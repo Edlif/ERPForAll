@@ -160,9 +160,13 @@ test("one2many cells keep one line like the main list: no letter breaks, tags on
   expect(last(".x2many-scroll")).toMatch(/overflow-x:\s*auto/);
 });
 
-test("the content-sizing layout lets long values wrap, so a first draw never paints a table wider than its text", () => {
-  expect(last(".list-table.list-auto-layout td button.link")).toMatch(/white-space:\s*normal/);
-  expect(last(".list-table.list-auto-layout td")).toMatch(/overflow-wrap:\s*anywhere/);
+// 2026-11-15: measuring wrapped values sized every column to its longest word, so names,
+// relations and tags were cut on the dev/testing deployment. The measure now reads one-line widths; columns.ts caps them.
+test("the content-sizing layout measures one-line values in a table as wide as its columns", () => {
+  expect(rulesFor(".list-table.list-auto-layout td", false).length).toBe(0);
+  expect(last(".list-table.list-auto-layout")).toMatch(/width:\s*max-content/);
+  expect(last(".list-table .many2many-tags .tag-list")).toMatch(/flex-wrap:\s*nowrap/);
+  expect(last(".list-table .list-number .sort-button")).toMatch(/justify-content:\s*safe flex-end/);
 });
 
 test("the open home menu takes the app's menus and phone burger out of the top bar", () => {

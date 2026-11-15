@@ -997,6 +997,7 @@ mod tests {
                     modifiers: wire::Modifiers::empty(),
                     label: "Name".to_owned(),
                     force_save: false,
+                    width: None,
                 },
             ),
             (
@@ -1068,6 +1069,7 @@ mod tests {
                     modifiers: wire::Modifiers::empty(),
                     label: "Count".to_owned(),
                     force_save: false,
+                    width: None,
                 },
             ],
         );

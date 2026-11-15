@@ -444,7 +444,7 @@ test("embedded list cells use the comodel's list widgets: a colour swatch instea
   expect(swatch.getAttribute("aria-label")).toBe("Cover Color: #562424");
   expect(swatch.style.backgroundColor).not.toBe("");
   expect(cells[2]!.classList.contains("x2many-boolean")).toBe(true);
-  expect([...node.querySelectorAll("th")].map(th => th.className)).toEqual(["", "", "x2many-boolean", "x2many-actions"]);
+  expect([...node.querySelectorAll("th")].map(th => th.className)).toEqual(["x2many-column", "x2many-column", "x2many-boolean x2many-column", "x2many-actions"]);
   // A click on a widget cell still opens the line form.
   swatch.click();
   await Promise.all(jobs);
@@ -545,4 +545,62 @@ test("an existing line's widgets receive the field context, like a new line's", 
   await Promise.all(jobs);
   expect(reports).toEqual([]);
   expect(seen.at(-1)).toMatchObject({ ambient_key: "ambient_val", default_parent_id: 42 });
+});
+
+test("sub-list columns follow the list width rules: a number keeps its content width, the name takes the room", async () => {
+  // Its own sub-view, so widths kept by other tests' redraws do not reach this one.
+  const target = field("book_ids", "one2many", { label: "Books", relation: "library.book", relationField: "author_id", subview: { ...subview } });
+  const { node } = render([{ id: 1, title: "A long book title" }, { id: 2, title: "Short", publication_year: 1990 }], vi.fn(), rpcWith(() => ({})), target);
+  const scroller = node.querySelector<HTMLElement>(".x2many-scroll")!, table = node.querySelector<HTMLTableElement>("table.x2many-table")!;
+  Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 640 });
+  const [titleHead, yearHead] = [...table.tHead!.rows[0]!.cells];
+  vi.spyOn(titleHead!, "getBoundingClientRect").mockImplementation(() => ({ width: table.classList.contains("list-auto-layout") ? 200 : 100 } as DOMRect));
+  vi.spyOn(yearHead!, "getBoundingClientRect").mockImplementation(() => ({ width: table.classList.contains("list-auto-layout") ? 50 : 100 } as DOMRect));
+  await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+  // Editable lines end with the 40 px actions column; 600 px room: the year is fixed at 64 px, the title (the spare
+  // column, no inline width) takes the rest.
+  expect([...table.querySelectorAll("col")].map(col => col.style.width)).toEqual(["", "64px", "40px"]);
+  expect(table.style.tableLayout).toBe("fixed"); expect(table.style.width).toBe("640px");
+  expect(titleHead!.querySelector(".column-resize-handle")).not.toBeNull();
+});
+
+const sizedSubList = (lines: unknown[], target: Field, hidden = false): { table: HTMLTableElement; scroller: HTMLElement } => {
+  const page = document.createElement("section"); page.hidden = hidden; document.body.append(page);
+  const handle = fieldWidgets.get("one2many").render({ field: target, value: lines, change: vi.fn(), rpc: rpcWith(() => ({})), context: {}, run, report: error => { reports.push(error); } });
+  page.append(handle.node);
+  const scroller = handle.node.querySelector<HTMLElement>(".x2many-scroll")!, table = handle.node.querySelector<HTMLTableElement>("table.x2many-table")!;
+  Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 640 });
+  const [titleHead, yearHead] = [...table.tHead!.rows[0]!.cells];
+  vi.spyOn(titleHead!, "getBoundingClientRect").mockImplementation(() => ({ width: table.classList.contains("list-auto-layout") ? 200 : 100 } as DOMRect));
+  vi.spyOn(yearHead!, "getBoundingClientRect").mockImplementation(() => ({ width: table.classList.contains("list-auto-layout") ? (table.querySelector("tbody tr.x2many-row") ? 90 : 30) : 100 } as DOMRect));
+  return { table, scroller };
+};
+const nextFrame = (): Promise<void> => new Promise(resolve => requestAnimationFrame(() => resolve()));
+
+test("a sub-list on a hidden notebook page is measured when the page is shown, not frozen at 0 px", async () => {
+  let observed: (() => void) | undefined;
+  vi.stubGlobal("ResizeObserver", class { constructor(callback: () => void) { observed = callback; } observe(): void {} disconnect(): void {} });
+  try {
+    const target = field("book_ids", "one2many", { label: "Books", relation: "library.book", relationField: "author_id", subview: { ...subview } });
+    const { table } = sizedSubList([{ id: 1, title: "A", publication_year: 1990 }], target, true);
+    await nextFrame();
+    // Hidden: nothing measured yet, the watcher is attached.
+    expect(table.style.tableLayout).toBe("");
+    expect(observed).toBeDefined();
+    table.closest("section")!.hidden = false; observed!();
+    // Year: its 90 px content, inside its 64 to 140 px rule; the title takes the rest.
+    expect([...table.querySelectorAll("col")].map(col => col.style.width)).toEqual(["", "90px", "40px"]);
+    expect(table.style.tableLayout).toBe("fixed");
+  } finally { vi.unstubAllGlobals(); }
+});
+
+test("a sub-list drawn empty measures its columns again once it has lines", async () => {
+  const target = field("book_ids", "one2many", { label: "Books", relation: "library.book", relationField: "author_id", subview: { ...subview } });
+  const empty = sizedSubList([], target).table;
+  await nextFrame();
+  // Header only: the year's 30 px label is under its 64 px floor.
+  expect([...empty.querySelectorAll("col")].map(col => col.style.width)).toEqual(["", "64px", "40px"]);
+  const filled = sizedSubList([{ id: 1, title: "A", publication_year: 1990 }], target).table;
+  await nextFrame();
+  expect([...filled.querySelectorAll("col")].map(col => col.style.width)).toEqual(["", "90px", "40px"]);
 });

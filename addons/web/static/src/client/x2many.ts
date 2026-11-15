@@ -9,6 +9,10 @@ import { CurrencyDisplayCache } from "./field-currency.js";
 import { relationQuery } from "./field-relations.js";
 import { resolveFieldWidget, registerFieldWidget, type WidgetEnvironment, type WidgetHandle, type WidgetDraft } from "./registry.js";
 import { ClientError } from "./transport.js";
+import { resizeColumns } from "./columns.js";
+
+/** Column widths of each sub-list, kept across the redraws a line change causes (one map per field's sub-view). */
+const subListWidths = new WeakMap<Subview, Map<string, number>>();
 
 /** How many line-form levels below the opened form get their one2many views attached. A deeper
  *  one2many keeps the name-only list. */
@@ -160,6 +164,12 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
     body.append(row);
   });
   table.append(head, body);
+  // The main list's width rules (kind, arch width, even fill, resize); measured once the form attaches the table.
+  if (columns.length && subview) {
+    const widths = subListWidths.get(subview) ?? new Map<string, number>(); subListWidths.set(subview, widths);
+    for (const th of [...headRow.cells].slice(0, columns.length)) th.classList.add("x2many-column");
+    resizeColumns(table, columns, widths, { selector: false, actions: editable });
+  }
   scroller.append(table);
   wrapper.append(scroller);
   if (editable) {

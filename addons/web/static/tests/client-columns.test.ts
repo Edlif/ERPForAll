@@ -1,6 +1,6 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 import {afterEach, expect, test, vi} from "vitest";
-import {resizeColumns} from "../src/client/columns.js";
+import {fitColumns,resizeColumns} from "../src/client/columns.js";
 afterEach(()=>{document.body.replaceChildren();vi.restoreAllMocks();});
 function table(widths:Map<string,number>):HTMLTableElement {
  const table=document.createElement("table");table.innerHTML='<thead><tr><th></th><th>Name</th><th>Login</th></tr></thead><tbody><tr><td></td><td>A name</td><td>A login</td></tr></tbody>';
@@ -19,10 +19,11 @@ test("keyboard resize preserves column identity and bounds across list redraws",
 test("pointer resize clamps width, ignores another pointer and stops on cancellation",()=>{
  const widths=new Map<string,number>(),first=table(widths),handle=first.querySelector<HTMLElement>('[aria-label="Resize Name column"]')!;
  const pointer=(name:string,id:number,x:number)=>{const event=new MouseEvent(name,{button:0,clientX:x,bubbles:true});Object.defineProperty(event,"pointerId",{value:id});handle.dispatchEvent(event);};
- pointer("pointerdown",1,100);pointer("pointermove",2,180);expect(widths.get("name")).toBe(200);
+ // A press, and another pointer's move, change nothing: the column is pinned only once its own drag moves it.
+ pointer("pointerdown",1,100);pointer("pointermove",2,180);expect(widths.get("name")).toBeUndefined();
  pointer("pointermove",1,150);expect(widths.get("name")).toBe(250);pointer("pointercancel",1,150);pointer("pointermove",1,300);expect(widths.get("name")).toBe(250);
 });
-test("first draw sizes columns to their content, then freezes them scaled to fill the container",async()=>{
+test("first draw sizes columns to their content, then freezes them with the spare room shared to fill the container",async()=>{
  const widths=new Map<string,number>(),host=document.createElement("div");document.body.append(host);
  Object.defineProperty(host,"clientWidth",{configurable:true,value:840});
  const t=document.createElement("table");t.innerHTML='<thead><tr><th></th><th>Name</th><th>Login</th></tr></thead><tbody></tbody>';host.append(t);
@@ -31,8 +32,9 @@ test("first draw sizes columns to their content, then freezes them scaled to fil
  resizeColumns(t,[{name:"name",label:"Name"},{name:"login",label:"Login"}],widths);
  expect(t.classList.contains("list-auto-layout")).toBe(true);expect(widths.size).toBe(0);
  await new Promise(resolve=>requestAnimationFrame(()=>resolve(undefined)));
- // 800 px for two columns measured 300 and 100: the content ratio is kept (600 and 200), the selector stays 40 px.
- expect(t.classList.contains("list-auto-layout")).toBe(false);expect(widths.get("name")).toBe(600);expect(widths.get("login")).toBe(200);
+ // 800 px for two flexible columns measured 300 and 100: the 400 px left over is shared evenly (500 and 300), the
+ // selector stays 40 px.
+ expect(t.classList.contains("list-auto-layout")).toBe(false);expect(widths.get("name")).toBe(500);expect(widths.get("login")).toBe(300);
  expect(t.style.tableLayout).toBe("fixed");expect(t.style.width).toBe("840px");
 });
 test("a width the user already set is kept and the list draws frozen at once",()=>{
@@ -70,12 +72,13 @@ test("in a container narrower than the content the columns shrink to fit, never 
   await frame();
   return { widths: contents.map((_,i)=>widths.get(`c${i}`)), table: t.style.width };
  };
- // A phone (390 px host): a 480 px long column and a 100 px one fit 350 px: 80 + 400 × 190/420 ≈ 261, 80 + 20 × 190/420 ≈ 89.
- expect(await fit(390,[600,100])).toEqual({ widths: [261, 89], table: "390px" });
+ // A phone (390 px host): a 480 px long column and a 100 px one fit 350 px. Both give up the excess evenly; the short
+ // one stops at 80 px and the long one gives the rest: 80 and 270.
+ expect(await fit(390,[600,100])).toEqual({ widths: [270, 80], table: "390px" });
  // Too narrow for the minimum: every column keeps 80 px (the list scrolls, as before).
  expect(await fit(200,[300,300,300])).toEqual({ widths: [80, 80, 80], table: "280px" });
- // A wide host still scales up to fill it.
- expect(await fit(840,[300,100])).toEqual({ widths: [600, 200], table: "840px" });
+ // A wide host is still filled.
+ expect(await fit(840,[300,100])).toEqual({ widths: [500, 300], table: "840px" });
 });
 
 test("settle after attaching sizes the columns in the same task, so the content layout is never painted",()=>{
@@ -126,4 +129,102 @@ test("a one-column list resized by keyboard changes its width and no longer stre
  expect(handle.getAttribute("aria-valuenow")).toBe("600");
  handle.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowLeft",bubbles:true}));
  expect(widths.get("name")).toBe(590);expect(t.querySelectorAll("col")[1]!.style.width).toBe("590px");expect(t.style.minWidth).toBe("120px");expect(t.style.width).toBe("630px");
+});
+test("fitting keeps each column within its bounds, shares spare room to open columns and shrinks evenly to the minimum",()=>{
+ // Spare room goes only to columns without an upper bound or below it; a fixed column (min = max) never moves.
+ expect(fitColumns([{width:100,min:80},{width:64,min:64,max:64},{width:90,min:56,max:100}],454)).toEqual([290,64,100]);
+ // Over the room: columns above their minimum give the excess up evenly.
+ expect(fitColumns([{width:300,min:80},{width:200,min:80}],400)).toEqual([250,150]);
+ // Minimums wider than the room: every column at its minimum (the list scrolls).
+ expect(fitColumns([{width:300,min:160},{width:64,min:64,max:64},{width:100,min:56,max:100}],200)).toEqual([160,64,56]);
+ // A measured width outside the bounds is clamped first; an unknown room leaves the clamped widths.
+ expect(fitColumns([{width:20,min:80},{width:900,min:56,max:100}],0)).toEqual([80,100]);
+});
+test("column kinds pick the width rule: numbers stay at their content width, the name column stays readable, the spare room goes to a flexible column",async()=>{
+ const draw=async(container:number)=>{
+  const widths=new Map<string,number>(),host=document.createElement("div");
+  Object.defineProperty(host,"clientWidth",{configurable:true,value:container});
+  const t=document.createElement("table");
+  t.innerHTML='<thead><tr><th></th><th>Name</th><th>Qty</th><th>Active</th></tr></thead><tbody></tbody>';host.append(t);document.body.append(host);
+  const contents=[120,50,300];
+  [...t.querySelectorAll("th")].slice(1).forEach((th,i)=>vi.spyOn(th,"getBoundingClientRect").mockImplementation(()=>({width:t.classList.contains("list-auto-layout")?contents[i]!:200} as DOMRect)));
+  resizeColumns(t,[{name:"name",label:"Name",kind:"char"},{name:"qty",label:"Qty",kind:"integer"},{name:"active",label:"Active",kind:"boolean"}],widths);
+  await frame();
+  return { widths: ["name","qty","active"].map(n=>widths.get(n)), cols: [...t.querySelectorAll("col")].slice(1).map(c=>c.style.width), min: t.style.minWidth };
+ };
+ // Wide: the integer keeps 64 px (its floor), the check box 100 px (its cap), the name takes the rest and the spare.
+ expect(await draw(1000)).toEqual({ widths: [796, 64, 100], cols: ["", "64px", "100px"], min: "max(320px, var(--list-table-min-width, 0px))" });
+ // Narrow: every column at its floor (the name keeps 160 px) and the table is as wide as those floors, so it scrolls.
+ expect(await draw(200)).toEqual({ widths: [160, 64, 56], cols: ["", "64px", "56px"], min: "max(320px, var(--list-table-min-width, 0px))" });
+});
+const listHost=(container:number,heads:string[],rows=0)=>{
+ const host=document.createElement("div");let width=container;
+ Object.defineProperty(host,"clientWidth",{configurable:true,get:()=>width});
+ const t=document.createElement("table"),thead=t.createTHead(),tbody=t.createTBody(),head=thead.insertRow();
+ head.append(document.createElement("th"));
+ for(const label of heads){const th=document.createElement("th");th.textContent=label;head.append(th);}
+ for(let i=0;i<rows;i++){const row=tbody.insertRow();row.dataset["id"]=String(i+1);row.insertCell();for(const _ of heads)row.insertCell().textContent="x";}
+ host.append(t);document.body.append(host);
+ return {host,t,resize:(next:number)=>{width=next;}};
+};
+test("an arch width is the content width plus the cell padding: fixed, a minimum, or a range",async()=>{
+ const {t}=listHost(1000,["Name","Code","Notes"]);
+ const contents=[120,300,700];
+ [...t.querySelectorAll("th")].slice(1).forEach((th,i)=>vi.spyOn(th,"getBoundingClientRect").mockImplementation(()=>({width:t.classList.contains("list-auto-layout")?contents[i]!:200} as DOMRect)));
+ const widths=new Map<string,number>();
+ resizeColumns(t,[{name:"name",label:"Name",kind:"char",width:{min:200}},{name:"code",label:"Code",kind:"char",width:{min:60,max:60}},{name:"notes",label:"Notes",kind:"text",width:{min:100,max:400}}],widths);
+ await frame();
+ // code: fixed 60 + 24; notes: 700 capped at 400 + 24; name: at least 200 + 24, then the rest of the 960 px room.
+ expect([widths.get("name"),widths.get("code"),widths.get("notes")]).toEqual([452,84,424]);
+});
+test("a list refits when its width changes, keeping a width the user set",async()=>{
+ let observed:(()=>void)|undefined;
+ vi.stubGlobal("ResizeObserver",class{constructor(callback:()=>void){observed=callback;}observe(){}disconnect(){}});
+ const {t,resize}=listHost(840,["Name","Login","Qty"]);
+ const contents=[300,100,50];
+ [...t.querySelectorAll("th")].slice(1).forEach((th,i)=>vi.spyOn(th,"getBoundingClientRect").mockImplementation(()=>({width:t.classList.contains("list-auto-layout")?contents[i]!:200} as DOMRect)));
+ const widths=new Map<string,number>();
+ const settle=resizeColumns(t,[{name:"name",label:"Name"},{name:"login",label:"Login"},{name:"qty",label:"Qty",kind:"integer"}],widths);
+ settle();
+ // 800 px room: qty fixed at 64, the 336 px left over shared by name and login.
+ expect([widths.get("name"),widths.get("login"),widths.get("qty")]).toEqual([468,268,64]);
+ t.querySelector<HTMLElement>('[aria-label="Resize Name column"]')!.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true}));
+ expect(widths.get("name")).toBe(478);
+ resize(1040);observed!();
+ // 1000 px room: name keeps the user's 478 px, qty its 64 px, login (automatic) takes the rest.
+ expect([widths.get("name"),widths.get("login"),widths.get("qty")]).toEqual([478,458,64]);
+ vi.unstubAllGlobals();
+});
+test("double-click or Enter on a resize handle gives the column its automatic width back",async()=>{
+ const {t}=listHost(840,["Name","Login"]);
+ const contents=[300,100];
+ [...t.querySelectorAll("th")].slice(1).forEach((th,i)=>vi.spyOn(th,"getBoundingClientRect").mockImplementation(()=>({width:t.classList.contains("list-auto-layout")?contents[i]!:200} as DOMRect)));
+ const widths=new Map<string,number>();
+ resizeColumns(t,[{name:"name",label:"Name"},{name:"login",label:"Login"}],widths)();
+ const handle=t.querySelector<HTMLElement>('[aria-label="Resize Name column"]')!;
+ handle.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowLeft",bubbles:true}));
+ expect(widths.get("name")).toBe(490);
+ handle.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}));
+ expect(widths.get("name")).toBe(500);
+ handle.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowLeft",bubbles:true}));
+ handle.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}));
+ expect(widths.get("name")).toBe(500);
+});
+test("a list first measured without records is measured again once records arrive",async()=>{
+ const widths=new Map<string,number>();
+ const first=listHost(440,["Name","Login"]);
+ const contents=[[100,100],[300,100]];let pass=0;
+ const spy=(t:HTMLTableElement)=>[...t.querySelectorAll("th")].slice(1).forEach((th,i)=>vi.spyOn(th,"getBoundingClientRect").mockImplementation(()=>({width:t.classList.contains("list-auto-layout")?contents[pass]![i]!:200} as DOMRect)));
+ spy(first.t);
+ resizeColumns(first.t,[{name:"name",label:"Name"},{name:"login",label:"Login"}],widths)();
+ expect([widths.get("name"),widths.get("login")]).toEqual([200,200]);
+ document.body.replaceChildren();pass=1;
+ const next=listHost(440,["Name","Login"],2);spy(next.t);
+ resizeColumns(next.t,[{name:"name",label:"Name"},{name:"login",label:"Login"}],widths)();
+ expect([widths.get("name"),widths.get("login")]).toEqual([300,100]);
+ // With records measured once, a later redraw keeps the frozen widths.
+ document.body.replaceChildren();pass=0;
+ const third=listHost(440,["Name","Login"],2);spy(third.t);
+ resizeColumns(third.t,[{name:"name",label:"Name"},{name:"login",label:"Login"}],widths)();
+ expect([widths.get("name"),widths.get("login")]).toEqual([300,100]);
 });

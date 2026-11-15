@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ViewIdentity,
         View,
         FieldRef,
+        ColumnWidth,
         DashboardItem,
         Modifiers,
         EmptyOptions,

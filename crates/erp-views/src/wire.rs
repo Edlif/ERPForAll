@@ -660,6 +660,33 @@ pub enum DashboardItem {
         domain: Option<WireDocument>,
     },
 }
+object!(/// A list column's width from its arch `width` attribute, in content pixels (padding excluded):
+    /// `max` equal to `min` is fixed, no `max` is a minimum.
+    ColumnWidth {
+        min: u16,
+        #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")]
+        #[cfg_attr(feature="schema-gen", ts(optional))] max: Option<u16> });
+impl ColumnWidth {
+    /// Largest width an arch may set, in pixels.
+    pub const MAX_PX: u16 = 2000;
+    /// Construct a bounded column width.
+    ///
+    /// # Errors
+    /// Refuses a bound outside 1 to [`Self::MAX_PX`] or a maximum below the minimum.
+    ///
+    /// ```
+    /// let width = erp_views::wire::ColumnWidth::new(100, Some(400)).unwrap();
+    /// assert_eq!((width.min, width.max), (100, Some(400)));
+    /// assert!(erp_views::wire::ColumnWidth::new(300, Some(200)).is_err());
+    /// ```
+    pub fn new(min: u16, max: Option<u16>) -> Result<Self, &'static str> {
+        let bounded = |px: u16| (1..=Self::MAX_PX).contains(&px);
+        if !bounded(min) || max.is_some_and(|max| !bounded(max) || max < min) {
+            return Err("Invalid list column width.");
+        }
+        Ok(Self { min, max })
+    }
+}
 /// Strict list/form arena, including the static record-form layout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
@@ -918,6 +945,14 @@ pub enum ViewNode {
         label: String,
         /// Whether a readonly value is still written on save; false when omitted.
         force_save: bool,
+        /// List column width set by the arch; omitted when it sets none.
+        #[serde(
+            default,
+            deserialize_with = "present_optional",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        width: Option<ColumnWidth>,
     },
     /// Explicit service widget.
     Widget {

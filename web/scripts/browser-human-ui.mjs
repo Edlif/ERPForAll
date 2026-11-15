@@ -2118,8 +2118,10 @@ try {
     const firstFrame = await evaluate('(()=>{const table=document.querySelector("table[aria-label=Records]");return {layout:getComputedStyle(table).tableLayout,autoLayoutClass:table.classList.contains("list-auto-layout"),cols:[...table.querySelectorAll("col")].map(c=>c.style.width)};})()');
     assert.equal(firstFrame.layout, "fixed", `table must settle to fixed layout synchronously on reload without waiting for requestAnimationFrame: ${JSON.stringify(firstFrame)}`);
     assert.equal(firstFrame.autoLayoutClass, false, `table must not retain list-auto-layout class on reload: ${JSON.stringify(firstFrame)}`);
-    // every data column but the last has its inline pixel width; the last has none and takes the spare room.
-    assert.ok(firstFrame.cols.length > 1 && firstFrame.cols.slice(1, -1).every(w => /^[0-9]+px$/.test(w)) && firstFrame.cols.at(-1) === "", `columns must have settled inline pixel widths on first frame: ${JSON.stringify(firstFrame)}`);
+    // every data column but one has its inline pixel width; that one (the last
+    // flexible column, so a number or a date never takes the spare room) has none.
+    const dataCols = firstFrame.cols.slice(1);
+    assert.ok(dataCols.length > 0 && dataCols.filter(w => w === "").length === 1 && dataCols.every(w => w === "" || /^[0-9]+px$/.test(w)), `columns must have settled inline pixel widths on first frame: ${JSON.stringify(firstFrame)}`);
     const longCell = await evaluate('(()=>{const cell=document.querySelector("table tbody td:not(.list-record-selector)"),link=cell.querySelector("button"),table=document.querySelector("table");return {page:document.documentElement.scrollWidth,viewport:innerWidth,table:table.getBoundingClientRect().width,cell:cell.getBoundingClientRect().width,link:link.getBoundingClientRect().width,full:cell.title===link.textContent,clipped:link.scrollWidth>link.clientWidth,layout:getComputedStyle(table).tableLayout};})()');
     assert.ok(longCell.page <= width && longCell.table <= width && longCell.link <= longCell.cell && longCell.clipped && longCell.full, JSON.stringify(longCell));
     assert.equal(longCell.layout, "fixed");
@@ -2151,8 +2153,11 @@ try {
   resizeLayouts.at(-1).keyboard_width = keyboardWidth;
   assert.ok(keyboardWidth < resized, `keyboard resizing must change actual layout width: ${JSON.stringify({resize,resized,keyboardWidth,table:await evaluate('document.querySelector("table").outerHTML')})}`);
 
-  // The last column draws the spare width: a keyboard resize starts from what is drawn and shows on screen.
-  const lastHandle = '[...document.querySelectorAll(".column-resize-handle")].at(-1)';
+  // The spare-width column (the last flexible one, no inline width) draws what is left: a keyboard resize starts from
+  // what is drawn and shows on screen.
+  // Found once and kept: after the resize the column is pinned and the spare room moves to another column.
+  await evaluate('(()=>{const t=document.querySelector("table[aria-label=Records]"),i=[...t.querySelectorAll("col")].findIndex((c,n)=>n>0&&c.style.width==="");window.__spareHandle=t.querySelector("thead tr").cells[i].querySelector(".column-resize-handle");})()');
+  const lastHandle = 'window.__spareHandle';
   const lastBefore = await evaluate(`(()=>{const h=${lastHandle};h.focus();return {width:h.parentElement.getBoundingClientRect().width,now:Number(h.getAttribute("aria-valuenow"))};})()`);
   assert.ok(Math.abs(lastBefore.now - lastBefore.width) <= 1, `the last column announces its drawn width: ${JSON.stringify(lastBefore)}`);
   await press("ArrowLeft", "ArrowLeft", 37);

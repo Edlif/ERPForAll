@@ -884,3 +884,100 @@ fn builtin_adapter_form_view_action_attributes() {
         _ => panic!("expected Form node"),
     }
 }
+
+fn width_list(
+    budget: &DescriptionBudget,
+    widths: &[Option<(i64, Option<i64>)>],
+) -> erp_views::DescriptionPayload {
+    let count = widths.len() + 1;
+    DescriptionBuilder::new(&list_schema().unwrap(), budget)
+        .build(|root| {
+            root.object(|object| {
+                object.set("root", |value| value.integer(0))?;
+                object.set("nodes", |values| {
+                    values.array(count, |index, node| {
+                        if index == 0 {
+                            return node.variant("list", |node| {
+                                node.object(|object| {
+                                    object.set("children", |value| {
+                                        value.array(count - 1, |child, value| {
+                                            value.integer(i64::try_from(child).unwrap() + 1)
+                                        })
+                                    })
+                                })
+                            });
+                        }
+                        let width = widths[index - 1];
+                        node.variant("field", |node| {
+                            node.object(|object| {
+                                object.set("field", |value| {
+                                    value.field_handle("res.partner", "name")
+                                })?;
+                                object.set("widget", |value| value.text("char"))?;
+                                object.set("label", |value| value.text("Name"))?;
+                                object.set("force_save", |value| value.boolean(false))?;
+                                object.set("modifiers", |value| value.object(|_| Ok(())))?;
+                                object.set("options", |value| value.object(|_| Ok(())))?;
+                                if let Some((min, max)) = width {
+                                    object.set("width", |value| {
+                                        value.object(|object| {
+                                            object.set("min", |value| value.integer(min))?;
+                                            if let Some(max) = max {
+                                                object.set("max", |value| value.integer(max))?;
+                                            }
+                                            Ok(())
+                                        })
+                                    })?;
+                                }
+                                Ok(())
+                            })
+                        })
+                    })
+                })
+            })
+        })
+        .unwrap()
+}
+
+#[test]
+fn builtin_adapter_carries_list_column_widths() {
+    let budget = DescriptionBudget::new();
+    let payload = width_list(&budget, &[Some((120, Some(300))), Some((90, None)), None]);
+    let admitted = payload
+        .builtin_view(
+            wire::ViewIdentity::stored(wire::WireId::try_from(7).unwrap()),
+            wire::ViewType::List,
+            "web.list",
+            &budget,
+        )
+        .unwrap();
+    let actual = serde_json::to_value(admitted.view()).unwrap();
+    assert_eq!(
+        actual["nodes"][1]["width"],
+        serde_json::json!({"min":120,"max":300})
+    );
+    assert_eq!(actual["nodes"][2]["width"], serde_json::json!({"min":90}));
+    assert!(actual["nodes"][3].get("width").is_none());
+    let _: wire::View = serde_json::from_value(actual).unwrap();
+    for bad in [
+        (300, Some(100)),
+        (0, None),
+        (2001, None),
+        (100, Some(70000)),
+    ] {
+        let budget = DescriptionBudget::new();
+        let error = width_list(&budget, &[Some(bad)])
+            .builtin_view(
+                wire::ViewIdentity::stored(wire::WireId::try_from(7).unwrap()),
+                wire::ViewType::List,
+                "web.list",
+                &budget,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ViewError::InvalidDescription("Builtin list column width is invalid".to_owned()),
+            "{bad:?}"
+        );
+    }
+}

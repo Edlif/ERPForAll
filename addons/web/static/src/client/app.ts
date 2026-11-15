@@ -3187,6 +3187,7 @@ export class HumanApp {
           offset = 0;
           await load();
         }), "sort-button");
+        sortBtn.title = field.label; // a narrow column cuts its header; the full label stays one hover away
         if (isSorted) {
           const arrow = icon("chevron-down"); // ascending rotates it in CSS; aria-sort carries the meaning
           arrow.classList.add("sort-indicator"); sortBtn.append(arrow);

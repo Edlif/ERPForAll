@@ -191,6 +191,11 @@ export type FieldRef = {
 model: string,
 /** Wire member `name`. */
 name: string, };
+export type ColumnWidth = {
+/** Wire member `min`. */
+min: number,
+/** Wire member `max`. */
+max?: number, };
 export type DashboardItem = { "kind": "count",
 /**
  * Stable item identity in the owning view.
@@ -799,7 +804,11 @@ modifiers: Modifiers,
  */
 label: string,
 /** Whether a readonly value is still written on save; false when omitted. */
-force_save: boolean, } | { "kind": "widget",
+force_save: boolean,
+/**
+ * List column width set by the arch; omitted when it sets none.
+ */
+width?: ColumnWidth, } | { "kind": "widget",
 /**
  * Registered identity.
  */

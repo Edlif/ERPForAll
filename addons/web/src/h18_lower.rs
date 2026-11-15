@@ -193,6 +193,48 @@ fn pivot_order<'a>(node: impl Node<'a>) -> ViewResult<Option<String>> {
 fn pivot_default_order<'a>(node: impl Node<'a>) -> ViewResult<()> {
     pivot_order(node).map(|_| ())
 }
+/// A malformed or out-of-range value is refused by name, never read as no width.
+fn column_width<'a>(node: impl Node<'a>) -> ViewResult<Option<(i64, Option<i64>)>> {
+    let Some(raw) = node.attr("width") else {
+        return Ok(None);
+    };
+    let refuse = || {
+        invalid(format!(
+            "Invalid list column width '{raw}': use 100px, [100px] or [100px,200px], from 1 to 2000 px."
+        ))
+    };
+    let px = |part: &str| -> ViewResult<i64> {
+        let part = part.trim();
+        let digits = part.strip_suffix("px").unwrap_or(part).trim();
+        if digits.is_empty() || digits.len() > 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(refuse());
+        }
+        let value: i64 = digits.parse().map_err(|_| refuse())?;
+        if (1..=i64::from(erp_sdk::views::wire::ColumnWidth::MAX_PX)).contains(&value) {
+            Ok(value)
+        } else {
+            Err(refuse())
+        }
+    };
+    let text = raw.trim();
+    let (min, max) = match text
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        Some(inner) => match inner.split_once(',') {
+            Some((lo, hi)) => (px(lo)?, Some(px(hi)?)),
+            None => (px(inner)?, None),
+        },
+        None => {
+            let fixed = px(text)?;
+            (fixed, Some(fixed))
+        }
+    };
+    if max.is_some_and(|max| max < min) {
+        return Err(refuse());
+    }
+    Ok(Some((min, max)))
+}
 fn boolean<'a>(node: impl Node<'a>, key: &str, default: bool) -> ViewResult<bool> {
     match node.attr(key) {
         None => Ok(default),
@@ -758,9 +800,16 @@ fn classify<'a, N: Node<'a>>(
                     "domain",
                     "context",
                     "nolabel",
+                    "width",
                 ],
             )?;
             boolean(node, "nolabel", false)?;
+            if node.attr("width").is_some() && key != "list" {
+                return Err(invalid(
+                    "The 'width' attribute sets a list column's width; only list views admit it.",
+                ));
+            }
+            column_width(node)?;
             if service {
                 return Err(invalid("Service forms cannot contain field nodes."));
             }
@@ -1989,6 +2038,17 @@ fn build_entry<'a, N: Node<'a>>(
                     object.set("force_save", |value| {
                         value.boolean(boolean(node, "force_save", false)?)
                     })?;
+                    if let Some((min, max)) = column_width(node)? {
+                        object.set("width", |value| {
+                            value.object(|object| {
+                                object.set("min", |value| value.integer(min))?;
+                                if let Some(max) = max {
+                                    object.set("max", |value| value.integer(max))?;
+                                }
+                                Ok(())
+                            })
+                        })?;
+                    }
                     object.set("options", |value| {
                         if widget == "code" {
                             // Code fields keep their closed mode admission; every other
@@ -3774,6 +3834,59 @@ mod tests {
             let error = fixture(&xml, "form").unwrap_err();
             assert!(matches!(error, ViewError::InvalidDescription(_)));
             assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    /// views are refused by name)
+    #[test]
+    fn builtin_h18_list_column_width_is_admitted_and_validated() {
+        let value = fixture(
+            "<list><field name=\"name\" width=\"[120px,300px]\"/><field name=\"count\" width=\"60\"/><field name=\"state\" width=\"[ 90px ]\"/></list>",
+            "list",
+        )
+        .unwrap();
+        assert_eq!(
+            value["nodes"][1]["width"],
+            serde_json::json!({"min": 120, "max": 300})
+        );
+        assert_eq!(
+            value["nodes"][2]["width"],
+            serde_json::json!({"min": 60, "max": 60})
+        );
+        assert_eq!(value["nodes"][3]["width"], serde_json::json!({"min": 90}));
+        let plain = fixture("<list><field name=\"name\"/></list>", "list").unwrap();
+        assert!(plain["nodes"][1].get("width").is_none());
+        for bad in [
+            "wide",
+            "0",
+            "2001px",
+            "[300px,100px]",
+            "[100px,]",
+            "12.5px",
+            "100%",
+        ] {
+            let xml = format!("<list><field name=\"name\" width=\"{bad}\"/></list>");
+            match fixture(&xml, "list").unwrap_err() {
+                ViewError::InvalidDescription(message) => assert_eq!(
+                    message,
+                    format!(
+                        "Invalid list column width '{bad}': use 100px, [100px] or [100px,200px], from 1 to 2000 px."
+                    )
+                ),
+                other => panic!("Unexpected error kind for {bad}: {other:?}"),
+            }
+        }
+        match fixture(
+            "<form><field name=\"name\" width=\"100px\"/></form>",
+            "form",
+        )
+        .unwrap_err()
+        {
+            ViewError::InvalidDescription(message) => assert_eq!(
+                message,
+                "The 'width' attribute sets a list column's width; only list views admit it."
+            ),
+            other => panic!("Unexpected error kind: {other:?}"),
         }
     }
 

@@ -182,6 +182,15 @@ fn integer(value: &DescriptionValue) -> ViewResult<i64> {
         _ => Err(invalid("Builtin view requires an integer")),
     }
 }
+fn column_width(value: &DescriptionValue) -> ViewResult<wire::ColumnWidth> {
+    let object = members(value)?;
+    let px = |value: &DescriptionValue| {
+        u16::try_from(integer(value)?).map_err(|_| invalid("Builtin list column width is invalid"))
+    };
+    let max = optional(object, "max").map(px).transpose()?;
+    wire::ColumnWidth::new(px(required(object, "min")?)?, max)
+        .map_err(|_| invalid("Builtin list column width is invalid"))
+}
 /// Inspect borrowed construction intermediates before any panel member is copied.
 fn panel_ceilings(sections: &[DescriptionValue], views: &[DescriptionValue]) -> ViewResult<()> {
     if sections.len() > 64 {
@@ -876,6 +885,7 @@ impl Output {
                     modifiers: self.modifiers(object)?,
                     label: self.string(object, "label")?,
                     force_save: boolean(required(object, "force_save")?)?,
+                    width: optional(object, "width").map(column_width).transpose()?,
                 }
             }
             "button" | "stat_button" => {

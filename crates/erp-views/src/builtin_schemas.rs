@@ -186,6 +186,11 @@ static SEARCH_PANEL: SchemaNode = SchemaNode::TaggedUnion {
 
 static CHILDREN_ONLY: SchemaNode =
     SchemaNode::Object(&[SchemaProperty::required("children", &CHILDREN)]);
+/// A list column's arch width in content px: a minimum and an optional maximum (equal for a fixed width).
+static COLUMN_WIDTH: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("min", &INT),
+    SchemaProperty::optional("max", &INT),
+]);
 static FIELD_NODE: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("field", &FIELD_REF),
     SchemaProperty::required("widget", &SHORT),
@@ -193,6 +198,7 @@ static FIELD_NODE: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("modifiers", &MODIFIERS),
     SchemaProperty::required("label", &LABEL),
     SchemaProperty::required("force_save", &BOOL),
+    SchemaProperty::optional("width", &COLUMN_WIDTH),
 ]);
 static LIST_NODE: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("children", &CHILDREN),

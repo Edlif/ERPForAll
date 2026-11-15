@@ -14,6 +14,14 @@ import { fieldWidgets, serviceControllers } from "./registry.js";
 import { ClientError } from "./transport.js";
 import { decodeAst, parseBoundedJson, type ValidatedAst } from "../../../../../web/packages/expr/src/index.js";
 
+/** A list column's arch width as the server admitted it: content px, a minimum and an optional maximum. */
+function columnWidth(raw: unknown): { min: number; max?: number } {
+  const value = object(raw, "column width");
+  closed(value, ["min", ...(Object.hasOwn(value, "max") ? ["max"] : [])], "column width");
+  const min = integer(value["min"], "column width minimum"), max = Object.hasOwn(value, "max") ? integer(value["max"], "column width maximum") : undefined;
+  if (min < 1 || min > 2000 || max !== undefined && (max < min || max > 2000)) throw new ClientError("server", "Invalid list column width.");
+  return max === undefined ? { min } : { min, max };
+}
 export function object(value: unknown, label = "response"): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new ClientError("server", `Invalid ${label}.`);
   return value as Record<string, unknown>;
@@ -48,6 +56,8 @@ export interface Field {
   name: string; kind: FieldDescription["type"]; label: string; required: boolean; readonly: boolean;
   /** Static view presentation; model metadata defaults to visible and unforced. */
   invisible?: boolean; forceSave?: boolean;
+  /** List column width from the arch (`width`), content px; absent: the width rule of the field's kind. */
+  width?: { min: number; max?: number };
   /** Validated per-occurrence source presentation; no execution semantics. */
   codeMode?: import("./code-editor-types.js").CodeEditorMode;
   /** Admitted selection keys for this header occurrence; current value is always retained. */
@@ -275,7 +285,7 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
       if (kind === "form") closed(node, ["kind", "record_mode", "children", ...(Object.hasOwn(node, "create") ? ["create"] : []), ...(Object.hasOwn(node, "edit") ? ["edit"] : []), ...(Object.hasOwn(node, "delete") ? ["delete"] : [])], "view node");
       else if (kind === "list") closed(node, ["kind", "children", ...(Object.hasOwn(node, "search_panel") ? ["search_panel"] : []), ...(Object.hasOwn(node, "page_limit") ? ["page_limit"] : []), ...(Object.hasOwn(node, "create") ? ["create"] : []), ...(Object.hasOwn(node, "edit") ? ["edit"] : []), ...(Object.hasOwn(node, "delete") ? ["delete"] : [])], "view node");
       else if (kind === "dashboard") closed(node,["kind","version","revision","items"],"dashboard node");
-      else if (kind === "field") closed(node, ["kind", "field", "widget", "options", "modifiers", "label", "force_save"], "view node");
+      else if (kind === "field") closed(node, ["kind", "field", "widget", "options", "modifiers", "label", "force_save", ...(Object.hasOwn(node, "width") ? ["width"] : [])], "view node");
       else if (kind === "widget") closed(node, ["kind", "widget", "options", "modifiers"], "view node");
       else if (kind === "button" || kind === "stat_button") closed(node, ["kind", "name", "button_type", "label", "variant", "confirm", "modifiers", ...(Object.hasOwn(node,"details")?["details"]:[]), ...(kind === "stat_button" ? ["children"] : [])], "view node");
       else if (kind === "cancel_button") closed(node, ["kind", "label", "variant", "modifiers",...(Object.hasOwn(node,"details")?["details"]:[])], "view node");
@@ -386,7 +396,8 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
           forceSave: boolean(node["force_save"], "force_save"),
           modifiers: { readonly: mods["readonly"] === null ? null : decodeAst(parseBoundedJson(JSON.stringify(mods["readonly"]))), required: mods["required"] === null ? null : decodeAst(parseBoundedJson(JSON.stringify(mods["required"]))), invisible: mods["invisible"] === null ? null : decodeAst(parseBoundedJson(JSON.stringify(mods["invisible"]))) },
           ...(widget === "statusbar" ? { statusbarVisible, statusbarFolded, statusbarClickable } : {}),
-          ...(widget === "code" ? { codeMode: codeEditorMode(options["mode"]) } : {}) };
+          ...(widget === "code" ? { codeMode: codeEditorMode(options["mode"]) } : {}),
+          ...(Object.hasOwn(node, "width") ? { width: columnWidth(node["width"]) } : {}) };
         if (statistic && (!occurrence.readonly || occurrence.forceSave)) throw new ClientError("server", "Smart-button statistics must be readonly.");
         // The count provider calls COUNT; loading this O2M into state would materialize ids.
         // An ordinary occurrence of the same relation is still selected by its own node.

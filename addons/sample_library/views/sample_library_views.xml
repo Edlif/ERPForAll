@@ -52,7 +52,7 @@
                     <kpi name="pages_added" string="Pages added" field="pages" aggregate="sum" date_field="create_date"/>
                 </dashboard>
                 <field name="favorite" widget="boolean_favorite"/>
-                <field name="title"/>
+                <field name="title" width="[200px]"/>
                 <field name="author_id"/>
                 <field name="genre_ids" widget="many2many_tags"/>
                 <field name="isbn"/>

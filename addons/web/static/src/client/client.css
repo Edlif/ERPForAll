@@ -533,10 +533,11 @@ td button.link { border: 0; background: transparent; color: var(--accent); paddi
 .list-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .list-table td button.link { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 .list-table .list-number { text-align: right; font-variant-numeric: tabular-nums; }
-.list-table .list-number .sort-button { justify-content: flex-end; }
+/* `safe`: a header wider than its number column is cut at its end, never at its start ("ion Year"). */
+.list-table .list-number .sort-button { justify-content: flex-end; justify-content: safe flex-end; }
 .list-table .list-number button.link { text-align: right; }
 .list-table .list-boolean { text-align: center; }
-.list-table .list-boolean .sort-button { justify-content: center; }
+.list-table .list-boolean .sort-button { justify-content: center; justify-content: safe center; }
 .list-table th { background: var(--surface-subtle); font-size: 13px; font-weight: 500; color: var(--muted); white-space: nowrap; user-select: none; }
 .list-table th { padding-block: 4px; transition: background var(--motion-fast) ease-out, color var(--motion-fast) ease-out; }
 .list-table th[aria-sort=ascending], .list-table th[aria-sort=descending] { color: var(--accent); }
@@ -1873,7 +1874,7 @@ span.field-color-toggler {
    WCAG 2.2 minimum target size. */
 .list-table td button.link { min-height: 24px; line-height: inherit; }
 /* A tag cell in a list does not keep the form editor's 34 px box height (it set every row to 47 px). */
-.list-table .many2many-tags .tag-list { min-height: 0; padding-block: 0; }
+.list-table .many2many-tags .tag-list { min-height: 0; padding-block: 0; flex-wrap: nowrap; overflow: hidden; }
 .settings-app-tab, .settings-section-title { display: flex; align-items: center; gap: 10px; }
 .settings-app-icon { --tone-bg: var(--selected); --tone-fg: var(--selected-text); width: 24px; height: 24px; flex: 0 0 24px; border-radius: var(--radius-control); font-size: 12px; }
 .settings-section-title .settings-app-icon { width: 24px; height: 24px; flex-basis: 24px; border-radius: var(--radius-control); font-size: 12px; margin-inline-end: 10px; }
@@ -1898,9 +1899,13 @@ span.field-color-toggler {
 }
 /* First draw of a list: columns take their content width before columns.ts freezes them (finding 6). */
 .list-table.list-auto-layout { table-layout: auto; }
-/* While the content layout measures (one task, or a frame for a list attached later), long values may wrap, so the
-   table never grows to the width of its longest text. */
-.list-table.list-auto-layout td, .list-table.list-auto-layout td button.link { white-space: normal; overflow-wrap: anywhere; }
+/* While the content layout measures (one task, or a frame for a list attached later) every cell keeps one line and
+   the table takes the sum of its columns, so each column reads its one-line width; columns.ts caps and fits them. */
+.list-table.list-auto-layout { width: max-content; }
+/* Sub-lists in forms use the same measure; their header cells hold the resize handles. */
+.x2many-table.list-auto-layout { table-layout: auto; width: max-content; }
+.x2many-table th.x2many-column { position: relative; overflow: hidden; text-overflow: ellipsis; }
+.x2many-table th.x2many-column:hover .column-resize-handle::after { border-color: var(--accent); }
 /* Pending stat value: a quiet block of the value's height (finding 14); no motion when the user asks for less. */
 .form-stat-value.form-stat-loading { display: inline-block; inline-size: 2.5ch; block-size: 1.25em; border-radius: 4px; background: var(--surface-subtle); animation: form-stat-pulse 1.2s ease-in-out infinite; }
 @keyframes form-stat-pulse { 50% { opacity: .45; } }
