@@ -24,6 +24,9 @@ Rules enforced today (a later release):
 6. ``erp-blob`` (L5) has no workspace dependency in any section; only ``erp-sdk``,
    ``erp-cli`` and ``erp-server`` may depend on it in ``[dependencies]`` or ``[build-dependencies]``.
 
+7. ``erp-pdf`` (L1 amendment 1 decision 8) has no workspace dependency,
+   including dev/build dependencies.
+
 Reads ``cargo metadata --no-deps`` (or ``--metadata FILE`` for tests). Exit status 1 and
 one line per violation when a rule fails.
 
@@ -52,6 +55,7 @@ LAYERS = {
     "erp-expr": 1,
     "erp-guest": 1,
     "erp-html": 1,
+    "erp-pdf": 1,
     "erp-store-wire": 1,
     "erp-registry": 2,
     "erp-domain": 3,
@@ -60,18 +64,25 @@ LAYERS = {
     "erp-blob": 5,
     "erp-security": 6,
     "erp-views": 7,
+    "erp-report": 7,
+    "erp-report-typst": 7,
+    "erp-report-worker": 7,
     "erp-data": 7,
     "erp-script": 7,
     "erp-rpc": 7,
     "erp-ui-compiler": 7,
     "erp-wasm-host": 7,
     "erp-modules": 8,
+    "erp-report-data": 8,
     "erp-server": 9,
     "erp-sdk": 10,
     "erp-cli": 12,
     "erp-ui-compiler-cli": 12,
 }
 SAME_LAYER_EDGES = {
+    ("erp-report-typst", "erp-report"),  # isolated layout adapter
+    ("erp-report-worker", "erp-report"),  # the render worker pool and frame protocol
+    ("erp-report", "erp-views"),  # pure print validation.
     ("erp-data", "erp-views"),
     ("erp-fields", "erp-html"),  # field conversion calls the sanitiser, never the reverse
     ("erp-ui-compiler", "erp-views"),
@@ -80,6 +91,7 @@ SAME_LAYER_EDGES = {
 # pure and guest-compatible). Rule 4 refuses every internal edge, whatever the layer.
 NO_INTERNAL_DEPENDENCIES = {
     "erp-html": "",
+    "erp-pdf": " amendment 1 decision 8",
     "erp-store-wire": " amendment 2026-11-06",
     "erp-blob": "",
 }
@@ -147,6 +159,13 @@ def check(metadata, root):
                     f"[{SECTIONS[kind]}]: addons use erp-sdk, other addons, and erp-testkit "
                     f"as a dev-dependency only"
                 )
+    for package in packages:
+        if package["name"] in {"erp-report-typst", "erp-report-worker"}:
+            for dep in package.get("dependencies", []):
+                if dep.get("kind") != "dev" and dep["name"] in {
+                    "erp-orm", "erp-sql", "erp-server", "postgres", "tokio-postgres", "sqlx", "rusqlite", "typst-kit"
+                }:
+                    errors.append(f"{package['name']} depends on {dep['name']}: isolated renderer forbids database and resource-loader dependencies")
     for package in packages:
         layer = LAYERS.get(package["name"])
         if layer is None:

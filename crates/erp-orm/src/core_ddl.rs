@@ -147,6 +147,7 @@ pub(crate) const ORM_DDL: &[CoreDdl] = &[
     crate::schema_generated::GENERATED_TABLES,
     crate::schema_sqlobj::SQL_OBJECT_TABLES,
     crate::jobs::schema::JOB_TABLES,
+    crate::company_ref_guard::COMPANY_REF_GUARD_TABLES,
 ];
 
 /// Every core table: `erp-orm`'s own, then the registered ones (what [`crate::Orm::sync_schema`]

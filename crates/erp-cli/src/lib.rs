@@ -28,6 +28,8 @@ mod partition_upkeep;
 #[cfg(test)]
 mod partition_upkeep_tests;
 mod pivot_export;
+mod report_print;
+mod report_worker;
 pub mod scaffold;
 mod server_runtime;
 
@@ -91,6 +93,10 @@ where
         }
     };
 
+    // Before anything else: the worker's stdout carries frames only.
+    if cli.command == Commands::ReportWorker {
+        return ExitCode::from(report_worker::serve());
+    }
     match execute(&cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -104,6 +110,9 @@ where
 fn execute(cli: &Cli) -> Result<()> {
     match cli.command {
         Commands::Server(ref args) => human::serve(args),
+        Commands::ReportWorker => Err(CliError::Execution(
+            "report-worker dispatch invariant failed".into(),
+        )),
         Commands::Attachments(ref cmd) => {
             println!("{}", attachments::execute(&cmd.action)?);
             Ok(())

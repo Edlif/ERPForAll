@@ -97,6 +97,19 @@ export async function settingsView(
 ): Promise<ServiceController> {
   let scope: Record<string, unknown> = { kind: "global" }, revision = "", baseline = new Map<string, unknown>(), edits = new Map<string, unknown>(), pending = false, ambiguous = false, generation = 0;
   let declarations: Record<string, unknown>[] = [];
+  // An app without a root
+  // menu takes its addon's manifest icon from the catalogue, read once; when that read fails it keeps its letter.
+  let addonIcons: ReadonlyMap<string, string> | null = null;
+  const readAddonIcons = async (): Promise<ReadonlyMap<string, string>> => {
+    try {
+      const catalog = object(await rpc.call("ir.module.module", "erp_available_addons", { context }), "addon catalogue");
+      const addons = array(catalog["addons"], "addons").map(raw => object(raw, "addon"));
+      return new Map(addons.filter(addon => addon["icon"] !== undefined).map(addon => [text(addon["name"], "addon name"), text(addon["icon"], "addon icon")]));
+    } catch (error) {
+      console.warn(`Settings app icons are not shown: ${(error as Error).message || "the addon catalogue could not be read"}`);
+      return new Map();
+    }
+  };
   let disposed = false;
   const choiceControls: { control: ChoiceDropdown; readonly: boolean }[] = [];
   const disposeChoices = (): void => { for (const { control } of choiceControls.splice(0)) control.dispose(); };
@@ -290,9 +303,10 @@ export async function settingsView(
       const rootMenu = options.navigation?.roots.find(root => root.module === appKey);
       const appTitle = rootMenu?.label ?? humanizeAppTitle(appKey);
       const makeIcon = (): HTMLElement | SVGSVGElement => {
-        if (!rootMenu) return appIcon(appKey, appTitle);
+        const declared = rootMenu ? rootMenu.icon : addonIcons?.get(appKey);
+        if (declared === undefined) return appIcon(appKey, appTitle);
         const tile = el("span", undefined, "settings-app-icon settings-menu-icon");
-        tile.setAttribute("aria-hidden", "true"); tile.append(menuIcon(rootMenu.icon)); return tile;
+        tile.setAttribute("aria-hidden", "true"); tile.append(menuIcon(declared)); return tile;
       };
       const selected = appKey === selectedApp;
 
@@ -569,6 +583,8 @@ export async function settingsView(
       nextValues.set(key, entry["value"]);
     }
     if (nextValues.size !== keys.length) throw new ClientError("server", "Settings response omitted a requested key.");
+    const apps = [...nextDeclarations, ...nextItems.map(item => ({ ...item }) as Record<string, unknown>)].map(value => text(value["app"], "setting app"));
+    if (addonIcons === null && apps.some(app => !options.navigation?.roots.some(root => root.module === app))) addonIcons = await readAddonIcons();
     if (disposed || request !== generation) return;
     declarations = nextDeclarations; items = nextItems; baseline = nextValues; revision = nextRevision; scope = immutableScope; showScope(scopeKey(scope)); edits.clear(); ambiguous = false; draw();
   };
@@ -667,6 +683,8 @@ interface AddonRow {
   installable: boolean; summary: string; author: string; application: boolean;
   section: AddonSection; path: readonly string[];
   website: string; license: string; depends: readonly string[];
+  /** The manifest's `lucide:<name>`; absent when the addon declares none (the tile shows its letter). */
+  icon?: string;
 }
 // Icon tile colours: one of a fixed set, chosen from the technical name so an addon keeps its colour.
 const ADDON_TONES = 8;
@@ -710,6 +728,7 @@ function addonRow(raw: unknown): AddonRow {
     website: text(addon["website"], "addon website"),
     license: text(addon["license"], "addon license"),
     depends: array(addon["depends"], "addon depends").map(item => text(item, "addon dependency")),
+    ...(addon["icon"] === undefined ? {} : { icon: text(addon["icon"], "addon icon") }),
   };
 }
 
@@ -798,7 +817,8 @@ export async function addonsView(
 
   const tileIcon = (row: AddonRow): HTMLElement => {
     const tile = el("div", undefined, "addon-icon");
-    tile.dataset["letter"] = (row.label.charAt(0) || row.name.charAt(0)).toUpperCase();
+    if (row.icon === undefined) tile.dataset["letter"] = (row.label.charAt(0) || row.name.charAt(0)).toUpperCase();
+    else { tile.classList.add("addon-icon-glyph"); tile.append(menuIcon(row.icon)); }
     tile.dataset["tone"] = String(addonTone(row.name));
     tile.setAttribute("aria-hidden", "true");
     return tile;
@@ -944,7 +964,9 @@ export async function addonsView(
       const itemEl = el("div", undefined, "addon-metadata-item");
       const line = el("div", undefined, "addon-metadata-line");
       line.append(el("strong", text(view["name"], "addon view name")), el("span", `[${text(view["kind"], "addon view kind")}]`, "badge addon-view-kind"));
-      itemEl.append(line, el("code", text(view["model"], "addon view model")));
+      // A QWeb template (a report's, a layout's) belongs to no model: the server sends an empty name.
+      const model = text(view["model"], "addon view model");
+      itemEl.append(line, ...(model ? [el("code", model)] : []));
       return itemEl;
     });
 

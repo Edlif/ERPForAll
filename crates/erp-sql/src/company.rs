@@ -417,3 +417,14 @@ impl CompanyValues {
         }
     }
 }
+
+/// The refusal of searching, sorting or grouping on a `res.company` field that mirrors a
+/// company default (`company_default_for`, supplement of 2026-11-15): the field is not
+/// stored and its per-row SQL expression arrives with the task named in the message.
+/// `operation` is `"searching"`, `"sorting"` or `"grouping"`.
+pub fn default_for_unsupported(model: &str, field: &str, target: &str, operation: &str) -> Error {
+    Error::validation(format!(
+        "{model}.{field} mirrors the company default of {target} and is not stored: {operation} \
+         on it is not supported until a later release"
+    ))
+}

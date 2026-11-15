@@ -5747,19 +5747,25 @@ impl<'s> Run<'s> {
             }
             match node.state() {
                 ModuleState::ToInstall => {
-                    self.update_schema(tx, limits, &module, &holders_after(pending, &module)?)
-                        .await?;
+                    // boxed: the debug poll frame of `update` holds a copy of each inline
+                    // awaitee, and the module lifecycle must run on a 2 MiB stack
+                    Box::pin(self.update_schema(
+                        tx,
+                        limits,
+                        &module,
+                        &holders_after(pending, &module)?,
+                    ))
+                    .await?;
                     let demo = self.demo_for(catalog, &module, &manifest)?;
-                    let demo = self
-                        .load_files(
-                            tx,
-                            session.as_deref_mut(),
-                            &module,
-                            &manifest,
-                            ConvertMode::Init,
-                            demo,
-                        )
-                        .await?;
+                    let demo = Box::pin(self.load_files(
+                        tx,
+                        session.as_deref_mut(),
+                        &module,
+                        &manifest,
+                        ConvertMode::Init,
+                        demo,
+                    ))
+                    .await?;
                     if let Some(session) = session.as_deref_mut() {
                         // an install checks every view it writes: the names are not needed
                         let _names: LoadedNames = session.finish_module(&module)?;
@@ -5800,12 +5806,23 @@ impl<'s> Run<'s> {
                             )
                             .await?;
                         }
-                        self.update_schema(tx, limits, &module, &holders_after(pending, &module)?)
-                            .await?;
+                        Box::pin(self.update_schema(
+                            tx,
+                            limits,
+                            &module,
+                            &holders_after(pending, &module)?,
+                        ))
+                        .await?;
                         let mode = ConvertMode::Update;
-                        let demo = self
-                            .load_files(tx, session.as_deref_mut(), &module, &manifest, mode, demo)
-                            .await?;
+                        let demo = Box::pin(self.load_files(
+                            tx,
+                            session.as_deref_mut(),
+                            &module,
+                            &manifest,
+                            mode,
+                            demo,
+                        ))
+                        .await?;
                         let loaded = match session.as_deref_mut() {
                             Some(session) => match session.finish_module(&module)? {
                                 LoadedNames::Tracked(names) => Loaded::Tracked(names),
@@ -5837,12 +5854,18 @@ impl<'s> Run<'s> {
                     } else {
                         if !self.demo_only {
                             // a reinit runs no `pre` migration: nothing waits for a later step
-                            self.update_schema(tx, limits, &module, &[]).await?;
+                            Box::pin(self.update_schema(tx, limits, &module, &[])).await?;
                         }
                         let mode = ConvertMode::Init;
-                        let demo = self
-                            .load_files(tx, session.as_deref_mut(), &module, &manifest, mode, demo)
-                            .await?;
+                        let demo = Box::pin(self.load_files(
+                            tx,
+                            session.as_deref_mut(),
+                            &module,
+                            &manifest,
+                            mode,
+                            demo,
+                        ))
+                        .await?;
                         if let Some(session) = session.as_deref_mut() {
                             let _names: LoadedNames = session.finish_module(&module)?;
                         }

@@ -1,7 +1,8 @@
 # ERPForAll documentation
 
-Three short guides cover installing, developing and deploying ERPForAll. A documentation website does not exist
-yet; these files are the documentation.
+The full documentation is the website [indoerp.github.io/ERPForAll](https://indoerp.github.io/ERPForAll/): the addon
+guide, installation and operation pages, and a search. The three short guides here cover installing, developing and
+deploying ERPForAll from this repository.
 
 - [Installation](install.md): prerequisites, building, creating the database, starting the server, the first
   sign-in, and installing an addon from a folder.

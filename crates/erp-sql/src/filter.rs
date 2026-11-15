@@ -1847,6 +1847,14 @@ impl<'a> Planner<'a> {
                 model.name, field.name
             )));
         }
+        if let Some(target) = field.company_default_for {
+            return Err(crate::company::default_for_unsupported(
+                model.name,
+                field.name,
+                target.path,
+                "searching",
+            ));
+        }
         if !matches!(field.ty, FieldType::Id) && !field.has_column() {
             return Err(self.input_error(format!(
                 "Field has no SQL representation because it is not stored in condition \

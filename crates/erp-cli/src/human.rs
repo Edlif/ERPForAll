@@ -1342,6 +1342,7 @@ async fn runtime_auth(
         .signal(Signal::new(baseline).with_refresh(NativeRefresh { source }))
         .build()?;
     orm.job_settings_snapshot().await?;
+    crate::report_print::serve_with(&orm);
     let auth =
         Auth::with_membership(orm, configuration.node, HashPool::global(), admission).await?;
     // Resource settings only: no credentials, signing keys or database secrets.
@@ -1422,7 +1423,11 @@ pub(crate) fn serve(args: &ServerArgs) -> Result<()> {
                 .with_lifecycle(lifecycle)
                 .with_attachment_content(Arc::new(crate::attachment_content::BaseAttachmentContent))
                 .with_attachment_policy(Arc::new(crate::attachment_content::BaseAttachmentContent))
-                .with_pivot_export(Arc::new(crate::pivot_export::WebAddonPivotExport));
+                .with_pivot_export(Arc::new(crate::pivot_export::WebAddonPivotExport))
+                .with_report(
+                    crate::report_print::ReportRuntime::install(&config)
+                        .map_err(|e| failed(e.to_string()))?,
+                );
             let listener =
                 tokio::net::TcpListener::bind(config.bind().map_err(|e| failed(e.to_string()))?)
                     .await
@@ -2396,7 +2401,7 @@ fn catalog<'a>(
                 )
                 .into()),
             };
-            entries.push(serde_json::json!({
+            let mut entry = serde_json::json!({
                 "name": manifest.name().as_str(),
                 "label": manifest.shortdesc(),
                 "version": manifest.version().to_string(),
@@ -2409,7 +2414,12 @@ fn catalog<'a>(
                 "website": manifest.website(),
                 "license": manifest.license(),
                 "depends": sorted_depends(manifest.depends().iter().map(|name| name.as_str().to_owned())),
-            }));
+            });
+            // the wire member is omitted, never null, for an addon that declares no icon
+            if let Some(icon) = manifest.app_icon() {
+                entry["icon"] = icon.into();
+            }
+            entries.push(entry);
         }
         // An uninstalled row
         // the directory does not offer stays out (native code that is not linked, a package that

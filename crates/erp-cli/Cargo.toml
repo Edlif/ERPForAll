@@ -25,6 +25,12 @@ erp-addon-account.workspace = true
 erp-addon-barcodes_gs1_nomenclature.workspace = true
 erp-addon-stock.workspace = true
 erp-server.workspace = true
+# `erp report-worker`: the render worker the report pool starts
+erp-report-typst.workspace = true
+erp-report-worker.workspace = true
+# printing: the document type and HTML preview, and the merge of print job parts
+erp-report.workspace = true
+erp-pdf.workspace = true
 erp-views.workspace = true
 erp-sdk.workspace = true
 # `erp addon build/package`: reads the built component's describe() under the host's limits

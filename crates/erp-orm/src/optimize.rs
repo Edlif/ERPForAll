@@ -434,6 +434,15 @@ impl<'a> Rewriter<'a> {
                 .condition(delegate, Operator::Any, Value::Domain(sub))
                 .map(Some);
         }
+        if let Some(target) = field.company_default_for {
+            // not stored and no SQL expression yet (supplement of 2026-11-15)
+            return Err(erp_sql::company::default_for_unsupported(
+                self.spec.name,
+                field.name,
+                target.path,
+                "searching",
+            ));
+        }
         if field.name == "display_name" && field.compute == Some("_compute_display_name") {
             return self.search_display_name(operator, value).map(Some);
         }

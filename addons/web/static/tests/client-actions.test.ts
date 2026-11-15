@@ -72,3 +72,11 @@ test("packaging product context is typed and restricted to packaging windows", (
   refused({...packaging, context:{active_model:"res.users"}}, "server", "Packaging active_model must name a product or unit model.");
   refused({...packaging, model:"library.loan"}, "unsupported", "Unsupported current-window context key: product_id.");
 });
+test("a report result is decoded strictly before it prints", () => {
+  const report = {kind:"report",name:"Loan Slip",report:"sample_library.report_loan_slip",model:"sample_library.loan",ids:[4,5]};
+  expect(decode(report)).toEqual(report);
+  refused({...report,ids:[]}, "server", "Invalid report records.");
+  refused({...report,ids:[0]}, "server", "Invalid report records.");
+  refused({...report,report:"a b"}, "server", "Invalid report name, report or model.");
+  refused({...report,extra:1}, "unsupported", "Unknown action result member: extra.");
+});

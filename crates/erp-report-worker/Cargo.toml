@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "erp-report-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Report render workers: the frame protocol, the worker loop and the process pool that keeps layout out of the server process"
+
+[lints]
+workspace = true
+
+[dependencies]
+erp-report.workspace = true
+ciborium.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# RLIMIT_AS for the worker and the page size for /proc/<pid>/statm
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["process", "param"] }
+
+# resident memory of a worker where there is no /proc
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+sysinfo.workspace = true
+
+# A worker around a scripted engine (loops, allocates, exits, floods its log). The pool tests start it
+# in place of `erp report-worker`; it is never packaged.
+[[bin]]
+name = "erp-report-worker-fixture"
+path = "fixture/main.rs"
+test = false
+doc = false

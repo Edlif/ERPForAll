@@ -1,0 +1,417 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! The report runtime of a served node (§11).
+//!
+//! `base` turns a report and its records into a document under the caller's rights
+//! ([`erp_addon_base::report_print`]); this module lays the document out in the render worker
+//! pool (`erp report-worker` processes) and hands the result on:
+//!
+//! - to the report route (`/erp/report/<pdf|html>/<report>/<ids>`, [`WebReport`]), which answers
+//!   with the file;
+//! - to the print jobs of `base` ([`ReportBackend`]): each chunk becomes one PDF attachment, one
+//!   document per record so a failing record is listed and the others print, and the last chunk
+//!   merges the parts into one PDF attachment the user downloads.
+//!
+//! The pool's settings are node configuration (`[report]`, read once at startup, each refused by
+//! name outside its floor and bound); the pool itself starts on the first print, so a node
+//! without a font store still starts and serves everything but printing.
+
+use std::io::Cursor;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
+
+use erp_addon_base::attachments::{self, AttachmentContent, NewAttachment, StageRequest, Uploader};
+use erp_addon_base::report_job::{PrintableReport, RenderedChunk, ReportBackend};
+use erp_addon_base::report_print::{self, PrintReport};
+use erp_fields::{Error, Result};
+use erp_orm::{BoxFuture, Orm, Transaction};
+use erp_report::{DocTree, LayoutEngine, RenderResult, ReportError, render_html};
+use erp_report_worker::{PoolSettings, Setting, WorkerCommand, WorkerPool};
+use erp_server::config::ServerConfig;
+use erp_server::web::{PrintedReport, ReportFormat, WebReport};
+use tokio::io::AsyncReadExt;
+
+/// Where the route sends a synchronous print.
+const ROUTE: &str = "/erp/report/pdf";
+/// The shipped font store's directory name in an addons path.
+const FONT_ADDON: &str = "report_fonts";
+
+/// The request ORM of the serving generation: the uploader of the print results stages its
+/// bytes in a transaction of its own.
+// shortcut: one ORM per process, replaced at each recomposition; upgrade when a node serves
+// several databases.
+static SERVE_ORM: RwLock<Option<Orm>> = RwLock::new(None);
+
+/// Record the request ORM a recomposition built (the print jobs stage their PDFs with it).
+pub(crate) fn serve_with(orm: &Orm) {
+    *SERVE_ORM.write().unwrap_or_else(PoisonError::into_inner) = Some(orm.clone());
+}
+
+fn serve_orm() -> Result<Orm> {
+    SERVE_ORM
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .ok_or_else(|| Error::internal("printing: the serving ORM is not composed yet"))
+}
+
+/// The render pool, started on the first document.
+struct Pool {
+    /// The checked settings, or why this node cannot print.
+    settings: std::result::Result<PoolSettings, String>,
+    started: Mutex<Option<Arc<WorkerPool>>>,
+}
+
+impl Pool {
+    fn get(&self) -> Result<Arc<WorkerPool>> {
+        let settings = self
+            .settings
+            .as_ref()
+            .map_err(|why| Error::user(why.clone()))?;
+        let mut started = self.started.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(pool) = started.as_ref() {
+            return Ok(Arc::clone(pool));
+        }
+        let pool = Arc::new(WorkerPool::new(settings.clone()).map_err(|e| unavailable(&e))?);
+        *started = Some(Arc::clone(&pool));
+        Ok(pool)
+    }
+
+    fn render(&self, document: &DocTree) -> Result<RenderResult> {
+        self.get()?.render(document).map_err(|e| layout_error(&e))
+    }
+}
+
+fn unavailable(error: &ReportError) -> Error {
+    Error::internal(format!(
+        "Printing is not available on this server: the render workers cannot start ({error})."
+    ))
+}
+
+/// A document's own failure (too long, too large) is the user's to fix; a worker that cannot
+/// start or crashed is the server's.
+fn layout_error(error: &ReportError) -> Error {
+    match error {
+        ReportError::Deadline { .. }
+        | ReportError::DocumentLimit { .. }
+        | ReportError::Limit { .. }
+        | ReportError::Image { .. }
+        | ReportError::Layout { .. } => {
+            Error::validation(format!("The document could not be laid out: {error}"))
+        }
+        other => unavailable(other),
+    }
+}
+
+/// The settings of `[report]`: the font store (the configured directory, else the
+/// `report_fonts` directory of an addons path) and each named pool setting.
+///
+/// # Errors
+///
+/// `Validation` naming an unknown setting or a value outside its floor and bound (the node does
+/// not start with them). A missing font store is not an error here: printing then fails with a
+/// message that names `report.font_directory`.
+fn pool_settings(config: &ServerConfig) -> Result<std::result::Result<PoolSettings, String>> {
+    let report = config.report();
+    let fonts: Option<PathBuf> = match &report.font_directory {
+        Some(directory) => Some(directory.clone()),
+        None => config
+            .addons()
+            .iter()
+            .map(|path| path.join(FONT_ADDON))
+            .find(|path| path.is_dir()),
+    };
+    let command = WorkerCommand::current_exe()
+        .map_err(|e| Error::internal(format!("printing: the server binary is unknown: {e}")))?;
+    // the bounds are checked even without fonts: a wrong value stops the node at startup
+    let mut settings = PoolSettings::new(command, fonts.clone().unwrap_or_default());
+    for (name, value) in &report.settings {
+        let setting = Setting::from_name(name).ok_or_else(|| {
+            let known: Vec<&str> = Setting::ALL.iter().map(|s| s.name()).collect();
+            Error::validation(format!(
+                "[report] {name} is not a report setting; the settings are font_directory, {}",
+                known.join(", ")
+            ))
+        })?;
+        settings = settings
+            .with(setting, *value)
+            .map_err(|e| Error::validation(format!("[report] {e}")))?;
+    }
+    Ok(match fonts {
+        Some(path) if path.is_dir() => Ok(settings),
+        Some(path) => Err(format!(
+            "Printing is not available on this server: the font store {} does not exist \
+             (report.font_directory).",
+            path.display()
+        )),
+        None => Err(format!(
+            "Printing is not available on this server: no font store is configured \
+             (report.font_directory) and no addons path has a {FONT_ADDON} directory."
+        )),
+    })
+}
+
+/// The node's report runtime: the route's printer and the print jobs' backend.
+pub(crate) struct ReportRuntime {
+    pool: Arc<Pool>,
+}
+
+impl ReportRuntime {
+    /// Read `[report]` (no worker starts here) and install the runtime as the print jobs'
+    /// backend of this process.
+    ///
+    /// # Errors
+    ///
+    /// As [`pool_settings`]; `Programming` when a backend is already installed.
+    pub(crate) fn install(config: &ServerConfig) -> Result<Arc<Self>> {
+        static INSTALLED: Mutex<Option<Arc<ReportRuntime>>> = Mutex::new(None);
+        let mut installed = INSTALLED.lock().unwrap_or_else(PoisonError::into_inner);
+        // shortcut: the print jobs' backend is process-global, so a second composition in the same
+        // process (a recomposed generation, a test) shares the first runtime and its settings;
+        // upgrade when one process serves nodes with different report settings.
+        if let Some(runtime) = installed.as_ref() {
+            return Ok(Arc::clone(runtime));
+        }
+        let runtime = Arc::new(Self {
+            pool: Arc::new(Pool {
+                settings: pool_settings(config)?,
+                started: Mutex::new(None),
+            }),
+        });
+        let backend: Arc<dyn ReportBackend> = Arc::clone(&runtime) as Arc<dyn ReportBackend>;
+        erp_addon_base::report_job::install_backend(backend)?;
+        *installed = Some(Arc::clone(&runtime));
+        Ok(runtime)
+    }
+
+    /// Lay `document` out on the blocking pool (the workers are separate processes; the call
+    /// waits for them).
+    async fn layout(&self, document: DocTree) -> Result<RenderResult> {
+        let pool = Arc::clone(&self.pool);
+        tokio::task::spawn_blocking(move || pool.render(&document))
+            .await
+            .map_err(|e| Error::internal(format!("printing: the layout task failed: {e}")))?
+    }
+
+    /// One PDF of every record of `ids`, each laid out alone, in order; the failures by record.
+    async fn render_each(
+        &self,
+        tx: &mut Transaction,
+        report: &PrintReport,
+        ids: &[i64],
+    ) -> Result<(Vec<Vec<u8>>, Vec<(i64, String)>, Vec<String>)> {
+        let mut parts = Vec::with_capacity(ids.len());
+        let mut failures = Vec::new();
+        let mut warnings = Vec::new();
+        for id in ids {
+            let one = std::slice::from_ref(id);
+            let prepared = tx
+                .savepoint(async |tx| report_print::prepare(tx, report, one).await)
+                .await;
+            let rendered = match prepared {
+                Ok(document) => self.layout(document).await,
+                Err(error) => Err(error),
+            };
+            match rendered {
+                Ok(output) => {
+                    warnings.extend(output.warnings().iter().cloned());
+                    parts.push(output.into_bytes());
+                }
+                // a retry of the whole chunk would fail the same way: the queue retries only these
+                Err(error) if error.kind() == erp_fields::ErrorKind::Concurrency => {
+                    return Err(error);
+                }
+                Err(error) => failures.push((*id, error.message().to_owned())),
+            }
+        }
+        Ok((parts, failures, warnings))
+    }
+
+    /// Stage `bytes` and keep them as a PDF attachment `name` of the caller.
+    async fn keep(tx: &mut Transaction, job: i64, name: &str, bytes: Vec<u8>) -> Result<i64> {
+        let env = tx.env();
+        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let staged = Uploader::new(&serve_orm()?)
+            .stage(
+                &env,
+                &mut Cursor::new(bytes),
+                StageRequest::named(name)
+                    .declared("application/pdf")
+                    .with_declared_length(length),
+            )
+            .await?;
+        let mut item = NewAttachment::new(name, AttachmentContent::Upload(staged.id));
+        item.declared_mimetype = Some("application/pdf".to_owned());
+        item.description = Some(format!("Print job {job}"));
+        let created = attachments::create(tx, vec![item]).await?;
+        created
+            .first()
+            .map(|id| id.get())
+            .ok_or_else(|| Error::internal("printing: the attachment was not created"))
+    }
+}
+
+/// `inputs` merged into one plain PDF, on the blocking pool.
+async fn merge(inputs: Vec<Vec<u8>>) -> Result<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        let mut output = Vec::new();
+        erp_pdf::merge(inputs, &erp_pdf::PdfLimits::default(), &mut |bytes| {
+            output.extend_from_slice(bytes);
+            Ok(())
+        })
+        .map_err(|e| {
+            Error::validation(format!("The printed documents could not be merged: {e}"))
+        })?;
+        Ok(output)
+    })
+    .await
+    .map_err(|e| Error::internal(format!("printing: the merge task failed: {e}")))?
+}
+
+impl ReportBackend for ReportRuntime {
+    fn reports<'a>(
+        &'a self,
+        tx: &'a mut Transaction,
+        model: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<PrintableReport>>> {
+        Box::pin(async move {
+            Ok(report_print::printable(tx, model)
+                .await?
+                .into_iter()
+                .map(|(report, name)| PrintableReport { report, name })
+                .collect())
+        })
+    }
+
+    fn check<'a>(
+        &'a self,
+        tx: &'a mut Transaction,
+        report: &'a str,
+        model: &'a str,
+        ids: &'a [i64],
+    ) -> BoxFuture<'a, Result<PrintableReport>> {
+        Box::pin(async move {
+            let found = report_print::find(tx, report).await?;
+            report_print::check_records(tx, &found, Some(model), ids).await?;
+            Ok(PrintableReport {
+                report: found.report_name,
+                name: found.name,
+            })
+        })
+    }
+
+    fn download_url(&self, report: &str, ids: &[i64]) -> Result<String> {
+        if !report
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.'))
+        {
+            return Err(Error::validation(format!(
+                "The report name '{report}' cannot be printed through the download: it may hold \
+                 only letters, digits, '_' and '.'."
+            )));
+        }
+        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+        Ok(format!("{ROUTE}/{report}/{}?download=1", ids.join(",")))
+    }
+
+    fn render<'a>(
+        &'a self,
+        tx: &'a mut Transaction,
+        job: i64,
+        report: &'a str,
+        ids: &'a [i64],
+    ) -> BoxFuture<'a, Result<RenderedChunk>> {
+        Box::pin(async move {
+            let found = report_print::find(tx, report).await?;
+            let (parts, failures, warnings) = self.render_each(tx, &found, ids).await?;
+            let part = if parts.is_empty() {
+                None
+            } else {
+                let bytes = merge(parts).await?;
+                Some(Self::keep(tx, job, &format!("print-job-{job}-part.pdf"), bytes).await?)
+            };
+            Ok(RenderedChunk {
+                part,
+                failures,
+                warnings,
+            })
+        })
+    }
+
+    fn merge<'a>(
+        &'a self,
+        tx: &'a mut Transaction,
+        job: i64,
+        name: &'a str,
+        parts: &'a [i64],
+    ) -> BoxFuture<'a, Result<i64>> {
+        Box::pin(async move {
+            // shortcut: the parts are read whole before the merge (bounded by the job's record
+            // limit and the attachment size limit); upgrade to a streamed merge when erp-pdf
+            // takes readers.
+            let mut inputs = Vec::with_capacity(parts.len());
+            for part in parts {
+                let mut read = attachments::open(tx, *part).await?.open(None).await?;
+                let mut bytes = Vec::new();
+                read.reader
+                    .read_to_end(&mut bytes)
+                    .await
+                    .map_err(|e| Error::internal(format!("printing: part {part}: {e}")))?;
+                inputs.push(bytes);
+            }
+            let merged = if inputs.len() == 1 {
+                inputs.pop().unwrap_or_default()
+            } else {
+                merge(inputs).await?
+            };
+            let result = Self::keep(tx, job, name, merged).await?;
+            // the parts are this job's own intermediate files
+            tx.env()
+                .sudo(true)
+                .records("ir.attachment")?
+                .browse(parts.iter().copied())?
+                .unlink(tx)
+                .await?;
+            Ok(result)
+        })
+    }
+}
+
+impl WebReport for ReportRuntime {
+    fn print<'a>(
+        &'a self,
+        tx: &'a mut Transaction,
+        format: ReportFormat,
+        report: &'a str,
+        ids: &'a [i64],
+    ) -> BoxFuture<'a, Result<PrintedReport>> {
+        Box::pin(async move {
+            erp_addon_base::report_job::check_direct_print(tx, ids).await?;
+            let found = report_print::find(tx, report).await?;
+            report_print::check_records(tx, &found, None, ids).await?;
+            let document = report_print::prepare(tx, &found, ids).await?;
+            match format {
+                ReportFormat::Html => Ok(PrintedReport {
+                    file_name: report_print::file_name(tx, &found, ids, "html").await?,
+                    // CPU work over up to the document limits: off the runtime thread.
+                    bytes: tokio::task::spawn_blocking(move || render_html(&document, &[]))
+                        .await
+                        .map_err(|e| {
+                            Error::internal(format!("printing: the HTML task failed: {e}"))
+                        })?
+                        .map_err(|e| Error::validation(format!("Report '{}': {e}", found.name)))?
+                        .into_bytes(),
+                }),
+                ReportFormat::Pdf => {
+                    let file_name = report_print::file_name(tx, &found, ids, "pdf").await?;
+                    Ok(PrintedReport {
+                        file_name,
+                        bytes: self.layout(document).await?.into_bytes(),
+                    })
+                }
+                other => Err(Error::programming(format!(
+                    "the report route asked for {other:?}, which this node does not print"
+                ))),
+            }
+        })
+    }
+}

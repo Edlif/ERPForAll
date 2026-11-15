@@ -293,6 +293,7 @@ pub mod test_access;
 pub mod test_auth;
 pub mod test_company;
 pub mod test_company_access;
+pub mod test_company_default_for;
 pub mod test_company_emit;
 pub mod test_company_escape;
 pub mod test_company_related;

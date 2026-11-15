@@ -1510,6 +1510,7 @@ async fn every_action_model_shares_the_sequence_and_follows_deletes() {
             "ir.actions.act_url",
             "ir.actions.act_window",
             "ir.actions.client",
+            "ir.actions.report",
             "ir.actions.server"
         ]
     );

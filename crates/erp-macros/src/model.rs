@@ -306,8 +306,15 @@ fn parse_field(name: &str, attr: &syn::Attribute) -> syn::Result<FieldOut> {
     let mut calls: Vec<TokenStream> = Vec::new();
     for meta in rest {
         match key(meta).as_str() {
-            k @ ("string" | "help" | "compute" | "inverse" | "related" | "groups"
-            | "search_method" | "collation") => {
+            k @ ("string"
+            | "help"
+            | "compute"
+            | "inverse"
+            | "related"
+            | "groups"
+            | "search_method"
+            | "collation"
+            | "company_default_for") => {
                 let s = lit_str(value(meta)?)?;
                 let m = format_ident!("{}", k);
                 calls.push(quote!(.#m(#s)));

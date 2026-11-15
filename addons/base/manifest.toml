@@ -23,6 +23,7 @@ data = [
     "data/res_partner_data.xml",
     "data/ir_config_parameter_data.xml",
     "data/ir_approval_policy_data.xml",
+    "data/report_paperformat_data.xml",
     "security/ir.access.csv",
     "data/settings_views.xml",
     "data/user_preferences_views.xml",

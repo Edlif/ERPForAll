@@ -602,7 +602,7 @@ struct Screen {
     admin: AdminRead,
 }
 
-const TECHNICAL_CATEGORIES: [&str; 8] = [
+const TECHNICAL_CATEGORIES: [&str; 9] = [
     "technical_db_menu",
     "technical_seq_menu",
     "technical_ui_menu",
@@ -611,9 +611,10 @@ const TECHNICAL_CATEGORIES: [&str; 8] = [
     "technical_security_menu",
     "technical_modules_menu",
     "technical_automation_menu",
+    "technical_reporting_menu",
 ];
 
-const TECHNICAL_SCREENS: [Screen; 20] = {
+const TECHNICAL_SCREENS: [Screen; 22] = {
     use AdminRead::{Granted, Managed, ReadOnly};
     const fn s(
         menu: &'static str,
@@ -793,6 +794,22 @@ const TECHNICAL_SCREENS: [Screen; 20] = {
             "technical_job_run",
             Granted,
         ),
+        s(
+            "technical_paperformat_menu",
+            "technical_reporting_menu",
+            "technical_paperformat_action",
+            "report.paperformat",
+            "technical_paperformat",
+            Granted,
+        ),
+        s(
+            "technical_reports_menu",
+            "technical_reporting_menu",
+            "technical_report_action",
+            "ir.actions.report",
+            "technical_report",
+            Granted,
+        ),
     ]
 };
 
@@ -882,6 +899,153 @@ fn model_denial(verb: &str, description: &str, model: &str, groups: &[&str]) -> 
 const PROVIDER_SECRET: &str = "provider-sentinel-7f3a-credential";
 /// The secret rows the Technical test probes: two created by `init`, one provider credential.
 const SECRET_PROBE_KEYS: [&str; 3] = ["database.secret", "database.uuid", "recaptcha_private_key"];
+
+/// One paper format as the probe reads it: external id, name, format, orientation, four margins,
+/// header spacing and dpi.
+type PaperRow = (String, String, String, String, f64, f64, f64, f64, i32, i32);
+
+/// The paper formats base ships
+/// are there after install, with the values of `report_paperformat_data.xml` read back.
+async fn report_screen_probes(
+    call: &impl AsyncFn(String, serde_json::Value, &erp_orm::Principal) -> (u16, serde_json::Value),
+    admin: &erp_orm::Principal,
+    client: &tokio_postgres::Client,
+) {
+    let action = base_xmlid(client, "ir.actions.act_window", "technical_report_action").await;
+    let row = client
+        .query_one(
+            "SELECT domain, context FROM ir_act_window WHERE id = $1",
+            &[&action],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        row.get::<_, Option<String>>(0),
+        None,
+        "Reports has no domain"
+    );
+    assert_eq!(
+        row.get::<_, String>(1),
+        "{}",
+        "Reports has no context filter"
+    );
+    let stored: Vec<i64> = client
+        .query("SELECT id::bigint FROM ir_act_report_xml ORDER BY id", &[])
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(stored.len(), 2, "the two reports the test created");
+    let (status, rows) = call(
+        "/json/2/ir.actions.report/web_search_read".to_owned(),
+        serde_json::json!({
+            "domain": [],
+            "specification": {"name": {}, "model": {}, "report_type": {}, "report_name": {}},
+            "order": "id asc",
+        }),
+        admin,
+    )
+    .await;
+    assert_eq!(status, 200, "{rows}");
+    let listed: Vec<i64> = rows["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(listed, stored, "every report action is in the Reports list");
+    assert_eq!(rows["records"][0]["name"], "Technical Test Report");
+    assert_eq!(rows["records"][0]["report_type"], "qweb-pdf");
+    assert_eq!(rows["records"][1]["report_type"], "qweb-text");
+    // each is an action of the shared id space with its key row
+    let keyed: i64 = client
+        .query_one(
+            "SELECT count(*) FROM ir_actions a JOIN ir_act_report_xml r ON r.id = a.id \
+              WHERE a.type = 'ir.actions.report' AND a.binding_type = 'report'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(keyed, 2);
+
+    // default data: the three paper formats, by external id
+    let formats: Vec<PaperRow> = client
+        .query(
+            "SELECT d.name, p.name, p.format, p.orientation, p.margin_top, p.margin_bottom, \
+                    p.margin_left, p.margin_right, p.header_spacing, p.dpi \
+               FROM ir_model_data d JOIN report_paperformat p ON p.id = d.res_id \
+              WHERE d.module = 'base' AND d.model = 'report.paperformat' ORDER BY d.name",
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r.get(0),
+                r.get(1),
+                r.get(2),
+                r.get(3),
+                r.get(4),
+                r.get(5),
+                r.get(6),
+                r.get(7),
+                r.get(8),
+                r.get(9),
+            )
+        })
+        .collect();
+    let text = |v: &str| v.to_owned();
+    assert_eq!(
+        formats,
+        [
+            (
+                text("paperformat_batch_deposit"),
+                text("US Batch Deposit"),
+                text("Letter"),
+                text("Portrait"),
+                15.0,
+                30.0,
+                10.0,
+                10.0,
+                15,
+                90
+            ),
+            (
+                text("paperformat_euro"),
+                text("A4"),
+                text("A4"),
+                text("Portrait"),
+                52.0,
+                32.0,
+                0.0,
+                0.0,
+                52,
+                90
+            ),
+            (
+                text("paperformat_us"),
+                text("US Letter"),
+                text("Letter"),
+                text("Portrait"),
+                52.0,
+                32.0,
+                0.0,
+                0.0,
+                52,
+                90
+            ),
+        ]
+    );
+    let count: i64 = client
+        .query_one("SELECT count(*) FROM report_paperformat", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 3, "no paper format without an external id");
+}
 
 /// The administrator never sees a secret parameter by any read path, replaces one without reading
 /// it, and is refused the identity keys; the internal user cannot replace one (
@@ -1666,6 +1830,38 @@ async fn technical_menu_and_views() {
             .set_cell("url", Cell::Str("/technical-test".into())),
     )
     .await;
+    // two reports of one template, for the Reports screen: a PDF and a text report
+    create(
+        &mut tx,
+        "ir.ui.view",
+        RawVals::new()
+            .set_cell("name", Cell::Str("technical.test_report".into()))
+            .set_cell("type", Cell::Str("qweb".into()))
+            .set_cell("key", Cell::Str("technical.test_report".into()))
+            .set_cell(
+                "arch_db",
+                Cell::Str(
+                    "<t t-name=\"technical.test_report\"><p class=\"fw-bold\">Partner</p></t>"
+                        .into(),
+                ),
+            ),
+    )
+    .await;
+    for (name, kind) in [
+        ("Technical Test Report", "qweb-pdf"),
+        ("Technical Test Text Report", "qweb-text"),
+    ] {
+        create(
+            &mut tx,
+            "ir.actions.report",
+            RawVals::new()
+                .set_cell("name", Cell::Str(name.into()))
+                .set_cell("model", Cell::Str("res.partner".into()))
+                .set_cell("report_type", Cell::Str(kind.into()))
+                .set_cell("report_name", Cell::Str("technical.test_report".into())),
+        )
+        .await;
+    }
     create(
         &mut tx,
         "ir.default",
@@ -1930,6 +2126,11 @@ async fn technical_menu_and_views() {
         }
     }
 
+    {
+        let client = db.client().await.unwrap();
+        report_screen_probes(&call, &admin, &client).await;
+    }
+
     secret_parameter_probes(&call, &admin, &ordinary, &secrets, &orm).await;
 
     // 3. An internal user without base.group_system: no Technical menu, and the actions are
@@ -1960,8 +2161,8 @@ async fn technical_menu_and_views() {
         );
         action_probes += 1;
     }
-    // every one of the 20 own screens was probed (a short `loaded_screens` would end the zip early)
-    assert_eq!(action_probes, 20, "internal-user action probes");
+    // every one of the 22 own screens was probed (a short `loaded_screens` would end the zip early)
+    assert_eq!(action_probes, 22, "internal-user action probes");
     let mut read_probes = 0usize;
     for screen in &TECHNICAL_SCREENS {
         let groups: &[&str] = match screen.admin {

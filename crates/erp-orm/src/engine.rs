@@ -762,6 +762,8 @@ impl Transaction {
             if matches!(fs.ty, erp_fields::FieldType::Id)
                 || shared.graph.model(model).is_builtin_display_name(field)
                 || fs.inherited.is_some()
+                // read by its own path (`Transaction::company_default_cells`), never cached
+                || fs.company_default_for.is_some()
             {
                 // inherited fields are read on their parent (`crate::inherits`)
                 return Ok(());

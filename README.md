@@ -7,6 +7,7 @@
 </p>
 
 <p align="center">
+  <a href="https://indoerp.github.io/ERPForAll/"><b>Documentation</b></a> ·
   <a href="#why-erpforall">Why</a> ·
   <a href="#what-works-today">What works today</a> ·
   <a href="#addons-all-the-way-down">Addons</a> ·
@@ -51,6 +52,11 @@
 </table>
 
 <br>
+
+> [!TIP]
+> **Documentation:** [indoerp.github.io/ERPForAll](https://indoerp.github.io/ERPForAll/). Guides and reference for
+> building addons: models and fields, data files, security, views, the `erp` command, installation and operation.
+> It is rebuilt from this repository whenever the code here changes.
 
 ## Why ERPForAll
 
@@ -117,7 +123,8 @@ scripts/check.sh                      # format, lints, build; add --tests to run
 ```
 
 Tests that need a database create and drop their own databases on the PostgreSQL server named by `DATABASE_URL`.
-The step-by-step guide to a running server with the web client is [docs/install.md](docs/install.md). A
+The step-by-step guide to a running server with the web client is [docs/install.md](docs/install.md); the addon
+guides are on the [documentation site](https://indoerp.github.io/ERPForAll/). A
 one-command local setup (database, demo data and the web client in a browser) is not available yet; it is one of the
 first things we want help with.
 
@@ -134,9 +141,13 @@ first things we want help with.
 | `vendor/` | Patched third-party crates, with their own licences. |
 | `testdata/` | Shared test fixtures. |
 | `scripts/` | Helper scripts: checks, generators, the pinned web toolchain. |
-| `docs/` | The guides below. |
+| `docs/` | The short guides below; the full documentation is on the [documentation site](https://indoerp.github.io/ERPForAll/). |
 
 ## Guides
+
+The full documentation is the website [indoerp.github.io/ERPForAll](https://indoerp.github.io/ERPForAll/): the addon
+guide (models, fields, data files, security, views, packaging), installation and operation pages, and a search. The
+short guides in this repository cover getting it running:
 
 - [Install](docs/install.md): from a checkout to a running server.
 - [Develop](docs/development.md): layout, writing an addon, the web client, how a change flows.

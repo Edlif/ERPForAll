@@ -113,6 +113,10 @@ pub enum Commands {
     /// The nodes serving a database and its rollout window (`erp cluster nodes`,
     /// `erp cluster rollout open|close|status`)
     Cluster(ClusterCommand),
+
+    /// A report render worker: frames on stdin and stdout, run by `erp server`'s worker pool. It
+    /// reads no configuration and opens no database (design `reports-pdf.md` §6.1.1).
+    ReportWorker,
 }
 
 /// Arguments for `erp scaffold`.

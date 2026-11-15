@@ -389,6 +389,7 @@ pub const MANIFEST: &[ModelCase] = &[
     ir("ir.actions.act_window.view"),
     ir("ir.actions.actions"),
     ir("ir.actions.client"),
+    ir("ir.actions.report"),
     ir("ir.actions.server"),
     ir("ir.approval.policy"),
     ir("ir.attachment"),
@@ -410,6 +411,8 @@ pub const MANIFEST: &[ModelCase] = &[
     ir("ir.sequence.date_range"),
     ir("ir.ui.menu"),
     ir("ir.ui.view"),
+    ir("report.job"),
+    ir("report.paperformat"),
     // mail.*
     mail("mail.activity"),
     mail("mail.activity.type"),

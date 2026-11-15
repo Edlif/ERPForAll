@@ -29,6 +29,10 @@ erp-orm = { workspace = true }
 # the attachment store types of `base`'s attachments module
 erp-blob = { workspace = true }
 erp-views = { workspace = true, features = ["host-access"] }
+# report template admission (`report`): base checks report views at load
+erp-report = { workspace = true }
+# the report data stage (`report::load_records`): base prepares printed documents
+erp-report-data = { workspace = true }
 erp-ui-compiler = { workspace = true }
 erp-security = { workspace = true }
 futures-core = { workspace = true }

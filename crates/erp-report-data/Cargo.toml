@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "erp-report-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The ORM side of the report data stage: set-based reads under the caller's rights"
+
+[lints]
+workspace = true
+
+[dependencies]
+erp-report.workspace = true
+erp-orm.workspace = true
+# The model and field metadata the reads convert by.
+erp-registry.workspace = true
+erp-fields.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+erp-testkit = { workspace = true }
+# `base_users`: the users model the non-superuser test runs under.
+erp-test-models = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

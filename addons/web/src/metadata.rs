@@ -3119,7 +3119,8 @@ async fn normalize_action_result(
     let json = crate::action_result::to_json(&result, 1)?;
     let normalized = crate::action_result::normalize(&json, &RegistryLookup(env))?;
     if let wire::ActionResult::Window { model, .. }
-    | wire::ActionResult::CurrentWindow { model, .. } = &normalized
+    | wire::ActionResult::CurrentWindow { model, .. }
+    | wire::ActionResult::Report { model, .. } = &normalized
     {
         require_model_read(env, tx, model).await?;
     }

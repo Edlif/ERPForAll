@@ -77,7 +77,7 @@ async fn base_default_get(
     // Base not installed => no stored defaults in ir.default.
     let (model_defaults, company_fallbacks) =
         if crate::ir_default::is_available(records.env().registry()) {
-            let defaults = crate::ir_default::get_model_defaults(
+            let mut defaults = crate::ir_default::get_model_defaults(
                 tx,
                 records.env(),
                 records.model_name(),
@@ -88,6 +88,9 @@ async fn base_default_get(
             // property stores no override and every company reads its own fallback, so offering
             // the shared one would only turn it into a supplied value.
             let current = !tx.companies(records.env()).await?.is_empty();
+            if current {
+                replace_removed_property_targets(tx, records, names, &mut defaults).await?;
+            }
             (defaults, current)
         } else {
             (Default::default(), false)
@@ -99,6 +102,95 @@ async fn base_default_get(
         out.extend(parent_records.default_get(tx, &list).await?);
     }
     Ok(out)
+}
+
+/// Step 5 for a company-dependent many2one: a default naming a record that is gone is no default.
+/// Its entry in `defaults` gives way to the company's fallback when that names a
+/// live record, and is removed otherwise, so the created record holds no value of its own and
+/// reads what every record without one reads.
+///
+/// A default equal to the fallback this transaction prepared is live by that preparation and
+/// costs no statement here. Any other id (a user's own default, a field of a delegation parent,
+/// a default whose fallback was found gone) is looked up in its table, one statement per
+/// comodel; record rules do not apply, as for the fallback.
+async fn replace_removed_property_targets(
+    tx: &mut Transaction,
+    records: &Records,
+    names: &[String],
+    defaults: &mut rustc_hash::FxHashMap<String, Value>,
+) -> Result<()> {
+    let spec = records.spec();
+    let env = records.env();
+    // every requested company-dependent many2one whose default names a record and that reaches
+    // step 5: a context default (step 1) or a field default (step 4) wins before it
+    let has_default_keys = env.context().has_default_keys();
+    let named: Vec<(&FieldSpec, i64)> = names
+        .iter()
+        .filter_map(|name| {
+            let field = spec.field(name)?;
+            if !field.company_dependent
+                || field.is_generated()
+                || !matches!(field.ty, FieldType::Many2one { .. })
+                || field.default.is_some()
+                || (has_default_keys && env.context().get(&format!("default_{name}")).is_some())
+            {
+                return None;
+            }
+            match defaults.get(name.as_str()) {
+                Some(Value::Int(id)) => Some((field, *id)),
+                _ => None,
+            }
+        })
+        .collect();
+    if named.is_empty() {
+        return Ok(());
+    }
+    // The model's own fields have a prepared fallback; an inherited field's lives on its parent.
+    let mut fallbacks: Vec<Option<Cell>> = vec![None; named.len()];
+    if named.iter().any(|(field, _)| field.inherited.is_none()) {
+        tx.prepare_properties(env, spec).await?;
+        for (slot, (field, _)) in fallbacks.iter_mut().zip(&named) {
+            if field.inherited.is_none() {
+                *slot = Some(tx.property_context(env, spec.id, field.id)?.1);
+            }
+        }
+    }
+    let mut unknown: Vec<(&str, Vec<i64>)> = Vec::new();
+    for ((field, id), fallback) in named.iter().zip(&fallbacks) {
+        if *fallback == Some(Cell::Id(*id)) {
+            continue;
+        }
+        let comodel = field.ty.comodel().ok_or_else(|| {
+            Error::programming(format!(
+                "{}.{}: a many2one without a comodel",
+                spec.name, field.name
+            ))
+        })?;
+        match unknown.iter_mut().find(|(name, _)| *name == comodel) {
+            Some((_, ids)) => ids.push(*id),
+            None => unknown.push((comodel, vec![*id])),
+        }
+    }
+    for (comodel, ids) in unknown {
+        let live = tx.live_ids(env, comodel, &ids).await?;
+        for ((field, id), fallback) in named.iter().zip(&fallbacks) {
+            if field.ty.comodel() != Some(comodel)
+                || *fallback == Some(Cell::Id(*id))
+                || live.contains(id)
+            {
+                continue;
+            }
+            match fallback {
+                Some(Cell::Id(fallback)) => {
+                    defaults.insert(field.name.to_owned(), Value::Int(*fallback));
+                }
+                _ => {
+                    defaults.remove(field.name);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Fields of `_inherits` parents to ask their model for, per parent in first-seen order.

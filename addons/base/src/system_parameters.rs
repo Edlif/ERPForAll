@@ -173,6 +173,9 @@ pub(crate) fn declarations() -> Result<Vec<ParameterDecl>> {
             (1, i64::from(u32::MAX)),
         )?,
     ];
+    for (key, label, default, floor, bound) in crate::report_job::PARAMETERS {
+        out.push(ParameterDecl::integer(key, label, default, (floor, bound))?);
+    }
     for (key, default, floor, bound) in crate::attachments::settings::PARAMETERS {
         out.push(ParameterDecl::integer(
             key,
@@ -215,6 +218,7 @@ mod tests {
         assert_eq!(
             declared.len(),
             16 + crate::attachments::settings::PARAMETERS.len()
+                + crate::report_job::PARAMETERS.len()
         );
         for decl in &declared {
             let key = decl.key();

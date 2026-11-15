@@ -1218,3 +1218,37 @@ fn spec_mod_058_force_demo_refuses_what_it_would_install_or_stamp() {
     );
     assert_eq!(cat.state("u"), Some(ModuleState::Uninstalled));
 }
+
+/// tested in `erp-cli` and the web client tests)
+#[test]
+fn spec_setcontrib_012_manifest_icon_is_a_lucide_name() {
+    let declared = Manifest::from_toml("theme_x", "name = 'T'\nicon = 'lucide:palette'\n").unwrap();
+    assert_eq!(declared.app_icon(), Some("lucide:palette"));
+    let multi =
+        Manifest::from_toml("web_x", "name = 'W'\nicon = 'lucide:app-window-mac'\n").unwrap();
+    assert_eq!(multi.app_icon(), Some("lucide:app-window-mac"));
+    assert_eq!(
+        Manifest::from_toml("none_x", "name = 'N'\n")
+            .unwrap()
+            .app_icon(),
+        None
+    );
+    let long = format!("lucide:{}", "a".repeat(erp_modules::manifest::APP_ICON_MAX));
+    for bad in [
+        "palette",
+        "lucide:",
+        "lucide:Palette",
+        "lucide:a--b",
+        "lucide:-a",
+        "lucide:a b",
+        "/x/icon.png",
+        long.as_str(),
+    ] {
+        let err =
+            Manifest::from_toml("bad_icon", &format!("name = 'B'\nicon = '{bad}'\n")).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidManifest { message, .. } if message.starts_with("icon must be lucide:<name>")),
+            "{bad}: {err}"
+        );
+    }
+}

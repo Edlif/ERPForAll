@@ -25,6 +25,7 @@ pub const ALLOWED_LICENCES: &[&str] = &[
     "Zlib",
     "Unicode-3.0",
     "MPL-2.0",
+    "0BSD",
 ];
 
 /// Check an SPDX expression against the licence policy: `A OR B` needs one allowed term, `A AND B`

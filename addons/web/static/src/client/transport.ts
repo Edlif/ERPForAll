@@ -79,17 +79,24 @@ export class RpcClient {
     }
   }
   /** POST a JSON document to the pivot download route and take the spreadsheet it answers (the route answers a file, not JSON). */
-  async postFile(path: "/erp/pivot/export", document: unknown): Promise<{ blob: Blob; fileName: string }> {
+  postFile(path: "/erp/pivot/export", document: unknown): Promise<{ blob: Blob; fileName: string }> {
+    const type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    return this.file(path, type, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(document) });
+  }
+  /** GET a file of this server (a printed report, a stored attachment); a refusal is thrown with the server's sentence. */
+  getFile(path: string, type: string): Promise<{ blob: Blob; fileName: string }> {
+    return this.file(path, type, { method: "GET" });
+  }
+  private async file(path: string, type: string, init: { method: string; headers?: Record<string, string>; body?: string }): Promise<{ blob: Blob; fileName: string }> {
     const finish = this.activity?.();
     const requestId = newRequestId();
-    const diagnostic = (status: number): ErrorDiagnostics => ({ endpoint: path, status, requestId });
+    const diagnostic = (status: number): ErrorDiagnostics => ({ endpoint: path.split("?")[0] ?? path, status, requestId });
     try {
       let response: Response;
       try {
         response = await this.fetcher(path, {
-          method: "POST", credentials: "same-origin", redirect: "error", cache: "no-store",
-          headers: { "Content-Type": "application/json", "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-Request-Id": requestId },
-          body: JSON.stringify(document)
+          ...init, credentials: "same-origin", redirect: "error", cache: "no-store",
+          headers: { ...init.headers, "Accept": type, "X-Request-Id": requestId },
         });
       } catch {
         throw new ClientError("network", "Unable to connect. Check your connection and try again.", 0, diagnostic(0));
@@ -98,12 +105,12 @@ export class RpcClient {
       if (!response.ok) {
         // A refusal below 500 is the server's JSON error (`message`) or a plain-text sentence, shown as sent and bounded; anything else
         // (an HTML error page, a 5xx) gets the fixed sentence, never the raw body.
-        const type = response.headers.get("Content-Type") ?? "";
+        const sent = response.headers.get("Content-Type") ?? "";
         let message = "";
-        if (response.status < 500 && (type.startsWith("text/plain") || type.includes("json"))) {
+        if (response.status < 500 && (sent.startsWith("text/plain") || sent.includes("json"))) {
           const raw = (await response.text().catch(() => "")).slice(0, 2000);
           message = raw;
-          if (type.includes("json")) {
+          if (sent.includes("json")) {
             message = "";
             try { const parsed: unknown = JSON.parse(raw); if (parsed !== null && typeof parsed === "object" && "message" in parsed && typeof parsed.message === "string") message = parsed.message; } catch { /* no message */ }
           }
@@ -112,7 +119,7 @@ export class RpcClient {
           || (response.status >= 500 ? "The server is temporarily unavailable. Please try again shortly." : "The download was refused. Please reload and try again."), response.status, diagnostic(response.status));
       }
       const blob = await response.blob();
-      if (blob.type !== "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") throw new ClientError("server", "The server returned an invalid response.", response.status, diagnostic(response.status));
+      if (blob.type.split(";")[0] !== type) throw new ClientError("server", "The server returned an invalid response.", response.status, diagnostic(response.status));
       return { blob, fileName: fileNameOf(response.headers.get("Content-Disposition")) };
     } finally { finish?.(); }
   }

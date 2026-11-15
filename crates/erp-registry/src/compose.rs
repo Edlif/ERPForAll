@@ -977,6 +977,8 @@ fn compose(
     crate::company::finish(&mut models, &by_name)?;
     // after the scopes: declarations name the company field of the scope
     crate::company_access::finish(&mut models, &by_name)?;
+    // after the relational passes: the targets and their kinds are final
+    crate::company_default::finish(&mut models)?;
     // after every pass: delegated fields are resolved, so `inherited` is final
     check_event_field_names(&models)?;
     // The model's defining addon protects the whole model. An exact-only extension
@@ -1553,6 +1555,7 @@ impl Merged {
             delegate,
             server_set,
             company_dependent,
+            company_default_for,
             change_default,
             user_writeable,
             tracking,
@@ -2506,6 +2509,7 @@ fn resolve_field(model: &str, id: FieldId, merged: Merged) -> Result<FieldSpec> 
             "Invalid generated input field '{model}.{name}': input_adapted requires a generated field"
         )));
     }
+    crate::company_default::check_declaration(model, &p)?;
     let (store, readonly, copy, compute_sudo);
     if is_generated {
         // The per-declaration checks in `apply` see one `fd` at a time; a base `compute`,
@@ -2565,6 +2569,12 @@ fn resolve_field(model: &str, id: FieldId, merged: Merged) -> Result<FieldSpec> 
                 "Invalid generated field '{model}.{name}': unsupported expression"
             )));
         }
+    } else if p.company_default_for.is_some() {
+        // no data of its own (supplement of 2026-11-15): never stored, never copied
+        store = false;
+        compute_sudo = false;
+        copy = false;
+        readonly = p.readonly.unwrap_or(false);
     } else if p.related.is_some() {
         store = p.store.unwrap_or(false);
         compute_sudo = p.compute_sudo.unwrap_or(true);
@@ -2958,6 +2968,9 @@ fn resolve_field(model: &str, id: FieldId, merged: Merged) -> Result<FieldSpec> 
         bypass_search_access: p.bypass_search_access.unwrap_or(false),
         delegate: p.delegate.unwrap_or(false),
         company_dependent: p.company_dependent.unwrap_or(false),
+        // resolved by `company_default::finish` once every model exists
+        company_default_for: None,
+        company_default_for_declared: p.company_default_for,
         translate,
         collation,
         collation_declared: p.collation.is_some(),

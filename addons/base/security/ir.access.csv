@@ -67,3 +67,8 @@ access_country_state_system,Manage states,base.model_res_country_state,base.grou
 access_country_state_internal,Read states,base.model_res_country_state,base.group_user,r,
 access_country_group_system,Manage country groups,base.model_res_country_group,base.group_system,crud,
 access_country_group_internal,Read country groups,base.model_res_country_group,base.group_user,r,
+access_report_actions_system,Manage reports,base.model_ir_actions_report,base.group_system,crud,
+access_report_actions_internal,Read reports,base.model_ir_actions_report,base.group_user,r,
+access_paperformat_system,Manage paper formats,base.model_report_paperformat,base.group_system,crud,
+access_paperformat_internal,Read paper formats,base.model_report_paperformat,base.group_user,r,
+access_report_job_own,Read the own print jobs,base.model_report_job,base.group_user,r,"[('user_id', '=', user.id)]"

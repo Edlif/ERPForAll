@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "erp-report-typst"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+erp-report.workspace = true
+typst = "=0.15.1"
+typst-layout = "=0.15.1"
+typst-pdf = "=0.15.1"
+comemo = "=0.5.1"
+rayon = "=1.12.0"
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# Templates through the whole library (tests/evaluated.rs); the renderer itself links no evaluator.
+erp-expr.workspace = true
+lopdf = { version = "=0.45.0", default-features = false }

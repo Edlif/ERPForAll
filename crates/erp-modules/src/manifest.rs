@@ -177,6 +177,23 @@ impl AutoInstall {
     }
 }
 
+/// Longest accepted manifest `icon`, prefix included.
+pub const APP_ICON_MAX: usize = 64;
+
+/// `lucide:` followed by lower-case ASCII words joined by single hyphens.
+fn is_app_icon(value: &str) -> bool {
+    value.len() <= APP_ICON_MAX
+        && value.strip_prefix("lucide:").is_some_and(|name| {
+            !name.is_empty()
+                && name.split('-').all(|word| {
+                    !word.is_empty()
+                        && word
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                })
+        })
+}
+
 /// Raw DTO deserialized strictly from manifest.toml.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -199,6 +216,9 @@ struct RawManifest {
     sequence: Option<i64>,
     application: Option<bool>,
     exact_only: Option<bool>,
+    /// The addon's icon where the web client lists it by addon (Settings sidebar, Apps tiles):
+    /// `lucide:<name>`, the form a menu's `web_icon` takes.
+    icon: Option<String>,
     data: Option<Vec<String>>,
     demo: Option<Vec<String>>,
     pre_init_hook: Option<String>,
@@ -255,6 +275,7 @@ pub struct Manifest {
     uninstall_hook: Option<HookName>,
     external_dependencies: ExternalDependencies,
     icon: String,
+    app_icon: Option<String>,
     static_path: Option<PathBuf>,
     countries: Vec<CountryCode>,
     excludes: Vec<ModuleName>,
@@ -514,6 +535,18 @@ impl Manifest {
             None => Vec::new(),
         };
 
+        let app_icon = match raw.icon {
+            Some(value) if is_app_icon(&value) => Some(value),
+            Some(_) => {
+                return Err(Error::InvalidManifest {
+                    name: mod_name,
+                    message: format!(
+                        "icon must be lucide:<name> (lower-case letters, digits and single hyphens, at most {APP_ICON_MAX} characters)"
+                    ),
+                });
+            }
+            None => None,
+        };
         let icon = "/base/static/description/icon.png".to_string();
         let static_path = None;
         let extra = raw.extra.unwrap_or_default();
@@ -564,6 +597,7 @@ impl Manifest {
             uninstall_hook,
             external_dependencies,
             icon,
+            app_icon,
             static_path,
             countries,
             excludes,
@@ -673,6 +707,11 @@ impl Manifest {
 
     pub fn icon(&self) -> &str {
         &self.icon
+    }
+
+    /// The declared `icon` (`lucide:<name>`), or `None` when the manifest declares none.
+    pub fn app_icon(&self) -> Option<&str> {
+        self.app_icon.as_deref()
     }
 
     pub fn static_path(&self) -> Option<&Path> {

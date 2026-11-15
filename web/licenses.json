@@ -10,7 +10,8 @@
     "ISC",
     "Zlib",
     "Unicode-3.0",
-    "MPL-2.0"
+    "MPL-2.0",
+    "0BSD"
   ],
-  "dev_only": ["BlueOak-1.0.0", "0BSD", "CC0-1.0", "Unlicense", "Python-2.0", "CC-BY-4.0", "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later"]
+  "dev_only": ["BlueOak-1.0.0", "CC0-1.0", "Unlicense", "Python-2.0", "CC-BY-4.0", "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later"]
 }

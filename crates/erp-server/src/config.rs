@@ -52,6 +52,9 @@ pub enum ConfigError {
         "server setting {0} requires a distinct PostgreSQL role name of 1..=63 bytes without NUL"
     )]
     SqlObjectRole(&'static str),
+    /// The `[report]` table is not a table of named non-negative integers and a path.
+    #[error("[report]: {0}")]
+    Report(String),
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +89,44 @@ struct RawConfig {
     /// The attachment store table. Its keys are validated by `erp-blob`, which
     /// reads this same file; here it is only allowed to exist.
     attachments: Option<toml::Value>,
+    /// The report render pool: `font_directory` and the pool settings by name.
+    /// Names and bounds are checked by the composition root, which knows the settings.
+    report: Option<toml::Value>,
+}
+/// The `[report]` table: the font store and the render pool's settings, each `name = integer`.
+#[derive(Debug, Clone, Default)]
+pub struct ReportConfig {
+    /// The shipped font store; `None`: the `report_fonts` directory of an addons path.
+    pub font_directory: Option<PathBuf>,
+    /// `(setting, value)` in file order.
+    pub settings: Vec<(String, u64)>,
+}
+fn read_report(
+    value: Option<toml::Value>,
+    resolve: impl Fn(&Path) -> PathBuf,
+) -> Result<ReportConfig, ConfigError> {
+    let Some(value) = value else {
+        return Ok(ReportConfig::default());
+    };
+    let table = value
+        .as_table()
+        .ok_or_else(|| ConfigError::Report("must be a table".to_owned()))?;
+    let mut config = ReportConfig::default();
+    for (key, value) in table {
+        if key == "font_directory" {
+            let path = value
+                .as_str()
+                .ok_or_else(|| ConfigError::Report("font_directory must be a path".to_owned()))?;
+            config.font_directory = Some(resolve(Path::new(path)));
+            continue;
+        }
+        let number = value
+            .as_integer()
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or_else(|| ConfigError::Report(format!("{key} takes a whole number, 0 or more")))?;
+        config.settings.push((key.clone(), number));
+    }
+    Ok(config)
 }
 fn read_audit_policy(value: Option<toml::Value>) -> Result<erp_rpc::ReadAuditPolicy, ConfigError> {
     let fail =
@@ -156,6 +197,7 @@ pub struct ServerConfig {
     attachment_maintenance_run_in_app: bool,
     audit_read_policy: erp_rpc::ReadAuditPolicy,
     attachments: String,
+    report: ReportConfig,
 }
 impl fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -386,6 +428,7 @@ impl ServerConfig {
                 .attachment_maintenance_run_in_app
                 .unwrap_or(false),
             attachments,
+            report: read_report(raw.report, resolve)?,
             audit_read_policy: read_audit_policy(raw.audit_read_policy)?,
         })
     }
@@ -400,6 +443,10 @@ impl ServerConfig {
     /// further infrastructure. The directory is created (mode 0700) when the server opens it.
     pub fn attachments_toml(&self) -> &str {
         &self.attachments
+    }
+    /// The `[report]` table: font store and render pool settings, node-local.
+    pub fn report(&self) -> &ReportConfig {
+        &self.report
     }
     /// Operator-provisioned NOLOGIN owner of declared SECURITY DEFINER functions; unset grants nothing.
     pub fn sql_object_definer_role(&self) -> Option<&str> {
@@ -527,6 +574,8 @@ impl erp_orm::node::SharedSettings for ServerConfig {
             audit_read_policy: _,
             // judged by the attachment topology check, not by settings agreement
             attachments: _,
+            // node-local: each node starts its own render workers with its own fonts and limits
+            report: _,
         } = self;
         out.shared_str("server.database", database)?;
         out.shared_str("server.public_origin", origin)?;

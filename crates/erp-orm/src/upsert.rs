@@ -2197,7 +2197,10 @@ async fn upsert_records_inner(
     let spec = registry.model_by_id(model);
     if let Some(field) = spec.fields.iter().find(|field| field.company_dependent) {
         return Err(crate::company_dependent_runtime::unsupported(
-            spec.name, field.name, "upsert",
+            spec.name,
+            field.name,
+            "upsert",
+            crate::company_dependent_runtime::Owner::Upsert,
         ));
     }
     if spec

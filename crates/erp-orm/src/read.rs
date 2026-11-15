@@ -772,6 +772,7 @@ impl Transaction {
             || field.inherited.is_some()
             || field.translate
             || field.company_dependent
+            || field.company_default_for.is_some()
             || (field.ty.is_x2many() && field.compute.is_none() && field.related.is_none())
     }
 
@@ -803,6 +804,11 @@ impl Transaction {
         }
         if field.inherited.is_some() {
             return self.inherited_cells(records, fid).await;
+        }
+        if field.company_default_for.is_some() {
+            // projected from the company's ir.default on every read, never cached for a
+            // database row (supplement of 2026-11-15)
+            return self.company_default_cells(records, field).await;
         }
         if field.ty.is_x2many() && field.compute.is_none() && field.related.is_none() {
             return self.x2many_cells(records, fid).await;

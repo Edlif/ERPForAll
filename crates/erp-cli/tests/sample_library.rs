@@ -443,7 +443,7 @@ async fn install_use_upgrade_uninstall() {
     let candidate_manifest = fs::read_to_string(&manifest_path).unwrap();
     fs::write(
         &manifest_path,
-        candidate_manifest.replace("version = \"1.0.12\"", "version = \"1.0.1\""),
+        candidate_manifest.replace("version = \"1.0.13\"", "version = \"1.0.1\""),
     )
     .unwrap();
     let db = TestDb::create().await.unwrap();
@@ -482,8 +482,10 @@ async fn install_use_upgrade_uninstall() {
     }
     // views, actions, menus and access rows came from the data files
     for (model, expected) in [
-        ("ir.ui.view", 8),
+        // eight views plus the four report templates
+        ("ir.ui.view", 12),
         ("ir.actions.act_window", 4),
+        ("ir.actions.report", 2),
         ("ir.ui.menu", 5),
         ("ir.access", 4),
     ] {
@@ -611,7 +613,7 @@ async fn install_use_upgrade_uninstall() {
     let text = fs::read_to_string(&manifest).unwrap();
     fs::write(
         &manifest,
-        text.replace("version = \"1.0.12\"", "version = \"1.1.0\""),
+        text.replace("version = \"1.0.13\"", "version = \"1.1.0\""),
     )
     .unwrap();
     let candidate = system_builder(&db, work.path())
@@ -1257,5 +1259,98 @@ fn sample_library_dashboard_reads_installed_declaration_and_scoped_records() {
             "12"
         );
         user_tx.rollback().await.unwrap();
+    });
+}
+
+/// The two sample reports are installed and offered in the Print menu of their models, and
+/// printing one book lays out a PDF named after it whose document carries its title.
+#[test]
+fn sample_library_reports_are_listed_and_print_a_book() {
+    use erp_report::LayoutEngine;
+    big_stack(async {
+        let db = TestDb::create().await.unwrap();
+        let system = system(&db, &repo_addons());
+        drop(system.initialize(InitOptions::new()).await.unwrap());
+        let env = system.system_env(erp_orm::Context::new());
+        let orm = system
+            .button_immediate_install(&env, &name())
+            .await
+            .unwrap()
+            .orm;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        for (model, report, label) in [
+            (
+                "sample_library.book",
+                "sample_library.report_book_sheet",
+                "Book Sheet",
+            ),
+            (
+                "sample_library.loan",
+                "sample_library.report_loan_slip",
+                "Loan Slip",
+            ),
+        ] {
+            let listed = erp_addon_base::report_print::printable(&mut tx, model)
+                .await
+                .unwrap();
+            assert_eq!(
+                listed,
+                vec![(report.to_owned(), label.to_owned())],
+                "{model}"
+            );
+        }
+        let books = tx.env().records("sample_library.book").unwrap();
+        let book = books
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("title", Cell::Str("The Printed Atlas".into()))],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let report =
+            erp_addon_base::report_print::find(&mut tx, "sample_library.report_book_sheet")
+                .await
+                .unwrap();
+        erp_addon_base::report_print::check_records(&mut tx, &report, None, &[book])
+            .await
+            .unwrap();
+        let document = erp_addon_base::report_print::prepare(&mut tx, &report, &[book])
+            .await
+            .unwrap();
+        let file = erp_addon_base::report_print::file_name(&mut tx, &report, &[book], "pdf")
+            .await
+            .unwrap();
+        // A direct report address prints no more than the Print menu prints at once, and no id twice.
+        erp_addon_base::report_job::check_direct_print(&mut tx, &[book])
+            .await
+            .unwrap();
+        let twice = erp_addon_base::report_job::check_direct_print(&mut tx, &[book, book])
+            .await
+            .unwrap_err();
+        assert!(
+            twice.message().contains("listed twice"),
+            "{}",
+            twice.message()
+        );
+        let many: Vec<i64> = (1..=51).collect();
+        let over = erp_addon_base::report_job::check_direct_print(&mut tx, &many)
+            .await
+            .unwrap_err();
+        assert!(
+            over.message()
+                .contains(erp_addon_base::report_job::SYNC_MAX_KEY),
+            "{}",
+            over.message()
+        );
+        tx.rollback().await.unwrap();
+        assert_eq!(file, "Book sheet - The Printed Atlas.pdf");
+        let html = erp_report::render_html(&document, &[]).unwrap();
+        assert!(html.contains("The Printed Atlas"), "{html}");
+        let fonts = repo_addons().join("report_fonts");
+        let engine =
+            erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
+        let pdf = engine.render(&document).unwrap();
+        assert!(pdf.bytes().starts_with(b"%PDF-"));
     });
 }

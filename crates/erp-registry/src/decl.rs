@@ -730,6 +730,9 @@ pub struct FieldDecl {
     pub server_set: Option<bool>,
     /// `company_dependent`.
     pub company_dependent: Option<bool>,
+    /// `company_default_for = "<model>.<field>"` (`res.company` only, supplement of
+    /// 2026-11-15): the field mirrors the per-company `ir.default` of that company-dependent field.
+    pub company_default_for: Option<&'static str>,
     /// `change_default`.
     pub change_default: Option<bool>,
     /// `user_writeable` (`res.users` only): a user may write the field on their
@@ -815,6 +818,7 @@ impl FieldDecl {
             delegate: None,
             server_set: None,
             company_dependent: None,
+            company_default_for: None,
             change_default: None,
             user_writeable: None,
             secret: None,
@@ -1224,6 +1228,16 @@ impl FieldDecl {
     /// Set `company_dependent`.
     pub const fn company_dependent(mut self, on: bool) -> Self {
         self.company_dependent = Some(on);
+        self
+    }
+    /// Declare a `res.company` field that mirrors the per-company `ir.default` of the
+    /// company-dependent field `target`, written `"<model>.<field>"` (
+    /// supplement of 2026-11-15). The field holds no data of its own: the ORM reads the default of
+    /// the company row and writes it back on a write, so it is never stored and cannot be combined
+    /// with `compute`, `inverse`, `related`, `store`, `copy`, `translate` or `company_dependent`.
+    /// A wrong target is refused when the registry is composed.
+    pub const fn company_default_for(mut self, target: &'static str) -> Self {
+        self.company_default_for = Some(target);
         self
     }
     /// Set `change_default`.

@@ -923,3 +923,216 @@ async fn drafts_read_references_only_through_readable_origins() {
     drop(tx);
     h.cleanup().await.unwrap();
 }
+
+/// The column of holder `id` as stored: `None` is SQL NULL, no company holds a value of its own.
+async fn stored(tx: &mut Transaction, column: &str, id: i64) -> Option<serde_json::Value> {
+    let sql = format!("SELECT {column} FROM prel_holder WHERE id = $1");
+    tx.query(&sql, &[&id]).await.unwrap()[0].get(0)
+}
+
+/// How the target of a default goes while its `ir.default` row stays.
+#[derive(Clone, Copy)]
+enum Removal {
+    /// A statement outside the record API.
+    RawDelete,
+    /// The database cascade under an ORM unlink of the target's parent.
+    CascadeUnderUnlink,
+}
+
+async fn creation_default_of_a_removed_target(removal: Removal) {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    seed(&mut tx).await;
+    let env = company(&tx.env(), 1);
+    let parent = tag(&mut tx, &env, "parent", None).await;
+    let target = tag(&mut tx, &env, "target", Some(parent.ids()[0]))
+        .await
+        .ids()[0];
+    ir_default::set(
+        &mut tx,
+        &env,
+        "prel.holder",
+        "null_id",
+        &Value::Int(target),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let model = env.records("prel.holder").unwrap();
+    // while the target lives the default is offered and a created record reads it
+    assert_eq!(
+        model
+            .default_get(&mut tx, &["null_id"])
+            .await
+            .unwrap()
+            .get("null_id"),
+        Some(&Value::Int(target))
+    );
+    let before = model
+        .create_values(&mut tx, &[vals(&[("name", Value::str("before"))])])
+        .await
+        .unwrap();
+    assert_eq!(
+        before.cell(&mut tx, "null_id").await.unwrap(),
+        Cell::Id(target)
+    );
+    match removal {
+        Removal::RawDelete => {
+            tx.flush().await.unwrap();
+            tx.execute("DELETE FROM prel_tag WHERE id = $1", &[&target])
+                .await
+                .unwrap();
+        }
+        Removal::CascadeUnderUnlink => parent.unlink(&mut tx).await.unwrap(),
+    }
+    // the premise: the record is gone and its default row is still there
+    assert!(!exists(&mut tx, target).await);
+    let rows: i64 = tx
+        .query(
+            "SELECT count(*)::int8 FROM ir_default d JOIN ir_model_fields f ON f.id = d.field_id WHERE f.model = 'prel.holder' AND f.name = 'null_id'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(rows, 1, "the default row outlives its target");
+
+    let created = model
+        .create_values(&mut tx, &[vals(&[("name", Value::str("after"))])])
+        .await
+        .unwrap();
+    let id = created.ids()[0];
+    // read from the cache the create filled
+    assert_eq!(created.cell(&mut tx, "null_id").await.unwrap(), Cell::Null);
+    assert_eq!(
+        created.value(&mut tx, "null_id").await.unwrap(),
+        Value::False
+    );
+    // the removed record was not stored as the company's own value
+    tx.flush().await.unwrap();
+    assert_eq!(stored(&mut tx, "null_id", id).await, None);
+    // read from the database
+    tx.invalidate_all().await.unwrap();
+    assert_eq!(created.cell(&mut tx, "null_id").await.unwrap(), Cell::Null);
+    assert_eq!(
+        created.value(&mut tx, "null_id").await.unwrap(),
+        Value::False
+    );
+    let found = model
+        .search(
+            &mut tx,
+            &erp_sdk::Domain::condition("null_id", erp_sdk::Operator::Eq, false).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(found.ids().contains(&id));
+    // a removed record is no default
+    assert_eq!(
+        model
+            .default_get(&mut tx, &["null_id"])
+            .await
+            .unwrap()
+            .get("null_id"),
+        None
+    );
+    drop(tx);
+    h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_default_whose_target_a_raw_delete_removed_is_not_copied_on_create() {
+    creation_default_of_a_removed_target(Removal::RawDelete).await;
+}
+
+#[tokio::test]
+async fn a_default_whose_target_a_cascade_removed_is_not_copied_on_create() {
+    creation_default_of_a_removed_target(Removal::CascadeUnderUnlink).await;
+}
+
+#[tokio::test]
+async fn a_users_own_default_is_dropped_once_its_target_is_gone() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    seed(&mut tx).await;
+    let env = company(&tx.env(), 1);
+    let fallback = tag(&mut tx, &env, "fallback", None).await.ids()[0];
+    let own = tag(&mut tx, &env, "own", None).await.ids()[0];
+    for (value, user) in [
+        (fallback, None),
+        (own, Some(erp_fields::RecId::from_real(7).unwrap())),
+    ] {
+        ir_default::set(
+            &mut tx,
+            &env,
+            "prel.holder",
+            "null_id",
+            &Value::Int(value),
+            user,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let mut tx = h.begin_as(7).await.unwrap();
+    let user = company(&tx.env(), 1);
+    assert!(!user.su());
+    let model = user.records("prel.holder").unwrap();
+    // the user's default differs from the fallback: it is the company's own value of the record
+    let kept = model
+        .create_values(&mut tx, &[vals(&[("name", Value::str("kept"))])])
+        .await
+        .unwrap();
+    assert_eq!(kept.cell(&mut tx, "null_id").await.unwrap(), Cell::Id(own));
+    tx.flush().await.unwrap();
+    assert_eq!(
+        stored(&mut tx, "null_id", kept.ids()[0]).await,
+        Some(json!({"1": own}))
+    );
+    tx.execute("DELETE FROM prel_tag WHERE id = $1", &[&own])
+        .await
+        .unwrap();
+    // the premise: the record is gone and the user's default row still names it
+    assert!(!exists(&mut tx, own).await);
+    let rows: i64 = tx
+        .query(
+            "SELECT count(*)::int8 FROM ir_default WHERE user_id = 7 AND json_value = $1",
+            &[&own.to_string()],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(rows, 1, "the user's default row outlives its target");
+    // once its target is gone it is no default: the record follows the fallback, from the cache
+    // and from the database
+    let after = model
+        .create_values(&mut tx, &[vals(&[("name", Value::str("after"))])])
+        .await
+        .unwrap();
+    assert_eq!(
+        after.cell(&mut tx, "null_id").await.unwrap(),
+        Cell::Id(fallback)
+    );
+    tx.flush().await.unwrap();
+    assert_eq!(stored(&mut tx, "null_id", after.ids()[0]).await, None);
+    tx.invalidate_all().await.unwrap();
+    assert_eq!(
+        after.cell(&mut tx, "null_id").await.unwrap(),
+        Cell::Id(fallback)
+    );
+    // `default_get` offers what the created record reads
+    assert_eq!(
+        model
+            .default_get(&mut tx, &["null_id"])
+            .await
+            .unwrap()
+            .get("null_id"),
+        Some(&Value::Int(fallback))
+    );
+    drop(tx);
+    h.cleanup().await.unwrap();
+}

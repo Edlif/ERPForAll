@@ -801,4 +801,83 @@
     <field name="view_id" ref="technical_jobs_settings_form"/>
   </record>
   <menuitem id="technical_jobs_settings_menu" name="Background Job Settings" parent="technical_automation_menu" action="technical_jobs_settings_action" groups="base.group_system" sequence="15"/>
+
+  <!-- Reporting Category (observed: Settings > Technical > Reporting of the reference, with Paper Format and Reports) -->
+  <menuitem id="technical_reporting_menu" name="Reporting" parent="technical_menu" sequence="57"/>
+
+  <!-- report.paperformat -->
+  <record id="technical_paperformat_list" model="ir.ui.view">
+    <field name="name">report.paperformat.technical.list</field>
+    <field name="model">report.paperformat</field>
+    <field name="arch" type="xml"><list><field name="name"/><field name="format"/><field name="orientation"/><field name="margin_top"/><field name="margin_bottom"/><field name="margin_left"/><field name="margin_right"/></list></field>
+  </record>
+  <record id="technical_paperformat_form" model="ir.ui.view">
+    <field name="name">report.paperformat.technical.form</field>
+    <field name="model">report.paperformat</field>
+    <field name="arch" type="xml"><form record_mode="record"><sheet><div class="oe_title"><h1><field name="name" placeholder="e.g. A4 with wide margins"/></h1></div><group><group string="Page"><field name="format"/><field name="page_width" invisible="format != 'custom'"/><field name="page_height" invisible="format != 'custom'"/><field name="orientation"/><field name="print_page_width"/><field name="print_page_height"/></group><group string="Margins (mm)"><field name="margin_top"/><field name="margin_bottom"/><field name="margin_left"/><field name="margin_right"/></group></group><group><group string="Header"><field name="header_spacing"/><field name="header_line"/></group><group string="Output"><field name="dpi"/><field name="default"/></group></group><notebook><page name="reports" string="Reports"><field name="report_ids" readonly="1"/></page></notebook></sheet></form></field>
+  </record>
+  <record id="technical_paperformat_search" model="ir.ui.view">
+    <field name="name">report.paperformat.technical.search</field>
+    <field name="model">report.paperformat</field>
+    <field name="arch" type="xml"><search><field name="name"/><field name="format"/><separator/><filter name="portrait" string="Portrait" domain="[('orientation', '=', 'Portrait')]"/><filter name="landscape" string="Landscape" domain="[('orientation', '=', 'Landscape')]"/><filter name="custom" string="Custom size" domain="[('format', '=', 'custom')]"/><group><filter name="group_by_format" string="Paper size" context="{'group_by': 'format'}"/><filter name="group_by_orientation" string="Orientation" context="{'group_by': 'orientation'}"/></group></search></field>
+  </record>
+  <record id="technical_paperformat_action" model="ir.actions.act_window">
+    <field name="name">Paper Format</field>
+    <field name="res_model">report.paperformat</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="technical_paperformat_list"/>
+    <field name="search_view_id" ref="technical_paperformat_search"/>
+    <field name="group_ids" eval="[(4, ref('base.group_system'), 0)]"/>
+  </record>
+  <record id="technical_paperformat_action_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="technical_paperformat_action"/>
+    <field name="view_id" ref="technical_paperformat_list"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="technical_paperformat_action_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="technical_paperformat_action"/>
+    <field name="view_id" ref="technical_paperformat_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <menuitem id="technical_paperformat_menu" name="Paper Format" parent="technical_reporting_menu" action="technical_paperformat_action" groups="base.group_system" sequence="10"/>
+
+  <!-- ir.actions.report: every installed report -->
+  <record id="technical_report_list" model="ir.ui.view">
+    <field name="name">ir.actions.report.technical.list</field>
+    <field name="model">ir.actions.report</field>
+    <field name="arch" type="xml"><list><field name="name"/><field name="model"/><field name="report_type"/><field name="report_name"/><field name="paperformat_id"/><field name="binding_model_id"/></list></field>
+  </record>
+  <record id="technical_report_form" model="ir.ui.view">
+    <field name="name">ir.actions.report.technical.form</field>
+    <field name="model">ir.actions.report</field>
+    <field name="arch" type="xml"><form record_mode="record"><header><button name="create_action" type="object" string="Offer when printing" class="btn-primary" invisible="binding_model_id"/><button name="unlink_action" type="object" string="Stop offering when printing" class="btn-secondary" invisible="not binding_model_id"/></header><sheet><div class="oe_title"><h1><field name="name" placeholder="e.g. Order sheet"/></h1></div><group><group string="Report"><field name="model"/><field name="report_type"/><field name="report_name" placeholder="e.g. my_addon.report_order"/><field name="paperformat_id" invisible="report_type != 'qweb-pdf'" placeholder="The company's paper format"/><field name="print_report_name" placeholder="e.g. 'Order ' + object.name"/></group><group string="Print menu"><field name="binding_model_id" readonly="1"/><field name="binding_view_types"/><field name="multi"/></group></group><notebook><page name="attachment" string="Attachment"><group><field name="save_as_attachment"/><field name="attachment" invisible="not save_as_attachment" placeholder="e.g. 'Order ' + object.name + '.pdf'"/><field name="attachment_use" invisible="not save_as_attachment"/><field name="allow_attachment_group_fields" invisible="not save_as_attachment"/></group></page><page name="visibility" string="Visibility"><group><field name="group_ids" widget="many2many_tags" placeholder="Visible to all groups"/><field name="domain" placeholder="Visible on all records"/></group></page></notebook></sheet></form></field>
+  </record>
+  <record id="technical_report_search" model="ir.ui.view">
+    <field name="name">ir.actions.report.technical.search</field>
+    <field name="model">ir.actions.report</field>
+    <field name="arch" type="xml"><search><field name="name"/><field name="model"/><field name="report_name"/><separator/><filter name="pdf" string="PDF" domain="[('report_type', '=', 'qweb-pdf')]"/><filter name="html" string="HTML" domain="[('report_type', '=', 'qweb-html')]"/><filter name="text" string="Text" domain="[('report_type', '=', 'qweb-text')]"/><separator/><filter name="in_print_menu" string="In the Print menu" domain="[('binding_model_id', '!=', False)]"/><filter name="saved" string="Saved as attachment" domain="[('save_as_attachment', '=', True)]"/><group><filter name="group_by_model" string="Model" context="{'group_by': 'model'}"/><filter name="group_by_type" string="Format" context="{'group_by': 'report_type'}"/><filter name="group_by_paperformat" string="Paper Format" context="{'group_by': 'paperformat_id'}"/></group></search></field>
+  </record>
+  <record id="technical_report_action" model="ir.actions.act_window">
+    <field name="name">Reports</field>
+    <field name="res_model">ir.actions.report</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="technical_report_list"/>
+    <field name="search_view_id" ref="technical_report_search"/>
+    <field name="group_ids" eval="[(4, ref('base.group_system'), 0)]"/>
+  </record>
+  <record id="technical_report_action_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="technical_report_action"/>
+    <field name="view_id" ref="technical_report_list"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="technical_report_action_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="technical_report_action"/>
+    <field name="view_id" ref="technical_report_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <menuitem id="technical_reports_menu" name="Reports" parent="technical_reporting_menu" action="technical_report_action" groups="base.group_system" sequence="20"/>
 </erp>

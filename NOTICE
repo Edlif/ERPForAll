@@ -12,3 +12,37 @@ kept next to that material.
 
 ERPForAll is a clean reimplementation: it does not copy code from the reference ERP.
 the reference ERP is a trademark of the reference ERP S.A.; this project is not affiliated with it.
+
+Native report engine data notices
+---------------------------------
+The separately packaged Noto fonts in addons/report_fonts remain under the
+SIL Open Font License 1.1. Their original copyright and licence notices are
+in addons/report_fonts/licenses/; exact sources and hashes are in that
+package's inventories. The project's licence does not replace those terms.
+
+The report adapter's dependency data has licences separate from crate code:
+
+* hayagriva 0.10.1: its NOTICE assigns Creative Commons BY-SA 3.0 to the CSL
+  styles/locales in archive/. Its README describes per-style attribution in
+  StyleInfo from the archive. Complete archive attribution remains to be
+  assembled for a distributed report-engine artifact.
+* two-face 0.4.5: embedded syntax/theme assets retain their own licences.
+  Its README credits bat: Copyright (c) 2018-2021 bat-developers
+  (https://github.com/sharkdp/bat). The package provides the asset notices
+  through acknowledgement::listing() and the versioned source listing:
+  https://github.com/CosmicHorrorDev/two-face/blob/v0.4.5/generated/acknowledgements_full.md
+  Complete per-asset notice packaging remains pending.
+* hypher 0.1.8: embedded hyphenation patterns retain their individual
+  licences. Its README lists LPPL, MPL, MIT and BSD-3 among these terms.
+  The enabled pattern notices still require a complete distribution inventory.
+* typst-assets 0.15.1: its NOTICE identifies CC0 ICC profiles, WHATWG-derived
+  HTML/fetch data under CC BY 4.0 (source-code portions under BSD-3-Clause),
+  and W3C Document-licensed WAI-ARIA, Referrer Policy and MathML Core data.
+  WHATWG attribution: Copyright WHATWG (Apple, Google, Mozilla, Microsoft).
+  W3C attribution: Copyright 2017 and 2025 World Wide Web Consortium, as
+  specified for the respective data in the package NOTICE.
+* krilla 0.8.2: its icc/LICENSE provides CC0 1.0 Universal for ICC data.
+
+These disclosures are an inventory, not a complete third-party licence
+bundle or an approval to distribute unresolved embedded data. Final artifact
+scope, complete applicable notices and embedded-data legal review are pending.

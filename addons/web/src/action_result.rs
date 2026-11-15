@@ -21,6 +21,9 @@ const MAX_CONTEXT_KEYS: usize = 64;
 const ACT_WINDOW: &str = "ir.actions.act_window";
 const ACT_CLOSE: &str = "ir.actions.act_window_close";
 const ACT_CLIENT: &str = "ir.actions.client";
+const ACT_REPORT: &str = "ir.actions.report";
+/// Most records one report result prints (the print request bounds it again by its setting).
+const MAX_REPORT_IDS: usize = 10_000;
 const NOTIFY_TAG: &str = "display_notification";
 
 /// Registry questions the pure validator needs answered.
@@ -147,11 +150,70 @@ fn dictionary(members: &Map<String, Json>, lookup: &dyn ModelLookup) -> Result<w
         }
         ACT_WINDOW => window(members, lookup),
         ACT_CLIENT => notification(members),
+        ACT_REPORT => report(members, lookup),
         other => Err(fail(format!(
             "Action type '{}' is not supported as a method result.",
             shown(other)
         ))),
     }
+}
+
+/// `report_action`'s dictionary: the report, its model and the records of `context.active_ids`.
+/// Printing with `data` (no records) is refused: the print request prints records.
+fn report(members: &Map<String, Json>, lookup: &dyn ModelLookup) -> Result<wire::ActionResult> {
+    reject_members(
+        members,
+        &[
+            "type",
+            "name",
+            "report_name",
+            "report_type",
+            "model",
+            "context",
+            "data",
+        ],
+        "report",
+    )?;
+    if !matches!(
+        members.get("data"),
+        None | Some(Json::Null | Json::Bool(false))
+    ) {
+        return Err(fail(
+            "A report result with 'data' is not supported: a report prints records.",
+        ));
+    }
+    let name = text(members, "name", 256, "A report result")?;
+    let report = text(members, "report_name", 128, "A report result")?;
+    let model = text(members, "model", 256, "A report result")?;
+    if !lookup.has_model(model) {
+        return Err(fail(format!(
+            "A report result names model '{}', which is not registered.",
+            shown(model)
+        )));
+    }
+    let Some(Json::Object(context)) = members.get("context") else {
+        return Err(fail(
+            "A report result requires a 'context' with 'active_ids'.",
+        ));
+    };
+    reject_members(context, &["active_ids"], "report context")?;
+    let ids = match context.get("active_ids") {
+        Some(Json::Array(ids)) if !ids.is_empty() && ids.len() <= MAX_REPORT_IDS => ids
+            .iter()
+            .map(|id| positive_id(id, "A report record id"))
+            .collect::<Result<Vec<_>>>()?,
+        _ => {
+            return Err(fail(format!(
+                "A report result requires 1 to {MAX_REPORT_IDS} record ids in context.active_ids."
+            )));
+        }
+    };
+    Ok(wire::ActionResult::Report {
+        name: name.to_owned(),
+        report: report.to_owned(),
+        model: model.to_owned(),
+        ids,
+    })
 }
 
 fn text<'a>(
@@ -948,6 +1010,38 @@ mod tests {
         assert_eq!(
             message(json!([])),
             "A method result of kind array is not an action result; only a scalar or an action dictionary is admitted."
+        );
+    }
+
+    #[test]
+    fn a_report_result_prints_its_records_or_names_the_refusal() {
+        let action = json!({"type": ACT_REPORT, "name": "Loan Slip",
+            "report_name": "sample_library.report_loan_slip", "report_type": "qweb-pdf",
+            "model": "library.loan", "context": {"active_ids": [4, 5]}, "data": false});
+        let result = serde_json::to_value(run(action.clone()).unwrap()).unwrap();
+        assert_eq!(
+            result,
+            json!({"kind": "report", "name": "Loan Slip",
+                   "report": "sample_library.report_loan_slip", "model": "library.loan",
+                   "ids": [4, 5]})
+        );
+        let mut with_data = action.clone();
+        with_data["data"] = json!({"filter": "late"});
+        assert_eq!(
+            message(with_data),
+            "A report result with 'data' is not supported: a report prints records."
+        );
+        let mut no_ids = action.clone();
+        no_ids["context"] = json!({"active_ids": []});
+        assert!(message(no_ids).contains("context.active_ids"));
+        let mut unknown = action.clone();
+        unknown["model"] = json!("x.unknown");
+        assert!(message(unknown).contains("not registered"));
+        let mut extra = action;
+        extra["context"] = json!({"active_ids": [1], "lang": "fr_FR"});
+        assert_eq!(
+            message(extra),
+            "Member 'lang' is not supported in a report context result."
         );
     }
 

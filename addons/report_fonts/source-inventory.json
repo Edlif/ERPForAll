@@ -1,0 +1,137 @@
+[
+  {
+    "family": "Noto Sans",
+    "file": "NotoSans-Italic.ttf",
+    "sha256": "58e6e0ebd1931b29a365aa2d3e2ee9a9e831a3af7cf3ad1462d4e72154f0b291",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosans/NotoSans-Italic%5Bwdth%2Cwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 2322640,
+    "upstream_filename": "NotoSans-Italic[wdth,wght].ttf"
+  },
+  {
+    "family": "Noto Sans",
+    "file": "NotoSans.ttf",
+    "sha256": "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 2049096,
+    "upstream_filename": "NotoSans[wdth,wght].ttf"
+  },
+  {
+    "family": "Noto Sans",
+    "file": "licenses/notosans-OFL.txt",
+    "sha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosans/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4396,
+    "upstream_filename": "OFL.txt"
+  },
+  {
+    "family": "Noto Sans Arabic",
+    "file": "NotoSansArabic.ttf",
+    "sha256": "63111b5b2e074dd48cc67692e0a2726d86ee94c1c37fe8598257b7b4e87e869e",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 844676,
+    "upstream_filename": "NotoSansArabic[wdth,wght].ttf"
+  },
+  {
+    "family": "Noto Sans Arabic",
+    "file": "licenses/notosansarabic-OFL.txt",
+    "sha256": "07fc70bfeb985cc1a87a8587d0a0c80bab11c86c9dc3fd95b6f0cb332f983e96",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosansarabic/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4382,
+    "upstream_filename": "OFL.txt"
+  },
+  {
+    "family": "Noto Sans Hebrew",
+    "file": "NotoSansHebrew.ttf",
+    "sha256": "7ef36a2c3593758cdb622e1bdef4f84523e92fbc3ccc667438dd80ff54c2de88",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosanshebrew/NotoSansHebrew%5Bwdth%2Cwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 112640,
+    "upstream_filename": "NotoSansHebrew[wdth,wght].ttf"
+  },
+  {
+    "family": "Noto Sans Hebrew",
+    "file": "licenses/notosanshebrew-OFL.txt",
+    "sha256": "9b9fe028b5ba74d231659a1bbaf0ed09b11e759d1ca6a070999e16d151616b47",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosanshebrew/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4382,
+    "upstream_filename": "OFL.txt"
+  },
+  {
+    "family": "Noto Sans Thai",
+    "file": "NotoSansThai.ttf",
+    "sha256": "5a1c559bb539583c8a1fd99d1c5b9491e5e14478c9cd2bd0970d5c3096cc9ef8",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosansthai/NotoSansThai%5Bwdth%2Cwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 218652,
+    "upstream_filename": "NotoSansThai[wdth,wght].ttf"
+  },
+  {
+    "family": "Noto Sans Thai",
+    "file": "licenses/notosansthai-OFL.txt",
+    "sha256": "2e98fd23a52d253db8612cd5942c8f2ff4111b21d2367050fdca91d8ccc374a0",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosansthai/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4380,
+    "upstream_filename": "OFL.txt"
+  },
+  {
+    "family": "Noto Sans Devanagari",
+    "file": "NotoSansDevanagari.ttf",
+    "sha256": "14ec4af41f27482216d1c2229f417ff9b1425e1babb014e57d1d40d03229853e",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 641944,
+    "upstream_filename": "NotoSansDevanagari[wdth,wght].ttf"
+  },
+  {
+    "family": "Noto Sans Devanagari",
+    "file": "licenses/notosansdevanagari-OFL.txt",
+    "sha256": "a216f6f8d85c7228093e0ee5e258d9d377e6671f68acb4db1930b29583d0f331",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosansdevanagari/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4386,
+    "upstream_filename": "OFL.txt"
+  },
+  {
+    "family": "Noto Naskh Arabic",
+    "file": "NotoNaskhArabic.ttf",
+    "sha256": "67b5a525a661b607971fbd3f96a81b89d3a768e74534fca84f18ac97e6fab72f",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notonaskharabic/NotoNaskhArabic%5Bwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 307592,
+    "upstream_filename": "NotoNaskhArabic[wght].ttf"
+  },
+  {
+    "family": "Noto Naskh Arabic",
+    "file": "licenses/notonaskharabic-OFL.txt",
+    "sha256": "a7a5a25eb188bf1cd96982030d53e23c33485c69b1044a562254226857ee13af",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notonaskharabic/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4382,
+    "upstream_filename": "OFL.txt"
+  },
+  {
+    "family": "Amiri",
+    "file": "Amiri-Regular.ttf",
+    "sha256": "ab391c4147d054c48976e98322ad0eefe1427aa0e0502a12a4c75d80a70cfcd7",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/amiri/Amiri-Regular.ttf",
+    "license": "OFL-1.1",
+    "bytes": 431116,
+    "upstream_filename": "Amiri-Regular.ttf"
+  },
+  {
+    "family": "Amiri",
+    "file": "licenses/amiri-OFL.txt",
+    "sha256": "72de68e5954f4fdd24702292ef5a32f003ca960ec9330dc86e5eefb5dffb9b22",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/amiri/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4389,
+    "upstream_filename": "OFL.txt"
+  }
+]

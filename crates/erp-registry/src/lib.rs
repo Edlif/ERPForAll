@@ -9,6 +9,7 @@
 
 mod company;
 mod company_access;
+mod company_default;
 mod compose;
 mod decl;
 mod drop;
@@ -41,6 +42,7 @@ pub use company_access::{
     EmptyCompany, EscapeGap, MAX_OWNER_DEPTH, MAX_UNRESTRICTED_REASON_BYTES, NotApplicable,
     OwnerGap, OwnerRestriction, ParentDecl, Restriction, UnrestrictedDecl,
 };
+pub use company_default::CompanyDefaultFor;
 pub use compose::{
     BASE_ADDON, BASE_DECL, MAGIC_FIELD_NAMES, MAX_EVENT_FIELD_NAMES, MAX_TRACKED_FIELDS,
     RegistryBuilder, USERS_DECL, WEB_ADDON, WEB_DECL, static_default,

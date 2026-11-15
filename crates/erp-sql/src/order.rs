@@ -488,6 +488,14 @@ impl<'a> OrderCompiler<'a> {
                 )));
             }
             (FieldType::Id, None) => col,
+            _ if field.company_default_for.is_some() => {
+                return Err(crate::company::default_for_unsupported(
+                    model.name,
+                    field.name,
+                    field.company_default_for.map_or("", |target| target.path),
+                    "sorting",
+                ));
+            }
             _ if !field.has_column() => {
                 return Err(Error::programming(format!(
                     "Cannot convert {}.{} to SQL because it is not stored",

@@ -19,7 +19,10 @@
 //! - [`IrActionsServer`]: every column of a server action; running them is;
 //! - [`get_bindings`] ([`bindings`]): the contextual actions of a model for a user.
 //!
-//! Not here yet: `ir.actions.report` (the report runtime slices), translated names,
+//! - [`IrActionsReport`] ([`report`]): a printable report, its paper format and the checks of its
+//!   template when it loads; rendering and the routes are the later report slices.
+//!
+//! Not here yet: translated names,
 //! `/web/action/load` and `_get_action_dict`, the clean-up of
 //! `ir.actions.todo` and `res.users.action_id` at unlink ([`CLEANUPS`]: those models and
 //! fields do not exist yet, and an action unlink is refused once one of them is present without
@@ -28,6 +31,7 @@
 
 pub mod bindings;
 pub mod path;
+pub mod report;
 mod server_rules;
 pub mod window;
 
@@ -36,6 +40,7 @@ use erp_sdk::{ErrorKind, Operation, RecId};
 
 pub use bindings::{ActionId, Binding, Bindings, action_by_id, get_bindings};
 pub use path::{ActionPathError, MAX_PATH_BYTES, check_path};
+pub use report::{IrActionsReport, check_loaded_reports, paperformat_of, report_from_name};
 
 pub const ACTIONS_CACHE: &str = "actions";
 

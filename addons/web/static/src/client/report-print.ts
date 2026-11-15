@@ -1,0 +1,158 @@
+/*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+import { button, el, errorMessage } from "./dom.js";
+import type { DialogHandle, DialogService } from "./dialog-service.js";
+import { saveFile } from "./file-save.js";
+import { ClientError, type RpcClient } from "./transport.js";
+
+/** A report the Print menu offers for a model (`report.job.erp_print_reports`). */
+export interface PrintableReport { readonly report: string; readonly name: string }
+
+export interface PrintServices {
+  readonly rpc: RpcClient;
+  readonly dialogs: DialogService;
+  /** Downloads a same-origin address and rejects when the server refuses it; the default fetches the file and saves it. */
+  readonly download?: (url: string) => Promise<void>;
+}
+
+const MODEL = "report.job";
+const STATUS_FIELDS = ["state", "total", "processed", "failed", "failures", "warnings", "error", "attachment_id"];
+
+function object(value: unknown, what: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new ClientError("server", `The server did not answer ${what} with an object.`);
+  return value as Record<string, unknown>;
+}
+
+/** A path on this server only: the server builds it, the client still refuses anything else. */
+function samePath(url: unknown): string {
+  if (typeof url !== "string" || !url.startsWith("/") || url.startsWith("//")) throw new ClientError("server", "The server answered the print request with an address outside this server.");
+  return url;
+}
+
+/** Fetch first, save after: a render that fails reaches the user as an error, not as a broken browser download. */
+async function fetchAndSave(services: PrintServices, url: string): Promise<void> {
+  if (services.download) return services.download(url);
+  const { blob, fileName } = await services.rpc.getFile(url, "application/pdf");
+  saveFile(blob, fileName);
+}
+
+/** The reports offered for `model`; empty when the server has no report runtime yet. */
+export async function loadPrintReports(rpc: RpcClient, model: string): Promise<PrintableReport[]> {
+  const answer = await rpc.call(MODEL, "erp_print_reports", { res_model: model });
+  if (!Array.isArray(answer)) throw new ClientError("server", "The server did not answer the report list with a list.");
+  return answer.map(item => {
+    const entry = object(item, "a report of the Print menu");
+    if (typeof entry["report"] !== "string" || typeof entry["name"] !== "string") throw new ClientError("server", "A report of the Print menu has no name.");
+    return { report: entry["report"], name: entry["name"] };
+  });
+}
+
+/**
+ * Print `report` for `ids`. A small request downloads at once; a large one becomes a background
+ * print whose progress, failures and result the returned dialog shows.
+ */
+export async function printRecords(services: PrintServices, report: PrintableReport, model: string, ids: readonly number[]): Promise<DialogHandle | undefined> {
+  if (!ids.length) throw new ClientError("validation", "Select at least one record to print.");
+  const answer = object(await services.rpc.call(MODEL, "erp_print", { report: report.report, res_model: model, res_ids: [...ids] }, { write: true }), "the print request");
+  if (answer["mode"] === "sync") { await fetchAndSave(services, samePath(answer["url"])); return undefined; }
+  const id = answer["id"], poll = answer["poll_ms"];
+  if (answer["mode"] !== "job" || typeof id !== "number" || typeof poll !== "number") throw new ClientError("server", "The server answered the print request in an unknown form.");
+  return printJobDialog(services, report.name, id, poll);
+}
+
+function jsonList(value: unknown): unknown[] {
+  if (typeof value !== "string" || !value) return [];
+  const parsed: unknown = JSON.parse(value);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+/** The dialog of one background print: it reads the job row every `pollMs` until the print ends or the dialog closes. */
+export function printJobDialog(services: PrintServices, title: string, id: number, pollMs: number): DialogHandle {
+  const body = el("div", undefined, "print-job-body");
+  const progress = el("progress", undefined, "print-job-progress");
+  progress.setAttribute("aria-label", "Print progress");
+  const status = el("p", "Waiting to start…", "print-job-status");
+  status.setAttribute("role", "status");
+  const problem = el("p", undefined, "print-job-error"); problem.setAttribute("role", "alert"); problem.hidden = true;
+  const failures = el("ul", undefined, "print-job-failures"); failures.hidden = true;
+  const warnings = el("ul", undefined, "print-job-warnings"); warnings.hidden = true;
+  body.append(status, progress, problem, failures, warnings);
+  const footer = el("div", undefined, "actions");
+  const downloadBtn = button("Download PDF", () => {}, "primary");
+  downloadBtn.hidden = true;
+  let handle: DialogHandle | undefined;
+  footer.append(downloadBtn, button("Close", () => handle?.close()));
+  let closed = false, timer: ReturnType<typeof setTimeout> | undefined;
+  handle = services.dialogs.open({ title: `Print: ${title}`, body, footer, size: "md", onClose: () => { closed = true; if (timer) clearTimeout(timer); } });
+  const list = (host: HTMLUListElement, items: string[], more = 0): void => {
+    host.replaceChildren(...items.map(text => el("li", text)));
+    if (more > 0) host.append(el("li", `and ${more} more`));
+    host.hidden = items.length === 0;
+  };
+  const tick = async (): Promise<void> => {
+    if (closed) return;
+    try {
+      const rows = await services.rpc.call(MODEL, "read", { ids: [id], fields: STATUS_FIELDS }, { background: true });
+      if (closed) return;
+      if (!Array.isArray(rows) || rows.length !== 1) throw new ClientError("server", "The print job is no longer available.");
+      const row = object(rows[0], "the print job");
+      const total = Number(row["total"]) || 0, processed = Number(row["processed"]) || 0, failed = Number(row["failed"]) || 0;
+      progress.max = Math.max(total, 1); progress.value = processed;
+      const listed = jsonList(row["failures"]).map(item => object(item, "a print failure"));
+      list(failures, listed.map(item => `Record ${String(item["id"])}: ${String(item["error"])}`), failed - listed.length);
+      list(warnings, jsonList(row["warnings"]).map(String));
+      const state = row["state"];
+      if (state === "done") {
+        status.textContent = failed ? `Printed ${processed - failed} of ${total} documents; ${failed} could not be printed.` : `Printed ${total} documents.`;
+        const attachment = Array.isArray(row["attachment_id"]) ? row["attachment_id"][0] : row["attachment_id"];
+        if (typeof attachment !== "number") throw new ClientError("server", "The finished print job has no result.");
+        downloadBtn.onclick = () => {
+          problem.hidden = true;
+          fetchAndSave(services, `/erp/content/${attachment}?download=true`).catch((error: unknown) => { problem.textContent = errorMessage(error); problem.hidden = false; });
+        };
+        downloadBtn.hidden = false;
+        return;
+      }
+      if (state === "failed") {
+        status.textContent = "The print failed.";
+        problem.textContent = typeof row["error"] === "string" ? row["error"] : "The print failed.";
+        problem.hidden = false;
+        return;
+      }
+      status.textContent = state === "queued" ? "Waiting to start…" : `Printing: ${processed} of ${total} documents.`;
+    } catch (error) {
+      if (closed) return;
+      status.textContent = "Progress is not available.";
+      problem.textContent = errorMessage(error); problem.hidden = false;
+      return;
+    }
+    timer = setTimeout(() => void tick(), pollMs);
+  };
+  void tick();
+  return handle;
+}
+
+/**
+ * Returns the `onOpen` hook of an Actions menu: the first opening loads the reports of `model` and adds one
+ * "Print <report>" entry per report before `before`; `pick` prints with it. A failed load is reported and tried again
+ * at the next opening.
+ */
+export function printMenuLoader(rpc: RpcClient, model: string, menu: HTMLElement, before: Node | null, pick: (report: PrintableReport) => void, report: (error: unknown) => void): () => void {
+  let loaded = false;
+  return () => {
+    if (loaded) return;
+    loaded = true;
+    void loadPrintReports(rpc, model).then(reports => {
+      // A menu with nothing else to offer says so instead of opening empty.
+      if (!reports.length && !menu.querySelector("button")) {
+        const none = button("No report available", () => {}, "dropdown-item print-report-none");
+        none.disabled = true; none.setAttribute("role", "menuitem");
+        menu.append(none);
+      }
+      for (const entry of reports) {
+        const item = button(`Print ${entry.name}`, () => pick(entry), "dropdown-item print-report-btn");
+        item.setAttribute("role", "menuitem");
+        menu.insertBefore(item, before);
+      }
+    }, (error: unknown) => { loaded = false; report(error); });
+  };
+}

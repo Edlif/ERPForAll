@@ -63,6 +63,7 @@ erp-test-models = { path = "crates/erp-test-models" }
 erp-macros = { path = "crates/erp-macros" }
 erp-fields = { path = "crates/erp-fields" }
 erp-html = { path = "crates/erp-html" }
+erp-pdf = { path = "crates/erp-pdf" }
 erp-store-wire = { path = "crates/erp-store-wire" }
 erp-blob = { path = "crates/erp-blob" }
 erp-registry = { path = "crates/erp-registry" }
@@ -73,6 +74,10 @@ erp-domain = { path = "crates/erp-domain" }
 erp-data = { path = "crates/erp-data" }
 erp-modules = { path = "crates/erp-modules" }
 erp-views = { path = "crates/erp-views" }
+erp-report = { path = "crates/erp-report" }
+erp-report-data = { path = "crates/erp-report-data" }
+erp-report-typst = { path = "crates/erp-report-typst" }
+erp-report-worker = { path = "crates/erp-report-worker" }
 erp-ui-compiler = { path = "crates/erp-ui-compiler" }
 erp-expr = { path = "crates/erp-expr" }
 erp-script = { path = "crates/erp-script" }
@@ -169,6 +174,8 @@ hmac = "0.13"
 
 # OS interfaces: O_NOFOLLOW / O_NONBLOCK when opening addon model and data files (MIT OR Apache-2.0)
 libc = "0.2"
+# length-prefixed CBOR frames between the server and its report render workers
+ciborium = "0.2"
 # Safe OS interfaces (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; already in the graph
 # through erp-bench and tempfile): the node registry's suspend-counting clock (CLOCK_BOOTTIME on
 # Linux, CLOCK_MONOTONIC on Apple), the dev-folder walk by directory descriptor, gethostname

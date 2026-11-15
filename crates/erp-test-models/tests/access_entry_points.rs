@@ -948,6 +948,12 @@ const ENTRY_POINTS: &[(&str, Class)] = &[
             "benchmark export (__bench) of the create path's defaults step; the create that runs it is checked",
         ),
     ),
+    (
+        "company_default_for::apply_declared_defaults",
+        Unchecked(
+            "writes the declared default of every res.company field declared company_default_for as ir.default(target, no user, company = given row, no condition) for the given companies that have no such row; superuser mode scoped to the declared targets and the given rows; called by base from res.company's init hook (install path, System) and after its create override, which checks create access first; returns nothing (test: company_default_for.rs, declared_defaults_are_idempotent_and_reach_archived_companies)",
+        ),
+    ),
     // ir.default and sequences
     (
         "ir_default::get_model_defaults",
@@ -1155,6 +1161,16 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "reads the dated parameters of the caller's company, its ancestors and the shared scope after the caller's model-level read right and company check, so a record rule that filters rows cannot put a farther value in place of the nearer one (the order of `RateBook::load`); keys and companies are bounded and the answer is typed values only",
     ),
     (
+        "base/report_job.rs::elevated",
+        1,
+        "the print job rows (`report.job`): users have read access to their own rows only and never write them; `erp_print` creates the row for the caller (`user_id` from `tx.env().uid()`, after the report runtime checked the caller may read every record) and the job's `run_chunk`, running as that user and refusing a row of another user, records progress, failures and the result; the records themselves are rendered with the caller's rights (a later release)",
+    ),
+    (
+        "base/report_print.rs::page_of",
+        1,
+        "reads the six page-size and margin fields of the report's paper format (`report.paperformat`, configuration of the report, not data of the caller); the format id comes from the report or the caller's company, never from request input, and the records are rendered with the caller's rights",
+    ),
+    (
         "base/res_users_settings.rs::own_row",
         1,
         "finds the caller's own `res.users.settings` row by `tx.env().uid()`, never by an argument: the row is selected by that user id alone, so a portal user outside `base.group_user` (who has no `ir.access` row on the model; the public user, whom every anonymous visitor shares, is refused by the caller before this) still reads the settings that are theirs; generic `read`/`search` stay under the `ir.access` rows",
@@ -1220,6 +1236,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "reads the logins a write renames, whatever the writer may read, so their sessions end with the rename (security review round 2 N3)",
     ),
     (
+        "erp-cli/report_print.rs::merge",
+        1,
+        "deletes the part attachments of a print job after they were merged; the ids come from the job row's `parts` column, which only the job's own `run_chunk` writes (users never write `report.job` rows), so they are that job's own intermediate files (a later release)",
+    ),
+    (
         "erp-data/load/menu.rs::action_names",
         1,
         "a <menuitem> reads the name of its action as the superuser, like env.ref(..).sudo() \
@@ -1272,6 +1293,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "erp-orm/access/records.rs::evidence_display_names",
         1,
         "the access-error evidence lists the display names of the denied records as superuser, like the reference ERP's debug listing (records[:6].sudo().display_name); only on the error path",
+    ),
+    (
+        "erp-orm/company_default_for.rs::store_company_defaults",
+        1,
+        "a res.company field declared company_default_for stores its written value as ir.default(declared target, no user, company = written row, no condition): reached only from base.write and create after the caller's model access, record rules and field groups on those company rows passed, and from apply_declared_defaults; never global, never per user, never another company",
     ),
     (
         "erp-orm/commands.rs::o2m_owners",

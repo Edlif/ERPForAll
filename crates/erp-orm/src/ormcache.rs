@@ -422,6 +422,11 @@ impl Transaction {
 
     /// Invalidate a named cache for the rest of this transaction (and for everyone once it
     /// commits).
+    ///
+    /// For `"ir.default"` this also ends the company-dependent fallbacks the transaction prepared
+    /// (they are read again on their next use) and the cached values of computed fields that
+    /// depend on the company context. Raw SQL that changes `ir_default` in a way the statement
+    /// text does not show (a data-changing `WITH`, a function, a trigger) calls this.
     pub fn invalidate_ormcache(&mut self, cache: &str) {
         if cache == "ir.default" {
             self.properties_mut().defaults.clear();

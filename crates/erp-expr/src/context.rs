@@ -251,6 +251,11 @@ impl EvalContext {
         self.vars.get(name)
     }
 
+    /// The bound names and their values, in binding order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &ExprValue)> {
+        self.vars.iter().map(|(name, value)| (name.as_str(), value))
+    }
+
     pub fn remove(&mut self, name: &str) -> Option<ExprValue> {
         self.vars.shift_remove(name)
     }

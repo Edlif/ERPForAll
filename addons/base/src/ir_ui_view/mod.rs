@@ -22,6 +22,7 @@
 //! archs; the editor fields `arch_prev`, `warning_info`, `invalid_locators`, `notes`.
 
 pub mod get_view;
+pub(crate) mod report_templates;
 pub mod select;
 mod tree;
 mod type_admission;

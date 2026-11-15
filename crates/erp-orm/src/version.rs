@@ -388,6 +388,7 @@ impl WriteHooks {
                         spec.name,
                         field.name,
                         "write-hook registration",
+                        crate::company_dependent_runtime::Owner::Hooks,
                     ));
                 }
                 if field.inherited.is_some() || field.column().is_none() {

@@ -58,6 +58,8 @@ pub const ASSETS_PREFIX: &str = "/erp/assets/";
 pub const JSON2_PREFIX: &str = "/erp/json/2/";
 /// Prefix of the authenticated attachment content route (`/erp/content/<id>`).
 pub const CONTENT_PREFIX: &str = "/erp/content/";
+/// Prefix of the printed reports (`/erp/report/<pdf|html>/<report>/<ids>`).
+pub const REPORT_PREFIX: &str = "/erp/report/";
 /// The pivot view's spreadsheet download (`POST`).
 pub const PIVOT_EXPORT: &str = "/erp/pivot/export";
 /// Text that selects the addon static asset branch.
@@ -85,6 +87,7 @@ pub const ROUTES: &[RouteMatch] = &[
     RouteMatch::Prefix("/erp/assets/"),
     RouteMatch::Prefix("/erp/json/2/"),
     RouteMatch::Prefix("/erp/content/"),
+    RouteMatch::Prefix("/erp/report/"),
     RouteMatch::Segment("/static/"),
 ];
 
@@ -103,6 +106,7 @@ pub const LEGACY_PREFIX: &[(&str, &str)] = &[
     ("/odoo/action-", "/erp/action-"),
     ("/web/assets/", "/erp/assets/"),
     ("/web/content/", "/erp/content/"),
+    ("/report/", "/erp/report/"),
     ("/json/2/", "/erp/json/2/"),
     ("/web/dataset/call_kw", "/erp/dataset/call_kw"),
 ];
@@ -175,6 +179,7 @@ mod tests {
             (ASSETS_PREFIX, "prefix"),
             (JSON2_PREFIX, "prefix"),
             (CONTENT_PREFIX, "prefix"),
+            (REPORT_PREFIX, "prefix"),
             (STATIC_SEGMENT, "segment"),
         ] {
             let found = ROUTES.iter().any(|route| match (route, wanted) {

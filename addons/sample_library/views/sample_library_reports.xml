@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Example reports of the sample library: one book sheet per book and one slip per loan. Each
+     report calls the shared layouts once around all its records (one page header and footer per
+     document) and starts every record after the first on a new page. -->
+<erp>
+    <template id="report_book_sheet_document">
+        <div class="page">
+            <h2 t-field="doc.title"/>
+            <table class="table table-sm table-borderless mt-3">
+                <tbody>
+                    <tr><th class="w-25">Author</th><td t-field="doc.author_id.name"/></tr>
+                    <tr><th>ISBN</th><td t-field="doc.isbn"/></tr>
+                    <tr><th>Published On</th><td t-field="doc.published_on"/></tr>
+                    <tr><th>Publication Year</th><td t-field="doc.publication_year"/></tr>
+                    <tr><th>Pages</th><td t-field="doc.pages"/></tr>
+                    <tr><th>Price</th><td t-field="doc.price"/></tr>
+                    <tr>
+                        <th>Availability</th>
+                        <td>
+                            <span t-if="doc.available">Available</span>
+                            <span t-else="" class="text-muted">On loan</span>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+            <t t-if="doc.genre_ids">
+                <h5 class="mt-3">Genres</h5>
+                <ul>
+                    <li t-foreach="doc.genre_ids" t-as="genre"><span t-field="genre.name"/></li>
+                </ul>
+            </t>
+        </div>
+    </template>
+
+    <template id="report_book_sheet">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="doc">
+                    <div t-att-class="None if doc_first else 'page-break-before'">
+                        <t t-call="sample_library.report_book_sheet_document"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_loan_slip_document">
+        <div class="page">
+            <h2>Loan Slip</h2>
+            <p class="text-muted">Status: <span t-field="doc.state"/></p>
+            <table class="table table-sm table-bordered mt-3">
+                <thead>
+                    <tr><th>Book</th><th>Borrower</th><th>Loan Date</th><th>Due Date</th><th>Return Date</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td t-field="doc.book_id.title"/>
+                        <td t-field="doc.borrower_id.name"/>
+                        <td t-field="doc.loan_date"/>
+                        <td t-field="doc.due_date"/>
+                        <td t-field="doc.return_date"/>
+                    </tr>
+                </tbody>
+            </table>
+            <p class="mt-3 small">Please return the book by the due date.</p>
+            <div class="row mt-3">
+                <div class="col">Librarian: ____________________</div>
+                <div class="col text-end">Borrower: ____________________</div>
+            </div>
+        </div>
+    </template>
+
+    <template id="report_loan_slip">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="doc">
+                    <div t-att-class="None if doc_first else 'page-break-before'">
+                        <t t-call="sample_library.report_loan_slip_document"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_report_book_sheet" model="ir.actions.report">
+        <field name="name">Book Sheet</field>
+        <field name="model">sample_library.book</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">sample_library.report_book_sheet</field>
+        <field name="print_report_name">'Book sheet - ' + object.title</field>
+        <field name="binding_model_id" ref="sample_library.model_sample_library_book"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_loan_slip" model="ir.actions.report">
+        <field name="name">Loan Slip</field>
+        <field name="model">sample_library.loan</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">sample_library.report_loan_slip</field>
+        <field name="print_report_name">'Loan slip - ' + object.book_id.title</field>
+        <field name="binding_model_id" ref="sample_library.model_sample_library_loan"/>
+        <field name="binding_type">report</field>
+    </record>
+</erp>

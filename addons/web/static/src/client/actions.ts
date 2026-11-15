@@ -108,6 +108,14 @@ export function actionResult(raw: unknown): ActionResult {
       if (typeof value["then_close"] !== "boolean") throw new ClientError("server", "Invalid notification close flag.");
       return { kind: "notification", title, message, level, then_close: value["then_close"] };
     }
+    case "report": {
+      closed(value, ["kind", "name", "report", "model", "ids"]);
+      const name = bounded(value["name"], "report name", 256), report = bounded(value["report"], "report", 128), model = bounded(value["model"], "report model", 256);
+      if (!name || !/^[A-Za-z0-9_.]+$/.test(report) || !/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/.test(model)) throw new ClientError("server", "Invalid report name, report or model.");
+      const ids = array(value["ids"], "report records").map(id => integer(id, "report record id"));
+      if (!ids.length || ids.some(id => id <= 0)) throw new ClientError("server", "Invalid report records.");
+      return { kind: "report", name, report, model, ids };
+    }
     default: throw new ClientError("unsupported", "Unsupported action result kind.");
   }
 }

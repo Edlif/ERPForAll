@@ -2291,6 +2291,7 @@ fn refuse_catalog_properties(
                 model.name,
                 field.name,
                 "selection catalog expressions",
+                crate::company_dependent_runtime::Owner::Catalog,
             ));
         }
     }

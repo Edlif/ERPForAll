@@ -1213,6 +1213,18 @@ pub enum ActionResult {
         /// Whether the dialog closes after the notification.
         then_close: bool,
     },
+    /// Print a report for records (an `ir.actions.report` result): the client sends it through
+    /// its print request, which checks the report and the records again.
+    Report {
+        /// The report's name, shown while it prints.
+        name: String,
+        /// The report's technical name.
+        report: String,
+        /// The registered model of the printed records.
+        model: String,
+        /// The printed records, in order.
+        ids: Vec<WireId>,
+    },
 }
 object!(/// Versioned envelope of a normalized method result.
     ActionResultEnvelope { wire_major: WireMajor, result: ActionResult });
@@ -1360,9 +1372,12 @@ object!(/// Manifest-validated native addon and persisted state. `category` is t
     /// path (`/`-separated, root `Industries` for industry addons); `application` marks an app.
     /// `website` and `license` are the manifest values (empty when the manifest names none) and
     /// `depends` the direct dependencies by technical name, sorted: the Apps card's module info.
+    /// `icon` is the manifest's `lucide:<name>`, omitted when the manifest declares none.
     AddonEntry { name: String, label: String, version: String, state: AddonState, installable: bool,
         summary: String, category: String, author: String, application: bool, website: String,
-        license: String, depends: Vec<String> });
+        license: String, depends: Vec<String>,
+        #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")]
+        #[cfg_attr(feature="schema-gen", ts(optional))] icon: Option<String> });
 object!(/// Durable installation result; no success is sent before lifecycle commit/publication.
     InstallResult { installed: Vec<String>, registry_version: String, asset_version: String });
 

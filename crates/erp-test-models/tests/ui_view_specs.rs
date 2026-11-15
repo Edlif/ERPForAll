@@ -3566,9 +3566,9 @@ async fn cold_parent_changes_fetch_only_the_parent_column() {
                 !parent_read.contains("arch_db"),
                 "parent read must not prefetch arch: {parent_read}"
             );
-            assert_eq!(count, if label == "unchanged" { 4 } else { 5 });
+            assert_eq!(count, if label == "unchanged" { 5 } else { 6 });
         } else {
-            assert_eq!(count, 2);
+            assert_eq!(count, 3);
         }
         tx.rollback().await.unwrap();
     }

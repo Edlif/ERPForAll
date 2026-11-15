@@ -1061,7 +1061,23 @@ level: NotificationLevel,
 /**
  * Whether the dialog closes after the notification.
  */
-then_close: boolean, };
+then_close: boolean, } | { "kind": "report",
+/**
+ * The report's name, shown while it prints.
+ */
+name: string,
+/**
+ * The report's technical name.
+ */
+report: string,
+/**
+ * The registered model of the printed records.
+ */
+model: string,
+/**
+ * The printed records, in order.
+ */
+ids: Array<WireId>, };
 export type ActionResultEnvelope = {
 /** Wire member `wire_major`. */
 wire_major: WireMajor,
@@ -1226,7 +1242,9 @@ website: string,
 /** Wire member `license`. */
 license: string,
 /** Wire member `depends`. */
-depends: Array<string>, };
+depends: Array<string>,
+/** Wire member `icon`. */
+icon?: string, };
 export type InstallResult = {
 /** Wire member `installed`. */
 installed: Array<string>,

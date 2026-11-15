@@ -1,0 +1,1479 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test assertions"
+)]
+//! The report compiler and evaluator: templates in, a `DocTree` out. Every expected string is
+//! compared with what the evaluator built from the template, the context and the record store.
+use erp_expr::{EvalContext, ExprValue};
+use erp_report::{
+    Alignment, AttachmentPolicy, DocTree, DocumentOptions, EvalOptions, FieldInfo, FieldValue,
+    LangFormat, Language, LimitKind, Node, NodeId, PageCounter, PageSetup, ProfileKind,
+    RecordStore, ReportError, ReportLimits, ReportProgram, Style, TemplateSource,
+};
+use std::{sync::Arc, time::Duration};
+
+const NBSP: &str = "\u{a0}";
+const MINUS: &str = "-\u{feff}";
+
+fn options() -> DocumentOptions {
+    DocumentOptions::new("doc-1", "Test", PageSetup::new(595.0, 842.0, 40.0).unwrap())
+}
+fn english() -> Language {
+    Language::new("en_US").unwrap()
+}
+fn french() -> LangFormat {
+    LangFormat::new(",", " ", &[3, 0], "%d/%m/%Y", "%H:%M:%S").unwrap()
+}
+fn compile_all(root: &str, sources: &[(&str, &str)]) -> Result<ReportProgram, ReportError> {
+    let sources: Vec<_> = sources
+        .iter()
+        .map(|(key, arch)| TemplateSource::new(key, arch))
+        .collect();
+    ReportProgram::compile(root, &sources, &english(), ReportLimits::default())
+}
+fn compile(arch: &str) -> ReportProgram {
+    compile_all("test.report", &[("test.report", arch)]).unwrap()
+}
+fn style_flags(style: &Style) -> String {
+    let mut flags = String::new();
+    if style.bold() {
+        flags.push('b');
+    }
+    if style.italic() {
+        flags.push('i');
+    }
+    if style.underline() {
+        flags.push('u');
+    }
+    if style.keep_together() {
+        flags.push('k');
+    }
+    match style.alignment() {
+        Alignment::Center => flags.push('c'),
+        Alignment::End => flags.push('e'),
+        _ => {}
+    }
+    if style.size() != 10.0 {
+        flags.push_str(&format!(" {}pt", style.size()));
+    }
+    if style.padding() != 0.0 {
+        flags.push_str(&format!(" pad{}", style.padding()));
+    }
+    if style.color() != [0, 0, 0] {
+        let [r, g, b] = style.color();
+        flags.push_str(&format!(" #{r:02x}{g:02x}{b:02x}"));
+    }
+    flags.trim().to_owned()
+}
+fn dump_node(doc: &DocTree, id: &NodeId, out: &mut String) {
+    let list = |ids: &[NodeId], out: &mut String| {
+        for (i, id) in ids.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            dump_node(doc, id, out);
+        }
+    };
+    match &doc.nodes()[id.index()] {
+        Node::Text(text) => out.push_str(&format!("{text:?}")),
+        Node::Flow { children } => {
+            out.push_str("flow(");
+            list(children, out);
+            out.push(')');
+        }
+        Node::Block { children, style } => {
+            out.push_str(&format!("block[{}](", style_flags(style)));
+            list(children, out);
+            out.push(')');
+        }
+        Node::Inline { children, style } => {
+            out.push_str(&format!("inline[{}](", style_flags(style)));
+            list(children, out);
+            out.push(')');
+        }
+        Node::Grid {
+            columns,
+            gutter,
+            cells,
+        } => {
+            let columns: Vec<String> = columns.iter().map(f64::to_string).collect();
+            out.push_str(&format!("grid[{}|{gutter}](", columns.join(",")));
+            list(cells, out);
+            out.push(')');
+        }
+        Node::Table {
+            columns,
+            header,
+            cells,
+        } => {
+            out.push_str(&format!("table[{columns}](head: "));
+            list(header, out);
+            out.push_str("; cells: ");
+            list(cells, out);
+            out.push(')');
+        }
+        Node::List { ordered, items } => {
+            out.push_str(if *ordered { "ol(" } else { "ul(" });
+            list(items, out);
+            out.push(')');
+        }
+        Node::Rule => out.push_str("hr"),
+        Node::LineBreak => out.push_str("br"),
+        Node::PageBreak => out.push_str("pagebreak"),
+        Node::PageCounter(PageCounter::Current) => out.push_str("page"),
+        Node::PageCounter(PageCounter::Total) => out.push_str("pages"),
+        other => out.push_str(&format!("{other:?}")),
+    }
+}
+fn dump(doc: &DocTree) -> String {
+    let mut out = String::new();
+    dump_node(doc, doc.body(), &mut out);
+    out
+}
+fn part(doc: &DocTree, id: Option<&NodeId>) -> String {
+    let mut out = String::new();
+    dump_node(
+        doc,
+        id.expect("the document has this page region"),
+        &mut out,
+    );
+    out
+}
+fn evaluate(program: &ReportProgram, context: &EvalContext) -> Result<DocTree, ReportError> {
+    program.evaluate(
+        context,
+        &RecordStore::new(),
+        &EvalOptions::default(),
+        options(),
+    )
+}
+/// Compile one template and print it with plain values.
+fn render(arch: &str, values: &[(&str, ExprValue)]) -> String {
+    let mut context = EvalContext::standard();
+    for (name, value) in values {
+        context.set(*name, value.clone());
+    }
+    dump(&evaluate(&compile(arch), &context).unwrap())
+}
+fn strs(values: &[&str]) -> ExprValue {
+    ExprValue::list(values.iter().map(|v| ExprValue::str(*v)).collect())
+}
+/// One sale order with its currency, partner and two lines.
+fn store() -> Arc<RecordStore> {
+    let mut store = RecordStore::new();
+    store
+        .insert(
+            "res.currency",
+            1,
+            "USD",
+            vec![
+                ("symbol", FieldValue::char("$")),
+                ("position", FieldValue::selection("before", "Before")),
+                ("decimal_places", FieldValue::integer(2)),
+            ],
+        )
+        .unwrap();
+    store
+        .insert(
+            "res.currency",
+            2,
+            "EUR",
+            vec![
+                ("symbol", FieldValue::char("€")),
+                ("position", FieldValue::selection("after", "After")),
+                ("decimal_places", FieldValue::integer(2)),
+            ],
+        )
+        .unwrap();
+    store
+        .insert(
+            "res.partner",
+            7,
+            "Agrolait, Belgium",
+            vec![("name", FieldValue::char("Agrolait"))],
+        )
+        .unwrap();
+    for (id, name, qty) in [(31, "Desk", 2), (32, "Chair", 5)] {
+        store
+            .insert(
+                "sale.order.line",
+                id,
+                name,
+                vec![
+                    ("name", FieldValue::char(name)),
+                    ("qty", FieldValue::integer(qty)),
+                    ("order_id", FieldValue::many2one("sale.order", Some(1))),
+                ],
+            )
+            .unwrap();
+    }
+    store
+        .insert(
+            "sale.order",
+            1,
+            "S00001",
+            vec![
+                ("name", FieldValue::char("S00001")),
+                ("note", FieldValue::char("")),
+                ("description", FieldValue::text("line1\nline2\n\nline3")),
+                ("narration", FieldValue::html("<p>Terms</p>")),
+                ("amount_total", FieldValue::monetary(1250.5, "currency_id")),
+                ("amount_eur", FieldValue::monetary(1250.5, "eur_id")),
+                ("debt", FieldValue::monetary(-1250.5, "currency_id")),
+                ("currency_id", FieldValue::many2one("res.currency", Some(1))),
+                ("eur_id", FieldValue::many2one("res.currency", Some(2))),
+                ("weight", FieldValue::float(4500.1267, None)),
+                ("ratio", FieldValue::float(0.5, None)),
+                ("quantity", FieldValue::integer(1_000_000)),
+                ("date_order", FieldValue::date(2026, 10, 15).unwrap()),
+                ("no_date", FieldValue::no_date()),
+                (
+                    "create_date",
+                    FieldValue::datetime((2026, 10, 15), (14, 30, 0)).unwrap(),
+                ),
+                ("state", FieldValue::selection("posted", "Comptabilisé")),
+                ("partner_id", FieldValue::many2one("res.partner", Some(7))),
+                ("carrier_id", FieldValue::many2one("res.partner", None)),
+                ("line_ids", FieldValue::many("sale.order.line", &[31, 32])),
+                ("active", FieldValue::boolean(true)),
+            ],
+        )
+        .unwrap();
+    Arc::new(store)
+}
+fn print_order(arch: &str, options: &EvalOptions) -> Result<String, ReportError> {
+    let store = store();
+    let context = EvalContext::standard().with_var("doc", store.recordset("sale.order", &[1]));
+    let doc = compile(arch).evaluate(&context, &store, options, self::options())?;
+    Ok(dump(&doc))
+}
+fn order(arch: &str) -> String {
+    print_order(arch, &EvalOptions::default()).unwrap()
+}
+fn order_in(arch: &str, formats: LangFormat) -> String {
+    print_order(arch, &EvalOptions::default().with_formats(formats)).unwrap()
+}
+
+#[test]
+fn foreach_binds_the_item_and_its_loop_names() {
+    let out = render(
+        "<t><p t-foreach='lines' t-as='line'><t t-out='line_index'/>:<t t-out='line'/>:<t \
+         t-out='line_size'/><t t-if='line_first'>:FIRST</t><t t-if='line_last'>:LAST</t></p></t>",
+        &[("lines", strs(&["alpha", "beta", "gamma"]))],
+    );
+    assert_eq!(
+        out,
+        r#"flow(block[]("0:alpha:3:FIRST") block[]("1:beta:3") block[]("2:gamma:3:LAST"))"#
+    );
+}
+
+#[test]
+fn foreach_loops_over_counts_mappings_and_records_and_keeps_its_names() {
+    assert_eq!(
+        render("<p><t t-foreach='3' t-as='n' t-out='n'/></p>", &[]),
+        r#"flow(block[]("012"))"#
+    );
+    let pairs = ExprValue::dict_str([("a", ExprValue::Int(1)), ("b", ExprValue::Int(2))]);
+    assert_eq!(
+        render(
+            "<p><t t-foreach='pairs' t-as='key'><t t-out='key'/>=<t t-out='key_value'/><t \
+             t-out='key_parity'/> </t></p>",
+            &[("pairs", pairs)]
+        ),
+        r#"flow(block[]("a=1even b=2odd"))"#
+    );
+    assert_eq!(
+        order("<p><t t-foreach='doc.line_ids' t-as='line'><t t-out='line.name'/>,</t></p>"),
+        r#"flow(block[]("Desk,Chair,"))"#
+    );
+    // The loop's names stay set after the loop, as in the reference.
+    assert_eq!(
+        render("<p><t t-foreach='2' t-as='n'/><t t-out='n'/></p>", &[]),
+        r#"flow(block[]("1"))"#
+    );
+    assert_eq!(
+        render(
+            "<p><t t-foreach='none' t-as='n'>x</t></p>",
+            &[("none", ExprValue::None)]
+        ),
+        "flow()"
+    );
+}
+
+#[test]
+fn only_the_matching_branch_is_evaluated() {
+    let arch = "<p><t t-if=\"status == 'draft'\">DRAFT</t>\n<t t-elif=\"status == \
+                'posted'\">POSTED</t>\n<t t-else=''><t t-out='missing_name'/>OTHER</t></p>";
+    for (status, expected) in [("draft", "DRAFT"), ("posted", "POSTED")] {
+        assert_eq!(
+            render(arch, &[("status", ExprValue::str(status))]),
+            format!("flow(block[]({expected:?}))")
+        );
+    }
+    // The else branch reads an unbound name: reaching it is an error, not reaching it is not.
+    let context = EvalContext::standard().with_var("status", ExprValue::str("cancelled"));
+    let err = evaluate(&compile(arch), &context).unwrap_err();
+    assert!(matches!(err, ReportError::Expression { .. }), "{err}");
+    let arch = arch.replace("<t t-out='missing_name'/>", "");
+    assert_eq!(
+        render(&arch, &[("status", ExprValue::str("cancelled"))]),
+        r#"flow(block[]("OTHER"))"#
+    );
+}
+
+#[test]
+fn set_assigns_a_value_or_a_body() {
+    let out = render(
+        "<t><t t-set='subtotal' t-value='price * qty'/><span t-out='subtotal'/><t \
+         t-set='badge'><b>ACTIVE</b></t><div t-out='badge'/></t>",
+        &[
+            ("price", ExprValue::Float(10.5)),
+            ("qty", ExprValue::Int(4)),
+        ],
+    );
+    assert_eq!(out, r#"flow("42.0" block[](inline[b]("ACTIVE")))"#);
+    // A body keeps the names of the place it was written at.
+    let out = render(
+        "<p><t t-set='who' t-value=\"'first'\"/><t t-set='greeting'>hello <t t-out='who'/></t><t \
+         t-set='who' t-value=\"'second'\"/><t t-out='greeting'/></p>",
+        &[],
+    );
+    assert_eq!(out, r#"flow(block[]("hello first"))"#);
+}
+
+#[test]
+fn out_prints_strings_as_text_and_nothing_for_absent_values() {
+    let script = "<script>alert(\"xss\")</script>";
+    assert_eq!(
+        render(
+            "<p t-out='content'/>",
+            &[("content", ExprValue::str(script))]
+        ),
+        format!("flow(block[]({script:?}))")
+    );
+    // t-esc is the same directive under its older name.
+    assert_eq!(
+        render("<p t-esc='content'/>", &[("content", ExprValue::Int(7))]),
+        r#"flow(block[]("7"))"#
+    );
+    // An absent value leaves the element out; with a body, the body prints instead.
+    for absent in [ExprValue::None, ExprValue::Bool(false)] {
+        assert_eq!(
+            render("<div><p t-out='v'/></div>", &[("v", absent.clone())]),
+            "flow()"
+        );
+        assert_eq!(
+            render("<div><p t-out='v'>none</p></div>", &[("v", absent)]),
+            r#"flow(block[]("none"))"#
+        );
+    }
+    assert_eq!(
+        render("<p t-out='v'>none</p>", &[("v", ExprValue::Int(0))]),
+        r#"flow(block[]("0"))"#
+    );
+}
+
+#[test]
+fn call_passes_arguments_and_the_body() {
+    let sources = [
+        (
+            "web.box_layout",
+            "<div class='p-2'><h3 t-out='box_title'/><t t-out='0'/></div>",
+        ),
+        (
+            "test.report",
+            "<t><t t-set='shown' t-value=\"'outer'\"/><t t-call='web.box_layout' \
+             box_title=\"'Summary'\"><p>Box Content <t t-out='shown'/></p></t></t>",
+        ),
+    ];
+    let program = compile_all("test.report", &sources).unwrap();
+    assert_eq!(
+        dump(&evaluate(&program, &EvalContext::standard()).unwrap()),
+        r#"flow(block[pad5](block[b 17.5pt]("Summary") block[]("Box Content outer")))"#
+    );
+    // The called template works on a copy: what it sets does not come back.
+    let sources = [
+        (
+            "test.inner",
+            "<t><t t-set='a' t-value='3'/><p t-out='a'/><p t-out='b'/></t>",
+        ),
+        (
+            "test.report",
+            "<t><t t-set='a' t-value='1'/><t t-set='b' t-value='1'/><t t-call='test.inner' \
+             b='2'/><p t-out='a'/><p t-out='b'/></t>",
+        ),
+    ];
+    let program = compile_all("test.report", &sources).unwrap();
+    assert_eq!(
+        dump(&evaluate(&program, &EvalContext::standard()).unwrap()),
+        r#"flow(block[]("3") block[]("2") block[]("1") block[]("1"))"#
+    );
+    // A format-string argument, and a body that itself puts out the caller's body.
+    let sources = [
+        ("test.frame", "<div class='fw-bold'><t t-out='0'/></div>"),
+        (
+            "test.titled",
+            "<t t-call='test.frame'><p t-out='title'/><t t-out='0'/></t>",
+        ),
+        (
+            "test.report",
+            "<t t-call='test.titled' title.f='No {{ number }}'><p>body</p></t>",
+        ),
+    ];
+    let program = compile_all("test.report", &sources).unwrap();
+    let context = EvalContext::standard().with_var("number", ExprValue::Int(5));
+    assert_eq!(
+        dump(&evaluate(&program, &context).unwrap()),
+        r#"flow(block[b](block[b]("No 5") block[b]("body")))"#
+    );
+}
+
+#[test]
+fn call_errors_name_the_template_and_the_reason() {
+    let err = compile_all(
+        "test.report",
+        &[("test.report", "<t t-call='test.missing'/>")],
+    )
+    .unwrap_err();
+    assert!(matches!(err, ReportError::Compile { .. }), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "test.report:1: template `test.missing` is not among the supplied templates"
+    );
+    let cycle = [
+        ("test.a", "<t t-call='test.b'/>"),
+        ("test.b", "<p><t t-call='test.a'/></p>"),
+    ];
+    let err = compile_all("test.a", &cycle).unwrap_err();
+    assert!(matches!(err, ReportError::Compile { .. }), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "test.b:1: t-call cycle: test.a -> test.b -> test.a"
+    );
+    for (arch, message) in [
+        (
+            "<div t-call='test.report'/>",
+            "test.report:1: t-call must be on a <t> element, not on <div>",
+        ),
+        (
+            "<p><t t-else=''>x</t></p>",
+            "test.report:1: t-elif and t-else need a t-if on the element before",
+        ),
+        (
+            "<p><t t-field='doc.name'/></p>",
+            "test.report:1: t-field cannot be on a <t> element; put it on the element that shows the value",
+        ),
+        (
+            "<p><span t-lang='lang'>x</span></p>",
+            "test.report:1: t-lang is only read on the element that has t-call",
+        ),
+        (
+            "<p t-foreach='lines'>x</p>",
+            "test.report:1: t-foreach needs a t-as name",
+        ),
+    ] {
+        let err = compile_all("test.report", &[("test.report", arch)]).unwrap_err();
+        assert!(
+            matches!(err, ReportError::Compile { .. }),
+            "{arch}: {err:?}"
+        );
+        assert_eq!(err.to_string(), message);
+    }
+}
+
+#[test]
+fn evaluated_attributes_apply_like_written_ones() {
+    let arch = "<div t-att-id=\"'row_%s' % line_id\" t-attf-class='text-{{align}} fw-{{weight}}' \
+                t-att=\"{'title': title, 'style': None}\">x</div>";
+    let values = [
+        ("line_id", ExprValue::Int(101)),
+        ("align", ExprValue::str("end")),
+        ("weight", ExprValue::str("bold")),
+        ("title", ExprValue::Bool(true)),
+    ];
+    assert_eq!(render(arch, &values), r#"flow(block[be]("x"))"#);
+    // A later evaluated attribute replaces the written one of its name.
+    assert_eq!(
+        render(
+            "<div class='text-center' t-att-class='cls'>x</div>",
+            &[("cls", ExprValue::str("fst-italic"))]
+        ),
+        r#"flow(block[i]("x"))"#
+    );
+    assert_eq!(
+        render(
+            "<div class='text-center' t-att-class='cls'>x</div>",
+            &[("cls", ExprValue::None)]
+        ),
+        r#"flow(block[]("x"))"#
+    );
+}
+
+#[test]
+fn an_evaluated_attribute_outside_the_profile_is_an_error() {
+    let program = compile("<div>\n<p t-attf-class='item-{{status}}'>x</p></div>");
+    let context = EvalContext::standard().with_var("status", ExprValue::str("open"));
+    let err = evaluate(&program, &context).unwrap_err();
+    let ReportError::Profile(found) = &err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(found.kind(), ProfileKind::Class);
+    assert_eq!(
+        (found.template(), found.line(), found.token()),
+        ("test.report", 2, "item-open")
+    );
+    let program = compile("<p t-att=\"{'onclick': 'x'}\">x</p>");
+    let err = evaluate(&program, &EvalContext::standard()).unwrap_err();
+    let ReportError::Profile(found) = &err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(
+        (found.kind(), found.token()),
+        (ProfileKind::Attribute, "onclick")
+    );
+}
+
+#[test]
+fn an_unknown_directive_stops_the_compile() {
+    let err = compile_all(
+        "sale.report_order",
+        &[(
+            "sale.report_order",
+            "<div>\n<div t-custom-command='run'>Invalid</div></div>",
+        )],
+    )
+    .unwrap_err();
+    let ReportError::Profile(found) = &err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(found.kind(), ProfileKind::Directive);
+    assert_eq!(
+        err.to_string(),
+        "sale.report_order:2: directive `t-custom-command` is not in print profile 1; see the addon guide page on reports"
+    );
+}
+
+#[test]
+fn monetary_fields_print_in_their_currency_and_the_language_format() {
+    let usd = format!("${NBSP}1{NBSP}250,50");
+    let eur = format!("1{NBSP}250,50{NBSP}€");
+    assert_eq!(
+        order_in(
+            "<p><span t-field='doc.amount_total' t-options=\"{'widget': 'monetary'}\"/></p>",
+            french()
+        ),
+        format!("flow(block[]({usd:?}))")
+    );
+    assert_eq!(
+        order_in("<p><span t-field='doc.amount_eur'/></p>", french()),
+        format!("flow(block[]({eur:?}))")
+    );
+    // The display_currency option wins over the field's own currency; a minus keeps its digits.
+    assert_eq!(
+        order_in(
+            "<p><span t-field='doc.debt' t-options=\"{'display_currency': doc.eur_id}\"/></p>",
+            french()
+        ),
+        format!("flow(block[]({:?}))", format!("{MINUS}{eur}"))
+    );
+    assert_eq!(
+        order(
+            "<p><span t-out='1250.5' t-options=\"{'widget': 'monetary', 'display_currency': doc.currency_id}\"/></p>"
+        ),
+        format!("flow(block[]({:?}))", format!("${NBSP}1,250.50"))
+    );
+    let err = print_order(
+        "<p><span t-out='1250.5' t-options=\"{'widget': 'monetary'}\"/></p>",
+        &EvalOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, ReportError::Evaluate { .. }), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "test.report:1: the monetary widget needs the display_currency option"
+    );
+}
+
+#[test]
+fn float_fields_round_to_the_precision_and_use_the_language_separators() {
+    let german = LangFormat::new(",", ".", &[3, 0], "%d.%m.%Y", "%H:%M:%S").unwrap();
+    assert_eq!(
+        order_in(
+            "<p><span t-field='doc.weight' t-options=\"{'widget': 'float', 'precision': 2}\"/></p>",
+            german
+        ),
+        r#"flow(block[]("4.500,13"))"#
+    );
+    // Without a precision: at most six decimals, trailing zeros dropped down to one.
+    assert_eq!(
+        order("<p><span t-field='doc.weight'/> <span t-field='doc.ratio'/></p>"),
+        r#"flow(block[]("4,500.1267 0.5"))"#
+    );
+    assert_eq!(
+        order(
+            "<p><span t-out='2.675' t-options=\"{'widget': 'float', 'precision': 2}\"/> <span t-out='-3.0' t-options=\"{'widget': 'float'}\"/></p>"
+        ),
+        format!("flow(block[]({:?}))", format!("2.68 {MINUS}3.0"))
+    );
+}
+
+#[test]
+fn integer_fields_group_their_digits_by_the_language() {
+    let arch = "<p><span t-field='doc.quantity' t-options=\"{'widget': 'integer'}\"/></p>";
+    assert_eq!(order(arch), r#"flow(block[]("1,000,000"))"#);
+    assert_eq!(order_in(arch, french()), r#"flow(block[]("1 000 000"))"#);
+}
+
+#[test]
+fn digit_grouping_follows_the_language_sizes() {
+    let moroccan = LangFormat::new(",", " ", &[3, 0], "%d/%m/%Y", "%H:%M:%S").unwrap();
+    assert_eq!(
+        order_in(
+            "<p t-out='1200.5' t-options=\"{'widget': 'float'}\"/>",
+            moroccan
+        ),
+        r#"flow(block[]("1 200,5"))"#
+    );
+    let indian = LangFormat::new(".", ",", &[3, 2, 0], "%d/%m/%Y", "%H:%M:%S").unwrap();
+    assert_eq!(
+        order_in(
+            "<p t-out='12345678' t-options=\"{'widget': 'integer'}\"/>",
+            indian
+        ),
+        r#"flow(block[]("1,23,45,678"))"#
+    );
+    // A list that ends without 0 groups once; -1 and an empty separator group nothing.
+    let once = LangFormat::new(".", ",", &[3], "%d/%m/%Y", "%H:%M:%S").unwrap();
+    let never = LangFormat::new(".", ",", &[-1], "%d/%m/%Y", "%H:%M:%S").unwrap();
+    let bare = LangFormat::new(".", "", &[3, 0], "%d/%m/%Y", "%H:%M:%S").unwrap();
+    let arch = "<p t-out='12345678' t-options=\"{'widget': 'integer'}\"/>";
+    assert_eq!(order_in(arch, once), r#"flow(block[]("12345,678"))"#);
+    assert_eq!(order_in(arch, never), r#"flow(block[]("12345678"))"#);
+    assert_eq!(order_in(arch, bare), r#"flow(block[]("12345678"))"#);
+}
+
+#[test]
+fn date_fields_use_the_language_date_format() {
+    let arch = "<p><span t-field='doc.date_order'/></p>";
+    assert_eq!(order(arch), r#"flow(block[]("10/15/2026"))"#);
+    assert_eq!(order_in(arch, french()), r#"flow(block[]("15/10/2026"))"#);
+    // An unset date leaves its element out.
+    assert_eq!(order("<p><span t-field='doc.no_date'/></p>"), "flow()");
+}
+
+#[test]
+fn datetime_fields_shift_to_the_user_offset() {
+    let new_york = EvalOptions::default()
+        .with_utc_offset_seconds(-4 * 3600)
+        .unwrap();
+    let arch = "<p><span t-field='doc.create_date'/></p>";
+    assert_eq!(
+        print_order(arch, &new_york).unwrap(),
+        r#"flow(block[]("10/15/2026 10:30:00"))"#
+    );
+    assert_eq!(order(arch), r#"flow(block[]("10/15/2026 14:30:00"))"#);
+    // The shift can cross midnight; the options pick the parts.
+    let tokyo = EvalOptions::default()
+        .with_utc_offset_seconds(10 * 3600)
+        .unwrap();
+    assert_eq!(
+        print_order(
+            "<p><span t-field='doc.create_date' t-options=\"{'hide_seconds': True}\"/>|<span \
+             t-field='doc.create_date' t-options=\"{'date_only': True}\"/>|<span \
+             t-field='doc.create_date' t-options=\"{'time_only': True}\"/></p>",
+            &tokyo
+        )
+        .unwrap(),
+        r#"flow(block[]("10/16/2026 00:30|10/16/2026|00:30:00"))"#
+    );
+    let err = EvalOptions::default()
+        .with_utc_offset_seconds(19 * 3600)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "invalid report document: UTC offset must be within 18 hours"
+    );
+}
+
+#[test]
+fn selection_fields_print_their_label() {
+    assert_eq!(
+        order("<p><span t-field='doc.state'/></p>"),
+        r#"flow(block[]("Comptabilisé"))"#
+    );
+    assert_eq!(
+        order("<p><span t-out='doc.state'/></p>"),
+        r#"flow(block[]("posted"))"#
+    );
+    assert_eq!(
+        order(
+            "<p><span t-field='doc.state' t-options=\"{'selection': {'posted': 'Booked'}}\"/></p>"
+        ),
+        r#"flow(block[]("Booked"))"#
+    );
+}
+
+#[test]
+fn the_widget_option_replaces_the_widget_of_the_field_kind() {
+    assert_eq!(
+        order("<p><span t-field='doc.quantity' t-options=\"{'widget': 'char'}\"/></p>"),
+        r#"flow(block[]("1000000"))"#
+    );
+    let err = print_order(
+        "<p><span t-field='doc.quantity' t-options=\"{'widget': 'sparkline'}\"/></p>",
+        &EvalOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, ReportError::Evaluate { .. }), "{err:?}");
+    assert_eq!(err.to_string(), "test.report:1: unknown widget `sparkline`");
+}
+
+#[test]
+fn text_fields_break_at_line_ends() {
+    assert_eq!(
+        order("<p><span t-field='doc.description' t-options=\"{'widget': 'text'}\"/></p>"),
+        r#"flow(block[]("line1" br "line2" br br "line3"))"#
+    );
+}
+
+#[test]
+fn many2one_fields_print_the_display_name() {
+    assert_eq!(
+        order("<p><span t-field='doc.partner_id'/></p>"),
+        r#"flow(block[]("Agrolait, Belgium"))"#
+    );
+    assert_eq!(order("<p><span t-field='doc.carrier_id'/></p>"), "flow()");
+    assert_eq!(
+        order("<p><span t-field='doc.line_ids'/></p>"),
+        r#"flow(block[]("Desk, Chair"))"#
+    );
+}
+
+#[test]
+fn records_read_only_what_was_loaded() {
+    // Fields of related records, the empty value through an empty relation, and equality.
+    assert_eq!(
+        order(
+            "<p><t t-out='doc.partner_id.name'/>|<t t-out='doc.carrier_id.name'/>|<t \
+             t-out='doc.line_ids.order_id == doc'/>|<t t-out='doc.line_ids[1].qty'/>|<t \
+             t-out='doc.id'/>|<t t-out='doc.display_name'/>|<t t-out='doc.active'/></p>"
+        ),
+        r#"flow(block[]("Agrolait||True|5|1|S00001|True"))"#
+    );
+    // An unset char field is the reference's False: its element is left out.
+    assert_eq!(order("<div><p t-field='doc.note'/></div>"), "flow()");
+    for (arch, message) in [
+        (
+            "<p t-field='doc.missing'/>",
+            "test.report:1: field sale.order.missing of record 1 was not loaded for this report",
+        ),
+        (
+            "<p t-field='doc.line_ids.name'/>",
+            "test.report:1: t-field needs one record, got 2 of sale.order.line",
+        ),
+        (
+            "<p t-field='doc.name.upper'/>",
+            "test.report:1: t-field needs a record, got a value of type str",
+        ),
+    ] {
+        let err = print_order(arch, &EvalOptions::default()).unwrap_err();
+        assert!(
+            matches!(err, ReportError::Evaluate { .. }),
+            "{arch}: {err:?}"
+        );
+        assert_eq!(err.to_string(), message);
+    }
+    // An expression cannot reach a field or a method that was not loaded.
+    for arch in [
+        "<p t-out='doc.secret'/>",
+        "<p t-out='doc.line_ids.name'/>",
+        "<p t-out=\"doc.sudo().name\"/>",
+    ] {
+        let err = print_order(arch, &EvalOptions::default()).unwrap_err();
+        let ReportError::Expression {
+            template,
+            line,
+            expression,
+            ..
+        } = &err
+        else {
+            panic!("{arch}: {err:?}");
+        };
+        assert_eq!((template.as_str(), *line), ("test.report", 1));
+        assert!(arch.contains(expression.as_str()), "{expression}");
+    }
+    let mut twice = RecordStore::new();
+    twice.insert("res.partner", 1, "A", vec![]).unwrap();
+    let err = twice.insert("res.partner", 1, "B", vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "invalid report document: record was added to the store twice"
+    );
+}
+
+#[test]
+fn what_later_slices_add_is_refused_by_task() {
+    for (arch, message) in [
+        (
+            "<div t-field='doc.narration'/>",
+            "report html field content requires a later release",
+        ),
+        (
+            "<p><span t-field='doc.name' t-options=\"{'widget': 'barcode'}\"/></p>",
+            "report image and barcode widgets requires a later release",
+        ),
+        (
+            "<p><span t-field='doc.partner_id' t-options=\"{'widget': 'contact'}\"/></p>",
+            "report contact, duration and relative widgets requires a later release",
+        ),
+        (
+            "<p><span t-out='doc.weight' t-options=\"{'widget': 'duration'}\"/></p>",
+            "report contact, duration and relative widgets requires a later release",
+        ),
+        (
+            "<p><img src='/web/image/1'/></p>",
+            "report images and icons requires a later release",
+        ),
+        (
+            "<table><tr><td colspan='2'>x</td></tr></table>",
+            "report table cell spans requires a later release",
+        ),
+    ] {
+        let err = print_order(arch, &EvalOptions::default()).unwrap_err();
+        assert_eq!(err.to_string(), message, "{arch}");
+    }
+    let err = LangFormat::new(".", ",", &[3, 0], "%d %B %Y", "%H:%M:%S").unwrap_err();
+    assert!(matches!(err, ReportError::Unsupported { .. }), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "report month and weekday names in date formats requires a later release"
+    );
+    let err = compile_all(
+        "test.report",
+        &[("test.report", "<t t-call='{{ name }}'/>")],
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "report a t-call target computed at render time requires a later release"
+    );
+}
+
+#[test]
+fn t_lang_must_name_the_language_of_the_program() {
+    let sources = [
+        ("test.inner", "<p>inner</p>"),
+        ("test.report", "<t t-call='test.inner' t-lang='lang'/>"),
+    ];
+    let program = compile_all("test.report", &sources).unwrap();
+    for lang in [ExprValue::str("en_US"), ExprValue::Bool(false)] {
+        let context = EvalContext::standard().with_var("lang", lang);
+        assert_eq!(
+            dump(&evaluate(&program, &context).unwrap()),
+            r#"flow(block[]("inner"))"#
+        );
+    }
+    let context = EvalContext::standard().with_var("lang", ExprValue::str("de_DE"));
+    let err = evaluate(&program, &context).unwrap_err();
+    assert!(matches!(err, ReportError::Evaluate { .. }), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "test.report:1: t-lang is `de_DE` but this program was compiled for `en_US`; evaluate a record with the program of its language"
+    );
+}
+
+#[test]
+fn terms_are_translated_at_compile_time_unless_switched_off() {
+    let french = Language::new("fr_FR")
+        .unwrap()
+        .with_term("Shipping Address", "Adresse de livraison")
+        .with_term("Invoice Date", "Date de facturation");
+    let sources = [TemplateSource::new(
+        "test.report",
+        "<div><p> Shipping Address </p><p><span t-translation='off'>Invoice Date</span>: <b>Invoice Date</b></p></div>",
+    )];
+    let program =
+        ReportProgram::compile("test.report", &sources, &french, ReportLimits::default()).unwrap();
+    assert_eq!(program.language().code(), "fr_FR");
+    let doc = evaluate(&program, &EvalContext::standard()).unwrap();
+    assert_eq!(
+        dump(&doc),
+        r#"flow(block[]("Adresse de livraison") block[]("Invoice Date: " inline[b]("Date de facturation")))"#
+    );
+    // The document carries the language for the layout engine.
+    assert_eq!(doc.options().language(), "fr");
+    for code in ["", "EN", "en-US", "en_", "english_US"] {
+        let err = Language::new(code).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid report document: language code must look like en, en_US, ar_001 or sr@latin"
+        );
+    }
+    for code in ["en", "ar_001", "sr@latin", "sr_RS@latin"] {
+        assert_eq!(Language::new(code).unwrap().code(), code);
+    }
+}
+
+#[test]
+fn header_footer_and_page_counters_are_document_parts() {
+    let program = compile(
+        "<div><div class='header'>Head</div><div class='article'><p>Body</p></div><div \
+         class='footer text-center'>Page <span class='page'/> / <span class='topage'/></div></div>",
+    );
+    let doc = evaluate(&program, &EvalContext::standard()).unwrap();
+    assert_eq!(dump(&doc), r#"flow(block[]("Body"))"#);
+    assert_eq!(part(&doc, doc.header()), r#""Head""#);
+    assert_eq!(
+        part(&doc, doc.footer()),
+        r#"block[c]("Page " page " / " pages)"#
+    );
+    let program = compile("<div><div class='header'>a</div><div class='header'>b</div></div>");
+    let err = evaluate(&program, &EvalContext::standard()).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "test.report:1: a second page header in one document"
+    );
+}
+
+#[test]
+fn page_break_controls_become_document_nodes() {
+    assert_eq!(
+        render(
+            "<div><p>one</p><p class='page-break-before'>two</p><div \
+             style='page-break-after: always'>three</div><div \
+             class='avoid-page-break-inside'>four</div><p \
+             style='page-break-inside: avoid; page-break-before: auto'>five</p></div>",
+            &[]
+        ),
+        r#"flow(block[]("one") pagebreak block[]("two") block[]("three") pagebreak block[k]("four") block[k]("five"))"#
+    );
+    // A page break that the engine cannot lay out is an error, not a dropped break.
+    for arch in [
+        "<table><tr><td><p class='page-break-before'>x</p></td></tr></table>",
+        "<div class='p-3'><p class='page-break-before'>x</p></div>",
+        "<div class='row'><div class='col-6' style='page-break-after: always'>x</div></div>",
+    ] {
+        let err = evaluate(&compile(arch), &EvalContext::standard()).unwrap_err();
+        assert!(
+            matches!(err, ReportError::Evaluate { .. }),
+            "{arch}: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "test.report:1: a page break inside a table, grid, list, inline element or padded block cannot be laid out"
+        );
+    }
+}
+
+#[test]
+fn elements_map_to_document_nodes() {
+    // Tables: header rows repeat, short rows are filled, row styles reach their cells.
+    assert_eq!(
+        render(
+            "<table class='table table-sm'><thead><tr><th>Name</th><th \
+             class='text-end'>Qty</th></tr></thead><tbody><tr t-foreach='rows' t-as='row' \
+             t-att-class=\"'fw-bold' if row_last else None\"><td t-out='row'/><td \
+             t-if='row_first'>1</td></tr></tbody></table>",
+            &[("rows", strs(&["a", "b"]))]
+        ),
+        r#"flow(table[2](head: block[b]("Name") block[be]("Qty"); cells: "a" "1" block[b]("b") ""))"#
+    );
+    // A 12-column row and a flex row.
+    assert_eq!(
+        render(
+            "<div class='row'><div class='col-8'>wide</div><div class='col-4 \
+             text-end'><p>narrow</p></div></div>",
+            &[]
+        ),
+        r#"flow(grid[8,4|15](block[]("wide") block[e](block[e]("narrow"))))"#
+    );
+    assert_eq!(
+        render(
+            "<div class='row'><div class='col-3'>a</div><div class='col'>b</div><div \
+             class='col'>c</div></div>",
+            &[]
+        ),
+        r#"flow(grid[3,4.5,4.5|15](block[]("a") block[]("b") block[]("c")))"#
+    );
+    assert_eq!(
+        render(
+            "<div class='d-flex justify-content-between gap-3'><span>left</span><strong>right</strong></div>",
+            &[]
+        ),
+        r#"flow(grid[6,6|10]("left" inline[b]("right")))"#
+    );
+    // Lists, rules, line breaks, headings and inline styles.
+    assert_eq!(
+        render(
+            "<div><ul><li>one</li><li><b>two</b></li></ul><ol><li>first</li></ol><hr/><p>a<br/>b</p></div>",
+            &[]
+        ),
+        r#"flow(ul("one" inline[b]("two")) ol("first") hr block[]("a" br "b"))"#
+    );
+    assert_eq!(
+        render(
+            "<div><h2>Title</h2><p class='text-muted small'>muted <em>em</em> <u>u</u></p><p \
+             style='font-size: 16px; color: #ff0000; font-weight: bold; text-align: \
+             center; padding: 4pt'>styled</p><p class='text-primary p-2'>primary</p></div>",
+            &[]
+        ),
+        r#"flow(block[b 20pt]("Title") block[8.75pt #6c757d]("muted " inline[i 8.75pt #6c757d]("em") " " inline[u 8.75pt #6c757d]("u")) block[bc 12pt pad4 #ff0000]("styled") block[pad5 #0d6efd]("primary"))"#
+    );
+    // Hidden elements print nothing.
+    assert_eq!(
+        render(
+            "<div><p class='d-none'>no</p><p style='display: none'>no</p><p>yes</p></div>",
+            &[]
+        ),
+        r#"flow(block[]("yes"))"#
+    );
+    // Theme colours come from the options.
+    let program = compile("<p class='text-primary'>x <span class='text-secondary'>y</span></p>");
+    let themed = EvalOptions::default().with_theme_colors([1, 2, 3], [4, 5, 6]);
+    let doc = program
+        .evaluate(
+            &EvalContext::standard(),
+            &RecordStore::new(),
+            &themed,
+            options(),
+        )
+        .unwrap();
+    assert_eq!(
+        dump(&doc),
+        r#"flow(block[#010203]("x " inline[#040506]("y")))"#
+    );
+    for arch in [
+        "<div><tr><td>x</td></tr></div>",
+        "<div><li>x</li></div>",
+        "<table><tr><p>x</p></tr></table>",
+        "<ul><p>x</p></ul>",
+    ] {
+        let err = evaluate(&compile(arch), &EvalContext::standard()).unwrap_err();
+        assert!(
+            matches!(err, ReportError::Evaluate { .. }),
+            "{arch}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn white_space_is_laid_out_as_html_does() {
+    assert_eq!(
+        render(
+            "<div>\n    <p>\n  two\n  words  </p>\n    <p>a <b> b </b> c</p>\n  <span>tail</span>\n</div>",
+            &[]
+        ),
+        r#"flow(block[](block[]("two words") block[]("a " inline[b](" b ") " c") "tail"))"#
+    );
+    // A no-break space is content, not white space.
+    assert_eq!(
+        render(
+            "<p t-out='v'/>",
+            &[("v", ExprValue::str("\u{a0}a\u{a0} b\n"))]
+        ),
+        format!("flow(block[]({:?}))", "\u{a0}a\u{a0} b")
+    );
+}
+
+#[test]
+fn wrappers_emit_no_node_and_depth_is_bounded() {
+    // Forty wrappers around one paragraph: none of them is a document node.
+    let nested = format!("{}<p>deep</p>{}", "<div>".repeat(40), "</div>".repeat(40));
+    let doc = evaluate(&compile(&nested), &EvalContext::standard()).unwrap();
+    assert_eq!(dump(&doc), r#"flow(block[]("deep"))"#);
+    assert_eq!(doc.nodes().len(), 3);
+    // Containers that carry layout do nest, up to the document depth limit.
+    let padded = |levels: usize| {
+        format!(
+            "{}<p>deep</p>{}",
+            "<div class='p-1'>".repeat(levels),
+            "</div>".repeat(levels)
+        )
+    };
+    evaluate(&compile(&padded(29)), &EvalContext::standard()).unwrap();
+    let err = evaluate(&compile(&padded(40)), &EvalContext::standard()).unwrap_err();
+    let ReportError::DocumentLimit { kind, max, .. } = err else {
+        panic!("{err:?}");
+    };
+    assert_eq!((kind, max), (LimitKind::Depth, 32));
+}
+
+#[test]
+fn evaluation_and_program_limits_trip_with_their_names() {
+    let limits = ReportLimits::default().with_evaluation_steps(50).unwrap();
+    let sources = [TemplateSource::new(
+        "test.report",
+        "<p><t t-foreach='1000' t-as='n' t-out='n'/></p>",
+    )];
+    let program = ReportProgram::compile("test.report", &sources, &english(), limits).unwrap();
+    let err = evaluate(&program, &EvalContext::standard()).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ReportError::Limit {
+                name: "evaluation_steps",
+                maximum: 50
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "report limit evaluation_steps exceeded or invalid (maximum 50)"
+    );
+    let limits = ReportLimits::default().with_program_nodes(3).unwrap();
+    let sources = [TemplateSource::new(
+        "test.report",
+        "<div><p>a</p><p>b</p></div>",
+    )];
+    let err = ReportProgram::compile("test.report", &sources, &english(), limits).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ReportError::Limit {
+                name: "program_nodes",
+                maximum: 3
+            }
+        ),
+        "{err:?}"
+    );
+    let limits = ReportLimits::default().with_program_depth(3).unwrap();
+    let sources = [TemplateSource::new(
+        "test.report",
+        "<div><div><div><p>a</p></div></div></div>",
+    )];
+    let err = ReportProgram::compile("test.report", &sources, &english(), limits).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ReportError::Limit {
+                name: "program_depth",
+                maximum: 3
+            }
+        ),
+        "{err:?}"
+    );
+    // A call adds the called template's depth to the place of the call.
+    let sources = [
+        TemplateSource::new("test.inner", "<div><p>a</p></div>"),
+        TemplateSource::new("test.report", "<div><t t-call='test.inner'/></div>"),
+    ];
+    let err = ReportProgram::compile("test.report", &sources, &english(), limits).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ReportError::Limit {
+                name: "program_depth",
+                maximum: 3
+            }
+        ),
+        "{err:?}"
+    );
+    let limits = ReportLimits::default().with_call_depth(2).unwrap();
+    let sources = [
+        TemplateSource::new("test.a", "<t t-call='test.b'/>"),
+        TemplateSource::new("test.b", "<t t-call='test.c'/>"),
+        TemplateSource::new("test.c", "<p>c</p>"),
+    ];
+    let err = ReportProgram::compile("test.a", &sources, &english(), limits).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ReportError::Limit {
+                name: "call_depth",
+                maximum: 2
+            }
+        ),
+        "{err:?}"
+    );
+    for (result, name) in [
+        (
+            ReportLimits::default().with_evaluation_steps(0),
+            "evaluation_steps",
+        ),
+        (
+            ReportLimits::default().with_evaluation_steps(10_000_001),
+            "evaluation_steps",
+        ),
+        (
+            ReportLimits::default().with_program_nodes(0),
+            "program_nodes",
+        ),
+        (
+            ReportLimits::default().with_program_nodes(50_001),
+            "program_nodes",
+        ),
+        (
+            ReportLimits::default().with_program_depth(0),
+            "program_depth",
+        ),
+        (
+            ReportLimits::default().with_program_depth(129),
+            "program_depth",
+        ),
+        (
+            ReportLimits::default().with_template_fragments(0),
+            "template_fragments",
+        ),
+        (
+            ReportLimits::default().with_template_fragments(65_537),
+            "template_fragments",
+        ),
+    ] {
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ReportError::Limit { name: found, .. } if found == name),
+            "{err:?}"
+        );
+    }
+    let limits = ReportLimits::default().with_template_fragments(2).unwrap();
+    let sources = [TemplateSource::new(
+        "test.report",
+        "<t t-foreach='3' t-as='n'><t t-set='body'>x</t></t>",
+    )];
+    let program = ReportProgram::compile("test.report", &sources, &english(), limits).unwrap();
+    let err = evaluate(&program, &EvalContext::standard()).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ReportError::Limit {
+                name: "template_fragments",
+                maximum: 2
+            }
+        ),
+        "{err:?}"
+    );
+    // Fragments that print each other are bounded at run time, whatever their number.
+    let mut chain = String::from("<t><t t-set='f0'>x</t>");
+    for n in 1..600 {
+        chain.push_str(&format!("<t t-set='f{n}'><t t-out='f{}'/></t>", n - 1));
+    }
+    chain.push_str("<p t-out='f599'/></t>");
+    let err = evaluate(&compile(&chain), &EvalContext::standard()).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ReportError::Limit {
+                name: "evaluation_depth",
+                maximum: 512
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn an_attachment_report_with_an_unacknowledged_restricted_field_does_not_compile() {
+    let fields = |model: &str, field: &str| match (model, field) {
+        ("sale.order", "name") => Some(FieldInfo::scalar(false)),
+        ("sale.order", "margin") => Some(FieldInfo::scalar(true)),
+        _ => None,
+    };
+    let sources = [TemplateSource::new(
+        "sale.report_order",
+        "<t t-foreach='docs' t-as='doc'><p t-field='doc.name'/><p t-field='doc.margin'/></t>",
+    )];
+    let policy = |acknowledged| {
+        AttachmentPolicy::new("sale.action_report", "sale.order")
+            .with_attachment(true)
+            .with_acknowledgement(acknowledged)
+    };
+    let compile = |acknowledged| {
+        ReportProgram::compile_for_attachment(
+            &policy(acknowledged),
+            "sale.report_order",
+            &sources,
+            &fields,
+            &english(),
+            ReportLimits::default(),
+        )
+    };
+    let err = compile(false).unwrap_err();
+    assert!(matches!(err, ReportError::Restricted { .. }), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "report sale.action_report: sale.report_order:1 prints restricted field sale.order.margin; set allow_attachment_group_fields explicitly to acknowledge the first printer's field view"
+    );
+    let (program, restricted) = compile(true).unwrap();
+    assert_eq!(
+        restricted.iter().map(|f| f.field()).collect::<Vec<_>>(),
+        ["sale.order.margin"]
+    );
+    assert!(program.node_count() > 0);
+}
+
+#[test]
+fn language_formats_are_validated() {
+    for (result, message) in [
+        (
+            LangFormat::new("", ",", &[3, 0], "%d", "%H"),
+            "decimal point must be 1..=8 bytes and the thousands separator at most 8",
+        ),
+        (
+            LangFormat::new(".", ",", &[3, 12], "%d", "%H"),
+            "digit grouping takes at most 8 sizes, each -1..=9",
+        ),
+        (
+            LangFormat::new(".", ",", &[3, 0], "", "%H"),
+            "date and time formats must be 1..=64 bytes",
+        ),
+        (
+            LangFormat::new(".", ",", &[3, 0], "%d", "%Q"),
+            "date format directive is not supported",
+        ),
+    ] {
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ReportError::InvalidDocument { .. }),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            format!("invalid report document: {message}")
+        );
+    }
+    let twelve_hour = LangFormat::new(".", ",", &[3, 0], "%y-%j", "%I:%M %p %%").unwrap();
+    assert_eq!(
+        order_in("<p t-field='doc.create_date'/>", twelve_hour),
+        r#"flow(block[]("26-288 02:30 PM %"))"#
+    );
+}
+
+/// The compile-and-evaluate example kept compiling and true.
+#[test]
+fn the_guide_example_prints_a_letter() {
+    let sources = [TemplateSource::new(
+        "example.letter",
+        "<p>Dear <b t-out='name'/>,</p>",
+    )];
+    let program = ReportProgram::compile(
+        "example.letter",
+        &sources,
+        &Language::new("en_US").unwrap(),
+        ReportLimits::default(),
+    )
+    .unwrap();
+    let context = EvalContext::standard().with_var("name", ExprValue::str("Ada"));
+    let page = PageSetup::new(595.0, 842.0, 40.0).unwrap();
+    let document = program
+        .evaluate(
+            &context,
+            &RecordStore::new(),
+            &EvalOptions::default(),
+            DocumentOptions::new("letter-1", "Letter", page),
+        )
+        .unwrap();
+    assert_eq!(document.options().language(), "en");
+    assert_eq!(
+        dump(&document),
+        r#"flow(block[]("Dear " inline[b]("Ada") ","))"#
+    );
+}
+
+fn compile_with(limits: ReportLimits, sources: &[(&str, &str)]) -> ReportProgram {
+    let sources: Vec<_> = sources
+        .iter()
+        .map(|(key, arch)| TemplateSource::new(key, arch))
+        .collect();
+    ReportProgram::compile("test.report", &sources, &english(), limits).unwrap()
+}
+fn limit_name(result: Result<DocTree, ReportError>) -> (&'static str, usize) {
+    match result {
+        Err(ReportError::Limit { name, maximum }) => (name, maximum),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn printed_text_is_charged_as_it_is_printed() {
+    let limits = ReportLimits::default()
+        .with_evaluation_bytes(1_000)
+        .unwrap();
+    let small = compile_with(
+        limits,
+        &[("test.report", "<p><t t-foreach='100' t-as='n'>ab</t></p>")],
+    );
+    evaluate(&small, &EvalContext::standard()).unwrap();
+    let large = compile_with(
+        limits,
+        &[("test.report", "<p><t t-foreach='2000' t-as='n'>ab</t></p>")],
+    );
+    assert_eq!(
+        limit_name(evaluate(&large, &EvalContext::standard())),
+        ("evaluation_bytes", 1_000)
+    );
+    for result in [
+        ReportLimits::default().with_evaluation_bytes(0),
+        ReportLimits::default().with_evaluation_bytes(128 * 1024 * 1024 + 1),
+    ] {
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ReportError::Limit {
+                    name: "evaluation_bytes",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+}
+
+#[test]
+fn names_copied_by_kept_fragments_are_charged_and_finished_calls_give_theirs_back() {
+    let limits = ReportLimits::default()
+        .with_evaluation_bytes(100_000)
+        .unwrap();
+    let big = "<t t-set='big' t-value=\"'x' * 10000\"/>";
+    // Each kept `t-set` body holds its own copy of `big`.
+    let fragments = format!("<t>{big}<t t-foreach='100' t-as='i'><t t-set='f'>a</t></t></t>");
+    let program = compile_with(limits, &[("test.report", fragments.as_str())]);
+    assert_eq!(
+        limit_name(evaluate(&program, &EvalContext::standard())),
+        ("evaluation_bytes", 100_000)
+    );
+    // A call's copies end with the call, so the same loop of calls stays under the bound.
+    let calls = format!("<t>{big}<t t-foreach='100' t-as='i'><t t-call='test.inner'/></t></t>");
+    let program = compile_with(
+        limits,
+        &[("test.inner", "<p>a</p>"), ("test.report", calls.as_str())],
+    );
+    evaluate(&program, &EvalContext::standard()).unwrap();
+}
+
+#[test]
+fn an_evaluation_past_its_deadline_is_refused_by_name() {
+    let limits = ReportLimits::default()
+        .with_evaluation_deadline(Duration::from_millis(1))
+        .unwrap();
+    let program = compile_with(
+        limits,
+        &[(
+            "test.report",
+            "<p><t t-foreach='1000000' t-as='n' t-out='n'/></p>",
+        )],
+    );
+    assert_eq!(
+        limit_name(evaluate(&program, &EvalContext::standard())),
+        ("evaluation_deadline", 1)
+    );
+    for value in [Duration::ZERO, Duration::from_secs(31)] {
+        let err = ReportLimits::default()
+            .with_evaluation_deadline(value)
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ReportError::Limit {
+                    name: "evaluation_deadline",
+                    maximum: 30_000
+                }
+            ),
+            "{err:?}"
+        );
+    }
+}

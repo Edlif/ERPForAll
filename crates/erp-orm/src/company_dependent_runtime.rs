@@ -1,21 +1,124 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! ORM-owned property preparation. The codec remains independent of authorization and SQL.
+//!
+//! # Prepared fallbacks and when they are read again
+//!
+//! The fallbacks of a model for a company are read once per transaction ([`Prepared`]) and reused
+//! by every later create, read, write and query of that model in that company (
+//! supplement of 2026-11-15). They never leave the transaction: the record API
+//! runs at `REPEATABLE READ`, so only this transaction's own changes can alter what the lookup
+//! would return. Each of these marks the entries that rest on the changed rows stale, and a stale
+//! entry is read again by the next `prepare_properties`:
+//! - a change of `ir.default`, of `ir.model.fields` or of `decimal.precision` rows through the
+//!   record API, pending or flushed, and the `ir.default` helper functions (every entry; the
+//!   `ir.default` invalidation removes them, as it always did);
+//! - rows created or deleted in a model a fallback names as its many2one target, through the
+//!   record API or an explicit invalidation of the model without a field list (the entries
+//!   naming that target);
+//! - a statement that names the table it writes (`INSERT`, `UPDATE`, `DELETE`, `MERGE`), the
+//!   ORM's own included, mapped to its models like the write ticks do
+//!   (`transaction/write_gens.rs`: the models stored in the table, the delegating models, and for
+//!   a delete the models a database cascade reaches); a table no model knows marks every entry;
+//! - a statement whose effect is unknown and that is not a data-changing `WITH` (`TRUNCATE`,
+//!   `COPY`, `CALL`, `DO`, DDL, a raw `ROLLBACK`, a batch, and every statement once the
+//!   connection's reading of string literals is uncertain) marks every entry;
+//! - `Transaction::invalidate_all` marks every entry; a rollback to a savepoint, commit and
+//!   rollback remove them; an isolated scope restores the entries it started with.
+//!
+//! Stale, not removed: an operation prepares first and projects values afterwards
+//! (`property_context`), and a statement it sends in between (a flush of pending writes before a
+//! restricted read, for example) may mark its entry. The operation keeps the fallbacks it started
+//! with, as it did when every use prepared again; the next operation reads them again.
+//!
+//! Not seen: a data-changing `WITH` (also one the word reader is unsure about), a `SELECT`
+//! calling a function that writes, and a trigger writing `ir_default` or a target table. The
+//! ORM's own record inserts are data-changing `WITH` statements and are covered by the record
+//! API rule above; its synchronous aggregate upsert (`delta.rs`) only inserts rows, outside that
+//! rule, so a dangling fallback naming an id such an insert takes later stays empty until the
+//! entry is read again. Raw code of that kind calls
+//! `Transaction::invalidate_ormcache("ir.default")`, `Transaction::invalidate_model` for the
+//! target model without a field list, or `Transaction::invalidate_all`.
+use crate::transaction::write_gens;
 use crate::{CompanyId, Env, Records, Transaction};
 use erp_fields::{Cell, Error, Result};
 use erp_registry::{FieldId, ModelId, ModelSpec};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
+/// The fallbacks of one model for one company, as this transaction's snapshot and its own
+/// writes show them.
+#[derive(Debug, Clone)]
+pub(crate) struct Prepared {
+    /// One cell per field of the model, by field index; `Null` where the field has no fallback
+    /// or is not company-dependent.
+    cells: Vec<Cell>,
+    /// The comodels whose rows the cells rest on: the target model of every many2one fallback
+    /// that named an id, also one found dangling (a later insert can make it live again).
+    targets: Vec<ModelId>,
+    /// An input changed after the entry was read: the next `prepare_properties` reads it again.
+    /// Until then it still serves the operation that prepared it (module documentation).
+    stale: bool,
+}
+
+/// The models whose rows every fallback lookup reads, whatever the model it is for.
+fn is_lookup_input(model: &str) -> bool {
+    matches!(
+        model,
+        "ir.default" | "ir.model.fields" | "decimal.precision"
+    )
+}
+
+impl State {
+    /// Mark the prepared entries `ends` selects stale. Nothing is copied when none is live.
+    pub(crate) fn end_prepared(this: &mut Arc<Self>, ends: impl Fn(&Prepared) -> bool) {
+        if this
+            .defaults
+            .values()
+            .any(|entry| !entry.stale && ends(entry))
+        {
+            for entry in Arc::make_mut(this).defaults.values_mut() {
+                if ends(entry) {
+                    entry.stale = true;
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct State {
-    pub defaults: FxHashMap<(ModelId, CompanyId), Vec<Cell>>,
+    pub defaults: FxHashMap<(ModelId, CompanyId), Prepared>,
     pub baselines: FxHashMap<(ModelId, FieldId, erp_fields::RecId), Cell>,
     pub origins: FxHashMap<(ModelId, erp_fields::RecId), Env>,
 }
 
-pub(crate) fn unsupported(model: &str, field: &str, operation: &str) -> Error {
+/// The board task that lifts a refusal of this module's callers. Each refusal names its own
+/// task, so the ids exist once, here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Owner {
+    Upsert,
+    Hooks,
+    StoredCompute,
+    Catalog,
+    DraftLinks,
+}
+
+impl Owner {
+    const fn task(self) -> &'static str {
+        match self {
+            Self::Upsert => "a later release",
+            Self::Hooks => "a later release",
+            Self::StoredCompute => "a later release",
+            Self::Catalog => "a later release",
+            Self::DraftLinks => "a later release",
+        }
+    }
+}
+
+pub(crate) fn unsupported(model: &str, field: &str, operation: &str, owner: Owner) -> Error {
     Error::programming(format!(
-        "{model}.{field}: company-dependent {operation} is not supported until a later release"
+        "{model}.{field}: company-dependent {operation} is not supported until {}",
+        owner.task()
     ))
 }
 
@@ -87,7 +190,21 @@ impl Transaction {
         let company = self.companies(env).await?.first().copied().ok_or_else(|| {
             Error::validation("company-dependent fields require a current company")
         })?;
-        // Refresh snapshot-local fallbacks even when the raw record maps are warm.
+        // Reuse what this transaction prepared: every change that could alter the lookup ended
+        // the entry (module documentation). One snapshot is the premise, so a transaction that
+        // takes a new snapshot per statement prepares again each time.
+        if self.isolation_level() == crate::transaction::Isolation::RepeatableRead
+            && self
+                .engine
+                .properties
+                .defaults
+                .get(&(spec.id, company))
+                .is_some_and(|prepared| {
+                    !prepared.stale && prepared.cells.len() == spec.fields.len()
+                })
+        {
+            return Ok(());
+        }
         let defaults = if crate::ir_default::is_available(env.registry()) {
             crate::ir_default::get_property_defaults(self, env, spec.name).await?
         } else {
@@ -99,55 +216,85 @@ impl Transaction {
             .iter()
             .filter(|f| f.company_dependent && f.inherited.is_none())
         {
-            let cell = match defaults.get(field.name) {
-                Some(value) => crate::html::input_cell(
-                    erp_fields::convert::FieldRef {
-                        model: spec.name,
-                        field: field.name,
-                        label: &field.string,
-                    },
-                    &field.ty,
-                    // ir.default serializes the public empty value as JSON false. Restore
-                    // that sentinel before strict date/relation conversion (FIELD-075/085).
-                    match value {
-                        erp_fields::Value::Bool(false) => &erp_fields::Value::False,
-                        other => other,
-                    },
-                )
-                .map_err(|error| {
-                    Error::new(
-                        error.kind(),
-                        format!(
-                            "{}.{}: invalid company-dependent fallback",
-                            spec.name, field.name
-                        ),
-                    )
-                })?,
-                None => Cell::Null,
-            };
-            let cell = self.admit_html_cell(spec, field, cell)?;
-            crate::precision::validate(self, env, spec, field, &cell).await?;
-            cells[field.id.index()] = crate::company_dependent::decode(
-                &field.ty,
-                &crate::company_dependent::encode(&field.ty, &cell)?,
-            )?;
+            cells[field.id.index()] = self
+                .property_fallback_cell(env, spec, field, defaults.get(field.name))
+                .await?;
         }
-        self.clear_dangling_fallbacks(env, spec, &mut cells).await?;
-        self.properties_mut()
-            .defaults
-            .insert((spec.id, company), cells);
+        let targets = self.clear_dangling_fallbacks(env, spec, &mut cells).await?;
+        self.properties_mut().defaults.insert(
+            (spec.id, company),
+            Prepared {
+                cells,
+                targets,
+                stale: false,
+            },
+        );
         Ok(())
+    }
+
+    /// The transaction changed rows of `model` (`rows`: rows were created or deleted, or may have
+    /// been): the prepared fallbacks that rest on them are read again on their next use (module
+    /// documentation).
+    pub(crate) fn property_inputs_written(&mut self, model: ModelId, rows: bool) {
+        if self.engine.properties.defaults.is_empty() {
+            return;
+        }
+        if is_lookup_input(self.shared.registry.model_by_id(model).name) {
+            State::end_prepared(&mut self.engine.properties, |_| true);
+        } else if rows {
+            State::end_prepared(&mut self.engine.properties, |entry| {
+                entry.targets.contains(&model)
+            });
+        }
+    }
+
+    /// A statement was sent whose text the classifier read as `class`: the prepared fallbacks
+    /// that may rest on what it changed are read again on their next use (module documentation).
+    pub(crate) fn property_statement_sent(
+        &mut self,
+        sql: &str,
+        class: &write_gens::Classified<'_>,
+    ) {
+        if self.engine.properties.defaults.is_empty() {
+            return;
+        }
+        match class.target {
+            write_gens::Target::Reads => {}
+            write_gens::Target::Rows { table, delete } => {
+                match self.shared.tables.models(table, delete) {
+                    Some(models) => {
+                        let registry = &self.shared.registry;
+                        let lookup = models
+                            .iter()
+                            .any(|model| is_lookup_input(registry.model_by_id(*model).name));
+                        State::end_prepared(&mut self.engine.properties, |entry| {
+                            lookup || entry.targets.iter().any(|target| models.contains(target))
+                        });
+                    }
+                    // a table no model knows: fail closed
+                    None => State::end_prepared(&mut self.engine.properties, |_| true),
+                }
+            }
+            // The ORM's own record inserts are data-changing `WITH` statements; the record API
+            // marks the entries for them. Anything else unknown fails closed.
+            write_gens::Target::Unknown
+                if class.data_change && starts_with_keyword(sql, "WITH") => {}
+            write_gens::Target::Unknown => {
+                State::end_prepared(&mut self.engine.properties, |_| true);
+            }
+        }
     }
 
     /// A many2one fallback whose target is gone reads empty, like a dangling override (
     /// decision 6): the existence of each target id is checked in the database, one statement per
-    /// comodel, and only when a fallback names an id. Record rules do not apply.
+    /// comodel, and only when a fallback names an id. Record rules do not apply. Returns the
+    /// comodels checked.
     async fn clear_dangling_fallbacks(
         &mut self,
         env: &Env,
         spec: &ModelSpec,
         cells: &mut [Cell],
-    ) -> Result<()> {
+    ) -> Result<Vec<ModelId>> {
         let mut by_comodel: Vec<(&str, Vec<i64>)> = Vec::new();
         for field in spec
             .fields
@@ -163,22 +310,14 @@ impl Transaction {
                 None => by_comodel.push((comodel, vec![*id])),
             }
         }
+        let mut targets = Vec::with_capacity(by_comodel.len());
         for (comodel, ids) in by_comodel {
             let target = env
                 .registry()
                 .model(comodel)
                 .ok_or_else(|| Error::programming(format!("unknown property comodel {comodel}")))?;
-            let sql = format!(
-                "SELECT \"id\" FROM {} WHERE \"id\" = ANY($1::int8[])",
-                erp_sql::quote(&target.table)
-            );
-            let mut live: Vec<i64> = Vec::with_capacity(ids.len());
-            for row in self.query(&sql, &[&ids]).await? {
-                live.push(row.try_get(0).map_err(|error| {
-                    Error::new(erp_fields::ErrorKind::Database, "could not decode an id")
-                        .with_source(error)
-                })?);
-            }
+            targets.push(target.id);
+            let live = self.existing_property_targets(env, comodel, &ids).await?;
             for field in spec
                 .fields
                 .iter()
@@ -190,7 +329,79 @@ impl Transaction {
                 }
             }
         }
-        Ok(())
+        Ok(targets)
+    }
+
+    /// The fallback cell of company-dependent `field` from its `ir.default` value (`None`: no
+    /// default): type conversion with the JSON `false` sentinel restored, HTML admission,
+    /// precision and the company-map codec round trip. Shared by the fallback of the current
+    /// company ([`Self::prepare_properties`]) and by the company fields that mirror a default
+    /// (`crate::company_default_for`), so both read one value the same way.
+    pub(crate) async fn property_fallback_cell(
+        &mut self,
+        env: &Env,
+        spec: &ModelSpec,
+        field: &erp_registry::FieldSpec,
+        value: Option<&erp_fields::Value>,
+    ) -> Result<Cell> {
+        let cell = match value {
+            Some(value) => crate::html::input_cell(
+                erp_fields::convert::FieldRef {
+                    model: spec.name,
+                    field: field.name,
+                    label: &field.string,
+                },
+                &field.ty,
+                // ir.default serializes the public empty value as JSON false. Restore
+                // that sentinel before strict date/relation conversion (FIELD-075/085).
+                match value {
+                    erp_fields::Value::Bool(false) => &erp_fields::Value::False,
+                    other => other,
+                },
+            )
+            .map_err(|error| {
+                Error::new(
+                    error.kind(),
+                    format!(
+                        "{}.{}: invalid company-dependent fallback",
+                        spec.name, field.name
+                    ),
+                )
+            })?,
+            None => Cell::Null,
+        };
+        let cell = self.admit_html_cell(spec, field, cell)?;
+        crate::precision::validate(self, env, spec, field, &cell).await?;
+        crate::company_dependent::decode(
+            &field.ty,
+            &crate::company_dependent::encode(&field.ty, &cell)?,
+        )
+    }
+
+    /// The ids of `ids` that have a row in `comodel`'s table, in one statement. Record rules do
+    /// not apply (a dangling many2one default reads empty).
+    pub(crate) async fn existing_property_targets(
+        &mut self,
+        env: &Env,
+        comodel: &str,
+        ids: &[i64],
+    ) -> Result<Vec<i64>> {
+        let target = env
+            .registry()
+            .model(comodel)
+            .ok_or_else(|| Error::programming(format!("unknown property comodel {comodel}")))?;
+        let sql = format!(
+            "SELECT \"id\" FROM {} WHERE \"id\" = ANY($1::int8[])",
+            erp_sql::quote(&target.table)
+        );
+        let mut live: Vec<i64> = Vec::with_capacity(ids.len());
+        for row in self.query(&sql, &[&ids]).await? {
+            live.push(row.try_get(0).map_err(|error| {
+                Error::new(erp_fields::ErrorKind::Database, "could not decode an id")
+                    .with_source(error)
+            })?);
+        }
+        Ok(live)
     }
 
     pub(crate) fn property_context(
@@ -208,7 +419,7 @@ impl Transaction {
             .properties
             .defaults
             .get(&(model, company))
-            .and_then(|cells| cells.get(field.index()))
+            .and_then(|prepared| prepared.cells.get(field.index()))
             .cloned()
             .ok_or_else(|| {
                 Error::programming(format!(
@@ -218,6 +429,33 @@ impl Transaction {
                 ))
             })?;
         Ok((company, fallback))
+    }
+
+    /// The ids among `ids` that have a row in the table of `comodel`, as this transaction sees
+    /// it: the existence rule of a many2one fallback, for a creation default that names a
+    /// record. One statement; record rules do not apply.
+    pub(crate) async fn live_ids(
+        &mut self,
+        env: &Env,
+        comodel: &str,
+        ids: &[i64],
+    ) -> Result<Vec<i64>> {
+        let target = env
+            .registry()
+            .model(comodel)
+            .ok_or_else(|| Error::programming(format!("unknown property comodel {comodel}")))?;
+        let sql = format!(
+            "SELECT \"id\" FROM {} WHERE \"id\" = ANY($1::int8[])",
+            erp_sql::quote(&target.table)
+        );
+        let mut live = Vec::with_capacity(ids.len());
+        for row in self.query(&sql, &[&ids]).await? {
+            live.push(row.try_get(0).map_err(|error| {
+                Error::new(erp_fields::ErrorKind::Database, "could not decode an id")
+                    .with_source(error)
+            })?);
+        }
+        Ok(live)
     }
 
     /// The company map draft `record` holds once `scalar` is assigned to `field` for the
@@ -289,6 +527,18 @@ impl Transaction {
     }
 }
 
+/// Whether the first word of `sql` is `keyword` (ASCII case-insensitive), leading white space
+/// skipped. A statement that opens with a comment does not match.
+fn starts_with_keyword(sql: &str, keyword: &str) -> bool {
+    let rest = sql.trim_start();
+    rest.get(..keyword.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(keyword))
+        && rest[keyword.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !(next.is_alphanumeric() || next == '_'))
+}
+
 /// A company map stores database ids only: a many2one to an unsaved record has no id to store.
 pub(crate) fn refuse_draft_link(
     spec: &ModelSpec,
@@ -297,9 +547,10 @@ pub(crate) fn refuse_draft_link(
 ) -> Result<()> {
     if matches!(value, Cell::Id(raw) if *raw < 0) {
         return Err(Error::validation(format!(
-            "{}.{}: a company-dependent many2one to an unsaved record is not supported until \
-             a later release",
-            spec.name, field.name
+            "{}.{}: a company-dependent many2one to an unsaved record is not supported until {}",
+            spec.name,
+            field.name,
+            Owner::DraftLinks.task()
         )));
     }
     Ok(())
@@ -365,5 +616,36 @@ impl Transaction {
             }
         }
         Ok(Some(values))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::starts_with_keyword;
+
+    #[test]
+    fn a_statement_is_recognised_by_its_first_word_only() {
+        for sql in [
+            "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
+            " \n\twith x as (select 1) select 1",
+            "WITH",
+            "WITH(x) AS (SELECT 1) SELECT 1",
+        ] {
+            assert!(starts_with_keyword(sql, "WITH"), "{sql}");
+        }
+        for sql in [
+            "",
+            "WI",
+            "WITHIN",
+            "with_x",
+            "with9",
+            "\"with\" x",
+            "INSERT INTO t VALUES (1)",
+            "/* c */ WITH x AS (SELECT 1) SELECT 1",
+            "-- c\nWITH x AS (SELECT 1) SELECT 1",
+            "wit\u{e9}",
+        ] {
+            assert!(!starts_with_keyword(sql, "WITH"), "{sql}");
+        }
     }
 }

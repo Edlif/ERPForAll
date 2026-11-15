@@ -1,0 +1,107 @@
+/*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { DialogService } from "../src/client/dialog-service.js";
+import { loadPrintReports, printMenuLoader, printRecords } from "../src/client/report-print.js";
+import { RpcClient } from "../src/client/transport.js";
+
+let dialogs: DialogService;
+beforeEach(() => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value(this: HTMLDialogElement) { this.open = true; } });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value(this: HTMLDialogElement) { this.open = false; } });
+  dialogs = new DialogService(() => {});
+});
+afterEach(() => { dialogs.dispose(); vi.restoreAllMocks(); document.body.replaceChildren(); });
+
+type Call = { model: string; method: string; args: Record<string, unknown> };
+function fakeRpc(answer: (call: Call) => unknown): { rpc: RpcClient; calls: Call[] } {
+  const calls: Call[] = [];
+  const rpc = { call: vi.fn(async (model: string, method: string, args: Record<string, unknown>) => { const call = { model, method, args }; calls.push(call); return answer(call); }) };
+  return { rpc: rpc as unknown as RpcClient, calls };
+}
+const order = { report: "sale.order.document", name: "Order" };
+
+test("a small print downloads the synchronous address the server gives", async () => {
+  const { rpc, calls } = fakeRpc(() => ({ mode: "sync", url: "/report/pdf/sale.order.document/1,2" }));
+  const download = vi.fn();
+  expect(await printRecords({ rpc, dialogs, download }, order, "sale.order", [1, 2])).toBeUndefined();
+  expect(calls).toEqual([{ model: "report.job", method: "erp_print", args: { report: "sale.order.document", res_model: "sale.order", res_ids: [1, 2] } }]);
+  expect(download).toHaveBeenCalledWith("/report/pdf/sale.order.document/1,2");
+});
+
+test("a small print the server fails to render is reported to the user, not saved as a broken file", async () => {
+  const fetcher = vi.fn(async () => new Response("The template of Order has no field total.", { status: 422, headers: { "Content-Type": "text/plain" } }));
+  const files = new RpcClient(fetcher, () => undefined);
+  const { rpc } = fakeRpc(() => ({ mode: "sync", url: "/erp/report/pdf/sale.order.document/1" }));
+  const both = Object.assign(rpc, { getFile: files.getFile.bind(files) });
+  await expect(printRecords({ rpc: both, dialogs }, order, "sale.order", [1])).rejects.toThrow("The template of Order has no field total.");
+  expect(fetcher).toHaveBeenCalledWith("/erp/report/pdf/sale.order.document/1", expect.objectContaining({ method: "GET", headers: expect.objectContaining({ Accept: "application/pdf" }) }));
+  expect(document.querySelector("a[download]")).toBeNull();
+});
+
+test("an address outside this server is refused", async () => {
+  const { rpc } = fakeRpc(() => ({ mode: "sync", url: "//elsewhere.example/x.pdf" }));
+  const download = vi.fn();
+  await expect(printRecords({ rpc, dialogs, download }, order, "sale.order", [1])).rejects.toThrow("outside this server");
+  expect(download).not.toHaveBeenCalled();
+});
+
+test("a large print shows progress, the failed document, the warning and then the download", async () => {
+  let reads = 0;
+  const { rpc } = fakeRpc(({ method }) => {
+    if (method === "erp_print") return { mode: "job", id: 7, poll_ms: 1 };
+    reads += 1;
+    return reads === 1
+      ? [{ state: "running", total: 51, processed: 20, failed: 0, failures: "[]", warnings: "[]", error: false, attachment_id: false }]
+      : [{ state: "done", total: 51, processed: 51, failed: 1, failures: JSON.stringify([{ id: 13, error: "The document did not finish within the render deadline." }]), warnings: JSON.stringify(["The terms field printed without its image."]), error: false, attachment_id: [90, "Order.pdf"] }];
+  });
+  const download = vi.fn();
+  const handle = (await printRecords({ rpc, dialogs, download }, order, "sale.order", Array.from({ length: 51 }, (_, i) => i + 1)))!;
+  const status = handle.dialog.querySelector(".print-job-status")!;
+  await vi.waitFor(() => expect(status.textContent).toBe("Printed 50 of 51 documents; 1 could not be printed."));
+  expect(handle.dialog.querySelector(".print-job-failures")!.textContent).toBe("Record 13: The document did not finish within the render deadline.");
+  expect(handle.dialog.querySelector(".print-job-warnings")!.textContent).toBe("The terms field printed without its image.");
+  const button = [...handle.dialog.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "Download PDF")!;
+  expect(button.hidden).toBe(false);
+  button.click();
+  expect(download).toHaveBeenCalledWith("/erp/content/90?download=true");
+  expect(reads).toBe(2);
+});
+
+test("a failed print shows its reason and stops reading", async () => {
+  let reads = 0;
+  const { rpc } = fakeRpc(({ method }) => {
+    if (method === "erp_print") return { mode: "job", id: 8, poll_ms: 1 };
+    reads += 1;
+    return [{ state: "failed", total: 60, processed: 60, failed: 60, failures: "[]", warnings: "[]", error: "None of the 60 documents could be printed.", attachment_id: false }];
+  });
+  const handle = (await printRecords({ rpc, dialogs }, order, "sale.order", Array.from({ length: 60 }, (_, i) => i + 1)))!;
+  await vi.waitFor(() => expect(handle.dialog.querySelector("[role='alert']")!.textContent).toBe("None of the 60 documents could be printed."));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(reads).toBe(1);
+});
+
+test("the Print entries load once at the first opening, before the given entry", async () => {
+  const { rpc, calls } = fakeRpc(() => [order]);
+  const menu = document.createElement("div");
+  const reload = document.createElement("button"); reload.textContent = "Reload"; menu.append(reload);
+  const pick = vi.fn();
+  const open = printMenuLoader(rpc, "sale.order", menu, reload, pick, () => {});
+  open(); open();
+  await vi.waitFor(() => expect([...menu.querySelectorAll("button")].map(item => item.textContent)).toEqual(["Print Order", "Reload"]));
+  expect(calls).toHaveLength(1);
+  menu.querySelector<HTMLButtonElement>(".print-report-btn")!.click();
+  expect(pick).toHaveBeenCalledWith(order);
+});
+
+test("an otherwise empty menu says no report is available", async () => {
+  const { rpc } = fakeRpc(() => []);
+  const menu = document.createElement("div");
+  printMenuLoader(rpc, "sale.order", menu, null, () => {}, () => {})();
+  await vi.waitFor(() => expect(menu.textContent).toBe("No report available"));
+  expect(menu.querySelector("button")!.disabled).toBe(true);
+});
+
+test("a report list that is not a list is refused", async () => {
+  const { rpc } = fakeRpc(() => ({}));
+  await expect(loadPrintReports(rpc, "sale.order")).rejects.toThrow("did not answer the report list with a list");
+});

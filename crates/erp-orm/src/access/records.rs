@@ -1152,6 +1152,9 @@ impl Transaction {
             self.engine.precisions.clear();
             self.engine.write_precisions.clear();
         }
+        // Prepared company fallbacks rest on default rows, on the digits they were admitted
+        // against and on the existence of their many2one targets.
+        self.property_inputs_written(model, fields.is_none());
         self.access_written_in(model, fields);
         let Some(fields) = fields else { return };
         // a many2many is one link table seen from both models: writing a field also changes

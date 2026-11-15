@@ -84,6 +84,10 @@ pub use erp_orm::BaseInstallGrant;
 /// [`PrincipalHint::caller`], [`BeginOptions::caller`], [`Orm::begin_caller`] or
 /// [`Orm::env_caller`], which never produce the `System` principal (A4).
 pub use erp_orm::PrincipalHint;
+/// Company fields that mirror a company-dependent default (`company_default_for`,
+/// supplement of 2026-11-15): write the declared default for companies without one.
+/// The base addon already calls it at install and at company creation.
+pub use erp_orm::company_default_for::apply_declared_defaults;
 pub use erp_orm::{
     AccessPolicy, Actor, Assign, AsyncComputeSuper, Base, Batch, BeginOptions, BoxFuture, Cmd,
     Command, CompanyError, ComputeSuper, Context, Cursor, Env, Fetch, Field, FieldAccessCtx,
@@ -261,6 +265,26 @@ pub mod rpc {
         IntoRpc, NotOffered, Offered, PRIMARY_READS, ParamSpec, PrimaryRead, Receiver, RpcArgs,
         json_type, null,
     };
+}
+
+/// Report template admission (`erp_report`): the closed print profile and the
+/// attachment field check that `base` runs when a report action and its template load; and the
+/// compile, plan, load and evaluate steps that turn a report and its records into a document
+/// (`base::report_print`). No layout: the node lays the document out.
+///
+/// The list is explicit: an item `erp_report` adds reaches addons only when it is added here.
+pub mod report {
+    /// The context a report program evaluates in (`docs`, `company`, plain values).
+    pub use erp_expr::EvalContext;
+    pub use erp_report::{
+        AttachmentPolicy, Diagnostic, DocTree, DocumentOptions, EvalOptions, FieldInfo,
+        HelperDependencies, Language, Limits, Node, PageSetup, PlanContext, ProfileKind,
+        RecordStore, ReportError, ReportLimits, ReportProgram, RestrictedField, TemplateSource,
+        Validation, check_attachment, render_html, validate_arch,
+    };
+    /// The data stage under the caller's rights: `load_records` fills the store a program
+    /// evaluates from; `field_info` describes the registry's fields to the planner.
+    pub use erp_report_data::{DataError, field_info, load as load_records};
 }
 
 /// The view arch engine (`erp_views`): parsing, combining and validating

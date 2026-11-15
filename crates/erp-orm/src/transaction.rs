@@ -987,6 +987,7 @@ impl OrmBuilder {
                             model.name,
                             field.name,
                             "compute dependencies without nonstored company context",
+                            crate::company_dependent_runtime::Owner::StoredCompute,
                         ));
                     }
                 }
@@ -3912,6 +3913,15 @@ impl Transaction {
     fn flight_effects_unknown(&mut self) {
         self.engine.readable.clear();
         self.write_gens.all_written();
+        self.forget_prepared_properties();
+    }
+
+    /// Any row may have changed in a way no statement text showed: the prepared company
+    /// fallbacks are read again on their next use (`company_dependent_runtime`).
+    fn forget_prepared_properties(&mut self) {
+        crate::company_dependent_runtime::State::end_prepared(&mut self.engine.properties, |_| {
+            true
+        });
     }
 
     /// Send `BEGIN` now, with the generation read when the ORM has a [`crate::Signal`] (not
@@ -4360,6 +4370,8 @@ impl Transaction {
         {
             self.engine.readable.clear();
         }
+        // prepared company fallbacks end with a write to the rows they rest on
+        self.property_statement_sent(sql, &class);
         // the models whose rows the statement may change (a stream reads them fresh by id after
         // it, `rows_stream.rs`)
         match class.target {
@@ -4666,6 +4678,7 @@ impl Transaction {
         // model may have changed
         self.engine.readable.clear();
         self.write_gens.all_written();
+        self.forget_prepared_properties();
         let (closed, result) = {
             let conn = self.conn()?;
             conn.statement_cache.clear();
@@ -5653,6 +5666,8 @@ impl Transaction {
     fn clear_values(&mut self) {
         self.engine.precisions.clear();
         self.engine.write_precisions.clear();
+        // data changed outside the ORM: the company fallbacks are read again
+        self.forget_prepared_properties();
         let registry = Arc::clone(&self.shared.registry);
         for spec in registry.models() {
             if let Some(mc) = self.cache.model(spec.id)

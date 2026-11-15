@@ -1,5 +1,6 @@
 //! The composed registry: one [`ModelSpec`] per model with its merged [`FieldSpec`]s.
 
+use crate::company_default::CompanyDefaultFor;
 use erp_fields::{ColumnType, Error, FieldType, IndexKind, Result, Storage};
 use rustc_hash::FxHashMap;
 
@@ -366,6 +367,13 @@ pub struct FieldSpec {
     pub delegate: bool,
     /// `company_dependent`.
     pub company_dependent: bool,
+    /// The company-dependent field whose per-company `ir.default` this `res.company` field
+    /// mirrors (`company_default_for`, supplement of 2026-11-15); resolved by the
+    /// registry's company-default pass. Such a field is not stored and never cached for a
+    /// database row.
+    pub company_default_for: Option<CompanyDefaultFor>,
+    /// The declared `company_default_for` path, read by the pass that resolves it.
+    pub(crate) company_default_for_declared: Option<&'static str>,
     /// `translate`: translatable textual field stored as JSONB with language keys.
     pub translate: bool,
     /// Resolved column collation.

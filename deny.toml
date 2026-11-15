@@ -31,6 +31,16 @@ ignore = [
     # workspace or in vendor/ calls the rustix xattr functions. Removed with the update to >= 1.1.6: board task
     # DEPS.RUSTIX-0486 (a lock change takes a full run of its own).
     { id = "RUSTSEC-2026-0486", reason = "xattr functions are not called; rustix is updated by DEPS.RUSTIX-0486" },
+    # The report engine's Typst dependencies (Licences; reviewed again at every Typst upgrade).
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml under citationberg (CSL/bibliography parsing): the report World never serves a bibliography or CSL file" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader under citationberg (CSL parsing): unreachable, no bibliography or CSL input" },
+    { id = "RUSTSEC-2025-0141", reason = "bincode under syntect/two-face: deserialises compiled-in syntax dumps; code blocks are not in the print profile" },
+    { id = "RUSTSEC-2024-0320", reason = "yaml-rust under syntect/two-face: compiled-in syntax data only; code blocks are not in the print profile" },
+    { id = "RUSTSEC-2024-0436", reason = "paste under biblatex: a proc-macro, compile time only" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml under serde_yaml/hayagriva: YAML bibliography parsing, unreachable" },
+    # Risk row: reachable shaping and font parsing; fonts are parsed only inside a render worker.
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained, reachable for shaping; risk row, until Typst and krilla move to harfrust" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, reachable for font parsing; risk row, until Typst and krilla move to skrifa" },
 ]
 
 [licenses]
@@ -46,6 +56,8 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "MPL-2.0",
+    # roman-numerals-rs (0BSD OR CC0-1.0) under typst-library; allowed, added.
+    "0BSD",
 ]
 confidence-threshold = 0.9
 # The list is a policy, not an inventory: do not warn about allowed licences no crate uses yet.

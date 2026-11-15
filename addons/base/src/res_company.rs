@@ -112,6 +112,14 @@ pub struct ResCompany {
         compute_sudo = true
     )]
     pub vat: Option<Arc<str>>,
+    /// The paper format of the company's reports when a report names none.
+    #[field(
+        many2one,
+        comodel = "report.paperformat",
+        ondelete = "set null",
+        string = "Paper format"
+    )]
+    pub paperformat_id: Option<RecId>,
 }
 
 // Without it a related field is company-bound
@@ -310,7 +318,35 @@ impl ResCompany {
         let created: Records = sup.call(tx, this.as_records(), (vals_list,)).await?;
         guard.admit(&created.ids())?;
         link_to_creators(tx, &created).await?;
+        // A value given
+        // in the create values was already stored by the create and is kept.
+        erp_sdk::apply_declared_defaults(tx, &created).await?;
         Ok(created)
+    }
+
+    /// The hook runs for `res.company` whenever
+    /// a module that declares or extends it is installed or upgraded, so an addon that adds such
+    /// a field needs no code of its own. A second run changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Database errors; `Validation` when there are more companies than one company map may
+    /// hold (`MAX_COMPANIES`).
+    #[method(override)]
+    async fn init(this: &RecordSet<ResCompany>, tx: &mut Transaction, sup: Super) -> Result<()> {
+        sup.call(tx, this.as_records(), ()).await?;
+        let rows = tx
+            .query("SELECT id::int8 FROM res_company ORDER BY id", &[])
+            .await?;
+        let mut ids: Vec<i64> = Vec::with_capacity(rows.len());
+        for row in &rows {
+            ids.push(
+                row.try_get(0)
+                    .map_err(|error| Error::db(format!("res_company.id: {error}")))?,
+            );
+        }
+        let companies = this.as_records().browse(ids)?;
+        erp_sdk::apply_declared_defaults(tx, &companies).await
     }
 
     /// Parentage is fixed at creation; lifecycle changes serialize across all nodes.

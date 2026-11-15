@@ -543,6 +543,14 @@ impl<'r> Builder<'r> {
         if matches!(field.ty, FieldType::Id) {
             return Ok(format!("{}.{}", quote(alias), quote("id")));
         }
+        if let Some(target) = field.company_default_for {
+            return Err(erp_sql::company::default_for_unsupported(
+                model.name,
+                field.name,
+                target.path,
+                "grouping",
+            ));
+        }
         // Keep the caller's exposure for access checks when expansion reads another field.
         // Inherited generated metadata names the owner; its child field must not be flushed
         // as an ordinary child column, so this is touched-only tracking.

@@ -566,6 +566,22 @@ pub(crate) async fn check_and_log(
     loading: Loading<'_>,
 ) -> Result<()> {
     let checked = check(tx, records, ids, written, loading).await?;
+    // a written QWeb view may be (or extend) the template of a report action: the report
+    // library checks it now (`report_templates`)
+    let templates: Vec<i64> = checked
+        .fetched
+        .iter()
+        .filter(|view| view.view_type.as_deref() == Some("qweb"))
+        .map(|view| view.id)
+        .collect();
+    if !templates.is_empty() {
+        let stage = super::report_templates::stage_of(tx, records.env().context());
+        // boxed: module lifecycle futures stay bounded (the 2 MiB lifecycle test)
+        Box::pin(super::report_templates::check_reports_of_views(
+            tx, &templates, stage,
+        ))
+        .await?;
+    }
     if checked.warnings.is_empty() {
         return Ok(());
     }

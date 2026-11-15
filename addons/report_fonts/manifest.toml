@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name = "Report Fonts"
+summary = "Shipped font assets for native report rendering"
+category = "Hidden"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base"]
+data = []
+# The manifest and documentation use the project licence. Font files remain OFL-1.1;
+# see NOTICE and the unmodified per-family notices in licenses/.

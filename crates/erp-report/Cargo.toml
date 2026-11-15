@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "erp-report"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Bounded QWeb print-profile validation, report compiler and evaluator; engine-neutral report document contract"
+
+[lints]
+workspace = true
+
+[dependencies]
+erp-views.workspace = true
+erp-expr.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true

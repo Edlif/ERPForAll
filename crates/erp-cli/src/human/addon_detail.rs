@@ -261,7 +261,7 @@ entries AS (SELECT * FROM (
  SELECT 'menus'::text AS collection, CASE WHEN octet_length(m.name)<=4096 THEN jsonb_build_object('id',m.id,'name',m.name,'label',m.name) ELSE NULL END AS item
  FROM ir_ui_menu m WHERE EXISTS(SELECT 1 FROM owned WHERE model='ir.ui.menu' AND res_id=m.id)
  UNION ALL
- SELECT 'views',CASE WHEN octet_length(v.name)<=4096 AND octet_length(v.model)<=4096 AND octet_length(v.type)<=256 THEN jsonb_build_object('id',v.id,'name',v.name,'model',v.model,'kind',v.type) ELSE NULL END
+ SELECT 'views',CASE WHEN octet_length(v.name)<=4096 AND octet_length(COALESCE(v.model,''))<=4096 AND octet_length(v.type)<=256 THEN jsonb_build_object('id',v.id,'name',v.name,'model',COALESCE(v.model,''),'kind',v.type) ELSE NULL END
  FROM ir_ui_view v WHERE EXISTS(SELECT 1 FROM owned WHERE model='ir.ui.view' AND res_id=v.id)
  UNION ALL
  SELECT 'dependencies',CASE WHEN octet_length(d.name)<=256 THEN to_jsonb(d.name::text) ELSE NULL END FROM ir_module_module_dependency d JOIN ir_module_module m ON m.id=d.module_id WHERE m.name=$1

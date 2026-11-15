@@ -49,6 +49,7 @@ import "./services.js";
 import { type ServiceController } from "./services.js";
 import { serviceControllers } from "./registry.js";
 import { mountControlPanel } from "./control-panel.js";
+import { printMenuLoader, printRecords } from "./report-print.js";
 import { requestLoading } from "./loading.js";
 import { actionResult } from "./actions.js";
 import { CompanySelector, type CompanyItem } from "./company-selector.js";
@@ -2900,12 +2901,19 @@ export class HumanApp {
 
     const canDelete = view.canDelete !== false && !isFalsy(context["delete"]);
     let disposeActionMenu = (): void => {};
-    if (canDelete) {
+    {
       const actionDropdown = el("div", undefined, "nav-dropdown action-dropdown");
       const actionMenu = el("div", undefined, "nav-dropdown-menu action-menu");
       const actionToggle = actionButton("Actions", () => {}, "action-toggle-btn");
-      const dropdown = attachMenuDropdown({ trigger: actionToggle, menu: actionMenu, mode: "class-open" });
+      // Print entries load at the first opening and print the selected records.
+      const loadPrint = printMenuLoader(this.rpc, description.model, actionMenu, null, report => this.run(async () => {
+        dropdown.close(false);
+        if (!selectedIds.size) return;
+        await printRecords({ rpc: this.rpc, dialogs: this.messages.dialogs }, report, description.model, Array.from(selectedIds));
+      }), error => this.reportError(error));
+      const dropdown = attachMenuDropdown({ trigger: actionToggle, menu: actionMenu, mode: "class-open", onOpen: loadPrint });
       disposeActionMenu = () => dropdown.dispose();
+      if (canDelete) {
       const deleteBtn = actionButton("Delete", () => this.run(async () => {
         dropdown.close(false);
         if (!selectedIds.size) return;
@@ -2922,10 +2930,9 @@ export class HumanApp {
       }), "dropdown-item action-delete-btn danger");
       deleteBtn.setAttribute("role", "menuitem");
       actionMenu.append(deleteBtn);
+      }
       actionDropdown.append(actionToggle, actionMenu);
       selectionBox.append(selectionCount, actionDropdown);
-    } else {
-      selectionBox.append(selectionCount);
     }
     // Beside the title, not before it: the summary appears without moving the title in every appearance.
     (breadcrumbs ?? controls).append(selectionBox);
@@ -3524,6 +3531,14 @@ export class HumanApp {
       if (!result.then_close) { if (!source) await refresh(); return; }
       if (!source) throw new ClientError("validation", "Invalid transition: no action dialog to close.");
       await source.close(); return;
+    }
+    if (result.kind === "report") {
+      // The print request checks the report and the records again; a dialog that asked for it is done. It closes first:
+      // closing it closes the dialogs above it, and the progress dialog of a large print must stay open.
+      if (source) await source.close();
+      await printRecords({ rpc: this.rpc, dialogs: this.messages.dialogs }, { report: result.report, name: result.name }, result.model, result.ids);
+      if (!source) await refresh();
+      return;
     }
     if (result.kind === "close" || result.kind === "none") {
       if (source) { await source.close(); return; }
@@ -4127,7 +4142,15 @@ export class HumanApp {
     actionDropdown.append(actionToggle, actionMenu);
     // A menu may only own menu items and separators (the dropdown component sets role="menu" on the panel).
     for (const item of actionMenu.querySelectorAll<HTMLElement>("button")) item.setAttribute("role", "menuitem");
-    const actionMenuDropdown = attachMenuDropdown({ trigger: actionToggle, menu: actionMenu, mode: "class-open", onOpen: () => { duplicateBtn.hidden = !state.id || !canCreate; } });
+    // Print entries load at the first opening, before the divider; a dirty record is saved first.
+    const loadPrint = printMenuLoader(this.rpc, state.model, actionMenu, menuDivider, report => runFormAction(async () => {
+      actionMenu.classList.remove("open");
+      refuseUncertain();
+      if (state.dirty && !await trySave()) return;
+      if (!state.id) return;
+      await printRecords({ rpc: this.rpc, dialogs: this.messages.dialogs }, report, state.model, [state.id]);
+    }), error => this.reportError(error));
+    const actionMenuDropdown = attachMenuDropdown({ trigger: actionToggle, menu: actionMenu, mode: "class-open", onOpen: () => { duplicateBtn.hidden = !state.id || !canCreate; if (state.id) loadPrint(); } });
     recordMenu = actionDropdown; updateBreadcrumbs();
     if (smartHost) panel.append(smartHost);
 

@@ -349,7 +349,15 @@ async fn unlink_checked(
     // Company-map references are referential actions run by the ORM: every
     // refusal first, then the cleanup. An unflushed write to a holder field cannot exist here (the
     // flush above wrote it); finding one is an invariant break, reported before anything is deleted.
+    // A `restrict` reference is also guarded against a write running at the same time
+    // (`company_ref_guard`): the rows are locked before the scan, and their guard
+    // rows are retired after every refusal passed.
+    let guarded = property_fields(&tx.shared, model)
+        .iter()
+        .any(|(_, field)| crate::company_ref_guard::guards(field));
+    crate::company_ref_guard::lock_targets(tx, spec, &ids, guarded).await?;
     refuse_company_dependent_unlink(tx, spec, &ids, force_delete).await?;
+    crate::company_ref_guard::retire(tx, spec, &ids, guarded).await?;
     let property_holders = property_holders_of(tx, model)?;
 
     if crate::ir_default::is_available(&registry) {
@@ -423,6 +431,10 @@ async fn unlink_checked(
             tx.execute_orm(&sql, &[&values]).await?;
         }
     }
+    // The references the deleted rows held themselves ended with them: their link rows go, only
+    // once the rows are gone (a link removed while its entry stays would leave that reference
+    // unguarded against a deleter with an older snapshot).
+    crate::company_ref_guard::forget_holders(tx, spec, &ids).await?;
     tx.access_written(model, None);
     links_to_deleted(tx, &registry, model);
     let mut deleted = tx.forget_deleted(model, &ids);

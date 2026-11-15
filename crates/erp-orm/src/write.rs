@@ -619,6 +619,9 @@ pub(crate) enum AfterInsert<'a> {
 pub(crate) struct AfterCreate {
     ids: Vec<RecId>,
     protected: Vec<FxHashSet<FieldId>>,
+    /// Given values of company fields that mirror a company default, with the created row:
+    /// written to `ir.default` before the related writes and the inverses.
+    company_defaults: Vec<(FieldId, Cell, RecId)>,
     related_writes: Vec<(crate::graph::Path, Cell, Vec<RecId>)>,
     inversed: Vec<(&'static str, Vec<FieldId>, Vec<RecId>)>,
     /// Constraints already run (stored fields given or precomputed) or run by the caller
@@ -633,6 +636,11 @@ impl AfterCreate {
         let model = created.model_id();
         let registry = Arc::clone(created.env().registry());
         let spec = registry.model_by_id(model);
+        // before the related writes and the inverses, which may read the new default
+        for (field, cell, id) in &self.company_defaults {
+            tx.store_company_defaults(created.env(), spec, spec.field_by_id(*field), cell, &[*id])
+                .await?;
+        }
         if !self.related_writes.is_empty() {
             let guard = tx.guard();
             let depth = protect_rows(tx, model, &self.ids, &self.protected);
@@ -780,7 +788,10 @@ async fn create_records_inner(
     let uid_cell = Cell::Id(env.uid());
     let mut rows: Vec<Vec<Option<Cell>>> = Vec::with_capacity(vals_list.len());
     let mut given: Vec<Vec<bool>> = Vec::with_capacity(vals_list.len());
-    for vals in &vals_list {
+    // values of company fields that mirror a company default, per row: written to ir.default
+    // once the rows exist, never to the record (supplement of 2026-11-15)
+    let mut company_defaults: Vec<(usize, FieldId, Cell)> = Vec::new();
+    for (r, vals) in vals_list.iter().enumerate() {
         let mut row: Vec<Option<Cell>> = vec![None; n_fields];
         for (name, cell) in vals.iter() {
             let field = spec.field(name).ok_or_else(|| invalid_field(spec, name))?;
@@ -809,6 +820,10 @@ async fn create_records_inner(
             };
             let validated = tx.admit_html_cell(spec, field, validated)?;
             crate::precision::validate(tx, &env, spec, field, &validated).await?;
+            if field.company_default_for.is_some() {
+                company_defaults.push((r, field.id, validated));
+                continue;
+            }
             row[field.id.index()] = Some(validated);
         }
         // defaults are already in `vals`: `relcrud::create` asked `default_get` for every field
@@ -1055,6 +1070,21 @@ async fn create_records_inner(
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| Error::programming("INSERT did not return an id for every row"))?;
+    // `restrict` references the new rows hold in their company maps: their targets are locked and
+    // recorded, so a deletion running at the same time is refused or fails
+    for field in spec
+        .fields
+        .iter()
+        .filter(|field| crate::company_ref_guard::guards(field))
+    {
+        let mut changes = crate::company_ref_guard::Changes::default();
+        for (row, id) in rows.iter().zip(&ids) {
+            if let Some(map) = &row[field.id.index()] {
+                crate::company_ref_guard::map_changes(*id, map, &mut changes)?;
+            }
+        }
+        tx.guard_company_references(spec, field, &changes).await?;
+    }
     // a created record never reports tracked changes (D2)
     if !spec.tracked.is_empty() {
         let depth = tx.savepoint_depth();
@@ -1226,9 +1256,14 @@ async fn create_records_inner(
     }
     // The related writes and the inverse methods, under protection of the given and precomputed
     // groups (COMP §4.7, §4.8): now, or after the caller's x2many writes ([`AfterInsert`]).
+    let company_defaults: Vec<(FieldId, Cell, RecId)> = company_defaults
+        .into_iter()
+        .map(|(r, field, cell)| (field, cell, ids[r]))
+        .collect();
     let after_create = AfterCreate {
         ids,
         protected,
+        company_defaults,
         related_writes,
         inversed,
         skip: stored_names.union(postponed).copied().collect(),
@@ -1821,6 +1856,9 @@ pub(crate) async fn write_records(
     let mut related_writes: Vec<(crate::graph::Path, Cell)> = Vec::new();
     // new records may point at other new records (ENV §4.9)
     let all_new = records.rec_ids().iter().all(|i| i.is_new());
+    // values of company fields that mirror a company default: written to ir.default, never to
+    // the record (supplement of 2026-11-15)
+    let mut company_defaults: Vec<(FieldId, Cell)> = Vec::new();
     for (name, cell) in vals.iter() {
         let field = spec.field(name).ok_or_else(|| invalid_field(spec, name))?;
         crate::database_generated::check_assignment(spec, field)?;
@@ -1851,6 +1889,18 @@ pub(crate) async fn write_records(
             }
             related_writes.push((Arc::clone(path), cell.clone()));
         }
+        if field.company_default_for.is_some() && !all_new {
+            // an in-memory record keeps the value in its own cache cell (the branch below)
+            if records.rec_ids().iter().any(|id| id.is_new()) {
+                return Err(Error::programming(format!(
+                    "{}.{}: a company default cannot be written on database and in-memory \
+                     records in one call",
+                    spec.name, field.name
+                )));
+            }
+            company_defaults.push((field.id, cell));
+            continue;
+        }
         // an editable one-segment related field writes its target (COMP §4.8)
         if let Some(fc) = graph.compute(field.id)
             && let crate::graph::Source::Related(target) = fc.source
@@ -1871,6 +1921,10 @@ pub(crate) async fn write_records(
     for (target, cell, _) in &items {
         crate::precision::validate(tx, &env, spec, spec.field_by_id(*target), cell).await?;
     }
+    // a mirror has its target's digits (registry check), so its own named precision is the target's
+    for (fid, cell) in &company_defaults {
+        crate::precision::validate(tx, &env, spec, spec.field_by_id(*fid), cell).await?;
+    }
     // write_uid is always rewritten, so the UPDATE happens even when nothing else changed
     if spec.log_access
         && let Some(f) = spec.field("write_uid")
@@ -1888,6 +1942,16 @@ pub(crate) async fn write_records(
     budget.check_grid(records.len(), monetary_items)?;
     // empty or inverted periods of typed exclusions, before anything is written
     crate::exclusion::check_write(tx, spec, records.rec_ids(), &items)?;
+
+    // Company defaults first: every value of the call is validated and taken from the call
+    // itself, nothing of this write is staged yet (`ir_default::set` flushes and clears the
+    // record cache), and the method inverses below then read the new default. The caller's
+    // model access, record rules and field groups on these rows were checked by `base.write`.
+    for (fid, cell) in &company_defaults {
+        tx.note_mutation();
+        tx.store_company_defaults(&env, spec, spec.field_by_id(*fid), cell, records.rec_ids())
+            .await?;
+    }
 
     // Fields with an inverse and editable computed fields protect their group (COMP §4.6).
     let mut protected: Vec<FieldId> = Vec::new();
@@ -2578,6 +2642,8 @@ impl Transaction {
                 Vec::with_capacity(group_fields.len());
             let mut merge_cols: Vec<&str> = Vec::new();
             let mut company_cols: Vec<&str> = Vec::new();
+            // what this UPDATE does to the entries of `restrict` company-dependent many2one fields
+            let mut guarded: Vec<(FieldId, crate::company_ref_guard::Changes)> = Vec::new();
             for fid in &group_fields {
                 let field = spec.field_by_id(*fid);
                 let Some(col) = field.column() else { continue };
@@ -2603,6 +2669,13 @@ impl Transaction {
                             crate::company_dependent::delta(before, &current)
                         })
                         .collect::<Result<Vec<_>>>()?;
+                    if crate::company_ref_guard::guards(field) {
+                        let mut changes = crate::company_ref_guard::Changes::default();
+                        for (id, patch) in rec_ids.iter().zip(&deltas) {
+                            crate::company_ref_guard::patch_changes(*id, patch, &mut changes)?;
+                        }
+                        guarded.push((*fid, changes));
+                    }
                     arrays.push(array_param(field.storage(), deltas)?);
                 } else if field.translate {
                     merge_cols.push(field.name);
@@ -2684,6 +2757,12 @@ impl Transaction {
                         ));
                     }
                 }
+            }
+            // before the UPDATE: lock and record the targets it is about to reference, so a
+            // deletion running at the same time is refused or fails
+            for (fid, changes) in &guarded {
+                self.guard_company_references(spec, spec.field_by_id(*fid), changes)
+                    .await?;
             }
             let with = erp_sql::version::VersionedUpdate::new()
                 .bump(spec.row_version.is_some())
