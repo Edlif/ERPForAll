@@ -92,6 +92,7 @@ pub mod ir_default;
 pub mod jobs;
 mod keyset;
 pub(crate) mod lang;
+pub mod method_wire;
 pub mod model_hooks;
 mod monetary;
 pub(crate) mod name_create;
@@ -211,6 +212,12 @@ pub use field_chain::{
     FieldAccessTable, FieldContextValues,
 };
 pub use keyset::{Cursor, Page};
+pub use method_wire::{METHOD_WIRE, MethodWireImpl, WireForm, WireSeal};
+#[doc(hidden)]
+pub use method_wire::{
+    SigProbe, SigProbeOther, SigProbeSerde, WireCheck, WireCheckOther, WireProbe, WireProbeOther,
+    WireProbeSerde, WireReportRow, model_seal_location, wire_report,
+};
 pub use notice::{MAX_NOTICE_MESSAGE_BYTES, MAX_NOTICES_PER_TRANSACTION, Notice, NoticeKind};
 #[cfg(feature = "test-faults")]
 #[doc(hidden)]

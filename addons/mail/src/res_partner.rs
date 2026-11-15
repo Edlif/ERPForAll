@@ -14,7 +14,7 @@ pub struct PartnerThread {}
 
 #[methods(ResPartner, addon = "mail")]
 impl PartnerThread {
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _mail_post_access(
         _this: &RecordSet<ResPartner>,
         _tx: &mut Transaction,

@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: #[method(wire)] on `lend`: `Opaque` (argument `value`) has no wire form; it must implement Serialize + DeserializeOwned + Send + 'static (or drop `wire`: the method then stays native-only)
+  --> tests/ui/method_wire/wire_not_serde.rs:17:73
+   |
+17 |     async fn lend(_this: &RecordSet<Bad>, _tx: &mut Transaction, value: Opaque) -> Result<i64> {
+   |                                                                         ^^^^^^ evaluation of `_::_` failed here

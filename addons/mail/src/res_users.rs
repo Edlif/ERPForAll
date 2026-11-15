@@ -39,7 +39,7 @@ pub struct UsersThread {
 
 #[methods(ResUsers, addon = "mail")]
 impl UsersThread {
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _mail_post_access(
         _this: &RecordSet<ResUsers>,
         _tx: &mut Transaction,

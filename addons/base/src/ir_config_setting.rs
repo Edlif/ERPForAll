@@ -1117,7 +1117,7 @@ pub async fn write_values(
 #[methods(IrConfigSetting)]
 impl IrConfigSetting {
     /// Reject invalid declarations before the final registry generation commits or publishes.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _register_hook(
         this: &RecordSet<IrConfigSetting>,
         tx: &mut Transaction,

@@ -493,9 +493,10 @@ pub mod __private {
         ConstraintImpl, FIELD_ACCESS_IMPLS, FIELD_SEARCH_IMPLS, Field, FieldAccessCtx,
         FieldAccessImpl, FieldAccessSuper, FieldMask, FieldOp, FieldSearchContext, FieldSearchImpl,
         FieldSearchRequest, FieldSearchSuper, ImplKind, Inherits, KeyRef, METHOD_CODECS,
-        MethodCodecImpl, MethodFn, MethodImpl, Model, Outputs, ReadTx, RecordSet, Records,
-        SelectionContext, SelectionFn, SelectionSuper, Super, Token, Transaction, TypedCodec,
-        call_method,
+        METHOD_WIRE, MethodCodecImpl, MethodFn, MethodImpl, MethodWireImpl, Model, Outputs, ReadTx,
+        RecordSet, Records, SelectionContext, SelectionFn, SelectionSuper, SigProbe, SigProbeOther,
+        SigProbeSerde, Super, Token, Transaction, TypedCodec, WireCheck, WireCheckOther, WireForm,
+        WireProbe, WireProbeOther, WireProbeSerde, WireSeal, call_method,
         dispatch::METHOD_IMPLS,
         onchange::{ONCHANGE_IMPLS, OnchangeImpl},
         rpc::{

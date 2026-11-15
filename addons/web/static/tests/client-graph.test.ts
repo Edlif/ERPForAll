@@ -319,6 +319,34 @@ test("grid steps are round: 1, 2 or 5 times a power of ten", () => {
   expect([0.3, 3, 7, 13, 380, 0].map(niceStep)).toEqual([0.5, 5, 10, 20, 500, 1]);
 });
 
+// The server answers `false` for a sum over records that all have no value (live: Library > Books, pages:sum).
+async function mountedFalseSums(sizes: number[]) {
+  const source = records.map((rec, index) => ({ ...rec, size: sizes[index]! }));
+  const { call: plain } = recorder(source);
+  const call: typeof plain = async request => (await plain(request) as Record<string, unknown>[][])
+    .map(rows => rows.map(row => row["size:sum"] === 0 ? { ...row, "size:sum": false } : row));
+  const model = new GraphModel(config(standard()), call, () => [], 50);
+  await model.load();
+  const view = mountGraph({ model, locale: american, run: job => { void job(); } });
+  document.body.append(view.element);
+  return { model, root: view.element };
+}
+const ticks = (root: HTMLElement): string[] => [...root.querySelectorAll(".graph-tick")].map(node => node.textContent!).filter(text => /^[0-9,.-]+$/.test(text));
+
+test("an integer measure whose sums are all false draws zero bars on a whole-number axis", async () => {
+  const { model, root } = await mountedFalseSums([0, 0, 0, 0, 0]);
+  expect(values(model)).toEqual([["Draft", [0, 0, 0]], ["Done", [0, 0, 0]]]);
+  expect(root.querySelectorAll(".graph-bar")).toHaveLength(6);
+  expect(titles(root, ".graph-bar")).toContain("Normal / Draft: 0");
+  expect(ticks(root)).toEqual(["0", "1"]);
+});
+
+test("an integer measure with false and small sums keeps whole-number ticks", async () => {
+  const { model, root } = await mountedFalseSums([2, 0, 1, 0, 0]);
+  expect(values(model)).toEqual([["Draft", [2, 1, 0]], ["Done", [0, 0, 0]]]);
+  expect(ticks(root)).toEqual(["0", "1", "2"]);
+});
+
 // ---- through the application ----
 
 const bootstrap = {

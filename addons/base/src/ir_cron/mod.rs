@@ -407,7 +407,7 @@ impl IrCron {
 
     /// Tell an administrator something about this cron. The base only logs; the mail addon
     /// overrides it to send a message.
-    #[method]
+    #[method(sealed)]
     async fn _notify_admin(
         _this: &RecordSet<IrCron>,
         _tx: &mut Transaction,

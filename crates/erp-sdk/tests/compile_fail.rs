@@ -23,3 +23,13 @@ fn bigint_field_types_are_distinct_from_integer_and_record_ids() {
     cases.compile_fail("tests/ui/bigint/i32.rs");
     cases.compile_fail("tests/ui/bigint/i64.rs");
 }
+
+/// Every native method gets its wire form without an attribute; `#[method(wire)]` is a
+/// compile-time assertion that names the method and the type without one, and `sealed` parses
+/// alone and with `override` (WASM.WIRE-NATIVE).
+#[test]
+fn method_wire_asserts_a_wire_form_and_sealed_parses() {
+    let cases = trybuild::TestCases::new();
+    cases.pass("tests/ui/method_wire/pass/control.rs");
+    cases.compile_fail("tests/ui/method_wire/*.rs");
+}

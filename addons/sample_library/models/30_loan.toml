@@ -3,6 +3,8 @@
 name = "sample_library.loan"
 description = "Library Loan"
 order = "loan_date desc, id desc"
+# a loan has no name of its own: it is shown by its book's title (a many2one rec_name)
+rec_name = "book_id"
 
 [model.company_access]
 unrestricted = "sample library loans use the existing borrower and library access rules"

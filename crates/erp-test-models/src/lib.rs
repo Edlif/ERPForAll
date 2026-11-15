@@ -310,6 +310,7 @@ pub mod test_search;
 pub mod test_sudo_commands;
 pub mod test_transient_policy;
 pub mod test_vacuum;
+pub mod test_wasm_decl;
 pub mod test_web;
 
 pub mod test_large;

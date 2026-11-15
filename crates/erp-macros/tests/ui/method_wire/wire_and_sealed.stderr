@@ -1,0 +1,5 @@
+error: `wire` asserts that a method has a wire form and `sealed` that it never crosses into WebAssembly: use one of them
+ --> tests/ui/method_wire/wire_and_sealed.rs:7:7
+  |
+7 |     #[method(wire, sealed)]
+  |       ^^^^^^

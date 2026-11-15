@@ -3236,9 +3236,13 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .calendar-day-head { display: flex; align-items: baseline; justify-content: center; gap: 6px; padding: 6px 4px; color: var(--muted); font-size: 12px; }
 .calendar-day-head-number { color: var(--text); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .calendar-day-head.is-today .calendar-day-head-number { color: var(--accent); }
+.calendar-day-head.is-today { background-color: color-mix(in srgb, var(--selected) 40%, var(--surface-subtle)); }
 .calendar-all-day { border-bottom: 1px solid var(--line); }
 .calendar-all-day-label { display: flex; align-items: center; justify-content: flex-end; padding: 4px 8px; color: var(--muted); font-size: 11px; }
-.calendar-all-day-lane { grid-column: 2 / -1; display: grid; grid-template-columns: repeat(var(--calendar-days), minmax(0, 1fr)); grid-auto-flow: row dense; gap: 2px; min-height: 28px; padding: 3px 2px; }
+.calendar-all-day-lane { grid-column: 2 / -1; display: grid; grid-template-columns: repeat(var(--calendar-days), minmax(0, 1fr)); grid-auto-flow: row dense; gap: 2px; min-height: 28px; padding: 3px 2px; position: relative; }
+.calendar-all-day-today { position: absolute; inset-block: 0; inset-inline-start: calc(2px + var(--calendar-today) * (100% - 4px) / var(--calendar-days)); width: calc((100% - 4px) / var(--calendar-days)); background-color: color-mix(in srgb, var(--selected) 40%, var(--surface)); pointer-events: none; }
+.calendar-all-day-lane > .calendar-event { position: relative; z-index: 1; }
+.calendar-all-day-lane > .calendar-event:focus-visible { z-index: 3; }
 .calendar-time-body { position: relative; max-height: min(70vh, 720px); overflow-y: auto; }
 .calendar-hours { display: grid; grid-template-rows: repeat(24, var(--calendar-hour)); }
 .calendar-hour-label { padding-inline-end: 8px; color: var(--muted); font-size: 11px; text-align: end; white-space: nowrap; transform: translateY(-7px); font-variant-numeric: tabular-nums; }
@@ -3255,6 +3259,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .calendar-month-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; min-height: 104px; padding: 4px; border-inline-start: 1px solid var(--line); }
 .calendar-month-cell.is-other-month { background: var(--surface-subtle); }
 .calendar-month-cell.is-padding { background: var(--canvas); }
+.calendar-month-cell.is-today { background-color: color-mix(in srgb, var(--selected) 40%, var(--surface)); }
 .calendar-month-day { align-self: flex-end; min-width: 24px; min-height: 24px; padding: 0 4px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
 .calendar-month-cell.is-other-month .calendar-month-day { color: var(--muted); }
 .calendar-month-cell.is-today .calendar-month-day { background: var(--accent); color: var(--on-accent); font-weight: 600; }

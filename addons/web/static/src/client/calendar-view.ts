@@ -242,6 +242,14 @@ export function mountCalendar(options: CalendarViewOptions): CalendarView {
     allDay.append(allDayLabel);
     const lane = el("div", undefined, "calendar-all-day-lane");
     const first = days[0]!, end = days[days.length - 1]!.plus({ days: 1 });
+    // Today's column stays marked through the all-day row too, as in the time grid below it.
+    const todayIndex = days.findIndex(day => day.hasSame(today, "day"));
+    if (todayIndex >= 0) {
+      const mark = el("div", undefined, "calendar-all-day-today");
+      mark.setAttribute("aria-hidden", "true");
+      mark.style.setProperty("--calendar-today", String(todayIndex));
+      lane.append(mark);
+    }
     for (const event of events.filter(item => item.allDay && item.start < end && item.end > first)) {
       const from = Math.max(0, Math.round(event.start.diff(first, "days").days));
       const to = Math.min(days.length, Math.round(event.end.diff(first, "days").days));

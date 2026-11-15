@@ -23,8 +23,8 @@ use erp_fields::{Digits, Error, ErrorKind, IndexKind, OnDelete, RangeBounds, Res
 
 use crate::company_access::CompanyAccessDef;
 use crate::decl::{
-    AddonDescriptor, DefaultDecl, FieldDecl, KindDecl, ModelDecl, ModelKind, SelectionOnDeleteDecl,
-    StaticValue, TableObjectDecl, TableObjectKind,
+    AddonDescriptor, DefaultDecl, FieldDecl, KeyDecl, KindDecl, ModelDecl, ModelKind,
+    SelectionOnDeleteDecl, StaticValue, TableObjectDecl, TableObjectKind,
 };
 use crate::exclusion::{ExclusionDecl, MAX_CONSTRAINT_COLUMNS, TemporalKeyDecl};
 use crate::spec::CompanyMatch;
@@ -943,6 +943,12 @@ pub struct ModelDef {
     pub exclusions: Vec<ExclusionDef>,
     /// `WITHOUT OVERLAPS` keys (`[[model.key]]` with `without_overlaps`).
     pub temporal_keys: Vec<TemporalKeyDef>,
+    /// Business keys (`keys = [key(...)]`): named `UNIQUE` constraints over stored fields.
+    pub keys: Vec<KeyDef>,
+    /// `_parent_name`: the self-referencing many2one that forms the tree (default `parent_id`).
+    pub parent_name: Option<String>,
+    /// `_parent_store`: maintain `parent_path` for the tree (CRUD §4.11).
+    pub parent_store: Option<bool>,
     /// Source file (for error messages and ordering inside an addon); empty when none.
     pub file: String,
     /// Source line.
@@ -990,6 +996,9 @@ impl ModelDef {
             fields: Vec::new(),
             exclusions: Vec::new(),
             temporal_keys: Vec::new(),
+            keys: Vec::new(),
+            parent_name: None,
+            parent_store: None,
             file: String::new(),
             line: 0,
             indexes: Vec::new(),
@@ -1097,6 +1106,28 @@ impl ModelDef {
         self
     }
 
+    /// Add a business key (a named `UNIQUE` constraint over stored fields).
+    #[must_use]
+    pub fn key(mut self, key: KeyDef) -> Self {
+        self.keys.push(key);
+        self
+    }
+
+    /// Set `_parent_store`: the registry build requires the parent field and an indexed
+    /// `parent_path` char field.
+    #[must_use]
+    pub fn parent_store(mut self, on: bool) -> Self {
+        self.parent_store = Some(on);
+        self
+    }
+
+    /// Set `_parent_name`, the self-referencing many2one that forms the tree.
+    #[must_use]
+    pub fn parent_name(mut self, field: impl Into<String>) -> Self {
+        self.parent_name = Some(field.into());
+        self
+    }
+
     /// True when this definition extends an existing model in place.
     pub fn is_extension(&self) -> bool {
         self.inherit.contains(&self.name)
@@ -1168,7 +1199,8 @@ impl ModelDef {
         let count = self
             .exclusions
             .len()
-            .saturating_add(self.temporal_keys.len());
+            .saturating_add(self.temporal_keys.len())
+            .saturating_add(self.keys.len());
         if count > MAX_TABLE_OBJECTS_PER_MODEL {
             return Err(Error::validation(format!(
                 "model '{}': {count} exclusions and keys, more than the limit of \
@@ -1177,6 +1209,10 @@ impl ModelDef {
             )));
         }
         let mut names: Vec<(&str, &str)> = Vec::new();
+        for k in &self.keys {
+            names.push(("key", &k.name));
+            names.extend(k.fields.iter().map(|f| ("key field", f.as_str())));
+        }
         for e in &self.exclusions {
             names.push(("exclusion", &e.name));
             names.push(("exclusion field", &e.period.0));
@@ -1192,6 +1228,17 @@ impl ModelDef {
             check_len(name, MAX_NAME_BYTES, || {
                 format!("model '{}': {what} name", clip(&self.name))
             })?;
+        }
+        for k in &self.keys {
+            if k.fields.len() > MAX_CONSTRAINT_COLUMNS {
+                return Err(Error::validation(format!(
+                    "model '{}': key '{}' has {} fields, more than PostgreSQL's limit of \
+                     {MAX_CONSTRAINT_COLUMNS}",
+                    clip(&self.name),
+                    clip(&k.name),
+                    k.fields.len()
+                )));
+            }
         }
         let lists = self
             .exclusions
@@ -1214,6 +1261,7 @@ impl ModelDef {
             .iter()
             .flat_map(|e| [Some(e.message.as_str()), e.filter.as_deref()])
             .chain(self.temporal_keys.iter().map(|k| Some(k.message.as_str())))
+            .chain(self.keys.iter().map(|k| Some(k.message.as_str())))
             .chain(self.indexes.iter().map(|i| i.filter.as_deref()))
             .flatten();
         for text in texts {
@@ -1299,6 +1347,8 @@ impl ModelDef {
         decl.transient_max_count = self.transient_max_count;
         decl.eventful = self.eventful;
         decl.audit_reads = self.audit_reads;
+        decl.parent_store = self.parent_store;
+        decl.parent_name = interner.opt_str(self.parent_name.as_deref())?;
         decl.company_access = match &self.company_access {
             Some(access) => Some(access.intern(&mut |s| interner.str(s))?),
             None => None,
@@ -1317,7 +1367,7 @@ impl ModelDef {
     /// The typed table objects as declarations.
     fn build_objects(&self, interner: &mut Session<'_>) -> Result<&'static [TableObjectDecl]> {
         let mut objects = Vec::with_capacity(
-            self.indexes.len() + self.exclusions.len() + self.temporal_keys.len(),
+            self.indexes.len() + self.exclusions.len() + self.temporal_keys.len() + self.keys.len(),
         );
         for index in &self.indexes {
             objects.push(index_decl(index, interner)?);
@@ -1337,6 +1387,18 @@ impl ModelDef {
             objects.push(TableObjectDecl {
                 name: interner.str(&e.name)?,
                 kind: TableObjectKind::Exclusion(decl),
+            });
+        }
+        for k in &self.keys {
+            let mut fields = Vec::with_capacity(k.fields.len());
+            for f in &k.fields {
+                fields.push(interner.str(f)?);
+            }
+            let decl = KeyDecl::new(interner.slice(fields)?, interner.str(&k.message)?)
+                .nulls_distinct(k.nulls_distinct);
+            objects.push(TableObjectDecl {
+                name: interner.str(&k.name)?,
+                kind: TableObjectKind::Key(decl),
             });
         }
         for k in &self.temporal_keys {
@@ -1368,7 +1430,8 @@ impl ModelDef {
             .saturating_add(opt(&self.description))
             .saturating_add(opt(&self.table))
             .saturating_add(opt(&self.order))
-            .saturating_add(opt(&self.rec_name));
+            .saturating_add(opt(&self.rec_name))
+            .saturating_add(opt(&self.parent_name));
         if let Some(access) = &self.company_access {
             total = total.saturating_add(access.heap_bytes(text));
         }
@@ -1399,6 +1462,13 @@ impl ModelDef {
                 .saturating_add(text(&e.period.1))
                 .saturating_add(opt(&e.filter))
                 .saturating_add(text(&e.message));
+        }
+        for k in &self.keys {
+            total = total
+                .saturating_add(size_of::<KeyDef>())
+                .saturating_add(text(&k.name))
+                .saturating_add(list(&k.fields))
+                .saturating_add(text(&k.message));
         }
         for k in &self.temporal_keys {
             total = total
@@ -1477,6 +1547,60 @@ impl ExclusionDef {
     #[must_use]
     pub fn filter(mut self, domain: impl Into<String>) -> Self {
         self.filter = Some(domain.into());
+        self
+    }
+}
+
+/// A business key, owned (`keys = [key(name, fields, message, nulls_distinct)]`; see
+/// [`crate::KeyDecl`]): a named `UNIQUE` constraint over stored fields of the model's own table.
+/// The registry build checks the fields; [`ModelDef::check_limits`] bounds the sizes.
+///
+/// ```
+/// use erp_registry::{KeyDef, ModelDef};
+///
+/// let asset = ModelDef::new("my_assets", "my.asset").key(
+///     KeyDef::new("_serial_uniq", "The serial number must be unique.")
+///         .fields(["serial_no"])
+///         .nulls_distinct(true),
+/// );
+/// assert_eq!(asset.keys.len(), 1);
+/// assert!(asset.keys[0].nulls_distinct);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct KeyDef {
+    /// Name, starting with `_`.
+    pub name: String,
+    /// Field names, in the constraint's column order.
+    pub fields: Vec<String>,
+    /// Message when violated; must not be blank (the registry build refuses a blank one).
+    pub message: String,
+    /// `nulls_distinct = true`: a plain `UNIQUE` whose NULL parts never conflict.
+    pub nulls_distinct: bool,
+}
+
+impl KeyDef {
+    /// A `NULLS NOT DISTINCT` key named `name` with no fields yet.
+    pub fn new(name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            fields: Vec::new(),
+            message: message.into(),
+            nulls_distinct: false,
+        }
+    }
+
+    /// Set the key's fields.
+    #[must_use]
+    pub fn fields(mut self, fields: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.fields = fields.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Opt out of `NULLS NOT DISTINCT`.
+    #[must_use]
+    pub fn nulls_distinct(mut self, on: bool) -> Self {
+        self.nulls_distinct = on;
         self
     }
 }

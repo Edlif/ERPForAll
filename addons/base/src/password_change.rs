@@ -119,7 +119,7 @@ impl ResUsersPassword {
         }
         Ok(())
     }
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write)]
     async fn action_change_password_wizard(
         _this: &RecordSet<ResUsers>,
@@ -127,7 +127,7 @@ impl ResUsersPassword {
     ) -> Result<Value> {
         Err(http_required())
     }
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write)]
     async fn preference_change_password(
         _this: &RecordSet<ResUsers>,
@@ -135,7 +135,7 @@ impl ResUsersPassword {
     ) -> Result<Value> {
         Err(http_required())
     }
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write, model)]
     async fn change_password(
         _this: &RecordSet<ResUsers>,
@@ -149,7 +149,7 @@ impl ResUsersPassword {
 }
 #[methods(ChangePasswordWizard)]
 impl ChangePasswordWizard {
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write)]
     async fn change_password_button(
         _this: &RecordSet<ChangePasswordWizard>,
@@ -159,7 +159,7 @@ impl ChangePasswordWizard {
         drop(changes);
         Err(http_required())
     }
-    #[method(override)]
+    #[method(override, sealed)]
     async fn write(
         _this: &RecordSet<ChangePasswordWizard>,
         _tx: &mut Transaction,
@@ -175,7 +175,7 @@ impl ChangePasswordUser {
     /// 6): any other creation, the generic `create` and a wizard's `user_ids` commands included,
     /// gets the unknown-user answer before anything about the named user is read. Then derive the
     /// visible login and keep lines on their creator's wizard.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn create(
         this: &RecordSet<ChangePasswordUser>,
         tx: &mut Transaction,
@@ -218,14 +218,14 @@ impl ChangePasswordUser {
         }
         Ok(())
     }
-    #[method]
+    #[method(sealed)]
     async fn _refuse_password(
         _this: &RecordSet<ChangePasswordUser>,
         _tx: &mut Transaction,
     ) -> Result<()> {
         Err(secret_write())
     }
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write)]
     async fn change_password_button(
         _this: &RecordSet<ChangePasswordUser>,
@@ -235,7 +235,7 @@ impl ChangePasswordUser {
         drop(new_passwd);
         Err(http_required())
     }
-    #[method(override)]
+    #[method(override, sealed)]
     async fn write(
         _this: &RecordSet<ChangePasswordUser>,
         _tx: &mut Transaction,
@@ -258,14 +258,14 @@ impl ChangePasswordOwn {
         }
         Ok(())
     }
-    #[method]
+    #[method(sealed)]
     async fn _refuse_password(
         _this: &RecordSet<ChangePasswordOwn>,
         _tx: &mut Transaction,
     ) -> Result<()> {
         Err(secret_write())
     }
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write)]
     async fn change_password(
         _this: &RecordSet<ChangePasswordOwn>,
@@ -286,14 +286,14 @@ impl ResUsersIdentitycheck {
         }
         Ok(())
     }
-    #[method]
+    #[method(sealed)]
     async fn _refuse_password(
         _this: &RecordSet<ResUsersIdentitycheck>,
         _tx: &mut Transaction,
     ) -> Result<()> {
         Err(secret_write())
     }
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write, model)]
     async fn run_check(
         _this: &RecordSet<ResUsersIdentitycheck>,

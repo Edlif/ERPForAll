@@ -44,7 +44,7 @@ impl DecimalPrecision {
     ///
     /// Uses the same bounded, digits-only lookup as [`precision_get`]. This method is not
     /// exported over RPC; target-model field access remains the ORM caller's responsibility.
-    #[method]
+    #[method(sealed)]
     async fn _precision_get(
         this: &RecordSet<DecimalPrecision>,
         tx: &mut Transaction,

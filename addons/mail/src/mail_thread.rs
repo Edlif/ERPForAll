@@ -192,7 +192,7 @@ impl MailThread {
     }
 
     /// Models override it, as `res.partner` does (read).
-    #[method]
+    #[method(sealed)]
     async fn _mail_post_access(
         _this: &RecordSet<MailThread>,
         _tx: &mut Transaction,

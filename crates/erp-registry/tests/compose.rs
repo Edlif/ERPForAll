@@ -1278,7 +1278,7 @@ fn runtime_object_names_cannot_be_generated_names() {
             format!(
                 "SQL object '{full}' of model 'x.t' (addon 'other', models/t.toml:4) has a name \
                  the ORM or PostgreSQL generates for a primary key, foreign key, not-null \
-                 constraint or field index; choose another name"
+                 constraint, id sequence, parent path index or field index; choose another name"
             )
         );
     }

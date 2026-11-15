@@ -182,7 +182,7 @@ impl ResCompany {
     /// Selected companies reachable through active branch edges. Native-only.
     /// # Errors
     /// Admission, membership, missing-company and malformed-tree errors are propagated.
-    #[method]
+    #[method(sealed)]
     async fn _accessible_branches(
         this: &RecordSet<ResCompany>,
         tx: &mut Transaction,
@@ -194,7 +194,7 @@ impl ResCompany {
     /// This can reveal that an omitted active sibling exists; it returns no hidden identity.
     /// # Errors
     /// Caller read access, validated company selection and hierarchy errors are propagated.
-    #[method]
+    #[method(sealed)]
     async fn _all_branches_selected(
         this: &RecordSet<ResCompany>,
         tx: &mut Transaction,

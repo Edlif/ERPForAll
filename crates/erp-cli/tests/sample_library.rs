@@ -768,6 +768,32 @@ fn sample_library_demo_data_loads_with_demo() {
             .await,
             "out,returned"
         );
+        // a loan is named by its book (`rec_name = "book_id"`), never "sample_library.loan,<id>"
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let rows = tx
+            .query(
+                "SELECT l.id::bigint, b.title::text FROM sample_library_loan l \
+                 JOIN sample_library_book b ON b.id = l.book_id ORDER BY l.id",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 6, "the demo loans");
+        for row in rows {
+            let (id, title) = (row.get::<_, i64>(0), row.get::<_, String>(1));
+            let loan = tx
+                .env()
+                .records("sample_library.loan")
+                .unwrap()
+                .browse(vec![id])
+                .unwrap();
+            assert_eq!(
+                loan.cell(&mut tx, "display_name").await.unwrap(),
+                Cell::Str(Arc::from(title.as_str())),
+                "loan {id}"
+            );
+        }
+        tx.rollback().await.unwrap();
     });
 }
 

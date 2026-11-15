@@ -26,6 +26,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::Transaction;
+use crate::method_wire::{MethodWireImpl, WireForm, WireSeal};
 use crate::records::Records;
 
 /// A boxed `Send` future.
@@ -289,7 +290,9 @@ mod name_tests {
 
 /// The wire codec of one method signature: it turns the typed arguments and result of a native
 /// implementation into JSON and back, so a chain can cross into WebAssembly and a WebAssembly
-/// `super()` can enter a native implementation. Built by `#[method(wire)]` (one per signature).
+/// `super()` can enter a native implementation. Produced for every serialisable native method by
+/// `#[methods]` (through [`crate::method_wire::METHOD_WIRE`], one per signature), and by hand for
+/// the core methods (`wire.rs`).
 pub trait MethodCodec: Send + Sync {
     /// The `TypeId` of the [`MethodFn`] the codec belongs to; checked against the chain's own.
     fn signature(&self) -> TypeId;
@@ -317,7 +320,7 @@ pub trait MethodCodec: Send + Sync {
 pub struct TypedCodec<A, R>(PhantomData<fn(A) -> R>);
 
 impl<A, R> TypedCodec<A, R> {
-    /// For `#[method(wire)]` output.
+    /// For macro output and the core codecs.
     pub const fn new() -> Self {
         Self(PhantomData)
     }
@@ -378,7 +381,8 @@ where
     }
 }
 
-/// A [`MethodCodec`] contributed by `#[method(wire)]`.
+/// A [`MethodCodec`] registered by hand: the core methods (`wire.rs`) and any crate that writes
+/// one itself. `#[methods]` contributes its codecs through [`crate::method_wire::METHOD_WIRE`].
 pub struct MethodCodecImpl {
     /// Contributing addon.
     pub addon: &'static str,
@@ -409,7 +413,7 @@ pub struct ChainData {
     model: ModelId,
     method: &'static str,
     targets: Vec<MethodDispatchTarget>,
-    /// Present when some native implementation declared `wire`.
+    /// Present when some native implementation of the chain has a wire form.
     codec: Option<&'static dyn MethodCodec>,
 }
 
@@ -600,6 +604,7 @@ impl Dispatch {
         {
             codecs.insert((c.model, c.addon, c.method), c);
         }
+        let wire = WireIndex::new(&installed);
 
         let mut chains: FxHashMap<ModelId, FxHashMap<&'static str, Chain>> = FxHashMap::default();
         for model in registry.models() {
@@ -622,7 +627,7 @@ impl Dispatch {
                 let targets: Vec<MethodDispatchTarget> =
                     chain.iter().map(|c| c.target.clone()).collect();
                 check_chain(model.name, method, &targets)?;
-                let codec = chain_codec(model.name, method, &targets, &codecs)?;
+                let codec = chain_codec(model.name, method, &targets, &codecs, &wire)?;
                 chains.entry(model.id).or_default().insert(
                     method,
                     Arc::new(ChainData {
@@ -685,50 +690,217 @@ impl Dispatch {
     }
 }
 
+/// The wire records of the installed addons' native methods: `#[methods]` output
+/// ([`METHOD_WIRE`](crate::method_wire::METHOD_WIRE)) and the core's
+/// ([`BUILTIN_WIRE`](crate::method_wire::BUILTIN_WIRE)), by (model, addon, method).
+struct WireIndex(
+    FxHashMap<(&'static str, &'static str, &'static str), (&'static MethodWireImpl, WireForm)>,
+);
+
+impl WireIndex {
+    fn new(installed: &FxHashSet<&str>) -> Self {
+        Self::from_records(
+            crate::method_wire::METHOD_WIRE
+                .iter()
+                .chain(crate::method_wire::BUILTIN_WIRE.iter().copied())
+                .filter(|w| installed.contains(w.addon)),
+        )
+    }
+
+    /// The index of `records`, each probed once. Two records for one method keep the first,
+    /// except that a seal is never replaced: a sealed record wins over any other, in either order.
+    fn from_records(records: impl IntoIterator<Item = &'static MethodWireImpl>) -> Self {
+        let mut map: FxHashMap<_, (&'static MethodWireImpl, WireForm)> = FxHashMap::default();
+        for w in records {
+            let form = (w.probe)();
+            match map.entry((w.model, w.addon, w.method)) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert((w, form));
+                }
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    let kept_sealed = matches!(slot.get().1, WireForm::Sealed(_));
+                    if !kept_sealed && matches!(form, WireForm::Sealed(_)) {
+                        slot.insert((w, form));
+                    }
+                }
+            }
+        }
+        Self(map)
+    }
+
+    fn get(&self, imp: &MethodImpl) -> Option<(&'static MethodWireImpl, WireForm)> {
+        self.0.get(&(imp.model, imp.addon, imp.method)).copied()
+    }
+}
+
+/// What one native entry of a chain offers the wire form.
+enum EntryWire {
+    Codec(&'static dyn MethodCodec),
+    Gap(&'static [&'static str]),
+    Sealed(&'static MethodWireImpl, WireSeal),
+    /// Neither a codec nor a wire record: a hand-registered core method without one, or a
+    /// `#[selection]` entry.
+    Unrecorded,
+}
+
+/// The wire form of one native entry. A seal is read first, so a hand-registered codec cannot
+/// unseal a sealed method; then a hand codec, which wins over a gap; then the probed form.
+fn entry_wire(
+    imp: &MethodImpl,
+    codecs: &FxHashMap<(&str, &str, &str), &'static MethodCodecImpl>,
+    wire: &WireIndex,
+) -> EntryWire {
+    let recorded = wire.get(imp);
+    if let Some((w, WireForm::Sealed(seal))) = recorded {
+        return EntryWire::Sealed(w, seal);
+    }
+    if let Some(c) = codecs.get(&(imp.model, imp.addon, imp.method)) {
+        return EntryWire::Codec(c.codec);
+    }
+    match recorded {
+        Some((_, WireForm::Codec(codec))) => EntryWire::Codec(codec),
+        Some((_, WireForm::Gap(types))) => EntryWire::Gap(types),
+        Some((w, WireForm::Sealed(seal))) => EntryWire::Sealed(w, seal),
+        None => EntryWire::Unrecorded,
+    }
+}
+
+/// The clause naming one sealed native entry in a refusal.
+fn seal_clause(imp: &MethodImpl, w: &MethodWireImpl, seal: WireSeal) -> String {
+    match seal {
+        WireSeal::Attribute => format!("{}, sealed at {}", imp.location(), w.location()),
+        WireSeal::Constraint => format!(
+            "{}, sealed as a constraint at {} (a package overrides constraints only from \
+             WASM.COMPUTE-REL on)",
+            imp.location(),
+            w.location()
+        ),
+        WireSeal::Onchange => format!(
+            "{}, sealed as an onchange at {} (a package overrides onchange methods only from \
+             WASM.ONCHANGE on)",
+            imp.location(),
+            w.location()
+        ),
+    }
+}
+
+/// Why each native entry of a chain has no wire form, one clause per entry.
+fn wire_gaps(
+    targets: &[MethodDispatchTarget],
+    codecs: &FxHashMap<(&str, &str, &str), &'static MethodCodecImpl>,
+    wire: &WireIndex,
+) -> String {
+    targets
+        .iter()
+        .filter_map(|t| match t {
+            MethodDispatchTarget::Native(imp) => Some(*imp),
+            MethodDispatchTarget::Wasm(_) => None,
+        })
+        .map(|imp| match entry_wire(imp, codecs, wire) {
+            EntryWire::Codec(_) => format!("{} has a wire form", imp.location()),
+            EntryWire::Gap(types) => format!(
+                "{} is not serialisable: {}",
+                imp.location(),
+                types.join(", ")
+            ),
+            EntryWire::Sealed(w, seal) => match seal {
+                WireSeal::Attribute => format!("{} is sealed at {}", imp.location(), w.location()),
+                WireSeal::Constraint => format!(
+                    "{} is sealed as a constraint at {}",
+                    imp.location(),
+                    w.location()
+                ),
+                WireSeal::Onchange => format!(
+                    "{} is sealed as an onchange at {}",
+                    imp.location(),
+                    w.location()
+                ),
+            },
+            EntryWire::Unrecorded => format!(
+                "{} has no wire record (a core method without a codec yet, a selection hook or an \
+                 implementation registered by hand)",
+                imp.location()
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// The codec of a chain: any native implementation's, which must agree with the chain's signature.
-/// A chain that mixes native and WebAssembly entries needs one; a chain of one kind only does not
-/// (a WebAssembly-only chain is called in the wire form, a native-only chain is typed).
+/// A chain that mixes native and WebAssembly entries needs one, and is refused when it contains a
+/// sealed native entry, when the core list seals the method on the chain's model
+/// ([`SEALED_ON_MODEL`](crate::method_wire::SEALED_ON_MODEL)), or when a native entry has no
+/// wire record at all (fail closed: an entry nobody has looked at is not crossed). A chain of one
+/// kind only does not need a codec (a WebAssembly-only chain is called in the wire form, a
+/// native-only chain is typed), and keeps the codec it has for wire calls.
 fn chain_codec(
     model: &str,
     method: &str,
     targets: &[MethodDispatchTarget],
     codecs: &FxHashMap<(&str, &str, &str), &'static MethodCodecImpl>,
+    wire: &WireIndex,
 ) -> Result<Option<&'static dyn MethodCodec>> {
-    let mut found: Option<(&'static dyn MethodCodec, &MethodImpl)> = None;
+    let mut found: Option<&'static dyn MethodCodec> = None;
+    let mut seals: Vec<String> = Vec::new();
+    let mut unrecorded: Vec<String> = Vec::new();
     for target in targets {
         let MethodDispatchTarget::Native(imp) = target else {
             continue;
         };
-        let Some(c) = codecs.get(&(imp.model, imp.addon, imp.method)) else {
-            continue;
-        };
-        if c.codec.signature() != imp.sig() {
-            return Err(Error::programming(format!(
-                "#[method(wire)] of '{method}' at {} was generated for another signature than the \
-                 function it marks",
-                imp.location()
-            )));
-        }
-        if found.is_none() {
-            found = Some((c.codec, imp));
+        match entry_wire(imp, codecs, wire) {
+            EntryWire::Codec(codec) => {
+                if codec.signature() != imp.sig() {
+                    return Err(Error::programming(format!(
+                        "the wire codec of '{method}' at {} was made for another signature than \
+                         the function it belongs to",
+                        imp.location()
+                    )));
+                }
+                if found.is_none() {
+                    found = Some(codec);
+                }
+            }
+            EntryWire::Sealed(w, seal) => seals.push(seal_clause(imp, w, seal)),
+            EntryWire::Unrecorded => unrecorded.push(imp.location()),
+            EntryWire::Gap(_) => {}
         }
     }
     let crosses =
         targets.iter().any(MethodDispatchTarget::is_wasm) && targets.iter().any(|t| !t.is_wasm());
-    if crosses && found.is_none() {
-        let natives: Vec<String> = targets
-            .iter()
-            .filter(|t| !t.is_wasm())
-            .map(MethodDispatchTarget::location)
-            .collect();
+    if !crosses {
+        return Ok(found);
+    }
+    if let Some(row) = crate::method_wire::model_seal(model, method) {
+        seals.push(format!(
+            "'{method}' is sealed on model '{model}' by the core list at {}",
+            row.location()
+        ));
+    }
+    if !seals.is_empty() {
         return Err(Error::programming(format!(
-            "method '{method}' of model '{model}' has a WebAssembly implementation, but no native \
-             implementation is marked #[method(wire)] ({}): a chain that crosses between native \
-             code and a component needs the argument and result types to be serialisable",
-            natives.join(", ")
+            "method '{method}' of model '{model}' has a WebAssembly implementation, but its native \
+             implementation is sealed ({}): a sealed method never runs in a chain with a package",
+            seals.join(", ")
         )));
     }
-    Ok(found.map(|(c, _)| c))
+    if !unrecorded.is_empty() {
+        return Err(Error::programming(format!(
+            "method '{method}' of model '{model}' has a WebAssembly implementation, but a native \
+             implementation of it has no wire record ({}): a core method without a codec yet, a \
+             selection hook or an implementation registered by hand never runs in a chain with a \
+             package",
+            unrecorded.join(", ")
+        )));
+    }
+    if found.is_none() {
+        return Err(Error::programming(format!(
+            "method '{method}' of model '{model}' has a WebAssembly implementation, but no native \
+             implementation has a wire form ({}): a chain that crosses between native code and a \
+             component needs every argument and the result to be Serialize + DeserializeOwned",
+            wire_gaps(targets, codecs, wire)
+        )));
+    }
+    Ok(found)
 }
 
 /// One signature; exactly one definition, at the bottom (newest first: overrides, then it). Only
@@ -862,6 +1034,22 @@ impl DynSuper {
     }
 }
 
+/// [`wire_gaps`] of a built chain, for the refusal of a wire call (an error path: the indexes are
+/// built again from the linked records, nothing is kept per chain).
+fn chain_wire_gaps(chain: &ChainData) -> String {
+    let installed: FxHashSet<&str> = chain
+        .targets
+        .iter()
+        .map(MethodDispatchTarget::addon)
+        .collect();
+    let codecs: FxHashMap<(&str, &str, &str), &'static MethodCodecImpl> = METHOD_CODECS
+        .iter()
+        .chain(crate::wire::BUILTIN_CODECS.iter().copied())
+        .map(|c| ((c.model, c.addon, c.method), c))
+        .collect();
+    wire_gaps(&chain.targets, &codecs, &WireIndex::new(&installed))
+}
+
 /// Run entry `index` of the chain in the wire form.
 fn invoke_json<'a>(
     chain: Chain,
@@ -904,9 +1092,10 @@ fn invoke_json<'a>(
             None => {
                 let message = format!(
                     "method '{}' reached the native implementation at {} through its wire form, \
-                     but no implementation of the chain is marked #[method(wire)]",
+                     but no native implementation of the chain has one ({})",
                     chain.method,
-                    imp.location()
+                    imp.location(),
+                    chain_wire_gaps(&chain)
                 );
                 Box::pin(async move { Err(Error::programming(message)) })
             }
@@ -964,11 +1153,17 @@ pub(crate) fn invoke<'a, A: Send + 'static, R: Send + 'static>(
         }
         MethodDispatchTarget::Wasm(invoker) => Box::pin(async move {
             let Some(codec) = chain.codec else {
+                let natives = chain_wire_gaps(&chain);
                 return Err(Error::programming(format!(
                     "method '{}' reached a WebAssembly implementation of addon '{}' from typed code, \
-                     but no native implementation is marked #[method(wire)]",
+                     but no native implementation of the chain has a wire form ({})",
                     chain.method,
-                    invoker.addon()
+                    invoker.addon(),
+                    if natives.is_empty() {
+                        "the chain has no native implementation"
+                    } else {
+                        natives.as_str()
+                    }
                 )));
             };
             if let Some(plan) = crate::wasm_abi1::typed_plan(tx, records, chain.method, &args)? {
@@ -1052,8 +1247,8 @@ pub(crate) fn call_unit_method<'a>(
 
 /// Call a method on a recordset through its chain in the wire form: JSON arguments (an array, the
 /// serialised argument tuple) in, JSON result out. This is how a component's `call-method` reaches
-/// any implementation, native or WebAssembly. A chain with native entries needs one marked
-/// `#[method(wire)]`.
+/// any implementation, native or WebAssembly. A chain with native entries needs one with a wire
+/// form (serialisable arguments and result, not sealed).
 pub fn call_method_json<'a>(
     tx: &'a mut Transaction,
     records: &'a Records,
@@ -1073,4 +1268,258 @@ pub fn call_method_json<'a>(
             }
         }
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
+mod wire_seal_tests {
+    //! The seal rules of `chain_codec` (WASM.WIRE-NATIVE review fixes): a hand codec never
+    //! unseals, a duplicate wire record never drops a seal, an unrecorded native entry refuses a
+    //! crossing chain, and the core list seals the record-level methods of the access models.
+
+    use super::*;
+    use crate::method_wire::{WireSeal, model_seal_location};
+
+    type UnitFn = MethodFn<(), ()>;
+
+    fn unit_impl<'a>(
+        _tx: &'a mut Transaction,
+        _records: &'a Records,
+        _args: (),
+        _sup: Super<(), ()>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn unit_entry() -> &'static (dyn Any + Send + Sync) {
+        static F: UnitFn = unit_impl;
+        &F
+    }
+
+    static UNIT_CODEC: TypedCodec<(), ()> = TypedCodec::new();
+
+    const MODEL: &str = "seal.fixture";
+    const METHOD: &str = "probe";
+
+    static LOWER: MethodImpl = MethodImpl {
+        addon: "seal_lower",
+        model: MODEL,
+        method: METHOD,
+        kind: ImplKind::Define,
+        sig_name: std::any::type_name::<UnitFn>,
+        entry: unit_entry,
+        file: file!(),
+        line: line!(),
+    };
+
+    static UPPER: MethodImpl = MethodImpl {
+        addon: "seal_upper",
+        model: MODEL,
+        method: METHOD,
+        kind: ImplKind::Override,
+        sig_name: std::any::type_name::<UnitFn>,
+        entry: unit_entry,
+        file: file!(),
+        line: line!(),
+    };
+
+    fn sealed_probe() -> WireForm {
+        WireForm::Sealed(WireSeal::Attribute)
+    }
+
+    fn codec_probe() -> WireForm {
+        WireForm::Codec(&UNIT_CODEC)
+    }
+
+    static LOWER_SEALED: MethodWireImpl = MethodWireImpl {
+        addon: "seal_lower",
+        model: MODEL,
+        method: METHOD,
+        file: file!(),
+        line: line!(),
+        probe: sealed_probe,
+    };
+
+    static LOWER_CODEC: MethodWireImpl = MethodWireImpl {
+        addon: "seal_lower",
+        model: MODEL,
+        method: METHOD,
+        file: file!(),
+        line: line!(),
+        probe: codec_probe,
+    };
+
+    static UPPER_CODEC: MethodWireImpl = MethodWireImpl {
+        addon: "seal_upper",
+        model: MODEL,
+        method: METHOD,
+        file: file!(),
+        line: line!(),
+        probe: codec_probe,
+    };
+
+    static LOWER_HAND: MethodCodecImpl = MethodCodecImpl {
+        addon: "seal_lower",
+        model: MODEL,
+        method: METHOD,
+        codec: &UNIT_CODEC,
+    };
+
+    #[derive(Debug)]
+    struct Layer;
+
+    impl MethodInvoker for Layer {
+        fn addon(&self) -> &str {
+            "seal_package"
+        }
+
+        fn kind(&self) -> ImplKind {
+            ImplKind::Override
+        }
+
+        fn invoke<'a>(
+            &'a self,
+            _tx: &'a mut Transaction,
+            _records: &'a Records,
+            _args_json: &'a str,
+            _sup: DynSuper,
+        ) -> BoxFuture<'a, Result<String>> {
+            Box::pin(async { Ok("null".to_owned()) })
+        }
+    }
+
+    fn crossing(natives: &[&'static MethodImpl]) -> Vec<MethodDispatchTarget> {
+        let mut targets = vec![MethodDispatchTarget::Wasm(Arc::new(Layer))];
+        targets.extend(natives.iter().map(|imp| MethodDispatchTarget::Native(imp)));
+        targets
+    }
+
+    fn no_codecs() -> FxHashMap<(&'static str, &'static str, &'static str), &'static MethodCodecImpl>
+    {
+        FxHashMap::default()
+    }
+
+    #[test]
+    fn a_duplicate_wire_record_keeps_the_seal() {
+        for records in [[&LOWER_SEALED, &LOWER_CODEC], [&LOWER_CODEC, &LOWER_SEALED]] {
+            let index = WireIndex::from_records(records);
+            assert!(matches!(
+                entry_wire(&LOWER, &no_codecs(), &index),
+                EntryWire::Sealed(_, WireSeal::Attribute)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_hand_codec_does_not_unseal_a_sealed_method() {
+        let mut codecs = no_codecs();
+        codecs.insert((MODEL, "seal_lower", METHOD), &LOWER_HAND);
+        let index = WireIndex::from_records([&LOWER_SEALED]);
+        let err = chain_codec(MODEL, METHOD, &crossing(&[&LOWER]), &codecs, &index)
+            .err()
+            .expect("the seal must refuse");
+        assert_eq!(err.kind(), erp_fields::ErrorKind::Programming);
+        assert_eq!(
+            err.message(),
+            format!(
+                "method '{METHOD}' of model '{MODEL}' has a WebAssembly implementation, but its \
+                 native implementation is sealed ({}, sealed at {}): a sealed method never runs \
+                 in a chain with a package",
+                LOWER.location(),
+                LOWER_SEALED.location()
+            )
+        );
+    }
+
+    #[test]
+    fn an_unrecorded_native_entry_refuses_a_crossing_chain() {
+        let index = WireIndex::from_records([&UPPER_CODEC]);
+        let err = chain_codec(
+            MODEL,
+            METHOD,
+            &crossing(&[&UPPER, &LOWER]),
+            &no_codecs(),
+            &index,
+        )
+        .err()
+        .expect("the unrecorded entry must refuse");
+        assert_eq!(err.kind(), erp_fields::ErrorKind::Programming);
+        assert_eq!(
+            err.message(),
+            format!(
+                "method '{METHOD}' of model '{MODEL}' has a WebAssembly implementation, but a \
+                 native implementation of it has no wire record ({}): a core method without a \
+                 codec yet, a selection hook or an implementation registered by hand never runs \
+                 in a chain with a package",
+                LOWER.location()
+            )
+        );
+        // the same chain without the package keeps its codec
+        let native = [
+            MethodDispatchTarget::Native(&UPPER),
+            MethodDispatchTarget::Native(&LOWER),
+        ];
+        assert!(
+            chain_codec(MODEL, METHOD, &native, &no_codecs(), &index)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_core_list_seals_a_method_on_an_access_model_only() {
+        static USERS_CREATE: MethodImpl = MethodImpl {
+            addon: "seal_lower",
+            model: "res.users",
+            method: "create",
+            kind: ImplKind::Define,
+            sig_name: std::any::type_name::<UnitFn>,
+            entry: unit_entry,
+            file: file!(),
+            line: line!(),
+        };
+        fn users_codec() -> WireForm {
+            WireForm::Codec(&UNIT_CODEC)
+        }
+        static USERS_CREATE_WIRE: MethodWireImpl = MethodWireImpl {
+            addon: "seal_lower",
+            model: "res.users",
+            method: "create",
+            file: file!(),
+            line: line!(),
+            probe: users_codec,
+        };
+        let index = WireIndex::from_records([&USERS_CREATE_WIRE]);
+        let list = model_seal_location("res.users", "create").expect("on the core list");
+        let err = chain_codec(
+            "res.users",
+            "create",
+            &crossing(&[&USERS_CREATE]),
+            &no_codecs(),
+            &index,
+        )
+        .err()
+        .expect("the core list must refuse");
+        assert_eq!(err.kind(), erp_fields::ErrorKind::Programming);
+        assert_eq!(
+            err.message(),
+            format!(
+                "method 'create' of model 'res.users' has a WebAssembly implementation, but its \
+                 native implementation is sealed ('create' is sealed on model 'res.users' by the \
+                 core list at {list}): a sealed method never runs in a chain with a package"
+            )
+        );
+        // the chain's model decides, not the model the core entry was registered under
+        assert!(
+            chain_codec(
+                "res.partner",
+                "create",
+                &crossing(&[&USERS_CREATE]),
+                &no_codecs(),
+                &index
+            )
+            .unwrap()
+            .is_some()
+        );
+    }
 }

@@ -267,6 +267,20 @@ test("the arrow keys move the focused day of the month grid; previous, next and 
   expect(element.querySelector('[data-day="2026-11-18"].has-events')!.getAttribute("aria-label")).toBe("Wednesday, November 18, 2026, 3 events");
 });
 
+test("today is marked in the month cell, the week heads, the all-day row and the time grid", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-11-18T03:00:00Z"));
+  const week = await mounted({ scale: "week", date: "2026-11-18" });
+  expect([...week.element.querySelectorAll(".calendar-day-head")].map(node => node.classList.contains("is-today"))).toEqual([false, false, true, false, false, false, false]);
+  expect(week.element.querySelectorAll(".calendar-day-column.is-today")).toHaveLength(1);
+  const mark = week.element.querySelector<HTMLElement>(".calendar-all-day-lane > .calendar-all-day-today")!;
+  expect(mark.style.getPropertyValue("--calendar-today")).toBe("2"); // Wednesday in a Monday-first week
+  expect(mark.getAttribute("aria-hidden")).toBe("true");
+  const month = await mounted({ scale: "month", date: "2026-11-18" });
+  expect([...month.element.querySelectorAll<HTMLElement>(".calendar-month-cell.is-today")].map(cell => cell.querySelector<HTMLElement>("[data-day]")!.dataset["day"])).toEqual(["2026-11-18"]);
+  const later = await mounted({ scale: "week", date: "2026-12-02" });
+  expect(later.element.querySelector(".calendar-all-day-today")).toBeNull();
+});
+
 test("the side panel's mini calendar navigates and its filters hide events without a read", async () => {
   const { element, settle, model } = await mounted();
   const loads = vi.spyOn(model, "load");

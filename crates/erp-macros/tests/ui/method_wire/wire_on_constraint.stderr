@@ -1,0 +1,5 @@
+error: `wire` asserts that a method has a wire form, but a #[constrains] or #[onchange] method is sealed and never crosses into WebAssembly: remove `wire`
+ --> tests/ui/method_wire/wire_on_constraint.rs:9:14
+  |
+9 |     async fn _check_qty(this: &u8, tx: &mut u8) {}
+  |              ^^^^^^^^^^

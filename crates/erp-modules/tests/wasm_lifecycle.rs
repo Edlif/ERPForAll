@@ -2610,3 +2610,647 @@ async fn legacy_bootstrap_preserves_verified_installed_package_identity() {
     );
     w.db.cleanup().await.unwrap();
 }
+
+// ---- WASM.MODEL-DECL: field attributes, keys and a parent store in a package model -------------
+
+/// The `amount` default of the fixture, as the macro spells a float literal.
+const AMOUNT_DEFAULT: &str = "1.5";
+
+const KEYS: &str = "[key(name = \"_serial_uniq\" , fields = [\"serial_no\"] , message = \"The \
+                    serial number must be unique.\" , nulls_distinct = true), key(name = \
+                    \"_name_site_key\" , fields = [\"name\" , \"site\"] , message = \"Name and \
+                    site must be unique.\")]";
+
+/// `wdecl`: a new model `wdecl.item` with the field attributes a package may declare (and the
+/// keys when `with_keys`), and a tree model `wdecl.node` (with `parent_store` when `store`).
+fn decl_describe(with_keys: bool, store: bool) -> String {
+    decl_describe_with(with_keys, store, "parent_id", "wdecl.node")
+}
+
+/// [`decl_describe`] with the tree's parent field named `parent` and pointing at `comodel`.
+fn decl_describe_with(with_keys: bool, store: bool, parent: &str, comodel: &str) -> String {
+    let mut item_args = json!({"description": "\"Item\""});
+    if with_keys {
+        item_args["keys"] = json!(KEYS);
+    }
+    let mut node_args = json!({"description": "\"Node\""});
+    if store {
+        node_args["parent_store"] = json!(true);
+        node_args["parent_name"] = json!(format!("\"{parent}\""));
+    }
+    let item_fields = json!([
+        {"name": "name", "kind": "char", "attrs": {"index": true}},
+        {"name": "code", "kind": "char", "attrs": {"index": "true"}},
+        {"name": "serial_no", "kind": "char", "attrs": {}},
+        {"name": "site", "kind": "char", "attrs": {}},
+        {"name": "state", "kind": "selection", "attrs": {
+            "selection": "[(\"draft\" , \"Draft\") , (\"done\" , \"Done\")]",
+            "default": "\"draft\""}},
+        {"name": "amount", "kind": "float", "attrs": {"digits": "(16 , 2)", "default": AMOUNT_DEFAULT}},
+        {"name": "secret", "kind": "char", "attrs": {"groups": "\"base.group_system\""}},
+    ]);
+    let node_fields = json!([
+        {"name": "name", "kind": "char", "attrs": {}},
+        {"name": parent, "kind": "many2one", "attrs": {"comodel": format!("\"{comodel}\"")}},
+        {"name": "parent_path", "kind": "char", "attrs": {"index": true}},
+    ]);
+    json!({"schema": 1, "contributions": [
+        {"addon": "wdecl", "kind": "addon", "model": "", "name": "wdecl",
+         "detail": {"depends": ["base"]}},
+        {"addon": "wdecl", "kind": "model", "model": "wdecl.item", "name": "Item",
+         "detail": {"args": item_args, "fields": item_fields}},
+        {"addon": "wdecl", "kind": "model", "model": "wdecl.node", "name": "Node",
+         "detail": {"args": node_args, "fields": node_fields}},
+    ]})
+    .to_string()
+}
+
+fn wdecl(version: &str, with_keys: bool, store: bool) -> Vec<u8> {
+    archive(
+        "wdecl",
+        version,
+        &[],
+        &[],
+        &decl_describe(with_keys, store),
+        None,
+    )
+}
+
+fn text(value: &str) -> erp_fields::Cell {
+    erp_fields::Cell::Str(value.into())
+}
+
+async fn create_row(
+    orm: &Orm,
+    model: &str,
+    cells: &[(&str, erp_fields::Cell)],
+) -> erp_fields::Result<Vec<i64>> {
+    let mut tx = orm.begin(SUPERUSER_ID).await?;
+    let mut vals = erp_orm::RawVals::new();
+    for (field, cell) in cells {
+        vals = vals.set_cell((*field).to_owned(), cell.clone());
+    }
+    let result = tx.env().records(model)?.create(&mut tx, vec![vals]).await;
+    match result {
+        Ok(records) => {
+            tx.commit().await?;
+            Ok(records.ids())
+        }
+        Err(error) => {
+            tx.rollback().await?;
+            Err(error)
+        }
+    }
+}
+
+async fn cell_of(orm: &Orm, sql: &str) -> Option<String> {
+    rows(orm, sql).await[0][0].clone()
+}
+
+/// float with digits are in the schema and the default applies on create; the groups field is in
+/// the registry)
+/// their definition)
+#[tokio::test]
+async fn a_package_model_declares_fields_keys_and_a_parent_store() {
+    let (w, _addons) = world().await;
+    let installed = w
+        .life
+        .install(&su(&w.orm), consent(&wdecl("1.0.0", true, true)))
+        .await
+        .unwrap();
+    committed_ref(&installed);
+    let orm = &installed.orm;
+
+    // the float carries the declared precision and scale in the registry
+    assert_eq!(
+        orm.registry()
+            .model("wdecl.item")
+            .unwrap()
+            .field("amount")
+            .unwrap()
+            .ty,
+        erp_fields::FieldType::Float {
+            digits: Some(erp_fields::Digits::Fixed {
+                precision: 16,
+                scale: 2
+            })
+        }
+    );
+    // the indexed chars have an index each (a bare flag and `index = true` both mean btree)
+    for column in ["name", "code"] {
+        let defs = rows(
+            orm,
+            "SELECT indexdef FROM pg_indexes WHERE tablename = 'wdecl_item'",
+        )
+        .await;
+        assert!(
+            defs.iter().any(|r| r[0]
+                .as_deref()
+                .is_some_and(|d| d.contains(&format!("USING btree ({column})")))),
+            "no btree index on {column}: {defs:?}"
+        );
+    }
+    assert!(
+        rows(
+            orm,
+            "SELECT 1::text FROM pg_indexes WHERE tablename = 'wdecl_node' AND indexdef LIKE \
+             '%parent_path%'"
+        )
+        .await
+        .len()
+            == 1
+    );
+    // both keys are unique constraints; only the second is NULLS NOT DISTINCT
+    let serial = cell_of(
+        orm,
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'wdecl_item_serial_uniq'",
+    )
+    .await
+    .unwrap();
+    assert_eq!(serial, "UNIQUE (serial_no)");
+    let pair = cell_of(
+        orm,
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'wdecl_item_name_site_key'",
+    )
+    .await
+    .unwrap();
+    assert_eq!(pair, "UNIQUE NULLS NOT DISTINCT (name, site)");
+
+    // the registry carries the group of the restricted field
+    assert_eq!(
+        orm.registry()
+            .model("wdecl.item")
+            .unwrap()
+            .field("secret")
+            .unwrap()
+            .groups,
+        Some("base.group_system")
+    );
+
+    // a create without a value takes the selection default and the float default
+    let first = create_row(
+        orm,
+        "wdecl.item",
+        &[("name", text("a")), ("serial_no", text("S1"))],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        rows(
+            orm,
+            &format!(
+                "SELECT state, amount::text FROM wdecl_item WHERE id = {}",
+                first[0]
+            )
+        )
+        .await,
+        vec![vec![
+            Some("draft".to_owned()),
+            Some(AMOUNT_DEFAULT.to_owned())
+        ]]
+    );
+    // a duplicate serial number fails with the key's message
+    let err = create_row(
+        orm,
+        "wdecl.item",
+        &[("name", text("b")), ("serial_no", text("S1"))],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.kind(), erp_fields::ErrorKind::Validation, "{err}");
+    assert_eq!(
+        err.message(),
+        "The database refused the change: The serial number must be unique."
+    );
+    // nulls_distinct = true: two rows without a serial number are both accepted
+    create_row(orm, "wdecl.item", &[("name", text("c"))])
+        .await
+        .unwrap();
+    create_row(orm, "wdecl.item", &[("name", text("d"))])
+        .await
+        .unwrap();
+    assert_eq!(
+        count(
+            orm,
+            "SELECT count(*) FROM wdecl_item WHERE serial_no IS NULL"
+        )
+        .await,
+        2
+    );
+    // the other key keeps NULLS NOT DISTINCT: two rows named alike without a site conflict
+    let err = create_row(orm, "wdecl.item", &[("name", text("c"))])
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), erp_fields::ErrorKind::Validation, "{err}");
+    assert_eq!(
+        err.message(),
+        "The database refused the change: Name and site must be unique."
+    );
+    w.db.cleanup().await.unwrap();
+}
+
+/// returns the descendants, also after a re-parent; the refusals are tested elsewhere).
+#[tokio::test]
+async fn a_package_parent_store_keeps_paths_and_child_of_follows_a_reparent() {
+    let (w, _addons) = world().await;
+    let installed = w
+        .life
+        .install(&su(&w.orm), consent(&wdecl("1.0.0", true, true)))
+        .await
+        .unwrap();
+    committed_ref(&installed);
+    let orm = &installed.orm;
+    let root = create_row(orm, "wdecl.node", &[("name", text("root"))])
+        .await
+        .unwrap()[0];
+    let other = create_row(orm, "wdecl.node", &[("name", text("other"))])
+        .await
+        .unwrap()[0];
+    let child = create_row(
+        orm,
+        "wdecl.node",
+        &[
+            ("name", text("child")),
+            ("parent_id", erp_fields::Cell::Id(root)),
+        ],
+    )
+    .await
+    .unwrap()[0];
+    let grand = create_row(
+        orm,
+        "wdecl.node",
+        &[
+            ("name", text("grand")),
+            ("parent_id", erp_fields::Cell::Id(child)),
+        ],
+    )
+    .await
+    .unwrap()[0];
+    assert_eq!(
+        cell_of(
+            orm,
+            &format!("SELECT parent_path FROM wdecl_node WHERE id = {grand}")
+        )
+        .await
+        .unwrap(),
+        format!("{root}/{child}/{grand}/")
+    );
+    async fn descendants(orm: &Orm, of: i64) -> Vec<i64> {
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let domain = erp_sdk::Domain::from_json(&json!([["id", "child_of", of]])).unwrap();
+        let found = tx
+            .env()
+            .records("wdecl.node")
+            .unwrap()
+            .search(&mut tx, &domain)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        let mut ids = found.ids();
+        ids.sort_unstable();
+        ids
+    }
+    let mut expected = vec![root, child, grand];
+    expected.sort_unstable();
+    assert_eq!(descendants(orm, root).await, expected);
+    // re-parent the child (and so its subtree) under the other root
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    tx.env()
+        .records("wdecl.node")
+        .unwrap()
+        .browse([child])
+        .unwrap()
+        .write(
+            &mut tx,
+            erp_orm::RawVals::new().set_cell("parent_id", erp_fields::Cell::Id(other)),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(descendants(orm, root).await, vec![root]);
+    let mut under_other = vec![other, child, grand];
+    under_other.sort_unstable();
+    assert_eq!(descendants(orm, other).await, under_other);
+    assert_eq!(
+        cell_of(
+            orm,
+            &format!("SELECT parent_path FROM wdecl_node WHERE id = {grand}")
+        )
+        .await
+        .unwrap(),
+        format!("{other}/{child}/{grand}/")
+    );
+    w.db.cleanup().await.unwrap();
+}
+
+/// the key and rolls back (the stored package, the constraint, the data and the registry generation
+/// stay as they were); once the rows are repaired the same upgrade goes through).
+#[tokio::test]
+async fn an_upgrade_adding_a_key_over_duplicates_fails_by_name_and_rolls_back() {
+    let (w, _addons) = world().await;
+    let installed = w
+        .life
+        .install(&su(&w.orm), consent(&wdecl("1.0.0", false, false)))
+        .await
+        .unwrap();
+    committed_ref(&installed);
+    let orm = &installed.orm;
+    for name in ["a", "b"] {
+        create_row(
+            orm,
+            "wdecl.item",
+            &[("name", text(name)), ("serial_no", text("S1"))],
+        )
+        .await
+        .unwrap();
+    }
+    let before = generation(&w.db).await;
+    let err = w
+        .life
+        .upgrade(&su(orm), consent(&wdecl("1.1.0", true, false)))
+        .await
+        .unwrap_err();
+    // a failed schema step of the module operation, not a refusal of the package
+    let (module, step, _file, _source) = step_failed(&err);
+    assert_eq!(module, "wdecl");
+    assert!(
+        matches!(step, erp_modules::error::ModuleStep::Schema),
+        "{step:?}"
+    );
+    let shown = chain(&err);
+    assert_eq!(shown[0], "Module \"wdecl\": schema update failed");
+    assert!(
+        shown[1].starts_with(
+            "cannot add key '_serial_uniq' to 'wdecl.item': existing records conflict"
+        ),
+        "the error must name the key: {shown:?}"
+    );
+    assert_eq!(generation(&w.db).await, before);
+    assert_eq!(
+        count(
+            orm,
+            "SELECT count(*) FROM pg_constraint WHERE conname = 'wdecl_item_serial_uniq'"
+        )
+        .await,
+        0
+    );
+    assert_eq!(count(orm, "SELECT count(*) FROM wdecl_item").await, 2);
+    assert_eq!(
+        rows(
+            orm,
+            "SELECT version FROM ir_module_package WHERE name = 'wdecl'"
+        )
+        .await,
+        vec![vec![Some("1.0.0".to_owned())]]
+    );
+    // repaired rows: the same upgrade succeeds and the key is enforced
+    exec(orm, "DELETE FROM wdecl_item WHERE name = 'b'").await;
+    let upgraded = w
+        .life
+        .upgrade(&su(orm), consent(&wdecl("1.1.0", true, false)))
+        .await
+        .unwrap();
+    committed_ref(&upgraded);
+    assert_eq!(
+        count(
+            &upgraded.orm,
+            "SELECT count(*) FROM pg_constraint WHERE conname = 'wdecl_item_serial_uniq'"
+        )
+        .await,
+        1
+    );
+    w.db.cleanup().await.unwrap();
+}
+
+/// version has without it is refused by name, with or without rows, since nothing fills the paths
+/// of existing rows; observed before the refusal existed: the upgrade went through and left
+/// `parent_path` NULL)
+#[tokio::test]
+async fn an_upgrade_turning_parent_store_on_over_existing_rows() {
+    let (w, _addons) = world().await;
+    let installed = w
+        .life
+        .install(&su(&w.orm), consent(&wdecl("1.0.0", false, false)))
+        .await
+        .unwrap();
+    committed_ref(&installed);
+    let orm = &installed.orm;
+    let root = create_row(orm, "wdecl.node", &[("name", text("root"))])
+        .await
+        .unwrap()[0];
+    let child = create_row(
+        orm,
+        "wdecl.node",
+        &[
+            ("name", text("child")),
+            ("parent_id", erp_fields::Cell::Id(root)),
+        ],
+    )
+    .await
+    .unwrap()[0];
+    let result = w
+        .life
+        .upgrade(&su(orm), consent(&wdecl("1.1.0", false, true)))
+        .await;
+    let err = result.unwrap_err();
+    assert!(
+        matches!(wasm_reason(&err), WasmReason::State(m) if m
+            == "the upgrade turns parent_store on for model 'wdecl.node', which the installed \
+                version has without it: the paths of its existing rows would stay empty. \
+                Declare parent_store from the first version of the model"),
+        "{err}"
+    );
+    // nothing changed: still the first version, rows untouched
+    assert_eq!(
+        rows(
+            orm,
+            "SELECT version FROM ir_module_package WHERE name = 'wdecl'"
+        )
+        .await,
+        vec![vec![Some("1.0.0".to_owned())]]
+    );
+    assert_eq!(
+        count(
+            orm,
+            &format!("SELECT count(*) FROM wdecl_node WHERE id IN ({root}, {child})")
+        )
+        .await,
+        2
+    );
+    w.db.cleanup().await.unwrap();
+}
+
+/// field another addon introduced, whatever the attribute: a plain `string`, `sanitize = false` on
+/// an HTML field, another `comodel`, an index)
+#[tokio::test]
+async fn a_package_extension_may_only_add_fields() {
+    let (w, _addons) = world().await;
+    let package = |name: &str, depends: &[&str], fields: serde_json::Value| {
+        let mut deps = vec!["base", "nat"];
+        deps.extend_from_slice(depends);
+        let text = json!({"schema": 1, "contributions": [
+            {"addon": name, "kind": "addon", "model": "", "name": name,
+             "detail": {"depends": deps}},
+            {"addon": name, "kind": "extend", "model": MODEL, "name": "Ext",
+             "detail": {"target": "Nat", "args": {}, "fields": fields}},
+        ]})
+        .to_string();
+        let mut manifest_deps = vec!["nat"];
+        manifest_deps.extend_from_slice(depends);
+        archive(name, "1.0.0", &manifest_deps, &[], &text, None)
+    };
+    // `wbase` adds an HTML field and a many2one of its own: allowed
+    let base = package(
+        "wbase",
+        &[],
+        json!([
+            {"name": "body", "kind": "html", "attrs": {"sanitize": "true"}},
+            {"name": "rel", "kind": "many2one", "attrs": {"comodel": "\"test.nat\""}},
+            {"name": "note", "kind": "char", "attrs": {"index": true}},
+        ]),
+    );
+    let ok = w.life.install(&su(&w.orm), consent(&base)).await.unwrap();
+    committed_ref(&ok);
+    assert!(
+        !rows(
+            &ok.orm,
+            "SELECT 1::text FROM pg_indexes WHERE tablename = 'test_nat' AND indexdef LIKE \
+             '%(note)%'"
+        )
+        .await
+        .is_empty()
+    );
+    // `wlife` redeclaring any of them, or the field of `nat`, is refused naming the first addon
+    let cases = [
+        ("name", "nat", json!({"string": "\"Other\""}), "char"),
+        ("body", "wbase", json!({"sanitize": "false"}), "html"),
+        (
+            "rel",
+            "wbase",
+            json!({"comodel": "\"res.users\""}),
+            "many2one",
+        ),
+        ("note", "wbase", json!({"index": true}), "char"),
+    ];
+    for (field, first, attrs, kind) in cases {
+        let bytes = package(
+            "wlife",
+            &["wbase"],
+            json!([{"name": field, "kind": kind, "attrs": attrs}]),
+        );
+        let err = w
+            .life
+            .install(&su(&ok.orm), consent(&bytes))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(wasm_reason(&err), WasmReason::Unsupported(m)
+                if m == &format!(
+                    "field test.nat.{field}: a package may not redeclare a field declared by \
+                     addon '{first}'; an extend entry only adds new fields")),
+            "{field}: {err}"
+        );
+    }
+    assert_eq!(package_rows(&ok.orm).await, 1);
+    // a new field on the extended model is accepted
+    let fresh = package(
+        "wlife",
+        &["wbase"],
+        json!([{"name": "extra", "kind": "char", "attrs": {"string": "\"Extra\""}}]),
+    );
+    let added = w.life.install(&su(&ok.orm), consent(&fresh)).await.unwrap();
+    committed_ref(&added);
+    assert!(has_column(&added.orm, "extra").await);
+    w.db.cleanup().await.unwrap();
+}
+
+/// a deeper native addon still may not redeclare that addon's field)
+#[tokio::test]
+async fn a_package_may_not_redeclare_a_deeper_native_field() {
+    let addons = fixture_addons();
+    addons.add("zmid", "name = 'Zmid'\ndepends = ['nat']\n");
+    addons.add("zdeep", "name = 'Zdeep'\ndepends = ['zmid']\n");
+    let db = TestDb::create().await.unwrap();
+    let packages = WasmPackages::new(Arc::new(StubLoader));
+    let system = Arc::new(
+        builder(&db, &addons)
+            .decls([model("nat", MODEL), extension("zdeep", MODEL, "deep_note")])
+            .signal(Signal::new(Generations::new()).with_refresh(KeepServing))
+            .package_runtime(packages.clone())
+            .build()
+            .unwrap(),
+    );
+    let life = WasmLifecycle::new(Arc::clone(&system), packages);
+    let init = system
+        .initialize(InitOptions::new().with_skip_auto_install(true))
+        .await
+        .unwrap();
+    let outcome = system
+        .button_immediate_install(&su(&init.orm), &[n("nat"), n("zdeep")])
+        .await
+        .unwrap();
+    committed_ref(&outcome);
+    // `wearly` depends on base and nat only, so it sorts before `zdeep` (depth 3)
+    let text = json!({"schema": 1, "contributions": [
+        {"addon": "wearly", "kind": "addon", "model": "", "name": "wearly",
+         "detail": {"depends": ["base", "nat"]}},
+        {"addon": "wearly", "kind": "extend", "model": MODEL, "name": "Ext",
+         "detail": {"target": "Nat", "args": {},
+                    "fields": [{"name": "deep_note", "kind": "char", "attrs": {"required": true}}]}},
+    ]})
+    .to_string();
+    let bytes = archive("wearly", "1.0.0", &["nat"], &[], &text, None);
+    let err = life
+        .install(&su(&outcome.orm), consent(&bytes))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(wasm_reason(&err), WasmReason::Unsupported(m)
+            if m == "field test.nat.deep_note: a package may not redeclare a field declared by \
+                     addon 'zdeep'; an extend entry only adds new fields"),
+        "{err}"
+    );
+    assert_eq!(package_rows(&outcome.orm).await, 0);
+    db.cleanup().await.unwrap();
+}
+
+/// `parent_store` stays on is refused, naming the model; an unchanged parent field upgrades)
+#[tokio::test]
+async fn an_upgrade_changing_the_parent_field_under_parent_store_is_refused() {
+    let (w, _addons) = world().await;
+    let installed = w
+        .life
+        .install(&su(&w.orm), consent(&wdecl("1.0.0", false, true)))
+        .await
+        .unwrap();
+    committed_ref(&installed);
+    let orm = &installed.orm;
+    let message = "the upgrade changes the parent field of model 'wdecl.node' (parent_name or the \
+                   model it points to) while parent_store stays on: the stored paths would no \
+                   longer match the tree";
+    for (parent, comodel) in [("up_id", "wdecl.node"), ("parent_id", "wdecl.item")] {
+        let text = decl_describe_with(false, true, parent, comodel);
+        let bytes = archive("wdecl", "1.1.0", &[], &[], &text, None);
+        let err = w.life.upgrade(&su(orm), consent(&bytes)).await.unwrap_err();
+        assert!(
+            matches!(wasm_reason(&err), WasmReason::State(m) if m == message),
+            "{parent}/{comodel}: {err}"
+        );
+    }
+    assert_eq!(
+        rows(
+            orm,
+            "SELECT version FROM ir_module_package WHERE name = 'wdecl'"
+        )
+        .await,
+        vec![vec![Some("1.0.0".to_owned())]]
+    );
+    // the same parent field upgrades
+    let ok = w
+        .life
+        .upgrade(&su(orm), consent(&wdecl("1.2.0", false, true)))
+        .await
+        .unwrap();
+    committed_ref(&ok);
+    w.db.cleanup().await.unwrap();
+}

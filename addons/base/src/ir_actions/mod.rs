@@ -216,7 +216,7 @@ impl IrActionsActions {
     /// The registry is final: refuse it when actions could not be deleted cleanly
     /// ([`check_cleanups`]) or an action model lacks the shared sequence or its trigger
     /// ([`check_action_model`]).
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _register_hook(
         this: &RecordSet<IrActionsActions>,
         tx: &mut Transaction,
@@ -988,7 +988,7 @@ impl IrActionsServer {
     /// Remove the `_run_as_superuser_not_yet` check an database still has: schema
     /// synchronization adds and replaces declared constraints but drops none, and that check
     /// would refuse every flagged action. Nothing is locked when it is gone.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn init(
         this: &RecordSet<IrActionsServer>,
         tx: &mut Transaction,
@@ -1001,7 +1001,7 @@ impl IrActionsServer {
 
     /// The registry is final: every state has exactly one runner
     /// ([`crate::server_action::check_runners`]).
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _register_hook(
         this: &RecordSet<IrActionsServer>,
         tx: &mut Transaction,

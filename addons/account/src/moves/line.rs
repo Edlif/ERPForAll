@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `account.move.line`: journal items of draft entries.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use erp_addon_base::money::{
+    CURRENCY_ROUNDING_MODE, MAX_CURRENCIES_PER_CALL, RateBook, RoundingTable,
+};
 use erp_sdk::GeneratedInput;
+use erp_sdk::money::{Increment, RateDateRule};
 use erp_sdk::prelude::*;
 
 use super::{
@@ -143,7 +147,8 @@ pub struct AccountMoveLine {
         string = "Currency"
     )]
     pub currency_id: Option<RecId>,
-    /// Amount in the line currency; equal to the balance in the company currency.
+    /// Amount in the line currency; equal to the balance in the company currency. In another
+    /// currency the amount that is not given is converted from the other one at the entry date.
     #[field(
         monetary,
         currency_field = "currency_id",
@@ -265,17 +270,102 @@ fn align_company_amounts(vals: &mut RawVals) -> Result<()> {
     }
 }
 
-const CONVERSION_NOT_DELIVERED: &str = "Converting between a line's currency and the company currency is not \
-     delivered yet (next part of task a later release): give both the amount in currency and the balance.";
+/// One amount to convert between a line currency and the company currency of an entry.
+struct Conversion {
+    company: i64,
+    date: Date,
+    company_currency: i64,
+    from: i64,
+    to: i64,
+    amount: Decimal,
+}
 
-/// A foreign-currency line needs both amounts until the rate conversion is delivered.
-fn check_foreign_amounts(vals: &RawVals) -> Result<()> {
-    let balance = amount_of(vals.get("balance"), "balance")?.unwrap_or_default();
-    let amount = amount_of(vals.get("amount_currency"), "amount_currency")?.unwrap_or_default();
-    if balance.is_zero() != amount.is_zero() {
-        return Err(Error::validation(CONVERSION_NOT_DELIVERED));
+fn real_id(id: i64) -> Result<RecId> {
+    RecId::from_real(id)
+        .ok_or_else(|| Error::invariant(format!("record id {id} is not a stored record id")))
+}
+
+/// Converts each amount through the `spot` rate strictly before its entry date for the entry's
+/// company, rounded half away from zero on the target currency's increment (
+/// 025, 032, 034;/D3). One rate book per (company, date) and chunk of currencies,
+/// never one per line; a currency without any rate fails with base's `UserError`.
+async fn convert_amounts(
+    env: &Env,
+    tx: &mut Transaction,
+    conversions: &[Conversion],
+) -> Result<Vec<Decimal>> {
+    if conversions.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(())
+    let targets: Vec<i64> = conversions
+        .iter()
+        .map(|c| c.to)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut increments: BTreeMap<i64, Increment> = BTreeMap::new();
+    for chunk in targets.chunks(MAX_CURRENCIES_PER_CALL) {
+        let ids = chunk
+            .iter()
+            .map(|id| real_id(*id))
+            .collect::<Result<Vec<_>>>()?;
+        let table = RoundingTable::load(env, tx, &ids).await?;
+        for id in ids {
+            increments.insert(id.get(), table.get(id)?.increment().clone());
+        }
+    }
+    // the company currency is one side of every conversion, the other side is foreign
+    type Group<'a> = BTreeMap<i64, Vec<(usize, &'a Conversion)>>;
+    let mut groups: BTreeMap<(i64, Date, i64), Group<'_>> = BTreeMap::new();
+    for (index, c) in conversions.iter().enumerate() {
+        let foreign = if c.from == c.company_currency {
+            c.to
+        } else {
+            c.from
+        };
+        groups
+            .entry((c.company, c.date, c.company_currency))
+            .or_default()
+            .entry(foreign)
+            .or_default()
+            .push((index, c));
+    }
+    let mut amounts = vec![None; conversions.len()];
+    for ((company, date, company_currency), by_foreign) in groups {
+        let by_foreign: Vec<_> = by_foreign.into_iter().collect();
+        // one slot of each book is the company currency
+        for chunk in by_foreign.chunks(MAX_CURRENCIES_PER_CALL - 1) {
+            let mut ids = vec![real_id(company_currency)?];
+            for (id, _) in chunk {
+                ids.push(real_id(*id)?);
+            }
+            let book = RateBook::load(
+                env,
+                tx,
+                real_id(company)?,
+                date,
+                RateDateRule::StrictlyBefore,
+                &ids,
+            )
+            .await?;
+            for (index, c) in chunk.iter().flat_map(|(_, items)| items) {
+                let increment = increments.get(&c.to).ok_or_else(|| {
+                    Error::invariant(format!("currency {} has no loaded rounding", c.to))
+                })?;
+                let exact = book
+                    .snapshot(real_id(c.from)?, real_id(c.to)?)?
+                    .convert_exact(c.amount)?;
+                let slot = amounts
+                    .get_mut(*index)
+                    .ok_or_else(|| Error::invariant("a conversion index is out of range"))?;
+                *slot = Some(exact.quantize(increment, CURRENCY_ROUNDING_MODE)?);
+            }
+        }
+    }
+    amounts
+        .into_iter()
+        .map(|amount| amount.ok_or_else(|| Error::invariant("a currency conversion was skipped")))
+        .collect()
 }
 
 fn refuse_line_inputs(vals: &RawVals) -> Result<()> {
@@ -289,29 +379,102 @@ fn refuse_line_inputs(vals: &RawVals) -> Result<()> {
     Ok(())
 }
 
-/// (currency, company currency) of the entries of `move_ids`, by entry.
-async fn move_currencies(
+/// What a line reads from its entry: currency, company currency, company and date.
+#[derive(Clone, Copy)]
+struct EntryInfo {
+    currency: Option<i64>,
+    company_currency: Option<i64>,
+    company: Option<i64>,
+    date: Option<Date>,
+}
+
+fn date_cell(cell: &Cell, field: &str) -> Result<Option<Date>> {
+    match cell {
+        Cell::Null | Cell::Bool(false) => Ok(None),
+        Cell::Date(date) => Ok(Some(*date)),
+        other => Err(Error::validation(format!(
+            "{field} takes a date, not {other:?}."
+        ))),
+    }
+}
+
+/// The [`EntryInfo`] of the entries of `move_ids`, by entry.
+async fn move_entries(
     tx: &mut Transaction,
     env: &Env,
     move_ids: &[i64],
-) -> Result<BTreeMap<i64, (Option<i64>, Option<i64>)>> {
+) -> Result<BTreeMap<i64, EntryInfo>> {
     let moves = env
         .records("account.move")?
         .browse(move_ids.iter().copied())?;
     let currencies = moves.cells(tx, "currency_id").await?;
-    let companies = moves.cells(tx, "company_currency_id").await?;
+    let company_currencies = moves.cells(tx, "company_currency_id").await?;
+    let companies = moves.cells(tx, "company_id").await?;
+    let dates = moves.cells(tx, "date").await?;
     let mut by_move = BTreeMap::new();
-    for ((id, currency), company) in moves.ids().into_iter().zip(currencies).zip(companies) {
+    let rows = moves
+        .ids()
+        .into_iter()
+        .zip(currencies)
+        .zip(company_currencies)
+        .zip(companies)
+        .zip(dates);
+    for ((((id, currency), company_currency), company), date) in rows {
         by_move.insert(
             id,
-            (
-                id_cell(Some(&currency), "currency_id")?,
-                id_cell(Some(&company), "company_currency_id")?,
-            ),
+            EntryInfo {
+                currency: id_cell(Some(&currency), "currency_id")?,
+                company_currency: id_cell(Some(&company_currency), "company_currency_id")?,
+                company: id_cell(Some(&company), "company_id")?,
+                date: date_cell(&date, "date")?,
+            },
         );
     }
     Ok(by_move)
 }
+
+/// The conversion that fills the amount a foreign-currency row lacks: the balance from the amount
+/// in currency, or the amount in currency from the balance. None when both or neither are given.
+fn missing_amount(
+    vals: &RawVals,
+    entry: EntryInfo,
+    currency: i64,
+) -> Result<Option<(&'static str, Conversion)>> {
+    let balance = amount_of(vals.get("balance"), "balance")?;
+    let amount = amount_of(vals.get("amount_currency"), "amount_currency")?;
+    let (target, given, foreign_to_company) = match (balance, amount) {
+        (None, Some(amount)) => ("balance", amount, true),
+        (Some(balance), None) => ("amount_currency", balance, false),
+        _ => return Ok(None),
+    };
+    let (Some(company), Some(date), Some(company_currency)) =
+        (entry.company, entry.date, entry.company_currency)
+    else {
+        return Err(Error::invariant(
+            "a journal entry lacks the company, date or company currency its line converts at",
+        ));
+    };
+    let (from, to) = if foreign_to_company {
+        (currency, company_currency)
+    } else {
+        (company_currency, currency)
+    };
+    Ok(Some((
+        target,
+        Conversion {
+            company,
+            date,
+            company_currency,
+            from,
+            to,
+            amount: given,
+        },
+    )))
+}
+
+const CURRENCY_ONLY_REFUSED: &str = "Changing only the currency of a journal item that has an amount would keep its \
+     amounts under the new currency: give the amount in currency (the balance is converted at the entry's rate) or \
+     both amounts.";
 
 #[methods(AccountMoveLine, addon = "account")]
 impl AccountMoveLine {
@@ -346,8 +509,9 @@ impl AccountMoveLine {
         Ok(rows)
     }
 
-    /// Fills the line currency from the entry and keeps company-currency amounts equal; the
-    /// entries are checked for balance after the lines exist (unless skipped).
+    /// Fills the line currency from the entry, keeps company-currency amounts equal and converts
+    /// the missing amount of a foreign-currency line at the entry date (one rate read per company
+    /// and date); the entries are checked for balance after the lines exist (unless skipped).
     #[method(override)]
     async fn create(
         this: &RecordSet<AccountMoveLine>,
@@ -366,30 +530,43 @@ impl AccountMoveLine {
         }
         move_ids.sort_unstable();
         move_ids.dedup();
-        let currencies = move_currencies(tx, &env, &move_ids).await?;
-        for vals in &mut vals_list {
-            let entry = id_cell(vals.get("move_id"), "move_id")?
-                .and_then(|id| currencies.get(&id).copied());
-            let Some((entry_currency, company_currency)) = entry else {
+        let entries = move_entries(tx, &env, &move_ids).await?;
+        let mut conversions = Vec::new();
+        let mut targets = Vec::new();
+        for (index, vals) in vals_list.iter_mut().enumerate() {
+            let entry =
+                id_cell(vals.get("move_id"), "move_id")?.and_then(|id| entries.get(&id).copied());
+            let Some(entry) = entry else {
                 continue; // the required check names the missing entry
             };
             let currency = match id_cell(vals.get("currency_id"), "currency_id")? {
                 Some(currency) => Some(currency),
                 None => {
-                    if let Some(currency) = entry_currency {
+                    if let Some(currency) = entry.currency {
                         vals.insert("currency_id".into(), Cell::Id(currency));
                     }
-                    entry_currency
+                    entry.currency
                 }
             };
             if is_text_line(vals) {
                 continue; // the CHECK refuses an amount or an account on a section or note
             }
-            if currency == company_currency {
+            if currency == entry.company_currency {
                 align_company_amounts(vals)?;
-            } else {
-                check_foreign_amounts(vals)?;
+            } else if let Some(currency) = currency
+                && let Some((field, conversion)) = missing_amount(vals, entry, currency)?
+            {
+                conversions.push(conversion);
+                targets.push((index, field));
             }
+            // a line without any currency is refused by the required check of currency_id
+        }
+        let converted = convert_amounts(&env, tx, &conversions).await?;
+        for ((index, field), amount) in targets.into_iter().zip(converted) {
+            let vals = vals_list
+                .get_mut(index)
+                .ok_or_else(|| Error::invariant("a converted line is out of range"))?;
+            vals.insert(field.into(), Cell::Decimal(amount));
         }
         let created = sup.call(tx, this.as_records(), (vals_list,)).await?;
         if !skip {
@@ -398,8 +575,9 @@ impl AccountMoveLine {
         Ok(created)
     }
 
-    /// A line stays in its entry (/096); amounts are aligned per currency and the
-    /// entries checked for balance after the write.
+    /// A line stays in its entry (/096); amounts are aligned per currency, an
+    /// amount in currency written alone on a foreign line re-derives its balance at the entry date,
+    /// and the entries are checked for balance after the write.
     #[method(override)]
     async fn write(
         this: &RecordSet<AccountMoveLine>,
@@ -432,7 +610,8 @@ impl AccountMoveLine {
         if !amounts {
             return sup.call(tx, this.as_records(), (vals,)).await;
         }
-        // one write per (currency, company currency, stored balance when only the currency changes)
+        // one write per (company currency or not, stored balance when only the currency changes,
+        // derived balance of a foreign line)
         let currencies = match id_cell(vals.get("currency_id"), "currency_id")? {
             Some(currency) => vec![Some(currency); this.len()],
             None => this
@@ -452,33 +631,74 @@ impl AccountMoveLine {
         } else {
             vec![Decimal::ZERO; this.len()]
         };
-        let mut groups: BTreeMap<(bool, Decimal), Vec<i64>> = BTreeMap::new();
+        // an amount in currency written without a balance re-derives the balance of each foreign
+        // line at its entry's company and date
+        let derive = vals.contains("amount_currency") && !vals.contains("balance");
+        let (companies, dates) = if derive {
+            (
+                this.mapped(tx, AccountMoveLine::COMPANY_ID).await?,
+                this.mapped(tx, AccountMoveLine::DATE).await?,
+            )
+        } else {
+            (vec![None; this.len()], vec![None; this.len()])
+        };
+        let mut lines = Vec::with_capacity(this.len());
+        let mut conversions = Vec::new();
         let rows = this
             .ids()
             .into_iter()
             .zip(text_lines)
             .zip(company_currencies)
             .zip(currencies)
-            .zip(balances);
-        for ((((id, kind), company), currency), balance) in rows {
+            .zip(balances)
+            .zip(companies.into_iter().zip(dates));
+        for (((((id, kind), company_currency), currency), balance), (company, date)) in rows {
             let text = kind
                 .as_deref()
                 .is_some_and(|kind| TEXT_LINE_TYPES.contains(&kind));
-            let company = company.and_then(|id| id.as_real()).map(|id| id.get());
-            let same = !text && currency == company;
-            if !text && !same {
-                check_foreign_amounts(&vals)?;
-                // a currency-only write would keep the stored amounts under the new currency
-                if currency_only && !balance.is_zero() {
-                    return Err(Error::validation(CONVERSION_NOT_DELIVERED));
+            let company_currency = company_currency
+                .and_then(|id| id.as_real())
+                .map(|id| id.get());
+            let same = !text && currency == company_currency;
+            // a currency-only write would keep the stored amounts under the new currency
+            // (a silent rate); the caller gives the amount in currency (converted) or both amounts.
+            if currency_only && !text && !same && !balance.is_zero() {
+                return Err(Error::validation(CURRENCY_ONLY_REFUSED));
+            }
+            let mut converted = false;
+            if derive && !text && !same {
+                let entry = EntryInfo {
+                    currency,
+                    company_currency,
+                    company: company.and_then(|id| id.as_real()).map(|id| id.get()),
+                    date,
+                };
+                let currency = currency.ok_or_else(|| {
+                    Error::invariant(format!("journal item {id} has no currency"))
+                })?;
+                if let Some((_, conversion)) = missing_amount(&vals, entry, currency)? {
+                    conversions.push(conversion);
+                    converted = true;
                 }
             }
-            groups.entry((same, balance)).or_default().push(id);
+            lines.push((id, same, balance, converted));
         }
-        // the chain continues once; further groups re-enter the public write with aligned values,
-        // which form a single group there (the balance check runs once below)
+        let mut derived = convert_amounts(&env, tx, &conversions).await?.into_iter();
+        let mut groups: BTreeMap<(bool, Decimal, Option<Decimal>), Vec<i64>> = BTreeMap::new();
+        for (id, same, balance, converted) in lines {
+            let derived = if converted {
+                Some(derived.next().ok_or_else(|| {
+                    Error::invariant("a derived balance is missing for a journal item")
+                })?)
+            } else {
+                None
+            };
+            groups.entry((same, balance, derived)).or_default().push(id);
+        }
+        // the chain continues once; further groups re-enter the public write with aligned values
+        // (or both amounts), which form a single group there (the balance check runs once below)
         let mut sup = Some(sup);
-        for ((same, stored_balance), ids) in groups {
+        for ((same, stored_balance, derived), ids) in groups {
             let mut group_vals = vals.clone();
             if same {
                 if currency_only {
@@ -486,6 +706,8 @@ impl AccountMoveLine {
                 } else {
                     align_company_amounts(&mut group_vals)?;
                 }
+            } else if let Some(balance) = derived {
+                group_vals.insert("balance".into(), Cell::Decimal(balance));
             }
             let records = this.as_records().browse(ids)?;
             match sup.take() {

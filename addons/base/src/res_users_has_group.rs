@@ -23,7 +23,7 @@ impl ResUsersGroupQuestions {
     /// `Access` for a non-internal user asking about another user (outside superuser mode);
     /// `Programming` for an external id that is malformed or names no group; the usual
     /// singleton error for anything but one record.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = read)]
     async fn has_group(
         this: &RecordSet<ResUsers>,

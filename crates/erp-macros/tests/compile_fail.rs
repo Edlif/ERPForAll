@@ -53,3 +53,11 @@ fn candidate_compute_refuses_what_cannot_be_read_only() {
 fn rpc_assistant_offer_refuses_external_hide_and_other_values() {
     trybuild::TestCases::new().compile_fail("tests/ui/rpc_assistant/*.rs");
 }
+
+/// `wire` (the method has a wire form) and `sealed` (it never crosses into WebAssembly) on one
+/// method contradict each other (WASM.WIRE-NATIVE), and so do `wire` and a constraint, which is
+/// sealed by default.
+#[test]
+fn method_wire_and_sealed_are_refused_together() {
+    trybuild::TestCases::new().compile_fail("tests/ui/method_wire/*.rs");
+}

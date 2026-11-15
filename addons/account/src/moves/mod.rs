@@ -3,7 +3,9 @@
 //! ([`AccountMoveLine`]) carry one stored amount, `balance` in the company currency; `debit` and
 //! `credit` are virtual generated columns derived from it, and a written debit or
 //! credit is turned into a balance by the line's generated-input adapter before the
-//! ordinary write runs.
+//! ordinary write runs. On a line in another currency than the company's, the amount that is not
+//! given is converted through the rate at the entry date (see the guide's
+//! "Lines in another currency").
 //!
 //! This part delivers drafts only (lead ruling V1-V5 of 2026-11-13): an entry can be created,
 //! edited, checked for balance and deleted. Nothing posts: [`AccountMove`]'s `action_post` and

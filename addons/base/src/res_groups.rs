@@ -507,7 +507,7 @@ impl ResGroups {
     }
 
     /// The user type groups (internal, portal, public) that exist.
-    #[method]
+    #[method(sealed)]
     async fn _get_user_type_groups(
         this: &RecordSet<ResGroups>,
         tx: &mut Transaction,
@@ -516,7 +516,7 @@ impl ResGroups {
         this.as_records().browse(ids)
     }
 
-    #[method]
+    #[method(sealed)]
     async fn _get_light_group_xmlids(
         _this: &RecordSet<ResGroups>,
         _tx: &mut Transaction,
@@ -536,7 +536,7 @@ impl ResGroups {
 
     /// Whether every group of the set is a light group. An empty set answers true (nothing in
     /// it is heavy; Python's `all([])`); a new record with no origin is an error.
-    #[method]
+    #[method(sealed)]
     async fn _is_light_groups(this: &RecordSet<ResGroups>, tx: &mut Transaction) -> Result<bool> {
         let light = light_group_ids(this, tx).await?;
         Ok(row_ids(this.as_records())?
@@ -544,7 +544,7 @@ impl ResGroups {
             .all(|g| light.contains(g)))
     }
 
-    #[method]
+    #[method(sealed)]
     async fn _reduce_to_light_groups(
         this: &RecordSet<ResGroups>,
         tx: &mut Transaction,
@@ -579,7 +579,7 @@ impl ResGroups {
 
     /// Whether some group of the set is in a loop of `field` (`implied_ids` or
     /// `implied_by_ids`).
-    #[method]
+    #[method(sealed)]
     async fn _has_cycle(
         this: &RecordSet<ResGroups>,
         tx: &mut Transaction,
@@ -603,7 +603,7 @@ impl ResGroups {
             .any(|g| follow(g).contains(&g)))
     }
 
-    #[method]
+    #[method(sealed)]
     async fn _apply_group(
         this: &RecordSet<ResGroups>,
         tx: &mut Transaction,
@@ -624,7 +624,7 @@ impl ResGroups {
 
     /// Members that held the group only through those groups
     /// lose it with the implication.
-    #[method]
+    #[method(sealed)]
     async fn _remove_group(
         this: &RecordSet<ResGroups>,
         tx: &mut Transaction,
@@ -644,7 +644,7 @@ impl ResGroups {
         this.as_records().browse(groups)?.write(tx, vals).await
     }
 
-    #[method]
+    #[method(sealed)]
     async fn _apply_group_regular(this: &RecordSet<ResGroups>, tx: &mut Transaction) -> Result<()> {
         let (found, _) = lookup_groups(tx, &[GROUP_USER_REGULAR], &[]).await?;
         let Some(regular) = found[0] else {
@@ -704,6 +704,7 @@ impl ResGroups {
 
     /// A user type group may not (transitively) imply another user type group's members: no
     /// group may imply two disjoint groups, and no active user may hold two.
+    #[method(sealed)]
     #[constrains("implied_ids", "implied_by_ids")]
     async fn _check_disjoint_groups(
         this: &RecordSet<ResGroups>,
@@ -741,6 +742,7 @@ impl ResGroups {
     }
 
     /// No active user may hold two user type groups through its membership in these groups.
+    #[method(sealed)]
     #[constrains("user_ids")]
     async fn _check_user_disjoint_groups(
         this: &RecordSet<ResGroups>,
@@ -754,6 +756,7 @@ impl ResGroups {
         check_users_disjoint(this, tx, &types, &graph).await
     }
 
+    #[method(sealed)]
     #[constrains("user_ids")]
     async fn _check_at_least_one_administrator(
         _this: &RecordSet<ResGroups>,
@@ -762,7 +765,7 @@ impl ResGroups {
         ensure_an_administrator(tx).await
     }
 
-    #[method(override)]
+    #[method(override, sealed)]
     async fn create(
         this: &RecordSet<ResGroups>,
         tx: &mut Transaction,
@@ -810,7 +813,7 @@ impl ResGroups {
         Ok(created)
     }
 
-    #[method(override)]
+    #[method(override, sealed)]
     async fn write(
         this: &RecordSet<ResGroups>,
         tx: &mut Transaction,
@@ -863,7 +866,7 @@ impl ResGroups {
         Ok(())
     }
 
-    #[method(override)]
+    #[method(override, sealed)]
     async fn unlink(this: &RecordSet<ResGroups>, tx: &mut Transaction, sup: Super) -> Result<()> {
         if let Some(system) = group_by_xmlid(tx, GROUP_SYSTEM).await?
             && row_ids(this.as_records())?.contains(&system)

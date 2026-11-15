@@ -145,7 +145,8 @@ export function mountGraph(options: GraphViewOptions): GraphView {
 
   const drawAxes = (chart: SVGSVGElement, data: GraphData, box: { x: number; y: number; w: number; h: number }, min: number, max: number): ((v: number) => number) => {
     const scale = (v: number): number => box.y + box.h - ((v - min) / (max - min || 1)) * box.h;
-    const step = niceStep((max - min) / 4);
+    // An integer measure (Count included) has no fractional values, so its ticks are whole numbers: formatNumeric refuses 0.25 as an integer.
+    const step = data.measure.kind === "integer" ? Math.max(1, niceStep((max - min) / 4)) : niceStep((max - min) / 4);
     for (let tick = Math.ceil(min / step) * step; tick <= max + step / 1e6; tick += step) {
       const y = scale(tick);
       chart.append(svg("line", { x1: box.x, x2: box.x + box.w, y1: y, y2: y }, tick === 0 ? "graph-axis" : "graph-grid"));

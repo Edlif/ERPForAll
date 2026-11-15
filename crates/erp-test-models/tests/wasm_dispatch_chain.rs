@@ -236,8 +236,9 @@ async fn the_dispatch_table_orders_native_and_wasm_entries_like_the_addons() {
 async fn a_wasm_layer_over_a_native_method_without_wire_is_refused_at_build() {
     let h = harness(false).await;
     let log = Arc::new(Mutex::new(Vec::new()));
-    // `default_get` is core's and has no wire form (`create`, `write` and `unlink` have one since,
-    // see `wasm_override.rs`)
+    // `default_get` is core's and has no wire form yet (its value map moves with
+    // WASM.WIRE-NATIVE.CORE-CODECS); `create`, `write` and `unlink` have one since
+    // (`wasm_override.rs`)
     let wasm = vec![WasmMethodImpl {
         model: MODEL.to_owned(),
         method: "default_get".to_owned(),
@@ -248,9 +249,28 @@ async fn a_wasm_layer_over_a_native_method_without_wire_is_refused_at_build() {
         }),
     }];
     let err = with_wasm(&h, wasm).err().expect("build must refuse");
-    let text = err.to_string();
-    assert!(text.contains("default_get"), "{text}");
-    assert!(text.contains("#[method(wire)]"), "{text}");
+    assert_eq!(err.kind(), erp_fields::ErrorKind::Programming);
+    let model = h.registry().model(MODEL).unwrap().id;
+    let core = h.orm().dispatch().implementations(model, "default_get");
+    let core = core.iter().find(|i| i.addon == "base").unwrap();
+    let gap = erp_orm::wire_report()
+        .into_iter()
+        .find(|r| r.model == "base" && r.addon == "base" && r.method == "default_get")
+        .unwrap();
+    assert_eq!(
+        err.message(),
+        format!(
+            "method 'default_get' of model '{MODEL}' has a WebAssembly implementation, but no \
+             native implementation has a wire form ({}:{} (addon 'base') is not serialisable: \
+             {}): a chain that crosses between native code and a component needs every argument \
+             and the result to be Serialize + DeserializeOwned",
+            core.file,
+            core.line,
+            gap.form.strip_prefix("gap: ").unwrap()
+        )
+    );
+    // the author is told what blocks the chain, never to mark a method `wire`
+    assert!(!err.message().contains("#[method(wire)]"));
 }
 
 #[tokio::test]

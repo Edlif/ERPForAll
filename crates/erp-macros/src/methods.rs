@@ -18,6 +18,15 @@
 //!
 //! `Super` may be written without generics; the macro fills in `Super<(A, B), R>`.
 //!
+//! Every method also gets a wire record (`METHOD_WIRE`, WASM.WIRE-NATIVE): its codec when the
+//! argument tuple and the result are `Serialize + DeserializeOwned + Send + 'static`, otherwise
+//! the first type that blocks it. `#[method(wire)]` asserts at compile time that the codec exists
+//! (the error names the method and the type); `#[method(sealed)]` (also with `override`) keeps
+//! the method out of every chain with a WebAssembly implementation. Every `#[constrains]` and
+//! `#[onchange]` method is sealed by default (a package could otherwise wrap a check and skip
+//! it); package overrides of those come with WASM.COMPUTE-REL and WASM.ONCHANGE. A seal limits
+//! overriding, not calling.
+//!
 //! `#[rpc(...)]` next to `#[method]` exposes the method over RPC:
 //!
 //! `#[rpc]` without `effect` (and without `hide`), an unknown effect, a parameter named `ids` or
@@ -43,9 +52,12 @@ use crate::model::addon_tokens;
 struct Method {
     name: syn::Ident,
     is_override: bool,
-    /// `#[method(wire)]`: the types can be serialised, so the method can sit in a chain with a
-    /// WebAssembly implementation.
+    /// `#[method(wire)]`: a compile-time assertion that the types can be serialised. Every
+    /// serialisable method gets its wire codec without it (WASM.WIRE-NATIVE).
     wire: bool,
+    /// `#[method(sealed)]`: the method never sits in a chain with a WebAssembly implementation
+    /// (credentials, access rows, schema hooks; WASM.WIRE-NATIVE).
+    sealed: bool,
     /// `#[method(rpc)]`: a package of this addon exposes the method to RPC clients (carried in
     /// `describe()` as `"rpc": true`). Natively it is a no-op: `#[rpc]` is the native marker.
     package_rpc: bool,
@@ -1102,14 +1114,14 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             }
             None => None,
         };
-        let (is_override, wire, package_rpc) = match f
+        let (is_override, wire, package_rpc, sealed) = match f
             .attrs
             .iter()
             .position(|a| a.path().is_ident("method"))
         {
             Some(pos) => {
                 let flags = match &f.attrs[pos].meta {
-                    Meta::Path(_) => (false, false, false),
+                    Meta::Path(_) => (false, false, false, false),
                     Meta::List(list) => {
                         let words = list.parse_args_with(|input: syn::parse::ParseStream| {
                             syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated_with(
@@ -1117,20 +1129,29 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                                 syn::ext::IdentExt::parse_any,
                             )
                         })?;
-                        let mut flags = (false, false, false);
+                        let mut flags = (false, false, false, false);
                         for word in &words {
                             match word.to_string().as_str() {
                                 "override" => flags.0 = true,
                                 "wire" => flags.1 = true,
                                 "rpc" => flags.2 = true,
+                                "sealed" => flags.3 = true,
                                 _ => {
                                     return err(
                                         word.span(),
                                         "expected #[method], #[method(override)], \
-                                         #[method(wire)], #[method(rpc)] or a combination",
+                                         #[method(wire)], #[method(rpc)], #[method(sealed)] or a \
+                                         combination",
                                     );
                                 }
                             }
+                        }
+                        if flags.1 && flags.3 {
+                            return err(
+                                list.span(),
+                                "`wire` asserts that a method has a wire form and `sealed` that it \
+                                 never crosses into WebAssembly: use one of them",
+                            );
                         }
                         flags
                     }
@@ -1142,9 +1163,16 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 flags
             }
             // a constraint or onchange method is a method of its own
-            None if constrains.is_some() || onchange.is_some() => (false, false, false),
+            None if constrains.is_some() || onchange.is_some() => (false, false, false, false),
             None => continue,
         };
+        if wire && (constrains.is_some() || onchange.is_some()) {
+            return err(
+                f.sig.ident.span(),
+                "`wire` asserts that a method has a wire form, but a #[constrains] or #[onchange] \
+                 method is sealed and never crosses into WebAssembly: remove `wire`",
+            );
+        }
         if package_rpc && is_override {
             return err(
                 f.sig.ident.span(),
@@ -1299,6 +1327,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             name: f.sig.ident.clone(),
             is_override,
             wire,
+            sealed,
             package_rpc,
             args,
             ret,
@@ -1382,19 +1411,13 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 line: ::core::line!(),
             };
         });
-        if m.wire {
-            let cstat = format_ident!("__ERP_CODEC_{}", name.to_string().to_uppercase());
-            entries.push(quote_spanned! {span=>
-                #[#rt::linkme::distributed_slice(#rt::METHOD_CODECS)]
-                #[linkme(crate = #rt::linkme)]
-                static #cstat: #rt::MethodCodecImpl = #rt::MethodCodecImpl {
-                    addon: #addon,
-                    model: <#target as #rt::Model>::MODEL_NAME,
-                    method: #name_str,
-                    codec: &#rt::TypedCodec::<#a_ty, #ret>::new(),
-                };
-            });
-        }
+        entries.push(wire_entry(WireEntry {
+            rt: &rt,
+            method: m,
+            target: &target,
+            addon: &addon,
+            a_ty: &a_ty,
+        }));
         if let Some(fields) = &m.constrains {
             let cstat = format_ident!("__ERP_CONSTRAINT_{}", name.to_string().to_uppercase());
             entries.push(quote_spanned! {span=>
@@ -1891,6 +1914,173 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
         };
         #(#registers)*
     })
+}
+
+/// Inputs of `wire_entry`.
+struct WireEntry<'a> {
+    rt: &'a TokenStream,
+    method: &'a Method,
+    target: &'a Path,
+    addon: &'a TokenStream,
+    a_ty: &'a TokenStream,
+}
+
+/// Whether a type is written with a reference or a lifetime: such a type never has a wire form
+/// (it cannot be deserialised into an owned value), and the autoref probe cannot see that because
+/// lifetimes take no part in trait selection, so the gap is decided from the source text.
+fn borrows(ty: &Type) -> bool {
+    fn walk(tokens: TokenStream) -> bool {
+        tokens.into_iter().any(|tree| match tree {
+            proc_macro2::TokenTree::Punct(p) => p.as_char() == '&' || p.as_char() == '\'',
+            proc_macro2::TokenTree::Group(g) => walk(g.stream()),
+            proc_macro2::TokenTree::Ident(_) | proc_macro2::TokenTree::Literal(_) => false,
+        })
+    }
+    walk(quote::ToTokens::to_token_stream(ty))
+}
+
+/// A type or pattern as an author writes it (`Vec<RawVals>`, not the token text
+/// `Vec < RawVals >`), for messages.
+fn source_text(node: &impl quote::ToTokens) -> String {
+    let mut text = crate::descriptor::text(node);
+    for (from, to) in [
+        (" < ", "<"),
+        (" <", "<"),
+        ("< ", "<"),
+        (" >", ">"),
+        (" ,", ","),
+        (" :: ", "::"),
+        (":: ", "::"),
+        (" ::", "::"),
+        ("& ", "&"),
+        ("( ", "("),
+        (" )", ")"),
+        ("[ ", "["),
+        (" ]", "]"),
+        (" ;", ";"),
+    ] {
+        text = text.replace(from, to);
+    }
+    text
+}
+
+/// The native wire record of one method (WASM.WIRE-NATIVE): a `MethodWireImpl` in
+/// `METHOD_WIRE` whose probe answers the codec, the first blocking type, or the seal; and for
+/// `#[method(wire)]` a compile-time assertion naming the method and the type.
+fn wire_entry(e: WireEntry<'_>) -> TokenStream {
+    let WireEntry {
+        rt,
+        method: m,
+        target,
+        addon,
+        a_ty,
+    } = e;
+    let name = &m.name;
+    let name_str = name.to_string();
+    let ret = &m.ret;
+    let span = m.line_span;
+    let probe = format_ident!("__erp_wire_probe_{}", name);
+    let stat = format_ident!("__ERP_WIRE_{}", name.to_string().to_uppercase());
+    // (type, its text with its role) for every argument and the result, in order
+    let mut roles: Vec<(&Type, String)> = m
+        .args
+        .iter()
+        .map(|(pat, ty)| {
+            (
+                ty,
+                format!("`{}` (argument `{}`)", source_text(ty), source_text(pat)),
+            )
+        })
+        .collect();
+    roles.push((ret, format!("`{}` (result)", source_text(ret))));
+    // a constraint or onchange method is sealed whatever its attribute says: the ORM runs it
+    // through its chain while it checks a write or answers a form, and a package layer that does
+    // not call `super` would skip it (package overrides: WASM.COMPUTE-REL, WASM.ONCHANGE)
+    let body = if m.constrains.is_some() {
+        quote!(#rt::WireForm::Sealed(#rt::WireSeal::Constraint))
+    } else if m.onchange.is_some() {
+        quote!(#rt::WireForm::Sealed(#rt::WireSeal::Onchange))
+    } else if m.sealed {
+        quote!(#rt::WireForm::Sealed(#rt::WireSeal::Attribute))
+    } else if let Some((_, text)) = roles.iter().find(|(ty, _)| borrows(ty)) {
+        let text = format!("{text}: a borrowed type");
+        quote!(#rt::WireForm::Gap(&[#text]))
+    } else {
+        let checks = roles.iter().map(|(ty, text)| {
+            quote! {
+                if !(&#rt::WireProbe::<#ty>::new()).wire_ok() {
+                    return #rt::WireForm::Gap(&[#text]);
+                }
+            }
+        });
+        let tuple = format!(
+            "the argument tuple of {} arguments (serde stops at 16)",
+            m.args.len()
+        );
+        quote! {
+            use #rt::{SigProbeOther as _, SigProbeSerde as _, WireProbeOther as _, WireProbeSerde as _};
+            if let ::core::option::Option::Some(codec) =
+                (&#rt::SigProbe::<#a_ty, #ret>::new()).wire_codec()
+            {
+                return #rt::WireForm::Codec(codec);
+            }
+            #(#checks)*
+            #rt::WireForm::Gap(&[#tuple])
+        }
+    };
+    let assertion = if m.wire {
+        let mut asserts = Vec::new();
+        for (ty, text) in &roles {
+            if borrows(ty) {
+                let message = format!(
+                    "#[method(wire)] on `{name_str}`: {text} is a borrowed type and has no wire form"
+                );
+                asserts.push(quote_spanned! {ty.span()=> ::core::compile_error!(#message); });
+            } else {
+                let message = format!(
+                    "#[method(wire)] on `{name_str}`: {text} has no wire form; it must implement \
+                     Serialize + DeserializeOwned + Send + 'static (or drop `wire`: the method then \
+                     stays native-only)"
+                )
+                // a panic message in a constant is a format string
+                .replace('{', "{{")
+                .replace('}', "}}");
+                asserts.push(quote_spanned! {ty.span()=>
+                    const _: () = {
+                        #[allow(unused_imports)]
+                        use #rt::WireCheckOther as _;
+                        ::core::assert!(<#rt::WireCheck<#ty>>::OK, #message);
+                    };
+                });
+            }
+        }
+        quote!(#(#asserts)*)
+    } else {
+        quote!()
+    };
+    quote_spanned! {span=>
+        #[allow(
+            non_snake_case,
+            unused_imports,
+            clippy::needless_borrow,
+            clippy::needless_borrows_for_generic_args,
+            clippy::needless_return
+        )]
+        fn #probe() -> #rt::WireForm {
+            #body
+        }
+        #[#rt::linkme::distributed_slice(#rt::METHOD_WIRE)]
+        #[linkme(crate = #rt::linkme)]
+        static #stat: #rt::MethodWireImpl = #rt::MethodWireImpl {
+            addon: #addon,
+            model: <#target as #rt::Model>::MODEL_NAME,
+            method: #name_str,
+            file: ::core::file!(),
+            line: ::core::line!(),
+            probe: #probe,
+        };
+        #assertion
+    }
 }
 
 /// The component's entry for one synchronous compute (`cfg(target_family = "wasm")` only).

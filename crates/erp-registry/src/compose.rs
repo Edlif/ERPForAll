@@ -1260,6 +1260,17 @@ impl Merged {
                 fd.name, self.declaring_addon
             )));
         }
+        // WASM.MODEL-DECL D3: a runtime declaration (package, data-only model file) may set
+        // `groups` only on a field it introduced; redeclaring it replaces the inherited value and
+        // could widen access to a field the addon does not own.
+        if fd.groups.is_some() && decl.runtime && addon != self.declaring_addon {
+            return Err(Error::programming(format!(
+                "Invalid field groups on '{model}.{}': addon '{addon}' sets `groups` on a field \
+                 first declared by addon '{}'; a runtime declaration may set `groups` only on \
+                 the fields it introduces",
+                fd.name, self.declaring_addon
+            )));
+        }
         if !same_kind(&self.params.kind, &fd.kind) {
             // M2: Refuse runtime type change on a natively indexed field.
             if decl.runtime {
@@ -1277,6 +1288,16 @@ impl Merged {
                         fd.name, s.addon, s.file, s.line
                     )));
                 }
+            }
+            // WASM.MODEL-DECL D3: a runtime declaration cannot change the kind of a field another
+            // addon introduced (the reset below would also drop what that addon declared).
+            if decl.runtime && addon != self.declaring_addon {
+                return Err(Error::programming(format!(
+                    "Invalid field type change on '{model}.{}': addon '{addon}' redeclares a field \
+                     first declared by addon '{}' with another type; a runtime declaration may \
+                     not change the type of a field it did not introduce",
+                    fd.name, self.declaring_addon
+                )));
             }
             // A type change discards everything collected so far.
             // M1(b): A native type change resets and recomputes the default native origin.
@@ -2189,6 +2210,8 @@ fn build_model(
             .iter()
             .any(|suffix| o.full_name.ends_with(suffix))
             || o.full_name == shorten_identifier(&format!("{table}_pkey"))
+            || o.full_name == shorten_identifier(&format!("{table}_id_seq"))
+            || o.full_name == crate::ident::index_name(&table, "parent_path_c")
             || fields.iter().any(|f| {
                 o.full_name == crate::ident::index_name(&table, f.name)
                     || o.full_name == shorten_identifier(&format!("{table}_{}_fkey", f.name))
@@ -2197,8 +2220,8 @@ fn build_model(
         if generated {
             return Err(Error::programming(format!(
                 "SQL object '{}' of model '{name}' (addon '{}', {}:{}) has a name the ORM or \
-                 PostgreSQL generates for a primary key, foreign key, not-null constraint or \
-                 field index; choose another name",
+                 PostgreSQL generates for a primary key, foreign key, not-null constraint, id \
+                 sequence, parent path index or field index; choose another name",
                 o.full_name, source.1, source.2, source.3
             )));
         }

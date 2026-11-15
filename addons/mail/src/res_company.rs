@@ -14,7 +14,7 @@ pub struct CompanyThread {}
 #[methods(ResCompany, addon = "mail")]
 impl CompanyThread {
     /// Posting on a company needs read access.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _mail_post_access(
         _this: &RecordSet<ResCompany>,
         _tx: &mut Transaction,

@@ -420,7 +420,7 @@ impl IrUiView {
     }
 
     /// Writing `arch` writes `arch_db`.
-    #[method]
+    #[method(sealed)]
     async fn _inverse_arch(this: &RecordSet<IrUiView>, tx: &mut Transaction) -> Result<()> {
         for rec in this.iter() {
             let arch = rec.get(tx, IrUiView::ARCH).await?;
@@ -754,7 +754,7 @@ impl IrUiView {
 
     /// Refuse a row-versioned `ir.ui.view` on the final registry of every load (review A3-R2;
     /// `tree::refuse_row_version`).
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _register_hook(
         this: &RecordSet<IrUiView>,
         tx: &mut Transaction,
@@ -771,7 +771,7 @@ impl IrUiView {
     /// not loaded yet: their sibling views still hold the archs of before the upgrade and are not
     /// combined, whatever the context (review F-2). Called by the module
     /// system at the end of each upgraded module's data.
-    #[method]
+    #[method(sealed)]
     async fn _validate_module_views(
         this: &RecordSet<IrUiView>,
         tx: &mut Transaction,
@@ -801,7 +801,7 @@ impl IrUiView {
     /// Check the xml of the views in this recordset (`_check_xml`).
     /// In a data load window with tracked view batch, called once per window across all updated views
     /// (review D-1).
-    #[method]
+    #[method(sealed)]
     async fn _check_xml(this: &RecordSet<IrUiView>, tx: &mut Transaction) -> Result<()> {
         let records = this.as_records();
         let ids = records.ids();

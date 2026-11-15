@@ -666,7 +666,7 @@ impl ResUsersAccess {
         Ok(())
     }
 
-    #[method(override)]
+    #[method(override, sealed)]
     async fn default_get(
         this: &RecordSet<ResUsers>,
         tx: &mut Transaction,
@@ -718,7 +718,7 @@ impl ResUsersAccess {
 
     /// A change of a user's groups changes the users of every group above them: the closure
     /// `all_user_ids` of groups the dependencies do not reach is dropped.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn create(
         this: &RecordSet<ResUsers>,
         tx: &mut Transaction,
@@ -775,7 +775,7 @@ impl ResUsersAccess {
 
     /// See `create`; also the rules that depend on `active`, and
     /// archiving ends the users' sessions.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn write(
         this: &RecordSet<ResUsers>,
         tx: &mut Transaction,
@@ -833,6 +833,7 @@ impl ResUsersAccess {
     }
 
     /// No user may be in two of the user type groups, directly or through implied groups.
+    #[method(sealed)]
     #[constrains("group_ids")]
     async fn _check_disjoint_groups(
         this: &RecordSet<ResUsers>,
@@ -843,6 +844,7 @@ impl ResUsersAccess {
 
     /// An active user's default company is one of its allowed companies (
     /// [`check_user_companies`]).
+    #[method(sealed)]
     #[constrains("company_id", "company_ids", "active")]
     async fn _check_user_company(this: &RecordSet<ResUsers>, tx: &mut Transaction) -> Result<()> {
         check_user_companies(this.as_records(), tx).await
@@ -864,6 +866,7 @@ impl ResUsersAccess {
 
     /// The last active member of `base.group_system` cannot be removed (
     /// [`ensure_an_administrator`]). Archiving and deleting are checked in `write` and `unlink`.
+    #[method(sealed)]
     #[constrains("group_ids")]
     async fn _check_at_least_one_administrator(
         _this: &RecordSet<ResUsers>,
@@ -872,7 +875,7 @@ impl ResUsersAccess {
         ensure_an_administrator(tx).await
     }
 
-    #[method(override)]
+    #[method(override, sealed)]
     async fn unlink(this: &RecordSet<ResUsers>, tx: &mut Transaction, sup: Super) -> Result<()> {
         let any = !this.as_records().is_empty();
         crate::res_users_auth::end_sessions_of(this.as_records(), tx).await?;
@@ -885,6 +888,7 @@ impl ResUsersAccess {
         Ok(())
     }
 
+    #[method(sealed)]
     #[onchange("role")]
     async fn _onchange_role(
         this: &RecordSet<ResUsers>,

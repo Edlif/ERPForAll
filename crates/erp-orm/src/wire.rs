@@ -1,4 +1,5 @@
-//! The wire form of the core `create`, `write` and `unlink`.
+//! The wire form of the core `create`, `write` and `unlink`, and of
+//! `name_create`, `action_archive` and `action_unarchive` (WASM.WIRE-NATIVE).
 //!
 //! A WebAssembly addon overrides these three like a native addon does, and its `super()` reaches
 //! the core implementation in `base`. The chain then crosses the native/WebAssembly seam in JSON,
@@ -12,6 +13,8 @@
 //! | `create` | `[[vals, ...]]` | the ids of the new records, `[id, ...]` |
 //! | `write` | `[vals]` | `null` |
 //! | `unlink` | `null` | `null` |
+//! | `action_archive`, `action_unarchive` | `null` | `null` |
+//! | `name_create` | `[name]` | `[id, display_name]` |
 //!
 //! `vals` is a JSON object, field name to value.
 //! Decoding goes through the one converter the RPC surface uses
@@ -19,13 +22,16 @@
 //! from a client, and a malformed document is a `Validation` error naming the field.
 
 use std::any::{Any, TypeId};
+use std::sync::Arc;
 
 use erp_fields::convert::value_to_json;
 use erp_fields::{Error, RecId, Result, Value, serde_json};
 
 use crate::Transaction;
 use crate::commands::Command;
-use crate::dispatch::{BoxFuture, Chain, MethodCodec, MethodCodecImpl, MethodFn, invoke};
+use crate::dispatch::{
+    BoxFuture, Chain, MethodCodec, MethodCodecImpl, MethodFn, TypedCodec, invoke,
+};
 use crate::ir_default::json_to_value;
 use crate::records::Records;
 use crate::vals::RawVals;
@@ -321,9 +327,85 @@ static UNLINK_CODEC: MethodCodecImpl = MethodCodecImpl {
     codec: &UnlinkCodec,
 };
 
-/// The codecs of the core `create`, `write` and `unlink`.
-pub(crate) static BUILTIN_CODECS: [&MethodCodecImpl; 3] =
-    [&CREATE_CODEC, &WRITE_CODEC, &UNLINK_CODEC];
+type NameCreateFn = MethodFn<(String,), (i64, Arc<str>)>;
+
+/// `name_create`: `[name]` in, `[id, display_name]` out. Written by hand because `Arc<str>` has
+/// no serde implementation without serde's `rc` feature, which the workspace does not enable.
+struct NameCreateCodec;
+
+impl MethodCodec for NameCreateCodec {
+    fn signature(&self) -> TypeId {
+        TypeId::of::<NameCreateFn>()
+    }
+
+    fn encode_args(&self, args: Box<dyn Any + Send>) -> Result<String> {
+        let args = args.downcast::<(String,)>().map_err(|_| {
+            Error::programming("name_create codec used with arguments of another type")
+        })?;
+        serde_json::to_string(&*args).map_err(|e| {
+            Error::programming(format!("name_create arguments are not serialisable: {e}"))
+        })
+    }
+
+    fn decode_result(&self, _records: &Records, json: &str) -> Result<Box<dyn Any + Send>> {
+        let (id, name): (i64, String) = serde_json::from_str(json).map_err(|e| {
+            Error::validation(format!(
+                "a WASM name_create returned something but [id, display_name]: {e}"
+            ))
+        })?;
+        let result: (i64, Arc<str>) = (id, Arc::from(name));
+        Ok(Box::new(result))
+    }
+
+    fn call_native<'a>(
+        &'a self,
+        chain: Chain,
+        index: usize,
+        tx: &'a mut Transaction,
+        records: &'a Records,
+        args_json: &'a str,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move {
+            let args: (String,) =
+                serde_json::from_str(args_json).map_err(|e| bad_args("name_create", &e))?;
+            let (id, name) =
+                invoke::<(String,), (i64, Arc<str>)>(chain, index, tx, records, args).await?;
+            serde_json::to_string(&(id, &*name)).map_err(|e| {
+                Error::programming(format!("name_create result is not serialisable: {e}"))
+            })
+        })
+    }
+}
+
+static NAME_CREATE_CODEC: MethodCodecImpl = MethodCodecImpl {
+    addon: "base",
+    model: "base",
+    method: "name_create",
+    codec: &NameCreateCodec,
+};
+static ACTION_ARCHIVE_CODEC: MethodCodecImpl = MethodCodecImpl {
+    addon: "base",
+    model: "base",
+    method: "action_archive",
+    codec: &TypedCodec::<(), ()>::new(),
+};
+static ACTION_UNARCHIVE_CODEC: MethodCodecImpl = MethodCodecImpl {
+    addon: "base",
+    model: "base",
+    method: "action_unarchive",
+    codec: &TypedCodec::<(), ()>::new(),
+};
+
+/// The codecs of the core `create`, `write`, `unlink`, `name_create`, `action_archive` and
+/// `action_unarchive` (the last three since WASM.WIRE-NATIVE).
+pub(crate) static BUILTIN_CODECS: [&MethodCodecImpl; 6] = [
+    &CREATE_CODEC,
+    &WRITE_CODEC,
+    &UNLINK_CODEC,
+    &NAME_CREATE_CODEC,
+    &ACTION_ARCHIVE_CODEC,
+    &ACTION_UNARCHIVE_CODEC,
+];
 
 #[cfg(test)]
 mod native_fields_tests {

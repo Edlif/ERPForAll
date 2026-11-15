@@ -56,7 +56,7 @@ impl ResCurrency {
     /// Internal, positional adapter for core monetary publication.
     /// Currency reads use the method environment. Core supplies narrow currency-lookup
     /// sudo; amount-write authorization remains with the mutation caller.
-    #[method]
+    #[method(sealed)]
     async fn _round_monetary(
         this: &RecordSet<ResCurrency>,
         tx: &mut Transaction,

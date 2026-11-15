@@ -68,7 +68,7 @@ pub use overlay::{
 };
 pub use owned::{
     DATABASE_INTERN_QUOTA_BYTES, DefaultValue, ExclusionDef, FieldDef, INTERN_BUDGET_BYTES,
-    InternAccount, KindDef, M2mTable, MAX_FIELDS_PER_MODEL, MAX_NAME_BYTES, MAX_PARENTS,
+    InternAccount, KeyDef, KindDef, M2mTable, MAX_FIELDS_PER_MODEL, MAX_NAME_BYTES, MAX_PARENTS,
     MAX_SELECTION_ENTRIES, MAX_TABLE_OBJECTS_PER_MODEL, MAX_TEXT_BYTES, ModelDef, TemporalKeyDef,
     intern_addon, intern_addon_with_policy, intern_budget, intern_budget_for, interned_bytes,
     set_intern_budget,

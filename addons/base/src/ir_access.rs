@@ -92,7 +92,7 @@ const GENERATED_INPUT_ERROR: &str = "ir.access rows marked generated are written
 #[methods(IrAccess, addon = "base")]
 impl IrAccess {
     /// Only module operations may supply the generated marker, including explicit false.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn create(
         this: &RecordSet<IrAccess>,
         tx: &mut Transaction,
@@ -106,7 +106,7 @@ impl IrAccess {
     }
 
     /// Defaults are resolved inside the create super call; they must not manufacture a marker.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn default_get(
         this: &RecordSet<IrAccess>,
         tx: &mut Transaction,
@@ -126,7 +126,7 @@ impl IrAccess {
     }
 
     /// Generated rows remain immutable even under System or full elevation.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn write(
         this: &RecordSet<IrAccess>,
         tx: &mut Transaction,
@@ -141,7 +141,7 @@ impl IrAccess {
     }
 
     /// Archived generated rows and mixed recordsets are protected too.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn unlink(this: &RecordSet<IrAccess>, tx: &mut Transaction, sup: Super) -> Result<()> {
         refuse_generated(this.as_records(), tx).await?;
         sup.call(tx, this.as_records(), ()).await

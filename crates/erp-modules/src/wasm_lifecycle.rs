@@ -23,13 +23,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use erp_fields::OnDelete;
+use erp_fields::{Digits, IndexKind, OnDelete};
 use erp_orm::{
     Actor, BoxFuture, Env, Orm, Transaction, WasmComputeSpec, WasmConstraintSpec, WasmMethodImpl,
     wasm_compute_impl, wasm_constraint_impl,
 };
 use erp_registry::{
-    CompanyAccessDef, CompanyBranch, EmptyCompany, FieldDef, KindDef, ModelDef, ModelKind, Registry,
+    CompanyAccessDef, CompanyBranch, DefaultValue, EmptyCompany, FieldDef, KeyDef, KindDef,
+    ModelDef, ModelKind, Registry,
 };
 use erp_wasm_host::{
     CallableMethods, DescribedMethod, Limits, MAX_DESCRIBED_METHODS, OrmCapabilities, WasmAddon,
@@ -922,6 +923,40 @@ fn model_def(addon: &ModuleName, extend: bool, model: &str, entry: &Value) -> Re
                         unsupported(format!("model '{model}': company_access: {why}"))
                     })?);
                 }
+                "parent_store" | "parent_name" | "keys" if extend => {
+                    return Err(unsupported(format!(
+                        "model '{model}': {key} is refused on an extension of another model; a \
+                         package declares keys and a parent store only on the models it creates"
+                    )));
+                }
+                "parent_store" => {
+                    def = def.parent_store(flag(
+                        addon,
+                        &format!("model '{model}': parent_store"),
+                        value,
+                    )?);
+                }
+                "parent_name" => {
+                    def = def.parent_name(unquote(
+                        addon,
+                        &format!("model '{model}': parent_name"),
+                        text,
+                    )?);
+                }
+                "keys" => {
+                    for key in parse_keys(text)
+                        .map_err(|why| unsupported(format!("model '{model}': keys: {why}")))?
+                    {
+                        def = def.key(key);
+                    }
+                }
+                "constraints" | "indexes" | "unique_indexes" => {
+                    return Err(unsupported(format!(
+                        "model '{model}': {key} are raw SQL table objects, which only a native \
+                         addon declares; use keys = [key(name = \"_x\", fields = [...], \
+                         message = \"...\")] for a unique constraint"
+                    )));
+                }
                 other => {
                     return Err(unsupported(format!(
                         "model '{model}': attribute '{other}' is not read from a WebAssembly addon"
@@ -939,50 +974,36 @@ fn model_def(addon: &ModuleName, extend: bool, model: &str, entry: &Value) -> Re
 /// Parse the macro's already-serialized source spelling at the package boundary.
 /// The registry checks semantic field/edge existence after this structural check.
 fn parse_company_access(source: &str) -> std::result::Result<CompanyAccessDef, String> {
-    if source.len() > 8192 {
-        return Err("expression exceeds 8192 bytes".into());
-    }
-    let expr: syn::Expr = syn::parse_str(source).map_err(|_| "invalid expression".to_string())?;
-    let syn::Expr::Call(call) = expr else {
-        return Err("expected direct(…), parent(…) or unrestricted(…)".into());
-    };
-    let syn::Expr::Path(path) = *call.func else {
-        return Err("expected direct(…), parent(…) or unrestricted(…)".into());
-    };
-    let Some(form) = path.path.get_ident().map(ToString::to_string) else {
-        return Err("expected direct(…), parent(…) or unrestricted(…)".into());
-    };
+    const FORMS: &str = "expected direct(…), parent(…) or unrestricted(…)";
+    let mut t = Tokens::new(source, MAX_COMPANY_ACCESS_SOURCE_BYTES)?;
+    let form = t.ident(FORMS)?;
     let allowed: &[&str] = match form.as_str() {
         "direct" => &["field", "branch", "empty", "parent", "escape"],
         "parent" => &["edge"],
         "unrestricted" => &["reason"],
-        _ => return Err("expected direct(…), parent(…) or unrestricted(…)".into()),
+        _ => return Err(FORMS.into()),
     };
+    t.punct('(', FORMS)?;
     let mut args = BTreeMap::new();
-    for arg in call.args {
-        let syn::Expr::Assign(assign) = arg else {
-            return Err(format!("expected key = value inside {form}(…)"));
-        };
-        let syn::Expr::Path(path) = *assign.left else {
-            return Err(format!("expected a parameter name inside {form}(…)"));
-        };
-        let Some(key) = path.path.get_ident().map(ToString::to_string) else {
-            return Err(format!("expected a parameter name inside {form}(…)"));
-        };
+    while !t.at(')') {
+        let key = t.ident(&format!("expected a parameter name inside {form}(…)"))?;
+        t.punct('=', &format!("expected key = value inside {form}(…)"))?;
         if !allowed.contains(&key.as_str()) {
             return Err(format!("unknown parameter '{key}' in {form}(…)"));
         }
         if args.contains_key(&key) {
             return Err(format!("parameter '{key}' is given twice"));
         }
-        let syn::Expr::Lit(lit) = *assign.right else {
-            return Err(format!("{key} must be a string literal"));
-        };
-        let syn::Lit::Str(value) = lit.lit else {
-            return Err(format!("{key} must be a string literal"));
-        };
-        args.insert(key, value.value());
+        let value = t.string(&format!("{key} must be a string literal"))?;
+        args.insert(key, value);
+        if t.at(',') {
+            t.pos += 1;
+        } else if !t.at(')') {
+            return Err(format!("expected key = value inside {form}(…)"));
+        }
     }
+    t.punct(')', FORMS)?;
+    t.end(FORMS)?;
     let get = |key: &str| args.get(key).map(String::as_str);
     match form.as_str() {
         "direct" => {
@@ -1055,11 +1076,52 @@ fn field_def(addon: &ModuleName, model: &str, field: &Value) -> Result<FieldDef>
                 })?,
         ),
     };
+    // refused by name before the kind is read, so a field that only has one of these is told so
+    for refused in ["selection_add", "selection_method", "default_fn"] {
+        if attrs.is_some_and(|a| a.contains_key(refused)) {
+            return Err(unsupported(format!(
+                "field {model}.{name}: {refused} is not read from a WebAssembly addon in this \
+                 build ({})",
+                match refused {
+                    "selection_add" =>
+                        "extending another addon's selection follows in \
+                        a later WebAssembly slice",
+                    "selection_method" => "it names a Rust function",
+                    _ => "it names a Rust function; use a literal default",
+                }
+            )));
+        }
+    }
     let kind = match kind_name {
         "boolean" => KindDef::Boolean,
         "bigint" => KindDef::BigInt,
         "integer" => KindDef::Integer,
-        "float" => KindDef::Float { digits: None },
+        "float" => KindDef::Float {
+            digits: match attrs.and_then(|a| a.get("digits")) {
+                None => None,
+                Some(v) => {
+                    Some(parse_digits(v.as_str().unwrap_or_default()).map_err(|why| {
+                        unsupported(format!("field {model}.{name}: digits: {why}"))
+                    })?)
+                }
+            },
+        },
+        "selection" => {
+            let Some(v) = attrs.and_then(|a| a.get("selection")) else {
+                return Err(unsupported(format!(
+                    "field {model}.{name}: a selection needs selection = [(\"value\", \"Label\"), ...]"
+                )));
+            };
+            KindDef::Selection {
+                values: Some(
+                    parse_selection(v.as_str().unwrap_or_default()).map_err(|why| {
+                        unsupported(format!("field {model}.{name}: selection: {why}"))
+                    })?,
+                ),
+                add: Vec::new(),
+                ondelete: Vec::new(),
+            }
+        }
         "char" => KindDef::Char { size },
         "text" => KindDef::Text,
         "html" => KindDef::Html,
@@ -1108,7 +1170,8 @@ fn field_def(addon: &ModuleName, model: &str, field: &Value) -> Result<FieldDef>
         other => {
             return Err(unsupported(format!(
                 "field {model}.{name}: kind '{other}' (a WebAssembly addon declares boolean, \
-                 integer, float, char, text, html, date, datetime and many2one fields in this build)"
+                 integer, float, selection, char, text, html, date, datetime and many2one fields \
+                 in this build)"
             )));
         }
     };
@@ -1118,6 +1181,30 @@ fn field_def(addon: &ModuleName, model: &str, field: &Value) -> Result<FieldDef>
         match key.as_str() {
             "size" if kind_name == "char" => {}
             "comodel" | "ondelete" if kind_name == "many2one" => {}
+            // read with the kind above
+            "digits" if kind_name == "float" => {}
+            "selection" if kind_name == "selection" => {}
+            "digits" | "selection" => {
+                return Err(unsupported(format!(
+                    "field {model}.{name}: {key} does not apply to a {kind_name} field"
+                )));
+            }
+            "index" => {
+                out.index =
+                    Some(parse_index(value).map_err(|why| {
+                        unsupported(format!("field {model}.{name}: index: {why}"))
+                    })?);
+            }
+            "default" => {
+                out.default = Some(
+                    parse_default(value.as_str().unwrap_or_default(), kind_name).map_err(
+                        |why| unsupported(format!("field {model}.{name}: default: {why}")),
+                    )?,
+                );
+            }
+            "groups" => {
+                out.groups = Some(unquote(addon, &what, value.as_str().unwrap_or_default())?);
+            }
             "string" => {
                 out = out.string(unquote(addon, &what, value.as_str().unwrap_or_default())?);
             }
@@ -1168,11 +1255,570 @@ fn field_def(addon: &ModuleName, model: &str, field: &Value) -> Result<FieldDef>
             }
         }
     }
+    // like the registry (and a model file): `brin` and `gin` need a stored column
+    if let Some(Some(index)) = out.index
+        && index.field_types().is_some()
+    {
+        let stored = out.store.unwrap_or(out.compute.is_none());
+        if !stored {
+            return Err(unsupported(format!(
+                "field {model}.{name}: index = \"{}\" needs a stored field (this field has no \
+                 column)",
+                index.as_str()
+            )));
+        }
+        if let Some(reason) = erp_registry::index_kind_mismatch(index, kind_name) {
+            return Err(unsupported(format!("field {model}.{name}: {reason}")));
+        }
+    }
     // the ORM's default is `compute_sudo = store`: a package compute is never elevated
     if out.compute.is_some() {
         out = out.compute_sudo(false);
     }
     Ok(out)
+}
+
+/// Longest `default` or `digits` source text.
+const MAX_SCALAR_SOURCE_BYTES: usize = 1024;
+/// Longest `selection` source text: the registry's entry limit times a value and a label of
+/// [`erp_registry::MAX_NAME_BYTES`] each, with the quotes, parentheses and separators.
+const MAX_SELECTION_SOURCE_BYTES: usize =
+    erp_registry::MAX_SELECTION_ENTRIES * (2 * erp_registry::MAX_NAME_BYTES + 16);
+/// Longest `keys` source text: the registry's table object limit times a name, the widest field
+/// list PostgreSQL allows and a message of 2 KiB (the message itself is bounded again by
+/// [`erp_registry::MAX_TEXT_BYTES`] when the definition is checked).
+const MAX_KEYS_SOURCE_BYTES: usize = erp_registry::MAX_TABLE_OBJECTS_PER_MODEL
+    * (erp_registry::MAX_NAME_BYTES
+        + erp_registry::MAX_CONSTRAINT_COLUMNS * (erp_registry::MAX_NAME_BYTES + 8)
+        + 2048
+        + 64);
+/// Longest `company_access` source text.
+const MAX_COMPANY_ACCESS_SOURCE_BYTES: usize = 8192;
+
+/// One token of a declaration value. The values a package declares are flat: literals, names and
+/// `( ) [ ] , = -`. They are read with this lexer and a fixed-shape matcher that only loops, never
+/// by a general expression parser: nothing here nests with the length of the text, so no input
+/// can exhaust the stack.
+#[derive(Debug, Clone, PartialEq)]
+enum Tok {
+    /// A string literal, decoded.
+    Str(String),
+    /// An integer literal, as written (digits and `_`).
+    Int(String),
+    /// A float literal, as written.
+    Float(String),
+    /// An identifier or keyword.
+    Ident(String),
+    /// One of `( ) [ ] , = -`.
+    Punct(char),
+}
+
+/// The tokens of `source`, refused when it is longer than `max_bytes` or has a character outside
+/// the flat grammar. String literals (escapes, raw strings) are decoded one at a time with
+/// `syn::LitStr`, which does not recurse.
+fn lex(source: &str, max_bytes: usize) -> std::result::Result<Vec<Tok>, String> {
+    if source.len() > max_bytes {
+        return Err(format!("the declaration exceeds {max_bytes} bytes"));
+    }
+    let bytes = source.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let literal = |text: &str| {
+        syn::parse_str::<syn::LitStr>(text)
+            .map(|lit| Tok::Str(lit.value()))
+            .map_err(|_| "a string literal is not valid".to_string())
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_whitespace() {
+            i += 1;
+        } else if b == b'"' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' {
+                i += if bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            if i >= bytes.len() {
+                return Err("a string literal is not closed".into());
+            }
+            i += 1;
+            out.push(literal(&source[start..i])?);
+        } else if b.is_ascii_alphabetic() || b == b'_' {
+            let start = i;
+            while i < bytes.len() && is_ident(bytes[i]) {
+                i += 1;
+            }
+            let word = &source[start..i];
+            // `r"…"` and `r#"…"#`: the closing quote is followed by the same number of `#`
+            let raw = word == "r" && matches!(bytes.get(i), Some(b'#' | b'"'));
+            if raw {
+                let mut hashes = 0;
+                while bytes.get(i) == Some(&b'#') {
+                    hashes += 1;
+                    i += 1;
+                }
+                if bytes.get(i) != Some(&b'"') {
+                    return Err("a raw string literal is not valid".into());
+                }
+                i += 1;
+                loop {
+                    let Some(rel) = bytes[i..].iter().position(|c| *c == b'"') else {
+                        return Err("a raw string literal is not closed".into());
+                    };
+                    i += rel + 1;
+                    if bytes.len() >= i + hashes && bytes[i..i + hashes].iter().all(|c| *c == b'#')
+                    {
+                        i += hashes;
+                        break;
+                    }
+                }
+                out.push(literal(&source[start..i])?);
+            } else {
+                out.push(Tok::Ident(word.to_owned()));
+            }
+        } else if b.is_ascii_digit() {
+            let start = i;
+            let digits = |i: &mut usize| {
+                while *i < bytes.len() && (bytes[*i].is_ascii_digit() || bytes[*i] == b'_') {
+                    *i += 1;
+                }
+            };
+            digits(&mut i);
+            let mut float = false;
+            if bytes.get(i) == Some(&b'.') && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+                float = true;
+                i += 1;
+                digits(&mut i);
+            }
+            if matches!(bytes.get(i), Some(b'e' | b'E')) {
+                let mut j = i + 1;
+                if matches!(bytes.get(j), Some(b'+' | b'-')) {
+                    j += 1;
+                }
+                if bytes.get(j).is_some_and(u8::is_ascii_digit) {
+                    float = true;
+                    i = j;
+                    digits(&mut i);
+                }
+            }
+            if bytes.get(i).is_some_and(|c| is_ident(*c) || *c == b'.') {
+                return Err("a number with a suffix or a trailing dot is not read".into());
+            }
+            let text = source[start..i].to_owned();
+            out.push(if float {
+                Tok::Float(text)
+            } else {
+                Tok::Int(text)
+            });
+        } else if matches!(b, b'(' | b')' | b'[' | b']' | b',' | b'=' | b'-') {
+            out.push(Tok::Punct(char::from(b)));
+            i += 1;
+        } else {
+            return Err(format!(
+                "unexpected character {:?} outside a string literal",
+                source[i..].chars().next().unwrap_or('?')
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// A cursor over the tokens of one declaration value.
+struct Tokens {
+    toks: Vec<Tok>,
+    pos: usize,
+}
+
+impl Tokens {
+    fn new(source: &str, max_bytes: usize) -> std::result::Result<Self, String> {
+        Ok(Self {
+            toks: lex(source, max_bytes)?,
+            pos: 0,
+        })
+    }
+
+    fn peek(&self) -> Option<&Tok> {
+        self.toks.get(self.pos)
+    }
+
+    fn next(&mut self) -> Option<Tok> {
+        let tok = self.toks.get(self.pos).cloned();
+        self.pos += usize::from(tok.is_some());
+        tok
+    }
+
+    fn at(&self, c: char) -> bool {
+        self.peek() == Some(&Tok::Punct(c))
+    }
+
+    /// Consume `c` or fail with `shape`.
+    fn punct(&mut self, c: char, shape: &str) -> std::result::Result<(), String> {
+        if self.at(c) {
+            self.pos += 1;
+            Ok(())
+        } else {
+            Err(shape.to_owned())
+        }
+    }
+
+    fn string(&mut self, shape: &str) -> std::result::Result<String, String> {
+        match self.next() {
+            Some(Tok::Str(text)) => Ok(text),
+            _ => Err(shape.to_owned()),
+        }
+    }
+
+    fn ident(&mut self, shape: &str) -> std::result::Result<String, String> {
+        match self.next() {
+            Some(Tok::Ident(name)) => Ok(name),
+            _ => Err(shape.to_owned()),
+        }
+    }
+
+    fn end(&self, shape: &str) -> std::result::Result<(), String> {
+        if self.pos == self.toks.len() {
+            Ok(())
+        } else {
+            Err(shape.to_owned())
+        }
+    }
+}
+
+/// `[(\"a\", \"A\"), ...]` as the macro's token text carries it (`[(\"a\" , \"A\")]`), with an
+/// optional trailing comma.
+fn parse_selection(source: &str) -> std::result::Result<Vec<(String, String)>, String> {
+    const SHAPE: &str = "expected a list of (\"value\", \"Label\") string pairs";
+    let mut t = Tokens::new(source, MAX_SELECTION_SOURCE_BYTES)?;
+    t.punct('[', SHAPE)?;
+    let mut out = Vec::new();
+    while !t.at(']') {
+        t.punct('(', SHAPE)?;
+        let value = t.string(SHAPE)?;
+        t.punct(',', SHAPE)?;
+        let label = t.string(SHAPE)?;
+        t.punct(')', SHAPE)?;
+        out.push((value, label));
+        if out.len() > erp_registry::MAX_SELECTION_ENTRIES {
+            return Err(format!(
+                "more than the limit of {} entries",
+                erp_registry::MAX_SELECTION_ENTRIES
+            ));
+        }
+        if t.at(',') {
+            t.pos += 1;
+        } else if !t.at(']') {
+            return Err(SHAPE.into());
+        }
+    }
+    t.punct(']', SHAPE)?;
+    t.end(SHAPE)?;
+    Ok(out)
+}
+
+/// `(16 , 2)`: `digits = (precision, scale)`. A name (`digits = \"price\"`) is refused: the owned
+/// definition has no interning for it.
+fn parse_digits(source: &str) -> std::result::Result<Digits, String> {
+    const SHAPE: &str = "expected (precision, scale)";
+    let mut t = Tokens::new(source, MAX_SCALAR_SOURCE_BYTES)?;
+    if matches!(t.peek(), Some(Tok::Str(_))) {
+        return Err(
+            "a named precision is not read from a WebAssembly addon; use (precision, \
+                    scale)"
+                .into(),
+        );
+    }
+    let int = |t: &mut Tokens| match t.next() {
+        Some(Tok::Int(text)) => text
+            .replace('_', "")
+            .parse::<u32>()
+            .map_err(|_| "precision and scale are unsigned integer literals".to_string()),
+        _ => Err("precision and scale are unsigned integer literals".to_string()),
+    };
+    t.punct('(', SHAPE)?;
+    let precision = int(&mut t)?;
+    t.punct(',', SHAPE)?;
+    let scale = int(&mut t)?;
+    t.punct(')', SHAPE)?;
+    t.end(SHAPE)?;
+    if precision == 0 {
+        return Err("the precision must be at least 1".into());
+    }
+    if scale > precision {
+        return Err("the scale must not be larger than the precision".into());
+    }
+    Ok(Digits::Fixed { precision, scale })
+}
+
+/// `index` (a bare flag is `true`), `index = true`, `index = false` or `index = \"trigram\"`.
+fn parse_index(value: &Value) -> std::result::Result<Option<IndexKind>, String> {
+    let text = match value {
+        Value::Bool(true) => return Ok(Some(IndexKind::Btree)),
+        Value::Bool(false) => return Ok(None),
+        Value::String(text) => text.as_str(),
+        _ => return Err("expected true, false or an index kind".into()),
+    };
+    match text {
+        "true" => return Ok(Some(IndexKind::Btree)),
+        "false" => return Ok(None),
+        _ => {}
+    }
+    let name = serde_json::from_str::<String>(text)
+        .map_err(|_| "expected true, false or an index kind in quotes".to_string())?;
+    IndexKind::from_name(&name).map(Some).ok_or_else(|| {
+        format!(
+            "unknown index kind \"{}\"",
+            name.chars().take(64).collect::<String>()
+        )
+    })
+}
+
+/// A static default: one string, integer (negative too), float or boolean literal, or `False`.
+fn parse_default(source: &str, kind_name: &str) -> std::result::Result<DefaultValue, String> {
+    const SHAPE: &str = "expected a string, number or boolean literal (a function is not read)";
+    let mut t = Tokens::new(source, MAX_SCALAR_SOURCE_BYTES)?;
+    let negative = t.at('-');
+    if negative {
+        t.pos += 1;
+    }
+    let value = match (negative, t.next()) {
+        (false, Some(Tok::Str(text))) => DefaultValue::Str(text),
+        (false, Some(Tok::Ident(word))) => match word.as_str() {
+            "False" => DefaultValue::False,
+            "true" => DefaultValue::Bool(true),
+            "false" if kind_name != "boolean" => DefaultValue::False,
+            "false" => DefaultValue::Bool(false),
+            _ => return Err(SHAPE.into()),
+        },
+        (_, Some(Tok::Int(text))) => {
+            let magnitude = text
+                .replace('_', "")
+                .parse::<i128>()
+                .map_err(|_| "the integer does not fit in 64 bits".to_string())?;
+            i64::try_from(if negative { -magnitude } else { magnitude })
+                .map(DefaultValue::Int)
+                .map_err(|_| "the integer does not fit in 64 bits".to_string())?
+        }
+        (_, Some(Tok::Float(text))) => {
+            let value = text
+                .replace('_', "")
+                .parse::<f64>()
+                .map_err(|_| "invalid float literal".to_string())?;
+            if !value.is_finite() {
+                return Err("the float is not finite".to_string());
+            }
+            DefaultValue::Float(if negative { -value } else { value })
+        }
+        _ => return Err(SHAPE.into()),
+    };
+    t.end(SHAPE)?;
+    Ok(value)
+}
+
+/// `[key(name = \"_x\", fields = [\"a\"], message = \"...\", nulls_distinct = true), ...]`.
+/// A key with `without_overlaps` is a temporal key, which a package cannot declare.
+fn parse_keys(source: &str) -> std::result::Result<Vec<KeyDef>, String> {
+    const SHAPE: &str =
+        "expected an array of key(name = \"_x\", fields = [...], message = \"...\")";
+    const ARG: &str = "expected name = value inside key(…)";
+    let mut t = Tokens::new(source, MAX_KEYS_SOURCE_BYTES)?;
+    t.punct('[', SHAPE)?;
+    let mut out = Vec::new();
+    while !t.at(']') {
+        if t.ident(SHAPE)? != "key" {
+            return Err(SHAPE.into());
+        }
+        t.punct('(', SHAPE)?;
+        let (mut name, mut message, mut fields, mut nulls_distinct) = (None, None, None, None);
+        while !t.at(')') {
+            let param = t.ident(ARG)?;
+            t.punct('=', ARG)?;
+            let given_twice = || format!("parameter '{param}' is given twice");
+            match param.as_str() {
+                "without_overlaps" => {
+                    return Err("without_overlaps (a temporal key) is not read from a \
+                                WebAssembly addon"
+                        .into());
+                }
+                "name" => {
+                    let value = t.string("key(…) needs name = \"...\"")?;
+                    if name.replace(value).is_some() {
+                        return Err(given_twice());
+                    }
+                }
+                "message" => {
+                    let value = t.string("key(…) needs message = \"...\"")?;
+                    if message.replace(value).is_some() {
+                        return Err(given_twice());
+                    }
+                }
+                "fields" => {
+                    const FIELDS: &str = "key fields are string literals";
+                    t.punct('[', FIELDS)?;
+                    let mut list = Vec::new();
+                    while !t.at(']') {
+                        list.push(t.string(FIELDS)?);
+                        if t.at(',') {
+                            t.pos += 1;
+                        } else if !t.at(']') {
+                            return Err(FIELDS.into());
+                        }
+                    }
+                    t.punct(']', FIELDS)?;
+                    if fields.replace(list).is_some() {
+                        return Err(given_twice());
+                    }
+                }
+                "nulls_distinct" => {
+                    let value = match t.ident("nulls_distinct is true or false")?.as_str() {
+                        "true" => true,
+                        "false" => false,
+                        _ => return Err("nulls_distinct is true or false".into()),
+                    };
+                    if nulls_distinct.replace(value).is_some() {
+                        return Err(given_twice());
+                    }
+                }
+                other => return Err(format!("unknown parameter '{other}' in key(…)")),
+            }
+            if t.at(',') {
+                t.pos += 1;
+            } else if !t.at(')') {
+                return Err(ARG.into());
+            }
+        }
+        t.punct(')', SHAPE)?;
+        let name = name.ok_or("key(…) needs name = \"...\"")?;
+        let message = message.ok_or("key(…) needs message = \"...\"")?;
+        let fields = fields.ok_or("key(…) needs fields = [\"...\", ...]")?;
+        // bounded before the duplicate check, which compares every pair (r3 review SHOULD 1)
+        if fields.len() > erp_registry::MAX_CONSTRAINT_COLUMNS {
+            return Err(format!(
+                "key '{name}' names {} fields, more than the limit of {}",
+                fields.len(),
+                erp_registry::MAX_CONSTRAINT_COLUMNS
+            ));
+        }
+        if let Some(dup) = fields
+            .iter()
+            .enumerate()
+            .find_map(|(i, f)| fields[..i].contains(f).then_some(f))
+        {
+            return Err(format!("key '{name}' names field '{dup}' twice"));
+        }
+        out.push(
+            KeyDef::new(name, message)
+                .fields(fields)
+                .nulls_distinct(nulls_distinct.unwrap_or(false)),
+        );
+        if t.at(',') {
+            t.pos += 1;
+        } else if !t.at(']') {
+            return Err(SHAPE.into());
+        }
+    }
+    t.punct(']', SHAPE)?;
+    t.end(SHAPE)?;
+    Ok(out)
+}
+
+/// A package's `extend` entry may only add fields: redeclaring a field another addon introduced
+/// could weaken it (`sanitize = false` on an HTML field, another `comodel`, `readonly`, `required`,
+/// `store`, `translate`, `collation`, an index), and the registry merges such a redeclaration
+/// attribute by attribute. The field's owner is its first native declarer, else its first
+/// declarer: the registry orders addons by depth, so a shallow package can load before a deeper
+/// native addon and be listed first in `FieldSpec::modules` for that addon's field (cycle 18
+/// security review). `packages` names the package addons of the registry. This runs for every
+/// registry the module system composes with a package in it (install, upgrade, load at boot, a
+/// node following another), through `check_model_refs`.
+fn check_extension_fields(
+    addon: &ModuleName,
+    defs: &[ModelDef],
+    registry: &Registry,
+    packages: &[&str],
+) -> Result<()> {
+    for def in defs.iter().filter(|d| d.is_extension()) {
+        let Some(model) = registry.model(&def.name) else {
+            continue;
+        };
+        for field in &def.fields {
+            let owner = model.field(&field.name).and_then(|spec| {
+                let mut declarers = spec.modules.iter().copied();
+                declarers
+                    .clone()
+                    .find(|m| !packages.contains(m))
+                    .or_else(|| declarers.next())
+            });
+            if let Some(other) = owner.filter(|owner| *owner != addon.as_str()) {
+                return Err(refuse(
+                    addon,
+                    WasmReason::Unsupported(format!(
+                        "field {}.{}: a package may not redeclare a field declared by addon \
+                         '{other}'; an extend entry only adds new fields",
+                        def.name, field.name
+                    )),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// An upgrade may not turn `parent_store` on for a model the installed version already had
+/// without it: the rows that exist would keep an empty `parent_path` (nothing fills the paths of
+/// existing rows), so `child_of` would silently miss them. A model new in the upgrade has no rows.
+fn refuse_parent_store_turned_on(
+    addon: &ModuleName,
+    previous: &[ModelDef],
+    next: &[ModelDef],
+) -> Result<()> {
+    // the parent field of a model: `parent_name` (default `parent_id`) and where it points
+    let parent_of = |def: &ModelDef| {
+        let name = def.parent_name.as_deref().unwrap_or("parent_id");
+        let comodel = def
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .and_then(|f| match &f.kind {
+                KindDef::Many2one { comodel, .. } => Some(comodel.clone()),
+                _ => None,
+            });
+        (name.to_owned(), comodel)
+    };
+    for def in next.iter().filter(|d| d.parent_store == Some(true)) {
+        // the stored paths follow the parent field: another one would leave them describing a tree
+        // that no longer exists
+        if let Some(old) = previous
+            .iter()
+            .find(|p| p.name == def.name && p.parent_store == Some(true))
+            && parent_of(old) != parent_of(def)
+        {
+            return Err(refuse(
+                addon,
+                WasmReason::State(format!(
+                    "the upgrade changes the parent field of model '{}' (parent_name or the model \
+                     it points to) while parent_store stays on: the stored paths would no longer \
+                     match the tree",
+                    def.name
+                )),
+            ));
+        }
+        let existed_without = previous
+            .iter()
+            .any(|p| p.name == def.name && p.parent_store != Some(true));
+        if existed_without {
+            return Err(refuse(
+                addon,
+                WasmReason::State(format!(
+                    "the upgrade turns parent_store on for model '{}', which the installed \
+                     version has without it: the paths of its existing rows would stay empty. \
+                     Declare parent_store from the first version of the model",
+                    def.name
+                )),
+            ));
+        }
+    }
+    Ok(())
 }
 
 // ---- loaded packages and the runtime state ---------------------------------------------------
@@ -1536,9 +2182,15 @@ impl PackageRuntime for WasmPackages {
     }
 
     fn check_model_refs(&self, registry: &Registry, modules: &[ModuleName]) -> Result<()> {
+        let packages: Vec<&str> = modules
+            .iter()
+            .filter(|m| self.current(m).is_some())
+            .map(ModuleName::as_str)
+            .collect();
         for module in modules {
             if let Some(loaded) = self.current(module) {
                 check_refs_in_registry(module, &loaded.refs, registry)?;
+                check_extension_fields(module, &loaded.defs, registry, &packages)?;
             }
         }
         Ok(())
@@ -2149,6 +2801,7 @@ impl WasmLifecycle {
         Self::check_depends(package.manifest(), &catalog)?;
         let location = format!("package:{}", package.archive_sha256());
         let loaded = Arc::new(self.packages.build(&package, location).await?);
+        refuse_parent_store_turned_on(&name, &previous.defs, &loaded.defs)?;
         self.run(
             access,
             Op::Upgrade,
@@ -2838,7 +3491,7 @@ mod tests {
             models_from_describe(&manifest("'base'"), &oversized)
                 .unwrap_err()
                 .to_string(),
-            "WebAssembly addon 'w': not supported in this build: model 'w.wiz': company_access: expression exceeds 8192 bytes"
+            "WebAssembly addon 'w': not supported in this build: model 'w.wiz': company_access: the declaration exceeds 8192 bytes"
         );
     }
 
@@ -3433,6 +4086,513 @@ mod tests {
             comodel
                 .contains("lib.loan.book_id points to lib.book but the handle names res.partner"),
             "{comodel}"
+        );
+    }
+    // ---- WASM.MODEL-DECL: field attributes, keys and parent store ------------------------------
+
+    const REFUSED: &str = "WebAssembly addon 'w': not supported in this build: ";
+
+    fn fields_of(kind: &str, attrs: Value) -> std::result::Result<FieldDef, Error> {
+        models_from_describe(
+            &manifest(""),
+            &one_model(
+                serde_json::json!({}),
+                serde_json::json!([{"name": "f", "kind": kind, "attrs": attrs}]),
+            ),
+        )
+        .map(|mut defs| defs.remove(0).fields.remove(0))
+    }
+
+    fn model_args(extend: bool, args: Value) -> std::result::Result<ModelDef, Error> {
+        let kind = if extend { "extend" } else { "model" };
+        let text = doc(&serde_json::json!([
+            {"addon": "w", "kind": "addon", "model": "", "name": "w",
+             "detail": {"depends": ["base"]}},
+            {"addon": "w", "kind": kind, "model": "w.wiz", "name": "Wiz",
+             "detail": {"args": args, "fields": []}},
+        ]));
+        models_from_describe(&manifest(""), &text).map(|mut defs| defs.remove(0))
+    }
+
+    /// hand-written JSON; the real macro text is in `wasm_model_decl_describe`)
+    #[test]
+    fn field_attributes_are_read_from_token_text() {
+        let state = fields_of(
+            "selection",
+            serde_json::json!({
+                "selection": "[(\"draft\" , \"Draft\") , (\"done\" , \"Done\")]",
+                "default": "\"draft\""
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            state.kind,
+            KindDef::Selection {
+                values: Some(vec![
+                    ("draft".into(), "Draft".into()),
+                    ("done".into(), "Done".into())
+                ]),
+                add: vec![],
+                ondelete: vec![],
+            }
+        );
+        assert_eq!(state.default, Some(DefaultValue::Str("draft".into())));
+        let amount = fields_of(
+            "float",
+            serde_json::json!({"digits": "(16 , 2)", "default": "1.5"}),
+        )
+        .unwrap();
+        assert_eq!(
+            amount.kind,
+            KindDef::Float {
+                digits: Some(Digits::Fixed {
+                    precision: 16,
+                    scale: 2
+                })
+            }
+        );
+        assert_eq!(amount.default, Some(DefaultValue::Float(1.5)));
+        let defaults = |kind: &str, text: &str| {
+            fields_of(kind, serde_json::json!({"default": text}))
+                .unwrap()
+                .default
+        };
+        assert_eq!(defaults("integer", "- 1"), Some(DefaultValue::Int(-1)));
+        assert_eq!(defaults("integer", "7"), Some(DefaultValue::Int(7)));
+        assert_eq!(defaults("float", "- 2.5"), Some(DefaultValue::Float(-2.5)));
+        assert_eq!(defaults("boolean", "true"), Some(DefaultValue::Bool(true)));
+        assert_eq!(
+            defaults("boolean", "false"),
+            Some(DefaultValue::Bool(false))
+        );
+        assert_eq!(defaults("char", "false"), Some(DefaultValue::False));
+        assert_eq!(defaults("char", "False"), Some(DefaultValue::False));
+        let index = |value: Value| fields_of("char", serde_json::json!({"index": value}));
+        assert_eq!(
+            index(serde_json::json!(true)).unwrap().index,
+            Some(Some(IndexKind::Btree))
+        );
+        assert_eq!(
+            index(serde_json::json!("true")).unwrap().index,
+            Some(Some(IndexKind::Btree))
+        );
+        assert_eq!(index(serde_json::json!("false")).unwrap().index, Some(None));
+        assert_eq!(
+            index(serde_json::json!("\"trigram\"")).unwrap().index,
+            Some(Some(IndexKind::Trigram))
+        );
+        let groups = fields_of(
+            "char",
+            serde_json::json!({"groups": "\"base.group_system\""}),
+        );
+        assert_eq!(groups.unwrap().groups.as_deref(), Some("base.group_system"));
+    }
+
+    #[test]
+    fn field_attribute_refusals_name_the_attribute() {
+        let cases: Vec<(&str, Value, &str)> = vec![
+            (
+                "selection",
+                serde_json::json!({"selection_add": "[(\"x\" , \"X\")]"}),
+                "field w.wiz.f: selection_add is not read from a WebAssembly addon in this build \
+                 (extending another addon's selection follows in a later WebAssembly slice)",
+            ),
+            (
+                "selection",
+                serde_json::json!({"selection_method": "\"_m\""}),
+                "field w.wiz.f: selection_method is not read from a WebAssembly addon in this \
+                 build (it names a Rust function)",
+            ),
+            (
+                "integer",
+                serde_json::json!({"default_fn": "f"}),
+                "field w.wiz.f: default_fn is not read from a WebAssembly addon in this build (it \
+                 names a Rust function; use a literal default)",
+            ),
+            (
+                "float",
+                serde_json::json!({"digits": "\"price\""}),
+                "field w.wiz.f: digits: a named precision is not read from a WebAssembly addon; \
+                 use (precision, scale)",
+            ),
+            (
+                "float",
+                serde_json::json!({"digits": "(16 , x)"}),
+                "field w.wiz.f: digits: precision and scale are unsigned integer literals",
+            ),
+            (
+                "float",
+                serde_json::json!({"digits": "0"}),
+                "field w.wiz.f: digits: expected (precision, scale)",
+            ),
+            (
+                "integer",
+                serde_json::json!({"digits": "(16 , 2)"}),
+                "field w.wiz.f: digits does not apply to a integer field",
+            ),
+            (
+                "char",
+                serde_json::json!({"selection": "[(\"a\" , \"A\")]"}),
+                "field w.wiz.f: selection does not apply to a char field",
+            ),
+            (
+                "selection",
+                serde_json::json!({}),
+                "field w.wiz.f: a selection needs selection = [(\"value\", \"Label\"), ...]",
+            ),
+            (
+                "selection",
+                serde_json::json!({"selection": "[(\"a\" , 1)]"}),
+                "field w.wiz.f: selection: expected a list of (\"value\", \"Label\") string pairs",
+            ),
+            (
+                "selection",
+                serde_json::json!({"selection": "[(\"a\" , \"A\" , \"B\")]"}),
+                "field w.wiz.f: selection: expected a list of (\"value\", \"Label\") string pairs",
+            ),
+            (
+                "char",
+                serde_json::json!({"index": "\"nope\""}),
+                "field w.wiz.f: index: unknown index kind \"nope\"",
+            ),
+            (
+                "char",
+                serde_json::json!({"index": "\"gin\""}),
+                "field w.wiz.f: index = \"gin\" is for json fields (this field is char)",
+            ),
+            (
+                "char",
+                serde_json::json!({"index": 3}),
+                "field w.wiz.f: index: expected true, false or an index kind",
+            ),
+            (
+                "integer",
+                serde_json::json!({"default": "some_fn()"}),
+                "field w.wiz.f: default: expected a string, number or boolean literal (a function \
+                 is not read)",
+            ),
+            (
+                "integer",
+                serde_json::json!({"default": "none"}),
+                "field w.wiz.f: default: expected a string, number or boolean literal (a function \
+                 is not read)",
+            ),
+            (
+                "integer",
+                serde_json::json!({"default": "99999999999999999999"}),
+                "field w.wiz.f: default: the integer does not fit in 64 bits",
+            ),
+        ];
+        for (kind, attrs, message) in cases {
+            let error = fields_of(kind, attrs.clone()).unwrap_err();
+            assert!(matches!(error, Error::WasmAddon { .. }), "{error:?}");
+            assert_eq!(error.to_string(), format!("{REFUSED}{message}"), "{attrs}");
+        }
+    }
+
+    /// cut, and so is a description text over the parse bound)
+    #[test]
+    fn declaration_values_are_bounded() {
+        let entries = |n: usize| {
+            let pairs: Vec<String> = (0..n).map(|i| format!("(\"v{i}\" , \"L\")")).collect();
+            format!("[{}]", pairs.join(" , "))
+        };
+        let at_limit = fields_of(
+            "selection",
+            serde_json::json!({"selection": entries(erp_registry::MAX_SELECTION_ENTRIES)}),
+        )
+        .unwrap();
+        let KindDef::Selection { values, .. } = at_limit.kind else {
+            panic!("a selection kind is expected");
+        };
+        assert_eq!(values.unwrap().len(), erp_registry::MAX_SELECTION_ENTRIES);
+        let over = erp_registry::MAX_SELECTION_ENTRIES + 1;
+        let error =
+            fields_of("selection", serde_json::json!({"selection": entries(over)})).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{REFUSED}field w.wiz.f: selection: more than the limit of {} entries",
+                erp_registry::MAX_SELECTION_ENTRIES
+            )
+        );
+        let huge = format!("[(\"{}\" , \"L\")]", "x".repeat(MAX_SELECTION_SOURCE_BYTES));
+        let error = fields_of("selection", serde_json::json!({"selection": huge})).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{REFUSED}field w.wiz.f: selection: the declaration exceeds \
+                 {MAX_SELECTION_SOURCE_BYTES} bytes"
+            )
+        );
+    }
+
+    /// arguments; a bare flag and `= true` both count)
+    #[test]
+    fn model_keys_and_parent_store_are_read() {
+        let keys = "[key(name = \"_serial_uniq\" , fields = [\"serial_no\"] , message = \"Unique.\" \
+                    , nulls_distinct = true) , key(name = \"_pair\" , fields = [\"a\" , \"b\"] , \
+                    message = \"Pair.\")]";
+        for store in [serde_json::json!(true), serde_json::json!("true")] {
+            let def = model_args(
+                false,
+                serde_json::json!({"keys": keys, "parent_store": store,
+                                   "parent_name": "\"up_id\""}),
+            )
+            .unwrap();
+            assert_eq!(def.parent_store, Some(true));
+            assert_eq!(def.parent_name.as_deref(), Some("up_id"));
+            assert_eq!(
+                def.keys,
+                vec![
+                    KeyDef::new("_serial_uniq", "Unique.")
+                        .fields(["serial_no"])
+                        .nulls_distinct(true),
+                    KeyDef::new("_pair", "Pair.").fields(["a", "b"]),
+                ]
+            );
+        }
+        let off = model_args(false, serde_json::json!({"parent_store": "false"})).unwrap();
+        assert_eq!(off.parent_store, Some(false));
+    }
+
+    #[test]
+    fn model_declaration_refusals_name_the_argument() {
+        let key = |inner: &str| format!("[key({inner})]");
+        let cases: Vec<(bool, Value, String)> = vec![
+            (
+                true,
+                serde_json::json!({"keys": key("name = \"_k\" , fields = [\"a\"] , message = \"m\"")}),
+                "model 'w.wiz': keys is refused on an extension of another model; a package \
+                 declares keys and a parent store only on the models it creates"
+                    .into(),
+            ),
+            (
+                true,
+                serde_json::json!({"parent_store": true}),
+                "model 'w.wiz': parent_store is refused on an extension of another model; a \
+                 package declares keys and a parent store only on the models it creates"
+                    .into(),
+            ),
+            (
+                true,
+                serde_json::json!({"parent_name": "\"up_id\""}),
+                "model 'w.wiz': parent_name is refused on an extension of another model; a \
+                 package declares keys and a parent store only on the models it creates"
+                    .into(),
+            ),
+            (
+                false,
+                serde_json::json!({"keys": key("name = \"_k\" , fields = [\"a\"] , message = \"m\" , without_overlaps = \"r\"")}),
+                "model 'w.wiz': keys: without_overlaps (a temporal key) is not read from a \
+                 WebAssembly addon"
+                    .into(),
+            ),
+            (
+                false,
+                serde_json::json!({"keys": key("name = \"_k\" , fields = [\"a\"]")}),
+                "model 'w.wiz': keys: key(…) needs message = \"...\"".into(),
+            ),
+            (
+                false,
+                serde_json::json!({"keys": key("name = \"_k\" , fields = [\"a\"] , message = \"m\" , extra = 1")}),
+                "model 'w.wiz': keys: unknown parameter 'extra' in key(…)".into(),
+            ),
+            (
+                false,
+                serde_json::json!({"keys": key("name = \"_k\" , fields = [a] , message = \"m\"")}),
+                "model 'w.wiz': keys: key fields are string literals".into(),
+            ),
+            (
+                false,
+                serde_json::json!({"keys": "key(name = \"_k\")"}),
+                "model 'w.wiz': keys: expected an array of key(name = \"_x\", fields = [...], \
+                 message = \"...\")"
+                    .into(),
+            ),
+        ];
+        for (extend, args, message) in cases {
+            let error = model_args(extend, args.clone()).unwrap_err();
+            assert!(matches!(error, Error::WasmAddon { .. }), "{error:?}");
+            assert_eq!(error.to_string(), format!("{REFUSED}{message}"), "{args}");
+        }
+        for name in ["constraints", "indexes", "unique_indexes"] {
+            let error = model_args(false, serde_json::json!({ name: "[]" })).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "{REFUSED}model 'w.wiz': {name} are raw SQL table objects, which only a \
+                     native addon declares; use keys = [key(name = \"_x\", fields = [...], \
+                     message = \"...\")] for a unique constraint"
+                )
+            );
+        }
+    }
+    /// refused by the flat reader at 100000 repetitions, with the attribute named; nothing
+    /// recursive runs, so the test cannot overflow a stack)
+    #[test]
+    fn repeated_expression_shapes_are_refused_by_every_entry_point() {
+        const N: usize = 100_000;
+        let shapes: Vec<(&str, String)> = vec![
+            ("calls", format!("x{}", "()".repeat(N))),
+            ("indexing", format!("x{}", "[0]".repeat(N))),
+            ("binary minus", format!("1{}", "-(1)".repeat(N))),
+            ("method chain", format!("x{}", ".f()".repeat(N))),
+            ("casts", format!("1{}", " as u8".repeat(N))),
+            ("return", format!("{}1", "return ".repeat(N))),
+            ("assignments", format!("x{}", "=()".repeat(N))),
+            ("unary minus", format!("{}1", "- ".repeat(N))),
+            (
+                "parentheses",
+                format!("{}1{}", "(".repeat(N), ")".repeat(N)),
+            ),
+            ("brackets", format!("{}{}", "[".repeat(N), "]".repeat(N))),
+            ("not", format!("{}1", "!".repeat(N))),
+        ];
+        for (what, source) in shapes {
+            // field attributes: the shape is refused, by size where it exceeds the value's cap
+            for (kind, attr, cap) in [
+                ("selection", "selection", MAX_SELECTION_SOURCE_BYTES),
+                ("float", "digits", MAX_SCALAR_SOURCE_BYTES),
+                ("integer", "default", MAX_SCALAR_SOURCE_BYTES),
+            ] {
+                let error = fields_of(kind, serde_json::json!({ attr: source })).unwrap_err();
+                let text = error.to_string();
+                let prefix = format!("{REFUSED}field w.wiz.f: {attr}: ");
+                assert!(
+                    matches!(error, Error::WasmAddon { .. }) && text.starts_with(&prefix),
+                    "{what} in {attr}: {text}"
+                );
+                if source.len() > cap {
+                    assert_eq!(text, format!("{prefix}the declaration exceeds {cap} bytes"));
+                }
+            }
+            for (arg, cap) in [
+                ("keys", MAX_KEYS_SOURCE_BYTES),
+                ("company_access", MAX_COMPANY_ACCESS_SOURCE_BYTES),
+            ] {
+                let error = model_args(false, serde_json::json!({ arg: source })).unwrap_err();
+                let text = error.to_string();
+                let prefix = format!("{REFUSED}model 'w.wiz': {arg}: ");
+                assert!(
+                    matches!(error, Error::WasmAddon { .. }) && text.starts_with(&prefix),
+                    "{what} in {arg}: {text}"
+                );
+                if source.len() > cap {
+                    assert_eq!(text, format!("{prefix}the declaration exceeds {cap} bytes"));
+                }
+            }
+        }
+        // the shapes that fit under a cap are refused for their shape, not accepted: the same
+        // repetitions at a size every cap admits
+        for source in [
+            "x()()()()",
+            "x[0][0]",
+            "1-(1)-(1)",
+            "x.f().f()",
+            "1 as u8 as u8",
+            "return 1",
+        ] {
+            assert!(parse_default(source, "integer").is_err(), "{source}");
+            assert!(parse_digits(source).is_err(), "{source}");
+            assert!(parse_selection(source).is_err(), "{source}");
+            assert!(parse_keys(source).is_err(), "{source}");
+            assert!(parse_company_access(source).is_err(), "{source}");
+        }
+    }
+
+    /// strings included, and refuses what it does not read)
+    #[test]
+    fn the_flat_reader_decodes_literals_and_refuses_the_rest() {
+        assert_eq!(
+            lex("[(\"a\\\"b\" , r#\"c\"d\"#)]", 4096).unwrap(),
+            vec![
+                Tok::Punct('['),
+                Tok::Punct('('),
+                Tok::Str("a\"b".into()),
+                Tok::Punct(','),
+                Tok::Str("c\"d".into()),
+                Tok::Punct(')'),
+                Tok::Punct(']'),
+            ]
+        );
+        assert_eq!(
+            lex("- 1 1.5 1e-3 x_1", 4096).unwrap(),
+            vec![
+                Tok::Punct('-'),
+                Tok::Int("1".into()),
+                Tok::Float("1.5".into()),
+                Tok::Float("1e-3".into()),
+                Tok::Ident("x_1".into()),
+            ]
+        );
+        assert_eq!(
+            parse_selection("[(\"a\" , \"A\") ,]").unwrap(),
+            vec![("a".to_owned(), "A".to_owned())]
+        );
+        for (source, why) in [
+            (
+                "a // c",
+                "unexpected character '/' outside a string literal",
+            ),
+            ("\"open", "a string literal is not closed"),
+            (
+                "1u8",
+                "a number with a suffix or a trailing dot is not read",
+            ),
+            ("1.", "a number with a suffix or a trailing dot is not read"),
+            ("a + b", "unexpected character '+' outside a string literal"),
+            ("{}", "unexpected character '{' outside a string literal"),
+        ] {
+            assert_eq!(lex(source, 4096), Err(why.to_owned()), "{source}");
+        }
+        assert_eq!(
+            lex("abc", 2),
+            Err("the declaration exceeds 2 bytes".to_owned())
+        );
+    }
+
+    #[test]
+    fn impossible_digits_and_duplicate_key_fields_are_refused() {
+        for (source, why) in [
+            ("(0 , 0)", "the precision must be at least 1"),
+            ("(2 , 3)", "the scale must not be larger than the precision"),
+        ] {
+            let error = fields_of("float", serde_json::json!({"digits": source})).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("{REFUSED}field w.wiz.f: digits: {why}")
+            );
+        }
+        fields_of("float", serde_json::json!({"digits": "(3 , 3)"})).unwrap();
+        let keys = "[key(name = \"_k\" , fields = [\"a\" , \"b\" , \"a\"] , message = \"m\")]";
+        let error = model_args(false, serde_json::json!({ "keys": keys })).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("{REFUSED}model 'w.wiz': keys: key '_k' names field 'a' twice")
+        );
+        // the field list is bounded before the pairwise duplicate check (r3 review SHOULD 1)
+        let many: Vec<String> = (0..=erp_registry::MAX_CONSTRAINT_COLUMNS)
+            .map(|i| format!("\"f{i}\""))
+            .collect();
+        let keys = format!(
+            "[key(name = \"_k\" , fields = [{}] , message = \"m\")]",
+            many.join(" , ")
+        );
+        let error = model_args(false, serde_json::json!({ "keys": keys })).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{REFUSED}model 'w.wiz': keys: key '_k' names {} fields, more than the limit of {}",
+                erp_registry::MAX_CONSTRAINT_COLUMNS + 1,
+                erp_registry::MAX_CONSTRAINT_COLUMNS
+            )
+        );
+        // a float default that overflows to infinity is refused, not stored
+        let error = fields_of("float", serde_json::json!({"default": "1e400"})).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("{REFUSED}field w.wiz.f: default: the float is not finite")
         );
     }
 }

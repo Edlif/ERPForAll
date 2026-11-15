@@ -613,7 +613,7 @@ fn audited_keys(env: &Env, keys: Vec<String>) -> Result<Vec<String>> {
 #[methods(IrConfigParameter)]
 impl IrConfigParameter {
     /// The text of `key`, `default` (empty) when undefined.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = read, model)]
     async fn get_str(
         this: &RecordSet<IrConfigParameter>,
@@ -627,7 +627,7 @@ impl IrConfigParameter {
     }
 
     /// The integer of `key`, `default` (0) when undefined.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = read, model)]
     async fn get_int(
         this: &RecordSet<IrConfigParameter>,
@@ -642,7 +642,7 @@ impl IrConfigParameter {
     }
 
     /// The number of `key`, `default` (0.0) when undefined.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = read, model)]
     async fn get_float(
         this: &RecordSet<IrConfigParameter>,
@@ -657,7 +657,7 @@ impl IrConfigParameter {
     }
 
     /// The flag of `key`, `default` (false) when undefined.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = read, model)]
     async fn get_bool(
         this: &RecordSet<IrConfigParameter>,
@@ -672,7 +672,7 @@ impl IrConfigParameter {
     }
 
     /// Set `key` to `value` (`None`: undefined); returns the previous text, empty when undefined.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write, model)]
     async fn set_str(
         this: &RecordSet<IrConfigParameter>,
@@ -685,7 +685,7 @@ impl IrConfigParameter {
     }
 
     /// Set `key` to `value`; returns the previous integer, 0 when undefined.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write, model)]
     async fn set_int(
         this: &RecordSet<IrConfigParameter>,
@@ -700,7 +700,7 @@ impl IrConfigParameter {
     }
 
     /// Set `key` to `value`; returns the previous number, 0.0 when undefined.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write, model)]
     async fn set_float(
         this: &RecordSet<IrConfigParameter>,
@@ -723,7 +723,7 @@ impl IrConfigParameter {
             .unwrap_or(0.0))
     }
 
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write, model)]
     async fn set_bool(
         this: &RecordSet<IrConfigParameter>,
@@ -739,7 +739,7 @@ impl IrConfigParameter {
 
     /// Creating parameters changes what the settings caches hold; settings of authentication are
     /// checked first. A secret key is created only in superuser mode (`erp_replace_secret`).
-    #[method(override)]
+    #[method(override, sealed)]
     async fn create(
         this: &RecordSet<IrConfigParameter>,
         tx: &mut Transaction,
@@ -792,7 +792,7 @@ impl IrConfigParameter {
 
     /// Protected keys cannot be renamed, nor can a key be renamed
     /// onto a secret outside superuser mode; settings of authentication are checked.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn write(
         this: &RecordSet<IrConfigParameter>,
         tx: &mut Transaction,
@@ -856,7 +856,7 @@ impl IrConfigParameter {
 
     /// Protected keys cannot be deleted. Every related key (the
     /// session policy, a group member) is declared, so a delete never changes a related value.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn unlink(
         this: &RecordSet<IrConfigParameter>,
         tx: &mut Transaction,
@@ -879,7 +879,7 @@ impl IrConfigParameter {
     /// characters of 32 OS CSPRNG bytes), `database.uuid`, `database.create_date` (UTC),
     /// `base.login_cooldown_after` 10 and `base.login_cooldown_duration` 60. `web.base.url` is
     /// 's (the canonical origin).
-    #[method(override)]
+    #[method(override, sealed)]
     async fn init(
         this: &RecordSet<IrConfigParameter>,
         tx: &mut Transaction,
@@ -938,7 +938,7 @@ impl IrConfigParameter {
 
     /// Every declared parameter gets its default row when the registry is published;
     /// the declarations are checked first.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _register_hook(
         this: &RecordSet<IrConfigParameter>,
         tx: &mut Transaction,
@@ -961,7 +961,7 @@ impl IrConfigParameter {
     /// Replace the value of the secret parameter `key` (`None`: undefined) without reading it:
     /// the caller needs write and create access on the model (`base.group_system`); the row is
     /// then written elevated through the same checks as every other write. Returns nothing.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write, model)]
     async fn erp_replace_secret(
         this: &RecordSet<IrConfigParameter>,

@@ -14,7 +14,7 @@ pub struct ProductTemplateThread {}
 #[methods(ProductTemplate, addon = "product_mail")]
 impl ProductTemplateThread {
     /// Posting on a product template needs read access.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _mail_post_access(
         _this: &RecordSet<ProductTemplate>,
         _tx: &mut Transaction,
@@ -31,7 +31,7 @@ pub struct ProductProductThread {}
 #[methods(ProductProduct, addon = "product_mail")]
 impl ProductProductThread {
     /// Posting on a product variant needs read access.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn _mail_post_access(
         _this: &RecordSet<ProductProduct>,
         _tx: &mut Transaction,

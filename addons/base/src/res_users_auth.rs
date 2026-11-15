@@ -190,7 +190,7 @@ impl ResUsersAuth {
     /// review round 2 S-1, database review round 2 S4, security delta N-e; claude2 ruling, lead to
     /// confirm), so a batch holds the transaction for about N ÷ (permits − 1) hash times (N on a
     /// pool of one or two permits; rust review round 3 RD-4).
-    #[method]
+    #[method(sealed)]
     async fn _set_password(this: &RecordSet<ResUsers>, tx: &mut Transaction) -> Result<()> {
         if this.as_records().is_empty() {
             return Ok(());
@@ -227,7 +227,7 @@ impl ResUsersAuth {
     ///
     /// `Validation` naming the users whose stored value is hash-shaped but not parsed (all of
     /// them in one error, the first [`HASH_SHAPED_LISTED`] by id; silent-delta N-5).
-    #[method(override)]
+    #[method(override, sealed)]
     async fn init(this: &RecordSet<ResUsers>, tx: &mut Transaction, sup: Super) -> Result<()> {
         sup.call(tx, this.as_records(), ()).await?;
         tx.batch(PASSWORD_COLUMN_DDL).await?;
@@ -269,7 +269,7 @@ impl ResUsersAuth {
         Ok(())
     }
 
-    #[method]
+    #[method(sealed)]
     async fn _check_credentials(
         this: &RecordSet<ResUsers>,
         tx: &mut Transaction,
@@ -285,7 +285,7 @@ impl ResUsersAuth {
     /// none, so only the core cooldown applies. An override returns a stricter policy (and calls
     /// `super`); it runs in a read-only transaction before any credential work, is told only the
     /// submitted login and client address, and can only tighten. Private: not an RPC method.
-    #[method]
+    #[method(sealed)]
     async fn _on_login_cooldown(
         _this: &RecordSet<ResUsers>,
         _tx: &mut Transaction,
@@ -297,7 +297,7 @@ impl ResUsersAuth {
     /// The login selection domain (H58): the base implementation looks up by exact
     /// login match. An override returns a custom domain (and calls `super` or builds on typed
     /// scalar fields). Private: not an RPC method.
-    #[method]
+    #[method(sealed)]
     async fn _get_login_domain(
         _this: &RecordSet<ResUsers>,
         _tx: &mut Transaction,
@@ -308,7 +308,7 @@ impl ResUsersAuth {
 
     /// The login candidate selection ordering (H58): the base implementation orders
     /// by `id ASC`. An override returns an ordering and calls `super`. Private: not an RPC method.
-    #[method]
+    #[method(sealed)]
     async fn _get_login_order(
         _this: &RecordSet<ResUsers>,
         _tx: &mut Transaction,
@@ -321,7 +321,7 @@ impl ResUsersAuth {
     /// ([`SessionTokenFields::with_field`]); it cannot remove a base field. Resolved once when the
     /// authentication service of the registry is built, in a read-only transaction that is rolled
     /// back, where any query is refused. Private: not an RPC method.
-    #[method]
+    #[method(sealed)]
     async fn _get_session_token_fields(
         _this: &RecordSet<ResUsers>,
         _tx: &mut Transaction,

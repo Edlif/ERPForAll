@@ -65,7 +65,7 @@ pub struct ResUsersApikeys {
 #[methods(ResUsersApikeys, addon = "base")]
 impl ResUsersApikeys {
     /// Generic creation cannot bypass native issuance, even under sudo.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn create(
         _this: &RecordSet<ResUsersApikeys>,
         _tx: &mut Transaction,
@@ -78,7 +78,7 @@ impl ResUsersApikeys {
     }
 
     /// Authority and credentials are immutable through generic writes.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn write(
         _this: &RecordSet<ResUsersApikeys>,
         _tx: &mut Transaction,
@@ -91,7 +91,7 @@ impl ResUsersApikeys {
     }
 
     /// Generic deletion cannot bypass programmatic management's ownership gate.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn unlink(
         _this: &RecordSet<ResUsersApikeys>,
         _tx: &mut Transaction,
@@ -103,7 +103,7 @@ impl ResUsersApikeys {
     }
 
     /// Generate a replacement; return its one-time secret only after RPC commits.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write, model)]
     async fn generate(
         _this: &RecordSet<ResUsersApikeys>,
@@ -134,7 +134,7 @@ impl ResUsersApikeys {
     }
 
     /// Revoke an owned active key, including the caller's current credential.
-    #[method]
+    #[method(sealed)]
     #[rpc(effect = write, model)]
     async fn revoke(
         _this: &RecordSet<ResUsersApikeys>,
