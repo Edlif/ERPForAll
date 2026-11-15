@@ -205,10 +205,131 @@ async fn assert_book_pivot(orm: &Orm) {
     );
 }
 
+/// loan date to the due date, coloured by borrower, with borrower and status filters)
+async fn assert_loan_calendar(orm: &Orm) {
+    let view = model_view(orm, "sample_library.loan", "calendar").await;
+    assert_eq!(view["views"][0]["type"], "calendar");
+    assert_eq!(view["views"][0]["renderer"], "web.calendar");
+    let nodes = view["views"][0]["nodes"].as_array().unwrap();
+    assert_eq!(nodes[0]["kind"], "calendar");
+    assert_eq!(nodes[0]["date_start"]["name"], "loan_date");
+    assert_eq!(nodes[0]["date_stop"]["name"], "due_date");
+    assert_eq!(nodes[0]["color"]["name"], "borrower_id");
+    assert_eq!(nodes[0]["mode"], "month");
+    let fields: Vec<_> = nodes[1..]
+        .iter()
+        .map(|node| {
+            (
+                node["field"]["name"].as_str().unwrap(),
+                node["filters"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            ("book_id", false),
+            ("borrower_id", true),
+            ("state", true),
+            ("return_date", false)
+        ]
+    );
+}
+
+/// regions, field widgets and progress bar; the cards themselves are the client's)
+async fn assert_book_kanban(orm: &Orm) {
+    let view = book_view(orm, "kanban").await;
+    assert_eq!(view["views"][0]["type"], "kanban");
+    assert_eq!(view["views"][0]["renderer"], "web.kanban");
+    let nodes = view["views"][0]["nodes"].as_array().unwrap();
+    let kinds: Vec<_> = nodes
+        .iter()
+        .map(|node| {
+            let kind = node["kind"].as_str().unwrap();
+            match kind {
+                "field" => format!(
+                    "{}:{}",
+                    node["field"]["name"].as_str().unwrap(),
+                    node["widget"].as_str().unwrap()
+                ),
+                "kanban_section" => node["region"].as_str().unwrap().to_owned(),
+                _ => kind.to_owned(),
+            }
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "kanban",
+            "kanban_progressbar",
+            "kanban_card",
+            "main",
+            "title:char",
+            "author_id:many2one",
+            "website:url",
+            "aside",
+            "title:char",
+            "footer",
+            "genre_ids:many2many_tags",
+            "rating:priority",
+            "favorite:boolean_favorite",
+        ]
+    );
+    assert_eq!(nodes[0]["quick_create"], true);
+    assert_eq!(nodes[1]["field"]["name"], "book_format");
+    assert_eq!(
+        nodes[1]["colors"],
+        serde_json::json!([
+            {"value": "hardcover", "tone": "success"},
+            {"value": "paperback", "tone": "info"},
+            {"value": "ebook", "tone": "warning"}
+        ])
+    );
+}
+
+/// flags and fields in order; the chart itself is the client's). Books per year published, one series per format.
+async fn assert_book_graph(orm: &Orm) {
+    let view = book_view(orm, "graph").await;
+    assert_eq!(view["views"][0]["type"], "graph");
+    assert_eq!(view["views"][0]["renderer"], "web.graph");
+    let nodes = view["views"][0]["nodes"].as_array().unwrap();
+    assert_eq!(nodes[0]["kind"], "graph");
+    assert_eq!(nodes[0]["mode"], "bar");
+    assert_eq!(nodes[0]["stacked"], true);
+    assert_eq!(nodes[0]["cumulated"], false);
+    assert_eq!(nodes[0]["disable_linking"], false);
+    assert!(nodes[0].get("order").is_none());
+    let fields: Vec<_> = nodes[1..]
+        .iter()
+        .map(|node| {
+            (
+                node["field"]["name"].as_str().unwrap(),
+                node["role"].as_str().unwrap(),
+                node.get("interval").and_then(|interval| interval.as_str()),
+                node["label"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            ("published_on", "group", Some("year"), "Published On"),
+            ("book_format", "group", None, "Format"),
+            ("price", "measure", None, "Price"),
+            ("pages", "measure", None, "Pages")
+        ]
+    );
+}
+
 /// `get_views` of the book model for one view type, as the client receives it.
 async fn book_view(orm: &Orm, view_type: &str) -> serde_json::Value {
+    model_view(orm, "sample_library.book", view_type).await
+}
+
+/// `get_views` of one model for one view type, as the client receives it.
+async fn model_view(orm: &Orm, model: &str, view_type: &str) -> serde_json::Value {
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
-    let records = tx.env().records("sample_library.book").unwrap();
+    let records = tx.env().records(model).unwrap();
     let Exposure::Exposed(method) = tx
         .exposure()
         .get(records.model_id(), "get_views")
@@ -322,7 +443,7 @@ async fn install_use_upgrade_uninstall() {
     let candidate_manifest = fs::read_to_string(&manifest_path).unwrap();
     fs::write(
         &manifest_path,
-        candidate_manifest.replace("version = \"1.0.9\"", "version = \"1.0.1\""),
+        candidate_manifest.replace("version = \"1.0.12\"", "version = \"1.0.1\""),
     )
     .unwrap();
     let db = TestDb::create().await.unwrap();
@@ -490,7 +611,7 @@ async fn install_use_upgrade_uninstall() {
     let text = fs::read_to_string(&manifest).unwrap();
     fs::write(
         &manifest,
-        text.replace("version = \"1.0.9\"", "version = \"1.1.0\""),
+        text.replace("version = \"1.0.12\"", "version = \"1.1.0\""),
     )
     .unwrap();
     let candidate = system_builder(&db, work.path())
@@ -512,6 +633,9 @@ async fn install_use_upgrade_uninstall() {
     let orm = upgraded.orm;
     assert_loan_statusbar(&orm, true).await;
     assert_book_pivot(&orm).await;
+    assert_loan_calendar(&orm).await;
+    assert_book_kanban(&orm).await;
+    assert_book_graph(&orm).await;
     assert_book_search(&orm).await;
     assert!(columns(&orm, "sample_library_book").await.contains("shelf"));
     assert_eq!(

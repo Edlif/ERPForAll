@@ -153,6 +153,9 @@ async fn install_on_base_and_product() {
         "account_account_code",
         "account_journal",
         "account_journal_group",
+        // the reference's data files ship no journal entries (`__manifest__.py` data list)
+        "account_move",
+        "account_move_line",
     ] {
         let count = strings(&mut tx, &format!("SELECT count(*)::text FROM {table}")).await;
         assert_eq!(count, ["0"], "{table} has no default records");
@@ -176,6 +179,31 @@ async fn install_on_base_and_product() {
             "generated"
         ]
     );
+
+    // entries and items are read by the readonly group and written by accounting users, with
+    // the generated company rule on each
+    for model in ["account.move", "account.move.line"] {
+        let access = strings(
+            &mut tx,
+            &format!(
+                "SELECT CASE WHEN coalesce(a.generated, false) THEN 'generated' \
+                 ELSE coalesce(g.module || '.' || g.name, '-') || '/' || a.operation END \
+                 FROM ir_access a JOIN ir_model m ON m.id = a.model_id \
+                 LEFT JOIN ir_model_data g ON g.model = 'res.groups' AND g.res_id = a.group_id \
+                 WHERE m.model = '{model}' ORDER BY 1"
+            ),
+        )
+        .await;
+        assert_eq!(
+            access,
+            [
+                "account.group_account_readonly/r",
+                "account.group_account_user/crud",
+                "generated"
+            ],
+            "{model}"
+        );
+    }
 
     let tag = tx.env().records("account.account.tag").unwrap();
     let master = tag

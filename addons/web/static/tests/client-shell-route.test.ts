@@ -58,7 +58,7 @@ test("serializer refuses runtime values outside the Route type", () => {
     { route: { action: 42 }, key: "action" },
     { route: { action: "42", search: 7 }, key: "search" },
     { route: { action: "42", model: null }, key: "model" },
-    { route: { action: "42", view_type: "kanban" }, key: "view_type" },
+    { route: { action: "42", view_type: "not-a-view" }, key: "view_type" },
     { route: { debug: "2" }, key: "debug" },
     { route: { cids: "1,2" }, key: "cids" },
     { route: { cids: [1] }, key: "cids" },

@@ -347,6 +347,17 @@ context?: WireDocument | null, };
 export type FieldOptions = CodeOptions | FieldPresentationOptions | StatusbarOptions | EmptyOptions;
 export type RecordMode = "record" | "service";
 export type PivotRole = "row" | "col" | "measure";
+export type KanbanRegion = "main" | "aside" | "footer";
+export type ProgressTone = "success" | "warning" | "danger" | "info" | "muted";
+export type ProgressColor = {
+/** Wire member `value`. */
+value: string,
+/** Wire member `tone`. */
+tone: ProgressTone, };
+export type CalendarScale = "day" | "week" | "month" | "year";
+export type GraphMode = "bar" | "line" | "pie";
+export type GraphRole = "group" | "measure";
+export type GraphOrder = "asc" | "desc";
 export type ButtonType = "object";
 export type ButtonVariant = "primary" | "secondary" | "link" | "success" | "info" | "warning" | "danger" | "unstyled";
 export type ButtonDetails = {
@@ -828,6 +839,116 @@ label: string,
 role: PivotRole,
 /**
  * Date grouping interval: day, week, month, quarter or year (date and datetime row/column fields only).
+ */
+interval?: string, } | { "kind": "kanban",
+/**
+ * Child arena indexes (`kanban_card`, `kanban_progressbar`).
+ */
+children: Array<number>,
+/**
+ * Cards per page from the arch `limit`; absent keeps the client's list default.
+ */
+page_limit?: WirePageLimit,
+default_group_by?: FieldRef,
+quick_create: boolean,
+records_draggable: boolean,
+groups_draggable: boolean,
+archivable: boolean,
+can_open: boolean,
+/**
+ * Whether new records can be created from this view.
+ */
+create?: boolean,
+/**
+ * Whether records can be edited from this view.
+ */
+edit?: boolean,
+/**
+ * Whether records can be deleted from this view.
+ */
+delete?: boolean, } | { "kind": "kanban_card",
+/**
+ * Child arena indexes (`field`, `kanban_section`).
+ */
+children: Array<number>, } | { "kind": "kanban_section",
+/**
+ * Which region.
+ */
+region: KanbanRegion,
+/**
+ * Child arena indexes (`field`).
+ */
+children: Array<number>, } | { "kind": "kanban_progressbar",
+/**
+ * Field whose values the segments count.
+ */
+field: FieldRef,
+/**
+ * Coloured values in arch order.
+ */
+colors: Array<ProgressColor>,
+/**
+ * Field summed per column.
+ */
+sum_field?: FieldRef,
+/**
+ * Help text of the bar.
+ */
+help?: string, } | { "kind": "calendar",
+/**
+ * Child arena indexes (only `calendar_field`).
+ */
+children: Array<number>,
+date_start: FieldRef,
+date_stop?: FieldRef,
+all_day?: FieldRef,
+color?: FieldRef,
+mode: CalendarScale,
+scales: Array<CalendarScale>,
+create: boolean,
+edit: boolean,
+delete: boolean,
+quick_create: boolean,
+hide_date: boolean,
+hide_time: boolean,
+month_overflow: boolean,
+event_limit: number, } | { "kind": "calendar_field",
+/**
+ * Accessible field handle.
+ */
+field: FieldRef,
+/**
+ * Display label.
+ */
+label: string,
+/**
+ * Read for the event but not shown in its popover.
+ */
+invisible: boolean,
+filters: boolean, } | { "kind": "graph",
+/**
+ * Child arena indexes (only `graph_field`).
+ */
+children: Array<number>,
+mode: GraphMode,
+stacked: boolean,
+cumulated: boolean,
+order?: GraphOrder,
+disable_linking: boolean, } | { "kind": "graph_field",
+/**
+ * Accessible field handle.
+ */
+field: FieldRef,
+/**
+ * Display label.
+ */
+label: string,
+/**
+ * What the field does in the chart.
+ */
+role: GraphRole,
+/**
+ * Date grouping interval: day, week, month, quarter or year (date and datetime groupings only).
  */
 interval?: string, } | { "kind": "search_field",
 /**

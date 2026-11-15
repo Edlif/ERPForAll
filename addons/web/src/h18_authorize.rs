@@ -72,6 +72,9 @@ fn decision(node: &wire::ViewNode, allowed: bool) -> Result<Decision> {
         | wire::ViewNode::Field { .. }
         | wire::ViewNode::SearchField { .. }
         | wire::ViewNode::PivotField { .. }
+        | wire::ViewNode::KanbanProgressbar { .. }
+        | wire::ViewNode::CalendarField { .. }
+        | wire::ViewNode::GraphField { .. }
         | wire::ViewNode::SearchFilter { .. } => Ok(Decision::Prune),
         _ => Err(Error::access(
             "A nonprunable builtin node references a field the caller cannot read.",
@@ -90,6 +93,11 @@ fn children(node: &wire::ViewNode) -> Result<&[u32]> {
         | List { children, .. }
         | Search { children, .. }
         | Pivot { children, .. }
+        | Kanban { children, .. }
+        | KanbanCard { children }
+        | KanbanSection { children, .. }
+        | Calendar { children, .. }
+        | Graph { children, .. }
         | Sheet { children }
         | Aside { children }
         | Title { children }
@@ -114,6 +122,9 @@ fn children(node: &wire::ViewNode) -> Result<&[u32]> {
         | Separator { .. }
         | SearchField { .. }
         | PivotField { .. }
+        | KanbanProgressbar { .. }
+        | CalendarField { .. }
+        | GraphField { .. }
         | SearchFilter { .. }
         | SearchSeparator {} => Ok(&[]),
         _ => Err(failure(
@@ -128,6 +139,11 @@ fn children_mut(node: &mut wire::ViewNode) -> Result<Option<&mut Vec<u32>>> {
         | List { children, .. }
         | Search { children, .. }
         | Pivot { children, .. }
+        | Kanban { children, .. }
+        | KanbanCard { children }
+        | KanbanSection { children, .. }
+        | Calendar { children, .. }
+        | Graph { children, .. }
         | Sheet { children }
         | Aside { children }
         | Title { children }
@@ -152,6 +168,9 @@ fn children_mut(node: &mut wire::ViewNode) -> Result<Option<&mut Vec<u32>>> {
         | Separator { .. }
         | SearchField { .. }
         | PivotField { .. }
+        | KanbanProgressbar { .. }
+        | CalendarField { .. }
+        | GraphField { .. }
         | SearchFilter { .. }
         | SearchSeparator {} => Ok(None),
         _ => Err(failure(
@@ -286,6 +305,27 @@ fn prune(
     })
 }
 
+/// Drop the optional root member that names a field the caller cannot read: the search panel, or a
+/// kanban's default grouping (the board opens ungrouped). False when the root has
+/// no such member, so the view is refused.
+fn relieve_root(node: &mut wire::ViewNode) -> bool {
+    match node {
+        wire::ViewNode::Search { search_panel, .. } | wire::ViewNode::List { search_panel, .. }
+            if search_panel.is_some() =>
+        {
+            *search_panel = None;
+            true
+        }
+        wire::ViewNode::Kanban {
+            default_group_by, ..
+        } if default_group_by.is_some() => {
+            *default_group_by = None;
+            true
+        }
+        _ => false,
+    }
+}
+
 fn require_builtin_root_field(model: &str, kind: &str, field: &wire::FieldRef) -> Result<()> {
     if field.model != model {
         return Err(failure(format!(
@@ -311,6 +351,40 @@ fn validate_builtin_field_models(model: &str, node: &wire::ViewNode) -> Result<(
         }
         wire::ViewNode::PivotField { field, .. } => {
             require_builtin_root_field(model, "pivot_field", field)
+        }
+        wire::ViewNode::Kanban {
+            default_group_by: Some(field),
+            ..
+        } => require_builtin_root_field(model, "kanban", field),
+        wire::ViewNode::KanbanProgressbar {
+            field, sum_field, ..
+        } => {
+            require_builtin_root_field(model, "kanban_progressbar", field)?;
+            match sum_field {
+                Some(sum) => require_builtin_root_field(model, "kanban_progressbar", sum),
+                None => Ok(()),
+            }
+        }
+        wire::ViewNode::CalendarField { field, .. } => {
+            require_builtin_root_field(model, "calendar_field", field)
+        }
+        wire::ViewNode::Calendar {
+            date_start,
+            date_stop,
+            all_day,
+            color,
+            ..
+        } => [
+            Some(date_start),
+            date_stop.as_ref(),
+            all_day.as_ref(),
+            color.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .try_for_each(|field| require_builtin_root_field(model, "calendar", field)),
+        wire::ViewNode::GraphField { field, .. } => {
+            require_builtin_root_field(model, "graph_field", field)
         }
         wire::ViewNode::Dashboard { items, .. } => {
             for item in items {
@@ -762,20 +836,12 @@ impl<'a> Request<'a> {
                 }
             }
             if !allowed && index == view.root as usize {
-                match node {
-                    wire::ViewNode::Search { search_panel, .. }
-                    | wire::ViewNode::List { search_panel, .. }
-                        if search_panel.is_some() =>
-                    {
-                        *search_panel = None;
-                        allowed = true;
-                    }
-                    _ => {
-                        return Err(Error::access(
-                            "The builtin view root references a field the caller cannot read.",
-                        ));
-                    }
+                if !relieve_root(node) {
+                    return Err(Error::access(
+                        "The builtin view root references a field the caller cannot read.",
+                    ));
                 }
+                allowed = true;
             }
             if allowed
                 && let wire::ViewNode::Button { name, .. } | wire::ViewNode::StatButton { name, .. } =
@@ -1228,6 +1294,218 @@ mod tests {
                 );
             }
             _ => panic!("pivot"),
+        }
+    }
+    #[test]
+    fn h18_authorize_prunes_calendar_fields_and_refuses_an_unreadable_root() {
+        let reference =
+            |model: &str, name: &str| wire::FieldRef::new(model.to_owned(), name.to_owned());
+        let calendar = |color: wire::FieldRef| wire::ViewNode::Calendar {
+            children: vec![1],
+            date_start: reference("h18.fixture", "deadline"),
+            date_stop: None,
+            all_day: None,
+            color: Some(color),
+            mode: wire::CalendarScale::Week,
+            scales: vec![wire::CalendarScale::Week],
+            create: true,
+            edit: true,
+            delete: true,
+            quick_create: true,
+            hide_date: false,
+            hide_time: false,
+            month_overflow: true,
+            event_limit: 5,
+        };
+        let field = wire::ViewNode::CalendarField {
+            field: reference("h18.fixture", "name"),
+            label: "Name".to_owned(),
+            invisible: false,
+            filters: false,
+        };
+        assert!(matches!(
+            super::decision(&field, false).unwrap(),
+            super::Decision::Prune
+        ));
+        let root = calendar(reference("h18.fixture", "partner_id"));
+        assert_eq!(
+            super::decision(&root, false).unwrap_err().kind(),
+            erp_sdk::ErrorKind::Access
+        );
+        assert!(matches!(
+            super::decision(&root, true).unwrap(),
+            super::Decision::Keep
+        ));
+        super::validate_builtin_field_models("h18.fixture", &root).unwrap();
+        for foreign in [
+            calendar(reference("res.company", "name")),
+            calendar(reference("h18.fixture", "partner_id.name")),
+        ] {
+            assert_eq!(
+                super::validate_builtin_field_models("h18.fixture", &foreign)
+                    .unwrap_err()
+                    .kind(),
+                erp_sdk::ErrorKind::Validation
+            );
+        }
+        let mut view = wire::View::new(
+            wire::ViewIdentity::generated(),
+            wire::ViewType::Calendar,
+            "web.calendar".to_owned(),
+            0,
+            vec![root, field],
+        );
+        super::prune(
+            &mut view,
+            &[super::Decision::Keep, super::Decision::Prune],
+            &DescriptionBudget::new(),
+        )
+        .unwrap();
+        assert_eq!(view.nodes.len(), 1);
+        match &view.nodes[0] {
+            wire::ViewNode::Calendar { children, .. } => assert!(children.is_empty()),
+            _ => panic!("calendar"),
+        }
+    }
+
+    #[test]
+    fn h18_authorize_relieves_kanban_grouping_and_prunes_its_progress_bar() {
+        let field = |name: &str| wire::FieldRef::new("h18.fixture".to_owned(), name.to_owned());
+        let bar = wire::ViewNode::KanbanProgressbar {
+            field: field("state"),
+            colors: Vec::new(),
+            sum_field: Some(field("count")),
+            help: None,
+        };
+        assert!(matches!(
+            super::decision(&bar, false).unwrap(),
+            super::Decision::Prune
+        ));
+        let mut root = wire::ViewNode::Kanban {
+            children: vec![1],
+            page_limit: None,
+            default_group_by: Some(field("stage")),
+            quick_create: true,
+            records_draggable: true,
+            groups_draggable: true,
+            archivable: true,
+            can_open: true,
+            create: None,
+            edit: None,
+            delete: None,
+        };
+        assert!(super::relieve_root(&mut root));
+        assert!(matches!(
+            &root,
+            wire::ViewNode::Kanban {
+                default_group_by: None,
+                ..
+            }
+        ));
+        assert!(
+            !super::relieve_root(&mut root),
+            "a root without a grouping has nothing to drop"
+        );
+        let foreign = wire::ViewNode::KanbanProgressbar {
+            field: field("state"),
+            colors: Vec::new(),
+            sum_field: Some(wire::FieldRef::new(
+                "res.company".to_owned(),
+                "name".to_owned(),
+            )),
+            help: None,
+        };
+        assert_eq!(
+            super::validate_builtin_field_models("h18.fixture", &foreign)
+                .unwrap_err()
+                .kind(),
+            erp_sdk::ErrorKind::Validation
+        );
+    }
+
+    #[test]
+    fn h18_authorize_prunes_denied_graph_fields_and_keeps_the_chart() {
+        let node = |name: &str, role: wire::GraphRole| wire::ViewNode::GraphField {
+            field: wire::FieldRef::new("h18.fixture".to_owned(), name.to_owned()),
+            label: name.to_owned(),
+            role,
+            interval: None,
+        };
+        assert!(matches!(
+            super::decision(&node("count", wire::GraphRole::Measure), false).unwrap(),
+            super::Decision::Prune
+        ));
+        let foreign = wire::ViewNode::GraphField {
+            field: wire::FieldRef::new("res.company".to_owned(), "name".to_owned()),
+            label: "Name".to_owned(),
+            role: wire::GraphRole::Group,
+            interval: None,
+        };
+        let error = super::validate_builtin_field_models("h18.fixture", &foreign).unwrap_err();
+        assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+        assert_eq!(
+            error.message(),
+            "Builtin graph_field reference 'res.company.name' does not match root model 'h18.fixture'. Cross-model builtin fields require a later release."
+        );
+        let mut view = wire::View::new(
+            wire::ViewIdentity::generated(),
+            wire::ViewType::Graph,
+            "web.graph".to_owned(),
+            0,
+            vec![
+                wire::ViewNode::Graph {
+                    children: vec![1, 2, 3],
+                    mode: wire::GraphMode::Pie,
+                    stacked: true,
+                    cumulated: false,
+                    order: Some(wire::GraphOrder::Desc),
+                    disable_linking: false,
+                },
+                node("state", wire::GraphRole::Group),
+                node("stage", wire::GraphRole::Group),
+                node("count", wire::GraphRole::Measure),
+            ],
+        );
+        // The caller may not read the first grouping `state`.
+        super::prune(
+            &mut view,
+            &[
+                super::Decision::Keep,
+                super::Decision::Prune,
+                super::Decision::Keep,
+                super::Decision::Keep,
+            ],
+            &DescriptionBudget::new(),
+        )
+        .unwrap();
+        let names: Vec<_> = view.nodes[1..]
+            .iter()
+            .map(|node| match node {
+                wire::ViewNode::GraphField { field, role, .. } => (field.name.as_str(), *role),
+                _ => panic!("graph field"),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("stage", wire::GraphRole::Group),
+                ("count", wire::GraphRole::Measure)
+            ]
+        );
+        match &view.nodes[0] {
+            wire::ViewNode::Graph {
+                children,
+                mode,
+                order,
+                ..
+            } => {
+                assert_eq!(children, &[1, 2]);
+                assert_eq!(
+                    (*mode, *order),
+                    (wire::GraphMode::Pie, Some(wire::GraphOrder::Desc))
+                );
+            }
+            _ => panic!("graph"),
         }
     }
 }

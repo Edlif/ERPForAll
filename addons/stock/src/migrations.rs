@@ -110,10 +110,8 @@ async fn quant_policy_parameters(tx: &mut Transaction, _from: &SemverVersion) ->
         }
         moved.insert(key, Value::Int(value));
     }
-    if moved.is_empty() {
-        return Ok(());
-    }
-    // The final state of every key: moved, an existing parameter row or the default.
+    // The final state of every key: moved, an existing parameter row or the default. Checked on
+    // every path: a parameter row written as free text before 1.5 stops the upgrade too.
     let mut values = std::collections::BTreeMap::new();
     for key in keys {
         let value = match moved.remove(&key) {

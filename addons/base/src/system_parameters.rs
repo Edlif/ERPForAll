@@ -61,27 +61,32 @@ pub(crate) fn declarations() -> Result<Vec<ParameterDecl>> {
             "argon2id",
             &[("argon2id", "Argon2id"), ("pbkdf2_sha512", "PBKDF2-SHA512")],
         )?,
+        // The hashing costs default to today's floor; absent, they follow a floor a later release
+        // raises, so no default row freezes the old one (review cycle 16 Rust S4).
         int(
             keys::ROUNDS,
             "PBKDF2 rounds",
             h::PBKDF2_ROUNDS_MIN,
             h::PBKDF2_ROUNDS_MIN,
             h::PBKDF2_ROUNDS_MAX,
-        )?,
+        )?
+        .without_default_row(),
         int(
             keys::ARGON2_MEMORY,
             "Argon2id memory (KiB)",
             h::ARGON2_MEMORY_KIB_MIN,
             h::ARGON2_MEMORY_KIB_MIN,
             h::ARGON2_MEMORY_KIB_MAX,
-        )?,
+        )?
+        .without_default_row(),
         int(
             keys::ARGON2_TIME,
             "Argon2id passes",
             h::ARGON2_TIME_MIN,
             h::ARGON2_TIME_MIN,
             h::ARGON2_TIME_MAX,
-        )?,
+        )?
+        .without_default_row(),
         int(
             keys::COOLDOWN_AFTER,
             "Failed logins per address before a cooldown",
@@ -96,15 +101,16 @@ pub(crate) fn declarations() -> Result<Vec<ParameterDecl>> {
             1,
             604_800,
         )?,
-        // 0 turns the per-login rule off (the per-address rule stays); the absent value is four
-        // times the per-address threshold.
-        int(
+        // The absent value is four times the per-address threshold, so no default row (a row
+        // would freeze it, review cycle 16 Rust M1).
+        ParameterDecl::integer_floor_below_one(
             keys::COOLDOWN_AFTER_LOGIN,
             "Failed logins per login before a cooldown (0: per-login rule off)",
-            COOLDOWN_AFTER_FALLBACK.saturating_mul(4),
-            0,
-            4_000_000,
-        )?,
+            i64::from(COOLDOWN_AFTER_FALLBACK.saturating_mul(4)),
+            (0, 4_000_000),
+            "0 turns the per-login rule off; the per-address rule stays",
+        )?
+        .without_default_row(),
         int(
             keys::MAX_INACTIVITY,
             "Session idle limit (seconds)",

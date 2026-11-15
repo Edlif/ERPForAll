@@ -148,6 +148,26 @@ pub fn registry_of(registry: &Registry) -> Result<ParameterRegistry> {
     ParameterRegistry::build(contributions, &installed, taken)
 }
 
+/// The keys declared secret by every addon linked into this binary, installed or not: a declared
+/// row survives its addon's uninstall as plain text, but a credential in it stays
+/// hidden (review cycle 16 security S3).
+///
+/// shortcut: a row of an addon whose code is no longer linked is not covered; a persisted secret
+/// marker would cover it once an addon that declares a secret can be dropped from the binary.
+/// # Errors
+/// A factory's error.
+pub fn linked_secret_keys() -> Result<Vec<String>> {
+    let mut keys = BTreeSet::new();
+    for entry in PARAMETER_CONTRIBUTIONS {
+        for decl in (entry.declarations)()? {
+            if decl.is_secret() {
+                keys.insert(decl.key().to_owned());
+            }
+        }
+    }
+    Ok(keys.into_iter().collect())
+}
+
 // Whether `target` is `source` or one of its transitive dependencies among the installed addons.
 fn depends_on(env: &Env, source: &str, target: &str) -> bool {
     let addons = env.registry().addons();
@@ -176,7 +196,14 @@ async fn read(tx: &mut Transaction, addon: &AddonDescriptor, key: &str) -> Resul
             "Parameter {key} is not declared by an installed addon."
         )));
     };
-    if !installed(env.registry()).contains(addon.name) || !depends_on(&env, addon.name, owner) {
+    // the very descriptor the registry installed, not a copy naming another addon (review cycle
+    // 16 Rust S5)
+    let linked = env
+        .registry()
+        .addons()
+        .iter()
+        .any(|a| std::ptr::eq(*a, addon));
+    if !linked || !depends_on(&env, addon.name, owner) {
         return Err(Error::programming(format!(
             "Addon {} reads parameter {key} of {owner}, which is outside its dependencies.",
             addon.name
@@ -214,7 +241,8 @@ fn wrong_kind(key: &str, wanted: &str) -> Error {
 /// reads it; a missing or empty row is the declared default.
 /// # Errors
 /// `Validation` `Stored parameter <key> is invalid.` for stored text outside the declaration;
-/// `Programming` for an undeclared key, a key outside `addon`'s dependency closure, or a key not
+/// `Programming` for an undeclared key, an `addon` that is not the installed descriptor itself
+/// (pass `&crate::ADDON`, never a copy), a key outside `addon`'s dependency closure, or a key not
 /// declared as an integer; database errors.
 pub async fn get_int(tx: &mut Transaction, addon: &AddonDescriptor, key: &str) -> Result<i64> {
     match read(tx, addon, key).await? {

@@ -846,6 +846,28 @@ fn upgrade_moves_stored_policy_to_parameters() {
                 .get::<_, String>(0),
             "1.4.0"
         );
+        // No Settings row left: a parameter row written as free text before 1.5, outside its
+        // declaration, stops the upgrade too (review cycle 16 Rust S2).
+        client
+            .batch_execute(
+                "DELETE FROM ir_config_setting_value WHERE setting_key LIKE 'stock.quant\\_%';
+                 UPDATE ir_config_parameter SET value='0' WHERE key='stock.quant_max_attempts';
+                 UPDATE ir_module_module SET latest_version='1.4.0' WHERE name='stock';",
+            )
+            .await
+            .unwrap();
+        let error = sys
+            .button_immediate_upgrade(&sys.system_env(Context::new()), &modules)
+            .await
+            .unwrap_err();
+        let inner = migration_source(error);
+        assert_eq!(
+            (inner.kind(), inner.message()),
+            (
+                ErrorKind::Validation,
+                "Stored parameter stock.quant_max_attempts is invalid."
+            )
+        );
         drop(client);
         drop(sys);
         db.cleanup().await.unwrap();

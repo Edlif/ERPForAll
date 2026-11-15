@@ -14,6 +14,7 @@ pub mod fpos;
 pub mod journal;
 pub mod ledger;
 pub mod locking;
+pub mod moves;
 pub mod numbering;
 
 pub mod tax;

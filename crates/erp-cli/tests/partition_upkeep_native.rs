@@ -58,8 +58,10 @@ async fn native_partition_policy_gates_startup_and_periodic_work() {
     let diagnostic = fs::read_to_string(&startup_log).unwrap();
     // The surrounding tracing/CLI prefixes contain timestamps and are not stable.
     assert!(
-        diagnostic
-            .contains("base.partition_upkeep_interval_secs must be an integer from 60 to 3600."),
+        diagnostic.contains(
+            "_register_hook() of ir.config_parameter failed: \
+             Stored parameter base.partition_upkeep_interval_secs is invalid."
+        ),
         "{diagnostic}"
     );
     assert!(

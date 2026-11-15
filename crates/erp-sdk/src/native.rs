@@ -319,8 +319,9 @@ pub mod views {
         MetadataFieldSetBuilder, OwnerBoundViewTypes, PublishedViewTypes, ReferenceScope,
         ReferenceVisitor, SchemaNode, SchemaProperty, SchemaReferences, SchemaVariant,
         ValidateView, ViewSchema, ViewTypeContribution, ViewTypeDecl, ViewTypeDeclBuilder,
-        ViewTypeDeclFn, find_view_type, form_schema, is_valid_view_type_key, list_schema,
-        pivot_schema, search_schema, validate_view_types,
+        ViewTypeDeclFn, calendar_schema, find_view_type, form_schema, graph_schema,
+        is_valid_view_type_key, kanban_schema, list_schema, pivot_schema, search_schema,
+        validate_view_types,
     };
 
     /// Every native addon-declared view type linked into the application (H18).

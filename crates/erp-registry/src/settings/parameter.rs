@@ -7,12 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const BASE_KEY_FAMILIES: [&str; 3] = ["attachments", "password", "sessions"];
 
-// A number whose key's last part contains one of these words is a limit, size, count, timeout,
-// batch, interval or amount of bytes: its floor is at least 1, so 0 can never mean "unlimited".
-const QUANTITY_WORDS: [&str; 9] = [
-    "limit", "size", "count", "timeout", "batch", "bytes", "secs", "seconds", "interval",
-];
-
 /// Longest stored text a parameter of any kind is parsed from; longer text is refused unread.
 const MAX_TEXT_BYTES: usize = 65_536;
 
@@ -52,6 +46,7 @@ pub struct ParameterDecl {
     default_text: String,
     validator: Option<Validator>,
     secret: bool,
+    default_row: bool,
 }
 impl std::fmt::Debug for ParameterDecl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -89,22 +84,28 @@ impl ParameterDecl {
             default_text,
             validator: None,
             secret: false,
+            default_row: true,
         })
     }
-    // floor <= bound, and floor >= 1 for quantities ("Bounds rule").
-    fn bounds(key: &str, floor: f64, bound: f64) -> Result<()> {
+    // floor <= bound, and floor >= 1 unless the declaration says why a lower floor has a meaning
+    // ("Bounds rule"): 0 can never mean "unlimited" by accident of a key's spelling.
+    fn bounds(key: &str, floor: f64, bound: f64, below_one: Option<&str>) -> Result<()> {
         checked_key(key)?;
         if !floor.is_finite() || !bound.is_finite() || floor > bound {
             return Err(bad(key, "needs a finite floor not above its hard bound"));
         }
-        let last = key.rsplit('.').next().unwrap_or(key);
-        if floor < 1.0 && QUANTITY_WORDS.iter().any(|word| last.contains(word)) {
-            return Err(bad(
+        match below_one {
+            None if floor < 1.0 => Err(bad(
                 key,
-                "is a limit, size, count, timeout, batch or interval; its floor must be at least 1",
-            ));
+                "has a floor below 1; a number whose 0 or fraction has a meaning is declared with \
+                 integer_floor_below_one or float_floor_below_one and the reason",
+            )),
+            Some(reason) if reason.trim().is_empty() || floor >= 1.0 => Err(bad(
+                key,
+                "is declared with a floor below 1 but has no reason or no such floor",
+            )),
+            _ => Ok(()),
         }
-        Ok(())
     }
     /// Declare a boolean parameter.
     /// # Errors
@@ -127,11 +128,35 @@ impl ParameterDecl {
             Value::str(default),
         )
     }
-    /// Declare a whole number with `(floor, hard bound)`, both inclusive and JSON-safe.
+    /// Declare a whole number with `(floor, hard bound)`, both inclusive and JSON-safe; the floor
+    /// is at least 1.
     /// # Errors
-    /// `Validation` naming the key when `floor <= default <= bound` does not hold, a bound is not
-    /// JSON-safe, or the key names a quantity and the floor is below 1.
+    /// `Validation` naming the key when `1 <= floor <= default <= bound` does not hold or a bound
+    /// is not JSON-safe.
     pub fn integer(key: &str, label: &str, default: i64, bounds: (i64, i64)) -> Result<Self> {
+        Self::integer_with(key, label, default, bounds, None)
+    }
+    /// [`Self::integer`] for a number whose floor below 1 has a meaning, which `reason` states
+    /// (for example "0 turns the per-login rule off"); never "unlimited".
+    /// # Errors
+    /// As [`Self::integer`] without the floor rule; `Validation` for an empty reason or a floor
+    /// of at least 1.
+    pub fn integer_floor_below_one(
+        key: &str,
+        label: &str,
+        default: i64,
+        bounds: (i64, i64),
+        reason: &str,
+    ) -> Result<Self> {
+        Self::integer_with(key, label, default, bounds, Some(reason))
+    }
+    fn integer_with(
+        key: &str,
+        label: &str,
+        default: i64,
+        bounds: (i64, i64),
+        below_one: Option<&str>,
+    ) -> Result<Self> {
         const SAFE: i64 = 9_007_199_254_740_991;
         checked_key(key)?;
         let (min, max) = bounds;
@@ -142,7 +167,7 @@ impl ParameterDecl {
             clippy::cast_precision_loss,
             reason = "JSON-safe integers are exact in f64"
         )]
-        Self::bounds(key, min as f64, max as f64)?;
+        Self::bounds(key, min as f64, max as f64, below_one)?;
         Self::new(
             key,
             label,
@@ -150,12 +175,34 @@ impl ParameterDecl {
             Value::Int(default),
         )
     }
-    /// Declare a finite number with `(floor, hard bound)`, both inclusive.
+    /// Declare a finite number with `(floor, hard bound)`, both inclusive; the floor is at least 1.
     /// # Errors
     /// As [`Self::integer`], and for a bound that is not finite.
     pub fn float(key: &str, label: &str, default: f64, bounds: (f64, f64)) -> Result<Self> {
+        Self::float_with(key, label, default, bounds, None)
+    }
+    /// [`Self::float`] for a number whose floor below 1 has a meaning (a ratio, a share), which
+    /// `reason` states.
+    /// # Errors
+    /// As [`Self::integer_floor_below_one`].
+    pub fn float_floor_below_one(
+        key: &str,
+        label: &str,
+        default: f64,
+        bounds: (f64, f64),
+        reason: &str,
+    ) -> Result<Self> {
+        Self::float_with(key, label, default, bounds, Some(reason))
+    }
+    fn float_with(
+        key: &str,
+        label: &str,
+        default: f64,
+        bounds: (f64, f64),
+        below_one: Option<&str>,
+    ) -> Result<Self> {
         let (min, max) = bounds;
-        Self::bounds(key, min, max)?;
+        Self::bounds(key, min, max, below_one)?;
         Self::new(
             key,
             label,
@@ -217,6 +264,18 @@ impl ParameterDecl {
         self.secret = true;
         self
     }
+    /// Ship no default row: the absent value follows something a stored row would freeze (another
+    /// key, or a floor a later release may raise). The key then shows in System Parameters only
+    /// once a value is set.
+    #[must_use]
+    pub fn without_default_row(mut self) -> Self {
+        self.default_row = false;
+        self
+    }
+    /// Whether publication creates a default row for this key.
+    pub fn has_default_row(&self) -> bool {
+        self.default_row
+    }
     /// The `ir.config_parameter` key.
     pub fn key(&self) -> &str {
         &self.key
@@ -266,6 +325,14 @@ impl ParameterDecl {
     pub fn read_text(&self, text: Option<&str>) -> Result<Value> {
         self.check_text(text)
             .map_err(|_| Error::validation(format!("Stored parameter {} is invalid.", self.key)))
+    }
+    /// The canonical text of the value stored text reads as (the default for `None` or empty).
+    /// # Errors
+    /// As [`Self::read_text`].
+    pub fn effective_text(&self, text: Option<&str>) -> Result<String> {
+        canonical(&self.read_text(text)?).ok_or_else(|| {
+            Error::programming(format!("Parameter {} has no canonical text.", self.key))
+        })
     }
     fn parse(&self, text: &str) -> Option<Value> {
         if text.len() > MAX_TEXT_BYTES {

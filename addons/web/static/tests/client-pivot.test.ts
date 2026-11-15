@@ -1082,7 +1082,10 @@ const reply = (value: unknown, status = 200) => new Response(JSON.stringify(valu
 let holdReads: Promise<void> | undefined; // while set, grouped reads wait for it
 let failReads = false; // while set, grouped reads fail
 let noSearchView = false; // while set, the model has no default search view: the server refuses the request for one (addons/base/src/ir_ui_view/select.rs)
-afterEach(() => { failReads = false; holdReads = undefined; noSearchView = false; });
+let dashboardRead: "ok" | "fails" | undefined; // when set, the list declares a dashboard strip and its read answers or fails
+afterEach(() => { failReads = false; holdReads = undefined; noSearchView = false; dashboardRead = undefined; });
+const dashboardRevision = "a".repeat(64);
+const withDashboard = (reply: typeof full) => ({ ...reply, views: reply.views.map(view => view.type !== "list" ? view : { ...view, nodes: [{ kind: "list", children: [1, 2] }, view.nodes[1], { kind: "dashboard", version: 1, revision: dashboardRevision, items: [{ kind: "count", name: "high", label: "High priority", domain: null, filter: "high", color: "info" }] }] }) });
 async function startApp(path: string, options: { tolerant?: boolean } = {}) {
   history.replaceState(null, "", path);
   const calls: Call[] = [];
@@ -1092,12 +1095,17 @@ async function startApp(path: string, options: { tolerant?: boolean } = {}) {
     if (method === "erp_load_web_menus") return reply({ wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: "Notes", action_id: 20, children: [], icon: null }] });
     if (method === "erp_load_web_action" || method === "erp_load_web_action_views") {
       const action = { wire_major: 1, id: 20, name: "Notes", model: "t.note", target: "current", views: [{ id: 2, type: "list" }, { id: 5, type: "pivot" }], domain: null, context: null };
-      return reply(method === "erp_load_web_action_views" ? { action, views: full } : action);
+      return reply(method === "erp_load_web_action_views" ? { action, views: dashboardRead ? withDashboard(full) : full } : action);
     }
     if (method === "get_views") {
       const asked = body["views"] as unknown[][];
       if (noSearchView && asked.some(item => item[1] === "search")) return reply({ message: "No default view of type 'search' could be found! (generated default views come with the model)" }, 422);
-      return reply(full);
+      return reply(dashboardRead ? withDashboard(full) : full);
+    }
+    if (method === "erp_read_dashboard") {
+      // addons/web dashboard read: the card's count and the domain that narrows to it
+      if (dashboardRead === "fails") return reply({ message: "Try the read again." }, 500);
+      return reply({ version: 1, hidden: false, revision: dashboardRevision, period: "week", periods: [{ id: "week", label: "Week", kind: "rolling", days: 7 }], values: [{ name: "high", value: "2", domain: [["priority", "=", "high"]] }] });
     }
     if (method === "fields_get") {
       if (!Array.isArray(body["attributes"]) || !body["attributes"].every(name => typeof name === "string")) return reply({ message: "attributes must be a list of strings" }, 422);
@@ -1653,4 +1661,36 @@ test("a pivot header button states its level and axis in an aria-description", a
   expect(header(root, "row", [k("normal")]).getAttribute("aria-description")).toBe("Row level 1"); // the arch's rows start expanded
   expect(header(root, "row", [k("normal"), k("draft")]).getAttribute("aria-description")).toBe("Row level 2");
   expect(header(root, "col", [k(1)]).getAttribute("aria-description")).toBe("Column level 1");
+});
+
+/// (partial: a dashboard card kept in the address narrows the pivot the way it narrows the list)
+test("a dashboard card chosen on the list stays applied when the pivot opens", async () => {
+  dashboardRead = "ok";
+  const { root, of } = await startApp(`/erp/action-20?view_type=pivot&search_filters=${encodeURIComponent('["dashboard_high"]')}`);
+  await ready(root);
+  expect(root.textContent).not.toContain("Invalid search_filters");
+  expect(of("erp_read_dashboard")[0]!.body).toMatchObject({ action_id: 20, view_id: 2, revision: dashboardRevision });
+  expect(of("formatted_read_grouping_sets").at(-1)!.body["domain"]).toEqual([["priority", "=", "high"]]);
+  expect(query().get("search_filters")).toBe('["dashboard_high"]');
+  expect(root.textContent).toContain("High priority");
+});
+
+/// (partial: a card the pivot cannot read is dropped from the address with a warning; the pivot still opens)
+test("a dashboard card that cannot be read is dropped with a warning instead of refusing the pivot", async () => {
+  dashboardRead = "fails";
+  const { root, of } = await startApp(`/erp/action-20?view_type=pivot&search_filters=${encodeURIComponent('["dashboard_high"]')}`);
+  await ready(root);
+  expect(root.textContent).not.toContain("Invalid search_filters");
+  expect(of("formatted_read_grouping_sets").at(-1)!.body["domain"]).toEqual([]);
+  expect(query().has("search_filters")).toBe(false);
+  expect(root.textContent).toContain("“High priority” could not be applied here");
+});
+
+/// (partial: an action whose list has no strip drops a stale card from the address; the pivot opens)
+test("a dashboard card in the address of an action without a strip is dropped and the pivot opens", async () => {
+  const { root, of } = await startApp(`/erp/action-20?view_type=pivot&search_filters=${encodeURIComponent('["dashboard_high"]')}`);
+  await ready(root);
+  expect(of("erp_read_dashboard")).toHaveLength(0);
+  expect(query().has("search_filters")).toBe(false);
+  expect(root.textContent).not.toContain("Invalid search_filters");
 });

@@ -53,7 +53,7 @@ impl DescriptionPayload {
             let root_schema = crate::builtin_schemas::builtin_root(kind).ok_or_else(|| {
                 refuse(
                     budget,
-                    "Builtin wire adapter supports only list, form, search and pivot",
+                    "Builtin wire adapter supports only list, form, search, pivot, calendar, graph and kanban",
                 )
             })?;
             if !std::ptr::eq(self.schema.root_node(), root_schema) {
@@ -67,10 +67,13 @@ impl DescriptionPayload {
                 wire::ViewType::Form => "web.form",
                 wire::ViewType::Search => "web.search_sections_v1",
                 wire::ViewType::Pivot => "web.pivot",
+                wire::ViewType::Kanban => "web.kanban",
+                wire::ViewType::Calendar => "web.calendar",
+                wire::ViewType::Graph => "web.graph",
                 _ => {
                     return Err(refuse(
                         budget,
-                        "Builtin wire adapter supports only list, form, search and pivot; later types require a later release",
+                        "Builtin wire adapter supports only list, form, search, pivot, calendar, graph and kanban; later types require a later release",
                     ));
                 }
             };
@@ -100,10 +103,13 @@ impl DescriptionPayload {
                 wire::ViewType::Form => "form",
                 wire::ViewType::Search => "search",
                 wire::ViewType::Pivot => "pivot",
+                wire::ViewType::Kanban => "kanban",
+                wire::ViewType::Calendar => "calendar",
+                wire::ViewType::Graph => "graph",
                 _ => {
                     return Err(refuse(
                         budget,
-                        "Builtin wire adapter supports only list, form, search and pivot; later types require a later release",
+                        "Builtin wire adapter supports only list, form, search, pivot, calendar, graph and kanban; later types require a later release",
                     ));
                 }
             };
@@ -1013,6 +1019,132 @@ impl Output {
                 },
                 interval: self.optional_text(object, "interval")?,
             },
+            "kanban" => wire::ViewNode::Kanban {
+                children: self.indices(object)?,
+                page_limit: optional(object, "page_limit")
+                    .map(|value| {
+                        let value = u64::try_from(integer(value)?)
+                            .map_err(|_| invalid("Builtin kanban page limit is invalid"))?;
+                        wire::WirePageLimit::try_from(value).map_err(invalid)
+                    })
+                    .transpose()?,
+                default_group_by: optional(object, "default_group_by")
+                    .map(|value| self.field(value))
+                    .transpose()?,
+                quick_create: boolean(required(object, "quick_create")?)?,
+                records_draggable: boolean(required(object, "records_draggable")?)?,
+                groups_draggable: boolean(required(object, "groups_draggable")?)?,
+                archivable: boolean(required(object, "archivable")?)?,
+                can_open: boolean(required(object, "can_open")?)?,
+                create: optional(object, "create").map(boolean).transpose()?,
+                edit: optional(object, "edit").map(boolean).transpose()?,
+                delete: optional(object, "delete").map(boolean).transpose()?,
+            },
+            "kanban_card" => wire::ViewNode::KanbanCard {
+                children: self.indices(object)?,
+            },
+            "kanban_section" => wire::ViewNode::KanbanSection {
+                region: match text_value(object, "region")? {
+                    "main" => wire::KanbanRegion::Main,
+                    "aside" => wire::KanbanRegion::Aside,
+                    "footer" => wire::KanbanRegion::Footer,
+                    _ => return Err(invalid("Builtin kanban region is invalid")),
+                },
+                children: self.indices(object)?,
+            },
+            "kanban_progressbar" => {
+                let source = array(required(object, "colors")?)?;
+                let mut colors = self.vector(source.len())?;
+                for color in source {
+                    let color = members(color)?;
+                    colors.push(wire::ProgressColor {
+                        value: self.string(color, "value")?,
+                        tone: match text_value(color, "tone")? {
+                            "success" => wire::ProgressTone::Success,
+                            "warning" => wire::ProgressTone::Warning,
+                            "danger" => wire::ProgressTone::Danger,
+                            "info" => wire::ProgressTone::Info,
+                            "muted" => wire::ProgressTone::Muted,
+                            _ => return Err(invalid("Builtin progress bar tone is invalid")),
+                        },
+                    });
+                }
+                wire::ViewNode::KanbanProgressbar {
+                    field: self.field(required(object, "field")?)?,
+                    colors,
+                    sum_field: optional(object, "sum_field")
+                        .map(|value| self.field(value))
+                        .transpose()?,
+                    help: self.optional_text(object, "help")?,
+                }
+            }
+            "calendar" => {
+                let source = array(required(object, "scales")?)?;
+                let mut scales = self.vector(source.len())?;
+                for value in source {
+                    scales.push(calendar_scale(value)?);
+                }
+                let mode = calendar_scale(required(object, "mode")?)?;
+                if scales.is_empty() || !scales.contains(&mode) {
+                    return Err(invalid("Builtin calendar mode is not one of its scales"));
+                }
+                let optional_field = |output: &mut Self, key| {
+                    optional(object, key)
+                        .map(|value| output.field(value))
+                        .transpose()
+                };
+                wire::ViewNode::Calendar {
+                    children: self.indices(object)?,
+                    date_start: self.field(required(object, "date_start")?)?,
+                    date_stop: optional_field(self, "date_stop")?,
+                    all_day: optional_field(self, "all_day")?,
+                    color: optional_field(self, "color")?,
+                    mode,
+                    scales,
+                    create: boolean(required(object, "create")?)?,
+                    edit: boolean(required(object, "edit")?)?,
+                    delete: boolean(required(object, "delete")?)?,
+                    quick_create: boolean(required(object, "quick_create")?)?,
+                    hide_date: boolean(required(object, "hide_date")?)?,
+                    hide_time: boolean(required(object, "hide_time")?)?,
+                    month_overflow: boolean(required(object, "month_overflow")?)?,
+                    event_limit: unsigned(required(object, "event_limit")?)?,
+                }
+            }
+            "calendar_field" => wire::ViewNode::CalendarField {
+                field: self.field(required(object, "field")?)?,
+                label: self.string(object, "label")?,
+                invisible: boolean(required(object, "invisible")?)?,
+                filters: boolean(required(object, "filters")?)?,
+            },
+            "graph" => wire::ViewNode::Graph {
+                children: self.indices(object)?,
+                mode: match text_value(object, "mode")? {
+                    "bar" => wire::GraphMode::Bar,
+                    "line" => wire::GraphMode::Line,
+                    "pie" => wire::GraphMode::Pie,
+                    _ => return Err(invalid("Builtin graph mode is invalid")),
+                },
+                stacked: boolean(required(object, "stacked")?)?,
+                cumulated: boolean(required(object, "cumulated")?)?,
+                order: match optional(object, "order").map(text).transpose()? {
+                    None => None,
+                    Some("asc") => Some(wire::GraphOrder::Asc),
+                    Some("desc") => Some(wire::GraphOrder::Desc),
+                    Some(_) => return Err(invalid("Builtin graph order is invalid")),
+                },
+                disable_linking: boolean(required(object, "disable_linking")?)?,
+            },
+            "graph_field" => wire::ViewNode::GraphField {
+                field: self.field(required(object, "field")?)?,
+                label: self.string(object, "label")?,
+                role: match text_value(object, "role")? {
+                    "group" => wire::GraphRole::Group,
+                    "measure" => wire::GraphRole::Measure,
+                    _ => return Err(invalid("Builtin graph role is invalid")),
+                },
+                interval: self.optional_text(object, "interval")?,
+            },
             "search_field" => wire::ViewNode::SearchField {
                 field: self.field(required(object, "field")?)?,
                 label: self.string(object, "label")?,
@@ -1036,6 +1168,15 @@ impl Output {
             },
             _ => return Err(invalid("Builtin view has an unsupported node kind")),
         })
+    }
+}
+fn calendar_scale(value: &DescriptionValue) -> ViewResult<wire::CalendarScale> {
+    match text(value)? {
+        "day" => Ok(wire::CalendarScale::Day),
+        "week" => Ok(wire::CalendarScale::Week),
+        "month" => Ok(wire::CalendarScale::Month),
+        "year" => Ok(wire::CalendarScale::Year),
+        _ => Err(invalid("Builtin calendar scale is invalid")),
     }
 }
 fn text_value<'a>(object: Members<'a>, key: &str) -> ViewResult<&'a str> {
@@ -1131,6 +1272,11 @@ fn children(node: &wire::ViewNode) -> &[u32] {
         | wire::ViewNode::Page { children, .. }
         | wire::ViewNode::Search { children, .. }
         | wire::ViewNode::Pivot { children, .. }
+        | wire::ViewNode::Kanban { children, .. }
+        | wire::ViewNode::KanbanCard { children }
+        | wire::ViewNode::KanbanSection { children, .. }
+        | wire::ViewNode::Calendar { children, .. }
+        | wire::ViewNode::Graph { children, .. }
         | wire::ViewNode::SearchGroup { children, .. } => children,
         wire::ViewNode::Dashboard { .. }
         | wire::ViewNode::Field { .. }
@@ -1143,6 +1289,9 @@ fn children(node: &wire::ViewNode) -> &[u32] {
         | wire::ViewNode::Widget { .. }
         | wire::ViewNode::Separator { .. }
         | wire::ViewNode::PivotField { .. }
+        | wire::ViewNode::KanbanProgressbar { .. }
+        | wire::ViewNode::CalendarField { .. }
+        | wire::ViewNode::GraphField { .. }
         | wire::ViewNode::SearchField { .. }
         | wire::ViewNode::SearchFilter { .. }
         | wire::ViewNode::SearchSeparator {} => &[],
@@ -1219,7 +1368,17 @@ fn validate_layout(
 ) -> ViewResult<()> {
     use wire::ViewNode as N;
     let valid = match node {
-        N::Form { .. } | N::List { .. } | N::Search { .. } | N::Pivot { .. } => parent.is_none(),
+        N::Form { .. }
+        | N::List { .. }
+        | N::Search { .. }
+        | N::Pivot { .. }
+        | N::Calendar { .. }
+        | N::Graph { .. }
+        | N::Kanban { .. } => parent.is_none(),
+        N::KanbanCard { .. } | N::KanbanProgressbar { .. } => {
+            matches!(parent, Some(N::Kanban { .. }))
+        }
+        N::KanbanSection { .. } => matches!(parent, Some(N::KanbanCard { .. })),
         N::Page { name, label, .. } => {
             matches!(parent, Some(N::Notebook { .. }))
                 && !name.trim().is_empty()
@@ -1266,6 +1425,13 @@ fn validate_layout(
             matches!(node, N::Field { .. })
         }
         Some(N::Pivot { .. }) => matches!(node, N::PivotField { .. }),
+        Some(N::Kanban { .. }) => {
+            matches!(node, N::KanbanCard { .. } | N::KanbanProgressbar { .. })
+        }
+        Some(N::KanbanCard { .. }) => matches!(node, N::Field { .. } | N::KanbanSection { .. }),
+        Some(N::KanbanSection { .. }) => matches!(node, N::Field { .. }),
+        Some(N::Calendar { .. }) => matches!(node, N::CalendarField { .. }),
+        Some(N::Graph { .. }) => matches!(node, N::GraphField { .. }),
         Some(N::Search { .. }) => matches!(
             node,
             N::SearchField { .. }
@@ -1302,12 +1468,50 @@ fn validate_layout(
                 | N::SearchSeparator {}
                 | N::SearchGroup { .. }
                 | N::PivotField { .. }
+                | N::CalendarField { .. }
+                | N::GraphField { .. }
         ),
     };
     if !valid || !allowed_child {
         return Err(invalid("Builtin view has an invalid layout hierarchy"));
     }
     match node {
+        N::Kanban { children, .. }
+            if children
+                .iter()
+                .filter(|index| matches!(nodes.get(**index as usize), Some(N::KanbanCard { .. })))
+                .count()
+                != 1
+                || children
+                    .iter()
+                    .filter(|index| {
+                        matches!(
+                            nodes.get(**index as usize),
+                            Some(N::KanbanProgressbar { .. })
+                        )
+                    })
+                    .count()
+                    > 1 =>
+        {
+            return Err(invalid(
+                "A kanban view has exactly one card and at most one progress bar",
+            ));
+        }
+        N::KanbanCard { children } => {
+            let mut seen = [false; 3];
+            for index in children {
+                if let Some(N::KanbanSection { region, .. }) = nodes.get(*index as usize) {
+                    let slot = match region {
+                        wire::KanbanRegion::Main => 0,
+                        wire::KanbanRegion::Aside => 1,
+                        wire::KanbanRegion::Footer => 2,
+                    };
+                    if std::mem::replace(&mut seen[slot], true) {
+                        return Err(invalid("A kanban card region is declared twice"));
+                    }
+                }
+            }
+        }
         N::List { children, .. }
             if children
                 .iter()

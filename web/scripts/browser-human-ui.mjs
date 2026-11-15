@@ -294,8 +294,33 @@ const description = {wire_major:1,registry_version:"fixture-r1",description_vers
  {identity:{kind:"stored",id:6},type:"pivot",schema_major:1,renderer:"web.pivot",root:0,nodes:[{kind:"pivot",children:[1,2,3],disable_linking:false,display_quantity:false},
   {kind:"pivot_field",field:{model:"acceptance_notes.note",name:"priority"},label:"Priority",role:"row"},
   {kind:"pivot_field",field:{model:"acceptance_notes.note",name:"format"},label:"Format",role:"col"},
-  {kind:"pivot_field",field:{model:"acceptance_notes.note",name:"print_run"},label:"Print run",role:"measure"}]}
+  {kind:"pivot_field",field:{model:"acceptance_notes.note",name:"print_run"},label:"Print run",role:"measure"}]},
+ // The kanban of the analysis action: a title, two lines, an initials tile and a footer.
+ {identity:{kind:"stored",id:9},type:"kanban",schema_major:1,renderer:"web.kanban",root:0,nodes:[
+  {kind:"kanban",children:[1],quick_create:true,records_draggable:true,groups_draggable:true,archivable:true,can_open:true},
+  {kind:"kanban_card",children:[2,3,6,8]},
+  {...formField("name"),widget:"char"},
+  {kind:"kanban_section",region:"main",children:[4,5]}, formField("format"), formField("pub_year"),
+  {kind:"kanban_section",region:"aside",children:[7]}, {...formField("name"),widget:"char"},
+  {kind:"kanban_section",region:"footer",children:[9,10]}, {...formField("priority"),widget:"badge"}, formField("print_run")]},
+ // The graph of the same action: print run per priority, one series per format, stacked bars.
+ {identity:{kind:"stored",id:7},type:"graph",schema_major:1,renderer:"web.graph",root:0,nodes:[{kind:"graph",children:[1,2,3],mode:"bar",stacked:true,cumulated:false,disable_linking:false},
+  {kind:"graph_field",field:{model:"acceptance_notes.note",name:"priority"},label:"Priority",role:"group"},
+  {kind:"graph_field",field:{model:"acceptance_notes.note",name:"format"},label:"Format",role:"group"},
+  {kind:"graph_field",field:{model:"acceptance_notes.note",name:"print_run"},label:"Print run",role:"measure"}]},
+ // The calendar of the analysis action: notes placed from creation to last edit, coloured by owner.
+ {identity:{kind:"stored",id:8},type:"calendar",schema_major:1,renderer:"web.calendar",root:0,nodes:[{kind:"calendar",children:[1,2,3],date_start:{model:"acceptance_notes.note",name:"create_date"},date_stop:{model:"acceptance_notes.note",name:"write_date"},color:{model:"acceptance_notes.note",name:"owner_id"},mode:"week",scales:["day","week","month","year"],create:true,edit:true,delete:true,quick_create:true,hide_date:false,hide_time:false,month_overflow:true,event_limit:2},
+  {kind:"calendar_field",field:{model:"acceptance_notes.note",name:"name"},label:"Title",invisible:false,filters:false},
+  {kind:"calendar_field",field:{model:"acceptance_notes.note",name:"owner_id"},label:"Owner",invisible:false,filters:true},
+  {kind:"calendar_field",field:{model:"acceptance_notes.note",name:"priority"},label:"Priority",invisible:false,filters:true}]}
 ]};
+// The calendar's events (UTC, the fixture user's zone): two overlap on Monday 2 November 2026, one runs two days, one is the next week.
+const calendarRecords = [
+  { id: 41, display_name: "Planning review", name: "Planning review", create_date: "2026-11-02 09:00:00", write_date: "2026-11-02 10:30:00", owner_id: { id: 2, display_name: "Rendering fixture user" }, priority: "high" },
+  { id: 42, display_name: "Print proofs", name: "Print proofs", create_date: "2026-11-02 09:30:00", write_date: "2026-11-02 11:00:00", owner_id: { id: 3, display_name: "Second fixture user" }, priority: "normal" },
+  { id: 43, display_name: "Book fair", name: "Book fair", create_date: "2026-11-04 08:00:00", write_date: "2026-11-05 17:00:00", owner_id: { id: 2, display_name: "Rendering fixture user" }, priority: "normal" },
+  { id: 44, display_name: "Author visit", name: "Author visit", create_date: "2026-11-10 14:00:00", write_date: "2026-11-10 15:00:00", owner_id: { id: 3, display_name: "Second fixture user" }, priority: "draft" },
+];
 const pivotRecords = [
  {priority:"normal",format:"hardcover",print_run:12000,pub_year:1974}, {priority:"normal",format:"paperback",print_run:30500,pub_year:1980}, {priority:"normal",format:"paperback",print_run:2200,pub_year:1980},
  {priority:"high",format:"hardcover",print_run:800,pub_year:1951}, {priority:"high",format:"ebook",print_run:150000,pub_year:2005}, {priority:"draft",format:"paperback",print_run:450,pub_year:2006}, {priority:false,format:"ebook",print_run:60,pub_year:false}
@@ -371,7 +396,9 @@ let priorityValue = "normal";
 let lineCount = 17;
 const inspectCalls = [];
 const lendCalls = [];
-const writes = [], calls = [], searchDomains = [], pageReads = [], groupDomains = [], groupReads = [], pivotReads = [];
+const writes = [], calls = [], searchDomains = [], pageReads = [], groupDomains = [], groupReads = [], pivotReads = [], calendarReads = [], kanbanReads = [];
+// The kanban's cards: the pivot's records with titles; id 5 is the note the form reads (`recordValues`).
+const kanbanRecords = () => pivotRecords.map((record, index) => ({ id: index + 1, name: index === 4 ? note : ["Harbour survey", "River log", "Night market", "Tide tables", "", "Lighthouse keeper", "Salt flats"][index], ...record }));
 let rejectNextCount = false;
 function html(login) {
   const data = login ? { csrf: "fixture-not-a-real-token", database: "fixture", redirect: "/erp", error: "<img src=x onerror=alert(1)>" } : bootstrap;
@@ -409,7 +436,7 @@ const server = createServer(async (request, response) => {
     else if (["res.users", "res.lang", "res.company"].some(model => pathname === `/erp/json/2/${model}/web_search_read`)) value = { length: 1, records: [{ id: 1, name: "Settings fixture record" }] };
     else if (pathname === "/erp/json/2/res.company/web_read") value = [{ id: 1, name: "Rendering fixture company" }];
     else if ((pathname.endsWith("/erp_load_web_action") || pathname.endsWith("/erp_load_web_action_views")) && rejectNextAction && body.ids[0] === 23) { deniedActions.push({ pathname, ids: body.ids }); response.statusCode = 403; value = { name: "erp.exceptions.AccessError", message: permissionMessage }; }
-    else if ((pathname.endsWith("/erp_load_web_action") || pathname.endsWith("/erp_load_web_action_views")) && body.ids[0] === 25) value = { wire_major: 1, id: 25, name: "Note analysis", model: "acceptance_notes.note", target: "current", views: [{ id: 1, type: "list" }, { id: 6, type: "pivot" }], domain: null, context: null };
+    else if ((pathname.endsWith("/erp_load_web_action") || pathname.endsWith("/erp_load_web_action_views")) && body.ids[0] === 25) value = { wire_major: 1, id: 25, name: "Note analysis", model: "acceptance_notes.note", target: "current", views: [{ id: 1, type: "list" }, { id: 9, type: "kanban" }, { id: 2, type: "form" }, { id: 6, type: "pivot" }, { id: 7, type: "graph" }, { id: 8, type: "calendar" }], domain: null, context: null };
     else if ((pathname.endsWith("/erp_load_web_action") || pathname.endsWith("/erp_load_web_action_views")) && body.ids[0] === 22) value = { wire_major: 1, id: 22, name: "Addons", model: "ir.module.module", target: "current", views: [{ id: 4, type: "form" }], domain: null, context: null };
     else if ((pathname.endsWith("/erp_load_web_action") || pathname.endsWith("/erp_load_web_action_views")) && body.ids[0] === 21) value = { wire_major: 1, id: 21, name: "Settings", model: "ir.config.setting", target: "current", views: [{ id: 3, type: "form" }], domain: null, context: null };
     else if ((pathname.endsWith("/erp_load_web_action") || pathname.endsWith("/erp_load_web_action_views"))) value = { wire_major: 1, id: 20, name: "Notes", model: "acceptance_notes.note", target: "current", views: [{ id: 1, type: "list" }, { id: 2, type: "form" }], domain: null, context: null };
@@ -425,7 +452,7 @@ const server = createServer(async (request, response) => {
     else if (pathname.endsWith("/erp_available_addons")) value = { wire_major: 1, addons: [{ name: "acceptance_notes", label: "Shared notes for a distributed office team", version: "1.0", state: "installed", installable: true, summary: "Long catalogue content remains readable and constrained on narrow screens.", category: "Productivity", author: "ERPForAll", application: true, website: "", license: "LGPL-3", depends: ["web"] }] };
     else if (pathname === "/erp/json/2/ir.config.setting/get_views") value = settingsDescription;
     else if (pathname === "/erp/json/2/ir.config.setting/erp_describe") value = { wire_major: 1, registry_version: "fixture-r1", scope: body.scope, items: settingsPanelItems, declarations: [...(officeBlue && officeInstalled ? [{ key: "theme_office_blue.appearance", kind: "selection", label: "Database appearance (refresh after saving)", choices: [["default", "Default"], ["office-blue", "Office Blue"]], writable: true, app: "theme_office_blue", block: "General", sequence: 100 }] : []), { key: "acceptance_notes.enabled", default: false, kind: "boolean", label: "Enable shared notes", help: "Everyone in the company can read and edit a note that is marked shared.", choices: null, writable: true, app: "acceptance_notes", block: "General", sequence: 100 }, { key: "acceptance_notes.colour", default: "yellow", kind: "selection", label: "Default note colour", help: "New notes start with this colour.", choices: [["yellow", "Yellow"], ["blue", "Blue"], ["green", "Green"]], writable: true, app: "acceptance_notes", block: "General", sequence: 110 }, { key: "acceptance_notes.archive_days", default: 30, kind: "integer", label: "Archive after (days)", help: "Notes that were not touched for this long are archived.", choices: null, writable: true, app: "acceptance_notes", block: "General", sequence: 120 }, { key: "acceptance_notes.mail_to", default: "", kind: "string", label: "Notification e-mail", help: "Digest of new shared notes goes to this address.", choices: null, writable: true, app: "acceptance_notes", block: "Sharing", sequence: 200 }, { key: "acceptance_notes.public_link", default: false, kind: "boolean", label: "Allow public links", help: "A shared note may be opened without signing in.", choices: null, writable: true, app: "acceptance_notes", block: "Sharing", sequence: 210 }] };
-    else if (pathname === "/erp/json/2/ir.config.setting/erp_read_values") value = { wire_major: 1, scope: body.scope, revision: "1", values: body.keys.map(key => key === "theme_office_blue.appearance" ? { key, value: officeChoice, source: "stored" } : { key, value: ({ "acceptance_notes.colour": "yellow", "acceptance_notes.archive_days": 30, "acceptance_notes.mail_to": "notes@example.com", "acceptance_notes.public_link": false, "web.pivot_max_groups": 2000, "web.pivot_max_open_headers": 200, "web.pivot_max_cells": 20000 })[key] ?? true, source: "default" }) };
+    else if (pathname === "/erp/json/2/ir.config.setting/erp_read_values") value = { wire_major: 1, scope: body.scope, revision: "1", values: body.keys.map(key => key === "theme_office_blue.appearance" ? { key, value: officeChoice, source: "stored" } : { key, value: ({ "acceptance_notes.colour": "yellow", "acceptance_notes.archive_days": 30, "acceptance_notes.mail_to": "notes@example.com", "acceptance_notes.public_link": false, "web.pivot_max_groups": 2000, "web.pivot_max_open_headers": 200, "web.pivot_max_cells": 20000, "web.graph_max_groups": 1000, "web.calendar_max_events": 1000 })[key] ?? true, source: "default" }) };
     else if (officeBlue && pathname === "/erp/json/2/ir.config.setting/erp_write_values") {
       for (const change of body.changes) { assert.equal(change.key, "theme_office_blue.appearance"); officeChoice = change.value; }
       value = { wire_major: 1, scope: body.scope, revision: "2", values: [{ key: "theme_office_blue.appearance", value: officeChoice, source: "stored" }] };
@@ -475,6 +502,20 @@ const server = createServer(async (request, response) => {
       { id: 4, name: "Call", summary: "Call", delay_count: 2, delay_unit: "days", default_user_id: null },
       { id: 2, name: "To-Do", summary: "To-Do", delay_count: 5, delay_unit: "days", default_user_id: null },
     ] };
+    else if (pathname === "/erp/json/2/acceptance_notes.note/web_search_read" && body.order === "create_date asc, id asc") {
+      // The calendar's range read: the range domain ends the search domain; the fixture keeps the events that touch the range.
+      calendarReads.push(body);
+      const first = body.domain.find(term => Array.isArray(term) && term[0] === "write_date" && term[1] === ">=")[2];
+      const last = body.domain.find(term => Array.isArray(term) && term[0] === "create_date" && term[1] === "<=")[2];
+      const records = calendarRecords.filter(record => record.create_date <= last && record.write_date >= first);
+      value = { length: records.length, records };
+    }
+    else if (pathname === "/erp/json/2/acceptance_notes.note/web_search_read" && body.specification?.pub_year) {
+      // The kanban's read: its card fields, the page size of the arch (none: 40), a name search.
+      kanbanReads.push(body);
+      const kept = kanbanRecords().filter(record => body.domain.every(([name, operator, text]) => name === "name" && operator === "ilike" && record.name.toLowerCase().includes(text.toLowerCase())));
+      value = { length: kept.length, records: kept.slice(body.offset, body.offset + body.limit) };
+    }
     else if (pathname.endsWith("/web_search_read")) {
       if (readPause) await readPause;
       if (delayNextRead) { delayNextRead = false; await new Promise(resolve => setTimeout(resolve, 1800)); }
@@ -484,6 +525,7 @@ const server = createServer(async (request, response) => {
         assert.ok(Array.isArray(condition)); assert.equal(condition.length, 3);
         if (condition[0] === "priority") { assert.equal(condition[1], "="); return priorityValue === condition[2]; }
         if (condition[0] === "create_date") { assert.ok([">=", "<"].includes(condition[1])); return true; }
+        if (condition[0] === "format") { assert.equal(condition[1], "="); return true; } // a graph bar's records: the one fixture note stands for every format
         assert.equal(condition[0], "name"); assert.ok(["ilike", "="].includes(condition[1]));
         return condition[1] === "=" ? note === condition[2] : note.toLowerCase().includes(condition[2].toLowerCase());
       });
@@ -942,6 +984,143 @@ try {
     await call("Page.navigate", { url: base + back });
     await wait('document.querySelector(".list-table tbody tr[data-id]") !== null');
   };
+  // The kanban, end to end in the compiled client: reached from the view switcher, one read of 40 with the card fields, the arrow keys
+  // between cards (Down follows the rows on screen), a card opens its form and the breadcrumb comes back to that card; a search with no
+  // match shows the empty state. Captured at 1440, 768 and 390; the page never scrolls sideways.
+  const kanbanProbe = async prefix => {
+    const back = await evaluate('location.pathname + location.search');
+    const metrics = (width, height) => call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: !viewportOnly && width < 700 });
+    const key = name => call("Input.dispatchKeyEvent", { type: "keyDown", key: name, code: name });
+    await metrics(1440, 900);
+    await call("Page.navigate", { url: base + "/erp/action-25" });
+    await wait('document.querySelector(\'.view-btn[aria-label="kanban view"]\') !== null');
+    await evaluate('document.querySelector(\'.view-btn[aria-label="kanban view"]\').click()');
+    await wait('document.querySelectorAll(".kanban-card").length === 7');
+    assert.equal(kanbanReads.at(-1).limit, 40);
+    assert.deepEqual(Object.keys(kanbanReads.at(-1).specification).sort(), ["format", "name", "print_run", "priority", "pub_year"]);
+    assert.equal(await evaluate('new URL(location.href).searchParams.get("view_type")'), "kanban");
+    assert.equal(await evaluate('document.querySelector(".kanban-card .kanban-card-tile").textContent'), "HS");
+    await evaluate('document.querySelector(".kanban-card").focus()');
+    await key("ArrowRight");
+    assert.equal(await evaluate('document.activeElement.dataset.id'), "2");
+    await key("ArrowDown");
+    assert.equal(await evaluate('document.activeElement.offsetTop > document.querySelector(".kanban-card").offsetTop'), true, "Down moves to the next row");
+    await key("Home");
+    for (const [width, height] of [[1440, 900], [768, 1024], [390, 844]]) {
+      await metrics(width, height);
+      await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${prefix} kanban fits ${width}`);
+      await shot(`${prefix}-kanban-${width}`, width, height);
+    }
+    await metrics(1440, 900);
+    await evaluate('document.querySelector(\'.kanban-card[data-id="5"]\').click()');
+    await wait('new URL(location.href).searchParams.get("view_type") === "form"');
+    await evaluate('[...document.querySelectorAll("[data-control-breadcrumbs] a, [data-control-breadcrumbs] button")].find(item => item.textContent.trim() === "Note analysis").click()');
+    await wait('document.querySelectorAll(".kanban-card").length === 7 && document.activeElement?.dataset?.id === "5"');
+    await call("Page.navigate", { url: base + "/erp/action-25?view_type=kanban&search=nothing-matches" });
+    await wait('document.querySelector(".kanban-results .message-no-content") !== null');
+    await shot(`${prefix}-kanban-empty-1440`, 1440, 900);
+    await call("Page.navigate", { url: base + back });
+    await wait('document.querySelector(".list-table tbody tr[data-id]") !== null');
+  };
+  // The calendar, end to end in the compiled client: reached from the view switcher, one range read under the search, the week grid
+  // with overlapping events side by side, the popover, the scales and the address, each state captured at 1440, 768 and 390.
+  const calendarProbe = async prefix => {
+    const back = await evaluate('location.pathname + location.search');
+    const fits = async (name, width, height) => {
+      await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: !viewportOnly && width < 700 });
+      await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${prefix} calendar ${name} fits ${width}`);
+      await shot(`${prefix}-calendar-${name}-${width}`, width, height);
+    };
+    await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await call("Page.navigate", { url: base + "/erp/action-25" });
+    await wait('document.querySelector(".list-table tbody tr[data-id]") !== null');
+    await evaluate('document.querySelector(\'.view-btn[aria-label="calendar view"]\').click()');
+    await wait('document.querySelector(".calendar-view") !== null');
+    // The week of 2 November 2026 by address: the reload restores it with one read.
+    await call("Page.navigate", { url: base + "/erp/action-25?view_type=calendar&calendar_scale=week&calendar_date=2026-11-02" });
+    await wait('document.querySelectorAll(".calendar-event").length === 4'); // the two-day book fair is drawn in both of its days
+    const read = calendarReads.at(-1);
+    assert.equal(read.limit, 1001, "one event over the bound of web.calendar_max_events");
+    assert.deepEqual(read.specification.display_name, {});
+    assert.ok(read.domain.some(term => JSON.stringify(term) === JSON.stringify(["create_date", "<=", "2026-11-08 23:59:59"])), JSON.stringify(read.domain));
+    assert.equal(await evaluate('document.querySelector(".calendar-week-number").textContent'), "Week 45");
+    assert.equal(await evaluate('[...document.querySelectorAll(".calendar-event.is-timed")].map(node => node.style.width).join("|")'), "50%|50%|100%|100%");
+    await fits("week", 1440, 900);
+    await evaluate('document.querySelector(".calendar-event.is-timed").click()');
+    await wait('document.querySelector(".calendar-popover") !== null');
+    assert.equal(await evaluate('document.querySelector(".calendar-popover h3").textContent'), "Planning review");
+    await shot(`${prefix}-calendar-popover-1440`, 1440, 900);
+    await call("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+    await wait('document.querySelector(".calendar-popover") === null');
+    assert.equal(await evaluate('document.activeElement?.classList.contains("calendar-event")'), true, "focus returns to the event");
+    // A filter value hides its events in memory, without another read.
+    const reads = calendarReads.length;
+    await evaluate('[...document.querySelectorAll(".calendar-filter-value")].find(row => row.textContent === "Second fixture user").querySelector("input").click()');
+    await wait('document.querySelectorAll(".calendar-event").length === 3');
+    assert.equal(calendarReads.length, reads);
+    await evaluate('[...document.querySelectorAll(".calendar-filter-value")].find(row => row.textContent === "All").querySelector("input").click()');
+    await wait('document.querySelectorAll(".calendar-event").length === 4');
+    await evaluate('[...document.querySelectorAll(".calendar-scale")].find(node => node.textContent === "Month").click()');
+    await wait('document.querySelector(".calendar-month-grid") !== null && new URL(location.href).searchParams.get("calendar_scale") === "month"');
+    assert.equal(await evaluate('new URL(location.href).searchParams.get("calendar_date")'), "2026-11-02");
+    await wait('document.querySelectorAll(".calendar-month-grid .calendar-event").length >= 4');
+    await fits("month", 1440, 900);
+    await fits("month", 768, 1024);
+    await fits("month", 390, 844);
+    await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate('[...document.querySelectorAll(".calendar-scale")].find(node => node.textContent === "Year").click()');
+    await wait('document.querySelectorAll(".calendar-year-month").length === 12');
+    await fits("year", 1440, 900);
+    await evaluate('[...document.querySelectorAll(".calendar-scale")].find(node => node.textContent === "Week").click()');
+    await wait('document.querySelector(".calendar-time-grid") !== null');
+    await fits("week", 768, 1024);
+    await fits("week", 390, 844);
+    await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await call("Page.navigate", { url: base + back });
+    await wait('document.querySelector(".list-table tbody tr[data-id]") !== null');
+  };
+  // The graph, end to end in the compiled client: reached from the view switcher of the same action, one grouped read (each grouping
+  // alone and both crossed), stacked bars with a legend; the chart type and the data table change it without a read; the address keeps
+  // the chart type; a bar opens its records. Captured at 1440, 1280, 768 and 390; the page never scrolls sideways.
+  const graphProbe = async () => {
+    const back = await evaluate('location.pathname + location.search');
+    await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await call("Page.navigate", { url: base + "/erp/action-25" });
+    await wait('document.querySelector(".list-table tbody tr[data-id]") !== null');
+    await evaluate('document.querySelector(\'.view-btn[aria-label="graph view"]\').click()');
+    await wait('document.querySelector(".graph-chart .graph-bar") !== null');
+    assert.deepEqual(pivotReads.at(-1).grouping_sets, [["priority"], ["format"], ["priority", "format"]]);
+    assert.deepEqual(pivotReads.at(-1).aggregates, ["__count", "print_run:sum"]);
+    assert.equal(await evaluate('document.querySelectorAll(".graph-legend-item").length'), 3, "one legend entry per format");
+    // The series colours come from classes (this page's policy drops style attributes): a mark drawn in the default black means they did not apply.
+    assert.notEqual(await evaluate('getComputedStyle(document.querySelector(".graph-bar")).fill'), "rgb(0, 0, 0)", "bars are drawn in the series colours");
+    assert.equal(await evaluate('[...document.querySelectorAll(".graph-toggle")].find(button => button.textContent === "Cumulative").getClientRects().length'), 0, "Cumulative is for lines only");
+    const reads = pivotReads.length;
+    await qualityShots("graph");
+    await evaluate('document.querySelector(\'.graph-mode[data-mode="line"]\').click()');
+    await wait('document.querySelector(".graph-line") !== null');
+    assert.equal(await evaluate('new URL(location.href).searchParams.get("graph_mode")'), "line");
+    await shot("fixture-graph-line-1440", 1440, 900);
+    await evaluate('document.querySelector(\'.graph-mode[data-mode="pie"]\').click()');
+    await wait('document.querySelector(".graph-chart .graph-slice") !== null');
+    await shot("fixture-graph-pie-1440", 1440, 900);
+    await shot("fixture-graph-pie-390", 390, 844);
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, "the pie fits 390");
+    await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate('[...document.querySelectorAll(".graph-toggle")].find(button => button.textContent === "Show data").click()');
+    await wait('document.querySelector(".graph-table") !== null');
+    await shot("fixture-graph-table-1440", 1440, 900);
+    assert.equal(pivotReads.length, reads, "the chart type and the table read nothing");
+    await evaluate('[...document.querySelectorAll(".graph-toggle")].find(button => button.textContent === "Show chart").click()');
+    await evaluate('document.querySelector(\'.graph-mode[data-mode="bar"]\').click()');
+    await wait('document.querySelector(".graph-bar.graph-link") !== null');
+    await evaluate('document.querySelector(".graph-bar.graph-link").dispatchEvent(new MouseEvent("click", { bubbles: true }))');
+    await wait('new URL(location.href).searchParams.has("method_action") && document.querySelector(".list-table") !== null');
+    await call("Page.navigate", { url: base + back });
+    await wait('document.querySelector(".list-table tbody tr[data-id]") !== null');
+  };
   const pointerClick = async selector => {
     const at = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
     await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
@@ -1245,6 +1424,7 @@ try {
     await wait('document.querySelector(".list-state-tabs")?.getAttribute("aria-busy") === "false" && document.querySelector(".list-table tbody tr") !== null');
     await groupedListProbe("office-blue");
     await pivotProbe("office-blue");
+    await kanbanProbe("office-blue");
     {
       await evaluate('document.querySelector(".list-table tbody input[type=checkbox]").click();document.querySelector(".action-toggle-btn").click()');
       await scene("list-selected", ".action-menu.open");
@@ -1910,6 +2090,9 @@ try {
   await assertListGeometry('default list', 1440);
   await groupedListProbe("fixture");
   await pivotProbe("fixture");
+  await kanbanProbe("fixture");
+  await calendarProbe("fixture");
+  await graphProbe();
   // The same page geometry at every delivered width (the Office Blue list runs the same loop in its own section).
   for (const [width, height] of [[1280, 900], [1024, 900], [800, 1024], [390, 844]]) {
     await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: !viewportOnly && width < 700 });
@@ -2099,7 +2282,7 @@ try {
   if (officeBlue && !listOnly && !dialogProbe) {
     const expected = ['list','search-menu','menu-search','list-selected','list-empty','list-loading','form-long-title','count-error','delete-dialog','relation','chatter','chatter-note','followers','home','user-menu','settings','addons','addon-info','login-boundary'].flatMap(scene=>[1440,800,390].map(width=>`office-blue-${scene}-${width}.png`));
     expected.push(...['form','form-dirty','form-invalid'].flatMap(scene=>[1536,1440,800,390].map(width=>`office-blue-${scene}-${width}.png`)));
-    expected.push('office-blue-grouped-folded-1440.png',...[1440,1024,800,390].map(width=>`office-blue-grouped-open-${width}.png`),'office-blue-pivot-1440.png','office-blue-pivot-menu-1440.png',...['plain','nested','sorted','flipped'].map(scene=>`office-blue-pivot-${scene}-390.png`),...['nested','sorted','flipped'].map(scene=>`office-blue-pivot-${scene}-1440.png`));
+    expected.push('office-blue-grouped-folded-1440.png',...[1440,1024,800,390].map(width=>`office-blue-grouped-open-${width}.png`),'office-blue-pivot-1440.png',...[1440,768,390].map(width=>`office-blue-kanban-${width}.png`),'office-blue-kanban-empty-1440.png','office-blue-pivot-menu-1440.png',...['plain','nested','sorted','flipped'].map(scene=>`office-blue-pivot-${scene}-390.png`),...['nested','sorted','flipped'].map(scene=>`office-blue-pivot-${scene}-1440.png`));
     for(const name of expected) assert.ok(screenshots.some(shot=>shot.name===name),`required scene missing: ${name}`);
   }
   const result = { list_geometry: listGeometries, status: officeBaseline ? "BASELINE_NOT_ACCEPTANCE" : dialogProbe ? "DIAGNOSTIC_NOT_ACCEPTANCE" : "PASS", visual_findings: visualFindings, shell_measurements: shellMeasurements, scope: `compiled-asset ${remoteCdp ? "remote CDP" : "Chrome"} rendering with explicit protocol fixtures; not backend/auth/database acceptance`, source_revision: (await readFile(path.join(root, "REVISION"), "utf8")).trim(), time_utc: new Date().toISOString(), hostname: hostname(), node: process.version, browser: version, theme, office_blue: officeBlue, viewport_only: viewportOnly, office_blue_scope: listOnly ? "list/category/page/count-error/delete-confirmation layout and narrow drawer close; resize/form/settings not run" : "enumerated screenshots; protocol fixture only", appearance_checks: appearanceChecks, manifest, screenshots, list_layouts: listLayouts, resize_layouts: resizeLayouts, error_layouts: errorLayouts, calls, search_domains: searchDomains, page_reads: pageReads, group_domains: groupDomains, observed_write: writes[0], denied_actions: deniedActions, unhandled_exceptions: exceptions };

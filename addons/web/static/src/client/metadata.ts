@@ -82,11 +82,32 @@ export type Node = { kind: "field"; field: Field; label: string; widget: string 
   | { kind: "page"; name: string; label: string; children: Node[] }
   | { kind: "separator"; label: string }
   | SearchFieldNode | SearchFilterNode | SearchSeparatorNode | SearchGroupNode
-  | PivotNode | PivotFieldNode | { kind: "dashboard"; config: DashboardConfig };
+  | PivotNode | PivotFieldNode | CalendarNode | CalendarFieldNode | GraphNode | GraphFieldNode | { kind: "dashboard"; config: DashboardConfig }
+  | KanbanNode | KanbanCardNode | KanbanSectionNode | KanbanProgressbarNode;
+/** Kanban root: the arch flags; its children are one `kanban_card` and at most one `kanban_progressbar`. */
+export interface KanbanNode { kind: "kanban"; children: Node[]; quickCreate: boolean; recordsDraggable: boolean; groupsDraggable: boolean; archivable: boolean; canOpen: boolean; /** The field the board opens grouped by, when the caller may read it. */ defaultGroupBy: Field | null }
+/** The card: field nodes and the `main`, `aside` and `footer` regions. */
+export interface KanbanCardNode { kind: "kanban_card"; children: Node[] }
+export interface KanbanSectionNode { kind: "kanban_section"; region: "main" | "aside" | "footer"; children: Node[] }
+/** A progress bar declaration; grouped columns draw it. */
+export interface KanbanProgressbarNode { kind: "kanban_progressbar"; field: Field; colors: readonly { value: string; tone: "success" | "warning" | "danger" | "info" | "muted" }[]; sumField: Field | null; help: string | null }
 /** Pivot root: the two flags of the arch; the grouping and measure fields are its `pivot_field` children. */
 export interface PivotNode { kind: "pivot"; children: Node[]; disableLinking: boolean; displayQuantity: boolean; /** `<measure> asc|desc` as the server normalized it. */ defaultOrder: string | null }
 /** One field of a pivot: a row grouping, a column grouping or a measure. */
 export interface PivotFieldNode { kind: "pivot_field"; field: Field; label: string; role: "row" | "col" | "measure"; /** Date grouping interval of a date or datetime row or column field. */ interval: string | null }
+export type CalendarScale = "day" | "week" | "month" | "year";
+/** Calendar root: the fields that place an event and what the grid offers; its `calendar_field` children are the popover and filter fields. */
+export interface CalendarNode {
+  kind: "calendar"; children: Node[]; dateStart: Field; dateStop: Field | null; allDay: Field | null; color: Field | null;
+  mode: CalendarScale; scales: CalendarScale[]; create: boolean; edit: boolean; delete: boolean; quickCreate: boolean;
+  hideDate: boolean; hideTime: boolean; monthOverflow: boolean; eventLimit: number;
+}
+/** One field of a calendar: shown in the event popover unless invisible; with `filters`, a side-panel filter section. */
+export interface CalendarFieldNode { kind: "calendar_field"; field: Field; label: string; invisible: boolean; filters: boolean }
+/** Graph root: the chart type and flags of the arch; its groupings and measures are `graph_field` children. */
+export interface GraphNode { kind: "graph"; children: Node[]; mode: "bar" | "line" | "pie"; stacked: boolean; cumulated: boolean; order: "asc" | "desc" | null; disableLinking: boolean }
+/** One field of a graph: a grouping (the axis, then the series) or a measure. */
+export interface GraphFieldNode { kind: "graph_field"; field: Field; label: string; role: "group" | "measure"; interval: string | null }
 /** Search field filter occurrence. */
 export interface SearchFieldNode { kind: "search_field"; field: Field; label: string; filterDomain: ValidatedAst | null; operator: string | null }
 /** Predefined search filter or group-by filter. */
@@ -103,7 +124,7 @@ export type ListSearchPanel = { kind: "selection"; field: Field; label: string; 
 export interface View {
   id?: number;
   dashboard?: DashboardConfig;
-  type: "list" | "form" | "search" | "pivot";
+  type: "list" | "form" | "search" | "pivot" | "calendar" | "graph" | "kanban";
   mode: "record" | "service";
   nodes: Node[];
   fields: Field[];
@@ -223,7 +244,7 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
     else unsupported("Unknown view identity kind.");
     const sectionRenderer=(type==="list"&&renderer==="web.list_sections_v1")||(type==="search"&&renderer==="web.search_sections_v1");
     if ((type==="list"||type==="search") && renderer.startsWith(`web.${type}_sections_`) && !sectionRenderer) throw new PanelCompatibilityError();
-    if ((type !== "list" && type !== "form" && type !== "search" && type !== "pivot") || (!sectionRenderer&&renderer !== `web.${type}`) || v["schema_major"] !== 1) unsupported(`Unsupported view renderer: ${renderer}.`);
+    if ((type !== "list" && type !== "form" && type !== "search" && type !== "pivot" && type !== "calendar" && type !== "graph" && type !== "kanban") || (!sectionRenderer&&renderer !== `web.${type}`) || v["schema_major"] !== 1) unsupported(`Unsupported view renderer: ${renderer}.`);
     if (views.has(type)) throw new ClientError("server", "Duplicate view type.");
     const arena = array(v["nodes"], "view nodes"), root = integer(v["root"], "view root");
     if (!arena.length || arena.length > 4096) throw new ClientError("server", "View node limit exceeded.");
@@ -231,14 +252,20 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
     if (totalNodes > 4096) throw new ClientError("server", "Requested views exceed the 4096-node aggregate limit.");
     const rootNode = object(arena[root], "view root");
     if (rootNode["kind"] !== type) throw new ClientError("server", "View root type does not match renderer.");
-    const mode = (type === "list" || type === "search" || type === "pivot") ? "record" : rootNode["record_mode"];
-    if (mode !== "record" && mode !== "service" || (type === "list" || type === "search" || type === "pivot") && mode !== "record") unsupported("Unsupported form record mode.");
+    const mode = type !== "form" ? "record" : rootNode["record_mode"];
+    if (mode !== "record" && mode !== "service" || type !== "form" && mode !== "record") unsupported("Unsupported form record mode.");
     let dashboard: DashboardConfig | undefined;
     const seen = new Set<number>(), selected: Field[] = [], contextFields = new Set<string>();
     const admitViewContext = (raw: unknown): ValidatedAst => {
       const ast = admitContext(raw);
       for (const node of ast.nodes) if (node.kind === "name" && fields.has(node.name)) contextFields.add(node.name);
       return ast;
+    };
+    const rootField = (raw: unknown): Field => {
+      const ref = object(raw, "field reference"); closed(ref, ["model", "name"], "field reference");
+      const name = text(ref["name"], "field name"), field = fields.get(name);
+      if (!field || ref["model"] !== model) throw new ClientError("server", `Unknown field in view: ${name}.`);
+      return field;
     };
     const visit = (index: number, depth: number, parentKind?: unknown): Node => {
       if (seen.has(index)) throw new ClientError("server", "View structure contains a cycle or repeated node.");
@@ -263,13 +290,27 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
       else if (kind === "separator") closed(node, ["kind", "label"], "view node");
       else if (kind === "pivot") closed(node, ["kind", "children", "disable_linking", "display_quantity", ...(Object.hasOwn(node, "default_order") ? ["default_order"] : [])], "view node");
       else if (kind === "pivot_field") closed(node, ["kind", "field", "label", "role", ...(Object.hasOwn(node, "interval") ? ["interval"] : [])], "view node");
+      else if (kind === "calendar") closed(node, ["kind", "children", "date_start", ...["date_stop", "all_day", "color"].filter(key => Object.hasOwn(node, key)), "mode", "scales", "create", "edit", "delete", "quick_create", "hide_date", "hide_time", "month_overflow", "event_limit"], "view node");
+      else if (kind === "calendar_field") closed(node, ["kind", "field", "label", "invisible", "filters"], "view node");
+      else if (kind === "graph") closed(node, ["kind", "children", "mode", "stacked", "cumulated", "disable_linking", ...(Object.hasOwn(node, "order") ? ["order"] : [])], "view node");
+      else if (kind === "graph_field") closed(node, ["kind", "field", "label", "role", ...(Object.hasOwn(node, "interval") ? ["interval"] : [])], "view node");
       else if (kind === "search") closed(node, ["kind", "children", ...(Object.hasOwn(node, "search_panel") ? ["search_panel"] : [])], "view node");
+      else if (kind === "kanban") closed(node, ["kind", "children", "quick_create", "records_draggable", "groups_draggable", "archivable", "can_open", ...["page_limit", "default_group_by", "create", "edit", "delete"].filter(key => Object.hasOwn(node, key))], "view node");
+      else if (kind === "kanban_card") closed(node, ["kind", "children"], "view node");
+      else if (kind === "kanban_section") closed(node, ["kind", "region", "children"], "view node");
+      else if (kind === "kanban_progressbar") closed(node, ["kind", "field", "colors", ...["sum_field", "help"].filter(key => Object.hasOwn(node, key))], "view node");
       else if (kind === "search_field") closed(node, ["kind", "field", "label", ...(Object.hasOwn(node, "filter_domain") ? ["filter_domain"] : []), ...(Object.hasOwn(node, "operator") ? ["operator"] : [])], "view node");
       else if (kind === "search_filter") closed(node, ["kind", "name", "label", ...(Object.hasOwn(node, "domain") ? ["domain"] : []), ...(Object.hasOwn(node, "context") ? ["context"] : [])], "view node");
       else if (kind === "search_separator") closed(node, ["kind"], "view node");
       else if (kind === "search_group") closed(node, ["kind", "label", ...(Object.hasOwn(node, "expand") ? ["expand"] : []), "children"], "view node");
       else unsupported(`Unsupported view node: ${String(kind)}.`);
-      if (depth > 1 && (kind === "form" || kind === "list" || kind === "search" || kind === "pivot") || type === "pivot" && kind !== "pivot" && kind !== "pivot_field"
+      const kanbanKind = kind === "kanban" || kind === "kanban_card" || kind === "kanban_section" || kind === "kanban_progressbar";
+      if (depth > 1 && (kind === "form" || kind === "list" || kind === "search" || kind === "pivot" || kind === "calendar" || kind === "graph" || kind === "kanban")
+        || type === "calendar" && kind !== "calendar" && kind !== "calendar_field" || type !== "calendar" && (kind === "calendar" || kind === "calendar_field") || kind === "calendar_field" && parentKind !== "calendar"
+        || type === "graph" && kind !== "graph" && kind !== "graph_field" || type !== "graph" && (kind === "graph" || kind === "graph_field") || kind === "graph_field" && parentKind !== "graph" || type === "pivot" && kind !== "pivot" && kind !== "pivot_field"
+        || type === "kanban" && !kanbanKind && kind !== "field" || type !== "kanban" && kanbanKind
+        || (kind === "kanban_card" || kind === "kanban_progressbar") && parentKind !== "kanban" || kind === "kanban_section" && parentKind !== "kanban_card"
+        || parentKind === "kanban" && kind !== "kanban_card" && kind !== "kanban_progressbar" || parentKind === "kanban_section" && kind !== "field"
         || type !== "pivot" && (kind === "pivot" || kind === "pivot_field") || kind === "pivot_field" && parentKind !== "pivot"
         || type === "list" && kind !== "list" && kind !== "field" && kind !== "dashboard"
         || kind === "dashboard" && parentKind !== "list"
@@ -440,6 +481,34 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
         if (interval !== null && !["day", "week", "month", "quarter", "year"].includes(interval)) unsupported("Unsupported pivot interval.");
         return { kind: "pivot_field", field, label, role: role as "row" | "col" | "measure", interval };
       }
+      if (kind === "kanban_progressbar") {
+        const field = rootField(node["field"]), sum = Object.hasOwn(node, "sum_field") ? rootField(node["sum_field"]) : null;
+        const tones = ["success", "warning", "danger", "info", "muted"];
+        const colors = array(node["colors"], "progress bar colors").map(raw => {
+          const color = object(raw, "progress bar color"); closed(color, ["value", "tone"], "progress bar color");
+          const tone = text(color["tone"], "progress bar tone");
+          if (!tones.includes(tone)) unsupported("Unsupported progress bar tone.");
+          return { value: text(color["value"], "progress bar value"), tone: tone as KanbanProgressbarNode["colors"][number]["tone"] };
+        });
+        return { kind, field, colors, sumField: sum, help: Object.hasOwn(node, "help") ? text(node["help"], "progress bar help") : null };
+      }
+      if (kind === "calendar_field") {
+        const field = rootField(node["field"]), label = text(node["label"], "field label");
+        if (!selected.some(item => item.name === field.name)) selected.push({ ...field, label, readonly: true, required: false, invisible: false, forceSave: false });
+        return { kind: "calendar_field", field, label, invisible: boolean(node["invisible"], "calendar invisible"), filters: boolean(node["filters"], "calendar filters") };
+      }
+      if (kind === "graph_field") {
+        const ref = object(node["field"]); closed(ref, ["model", "name"], "field reference");
+        const name = text(ref["name"], "field name"), field = fields.get(name);
+        if (!field || ref["model"] !== model) throw new ClientError("server", `Unknown field in view: ${name}.`);
+        const role = node["role"];
+        if (role !== "group" && role !== "measure") unsupported("Unsupported graph field role.");
+        const label = text(node["label"], "field label");
+        selected.push({ ...field, label, readonly: true, required: false, invisible: false, forceSave: false });
+        const interval = Object.hasOwn(node, "interval") ? text(node["interval"], "graph interval") : null;
+        if (interval !== null && !["day", "week", "month", "quarter", "year"].includes(interval)) unsupported("Unsupported graph interval.");
+        return { kind: "graph_field", field, label, role: role as "group" | "measure", interval };
+      }
       if (kind === "search_field") {
         const ref = object(node["field"]); closed(ref, ["model", "name"], "field reference");
         const name = text(ref["name"], "field name"), field = fields.get(name);
@@ -478,7 +547,47 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
       if (kind === "search") {
         return { kind: "root", children };
       }
+      if (kind === "kanban") {
+        if (children.filter(child => child.kind === "kanban_card").length !== 1 || children.filter(child => child.kind === "kanban_progressbar").length > 1) throw new ClientError("server", "A kanban view has exactly one card and at most one progress bar.");
+        const flag = (key: string): boolean => boolean(node[key], `kanban ${key}`);
+        return { kind, children, quickCreate: flag("quick_create"), recordsDraggable: flag("records_draggable"), groupsDraggable: flag("groups_draggable"), archivable: flag("archivable"), canOpen: flag("can_open"),
+          defaultGroupBy: Object.hasOwn(node, "default_group_by") ? rootField(node["default_group_by"]) : null };
+      }
+      if (kind === "kanban_card") {
+        const regions = children.flatMap(child => child.kind === "kanban_section" ? [child.region] : []);
+        if (new Set(regions).size !== regions.length) throw new ClientError("server", "A kanban card region is declared twice.");
+        return { kind, children };
+      }
+      if (kind === "kanban_section") {
+        const region = node["region"];
+        if (region !== "main" && region !== "aside" && region !== "footer") unsupported("Unsupported kanban card region.");
+        return { kind, region, children };
+      }
       if (kind === "pivot") return { kind, children, disableLinking: boolean(node["disable_linking"], "pivot disable_linking"), displayQuantity: boolean(node["display_quantity"], "pivot display_quantity"), defaultOrder: Object.hasOwn(node, "default_order") ? text(node["default_order"], "pivot default_order") : null };
+      if (kind === "calendar") {
+        const optional = (key: string): Field | null => Object.hasOwn(node, key) ? rootField(node[key]) : null;
+        const dateStart = rootField(node["date_start"]), dateStop = optional("date_stop"), allDay = optional("all_day"), color = optional("color");
+        if (dateStart.kind !== "date" && dateStart.kind !== "datetime" || dateStop && dateStop.kind !== dateStart.kind) unsupported("Calendar dates must be date or datetime fields of one type.");
+        if (allDay && allDay.kind !== "boolean" || color && color.kind !== "many2one" && color.kind !== "integer") unsupported("Unsupported calendar all-day or colour field.");
+        for (const field of [dateStart, dateStop, allDay, color]) if (field && !selected.some(item => item.name === field.name)) selected.push({ ...field, readonly: true, required: false, invisible: true, forceSave: false });
+        const scale = (value: unknown): CalendarScale => {
+          if (value !== "day" && value !== "week" && value !== "month" && value !== "year") unsupported("Unsupported calendar scale.");
+          return value as CalendarScale;
+        };
+        const scales = array(node["scales"], "calendar scales").map(scale), mode = scale(node["mode"]);
+        if (!scales.length || new Set(scales).size !== scales.length || !scales.includes(mode)) throw new ClientError("server", "Invalid calendar scales.");
+        const flag = (key: string): boolean => boolean(node[key], `calendar ${key}`);
+        const eventLimit = integer(node["event_limit"], "calendar event limit");
+        if (eventLimit < 1 || eventLimit > 50) throw new ClientError("server", "Invalid calendar event limit.");
+        return { kind, children, dateStart, dateStop, allDay, color, mode, scales, create: flag("create"), edit: flag("edit"), delete: flag("delete"), quickCreate: flag("quick_create"),
+          hideDate: flag("hide_date"), hideTime: flag("hide_time"), monthOverflow: flag("month_overflow"), eventLimit };
+      }
+      if (kind === "graph") {
+        const mode = node["mode"], order = Object.hasOwn(node, "order") ? node["order"] : null;
+        if (mode !== "bar" && mode !== "line" && mode !== "pie") unsupported("Unsupported graph mode.");
+        if (order !== null && order !== "asc" && order !== "desc") unsupported("Unsupported graph order.");
+        return { kind, children, mode: mode as GraphNode["mode"], stacked: boolean(node["stacked"], "graph stacked"), cumulated: boolean(node["cumulated"], "graph cumulated"), order: order as GraphNode["order"], disableLinking: boolean(node["disable_linking"], "graph disable_linking") };
+      }
       if (kind === "title") return { kind, children };
       if (kind === "group") {
         const columns = integer(node["columns"], "group columns"), colspan = integer(node["colspan"], "group colspan");
@@ -530,11 +639,11 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
         searchPanel = { kind: "selection", field, label, enableCounters: boolean(panel["enable_counters"], "search panel counters"), expand: boolean(panel["expand"], "search panel expand"), defaultValue, notice };
       } else throw new ClientError("unsupported", "Unknown search panel presentation.");
     }
-    const pageLimit = type === "list" && rootNode["page_limit"] !== undefined ? integer(rootNode["page_limit"], "list page limit") : undefined;
-    if (pageLimit !== undefined && pageLimit < 1) throw new ClientError("server", "List page limit must be a positive browser-safe integer.");
-    const canCreate = (type === "list" || type === "form") && Object.hasOwn(rootNode, "create") ? boolean(rootNode["create"], "view create") : undefined;
-    const canEdit = (type === "list" || type === "form") && Object.hasOwn(rootNode, "edit") ? boolean(rootNode["edit"], "view edit") : undefined;
-    const canDelete = (type === "list" || type === "form") && Object.hasOwn(rootNode, "delete") ? boolean(rootNode["delete"], "view delete") : undefined;
+    const pageLimit = (type === "list" || type === "kanban") && rootNode["page_limit"] !== undefined ? integer(rootNode["page_limit"], `${type} page limit`) : undefined;
+    if (pageLimit !== undefined && pageLimit < 1) throw new ClientError("server", `${type === "kanban" ? "Kanban" : "List"} page limit must be a positive browser-safe integer.`);
+    const canCreate = (type === "list" || type === "form" || type === "kanban") && Object.hasOwn(rootNode, "create") ? boolean(rootNode["create"], "view create") : undefined;
+    const canEdit = (type === "list" || type === "form" || type === "kanban") && Object.hasOwn(rootNode, "edit") ? boolean(rootNode["edit"], "view edit") : undefined;
+    const canDelete = (type === "list" || type === "form" || type === "kanban") && Object.hasOwn(rootNode, "delete") ? boolean(rootNode["delete"], "view delete") : undefined;
     const tree = visit(root, 1);
     if (seen.size !== arena.length) throw new ClientError("server", "View contains unreachable nodes.");
     // Context references are host-authorized metadata, even when no field occurrence is rendered.

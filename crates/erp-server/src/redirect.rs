@@ -9,7 +9,7 @@ const SHELL_URI_BYTES: usize = 2048;
 /// (`addons/web/static/src/client/route.ts`; `tests/redirect.rs` compares the two). An address with another
 /// value is refused, so a view type added to the client without its entry here fails on reload.
 // shortcut: a fixed list, upgrade to the published view types of the registry when an addon can add a page view.
-pub const SHELL_VIEW_TYPES: &[&str] = &["list", "form", "pivot"];
+pub const SHELL_VIEW_TYPES: &[&str] = &["list", "form", "pivot", "calendar", "graph", "kanban"];
 
 /// Startup-bound canonical origin and registered view capabilities.
 #[derive(Debug)]
@@ -152,6 +152,14 @@ impl RedirectPolicy {
                 "pivot_measures" => pivot_specs(value, true),
                 "pivot_open" => pivot_open(value),
                 "pivot_sort" => pivot_sort(value),
+                "calendar_scale" => matches!(value.as_str(), "day" | "week" | "month" | "year"),
+                "calendar_date" => calendar_date(value),
+                // The graph's state (route.ts): chart type, measure, at most two groupings, order, two switches.
+                "graph_mode" => matches!(value.as_str(), "bar" | "line" | "pie"),
+                "graph_measure" => pivot_field(value),
+                "graph_groupby" => pivot_specs(value, false) && value.split(',').count() <= 2,
+                "graph_order" => matches!(value.as_str(), "asc" | "desc" | "none"),
+                "graph_stacked" | "graph_cumulated" => matches!(value.as_str(), "0" | "1"),
                 "method_action" => method_identity(value),
                 "cids" => {
                     let parts: Vec<_> = value.split(',').collect();
@@ -187,6 +195,14 @@ impl RedirectPolicy {
             "pivot_measures",
             "pivot_open",
             "pivot_sort",
+            "calendar_scale",
+            "calendar_date",
+            "graph_mode",
+            "graph_measure",
+            "graph_groupby",
+            "graph_order",
+            "graph_stacked",
+            "graph_cumulated",
             "cids",
         ] {
             if let Some(value) = state.get(key) {
@@ -203,6 +219,32 @@ impl RedirectPolicy {
         }
         Ok(result)
     }
+}
+/// A real calendar day as `YYYY-MM-DD`, years 1000 to 9999 (the client's `calendarDate` in `route.ts`).
+fn calendar_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let digits = |range: std::ops::Range<usize>| {
+        bytes[range.clone()]
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then(|| value[range].parse::<u32>().ok())
+            .flatten()
+    };
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[0] == b'0' {
+        return false;
+    }
+    let (Some(year), Some(month), Some(day)) = (digits(0..4), digits(5..7), digits(8..10)) else {
+        return false;
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
 }
 fn model_name(value: &str) -> bool {
     value.len() <= 128

@@ -36,8 +36,14 @@ fn layout_error(message: impl std::fmt::Display) -> ViewError {
     ))
 }
 
+#[path = "h18_calendar.rs"]
+mod calendar;
 #[path = "h18_dashboard.rs"]
 mod dashboard;
+#[path = "h18_graph.rs"]
+mod graph;
+#[path = "h18_kanban.rs"]
+mod kanban;
 
 trait Node<'a>: Copy {
     fn tag(self) -> &'a str;
@@ -496,6 +502,10 @@ fn classify<'a, N: Node<'a>>(
                 node.tag()
             )));
         }
+        if key == "calendar" {
+            calendar::validate_root(node, spec)?;
+            return Ok("calendar");
+        }
         attrs(
             node,
             match key {
@@ -508,6 +518,8 @@ fn classify<'a, N: Node<'a>>(
                     "display_quantity",
                     "default_order",
                 ],
+                "kanban" => kanban::ROOT_ATTRS,
+                "graph" => graph::ROOT_ATTRS,
                 _ => return Err(invalid("Unknown builtin view type.")),
             },
         )?;
@@ -516,19 +528,33 @@ fn classify<'a, N: Node<'a>>(
             boolean(node, "display_quantity", false)?;
             pivot_default_order(node)?;
         }
+        if key == "kanban" {
+            kanban::root(node, spec)?;
+        }
+        if key == "graph" {
+            graph::admit_root(node)?;
+        }
         return Ok(match key {
             "form" => "form",
             "list" => "list",
             "search" => "search",
             "pivot" => "pivot",
+            "kanban" => "kanban",
+            "graph" => "graph",
             _ => return Err(invalid("Unknown builtin view type.")),
         });
     }
     let parent = parent.ok_or_else(|| invalid("Missing parent of a view node."))?;
+    if key == "kanban" {
+        return kanban::classify(node, parent, spec);
+    }
+    if parent.tag() == "calendar" {
+        return calendar::validate_child(node, parent, spec);
+    }
     let allowed = match parent.tag() {
         "form" if service => node.tag() == "widget",
         "list" => matches!(node.tag(), "field" | "dashboard"),
-        "pivot" => node.tag() == "field",
+        "pivot" | "graph" => node.tag() == "field",
         "search" => matches!(
             node.tag(),
             "field" | "filter" | "separator" | "group" | "searchpanel"
@@ -689,6 +715,7 @@ fn classify<'a, N: Node<'a>>(
             }
             Ok("pivot_field")
         }
+        "field" if key == "graph" => graph::admit_field(node, parent, spec),
         "field" if key == "search" => {
             attrs(
                 node,
@@ -1344,6 +1371,9 @@ fn plan<'a, N: Node<'a>>(
         if kind == "field" && node.attr("widget") == Some("code") {
             code_mode(node.attr("options"), budget)?;
         }
+        if kind == "kanban_progressbar" {
+            kanban::colors(node, spec, budget)?;
+        }
         if kind == "unwrap" {
             for child in node.children() {
                 visit(child, parent, spec, key, service, entries, budget)?;
@@ -1354,6 +1384,7 @@ fn plan<'a, N: Node<'a>>(
             return Ok(());
         } // the authorized host panel service attaches the panel after callback construction
         if kind != "field"
+            && kind != "calendar_field"
             && kind != "button"
             && kind != "stat_button"
             && kind != "cancel_button"
@@ -1878,6 +1909,19 @@ fn build_entry<'a, N: Node<'a>>(
                         object.set("default_order", |value| value.text(&order))?;
                     }
                 }
+                "kanban" | "kanban_card" | "kanban_section" | "kanban_progressbar" => {
+                    kanban::build(plan, index, node, spec, entry.kind, object)?
+                }
+                "calendar" => {
+                    set_children(object, plan, index)?;
+                    calendar::build_root(node, spec, object)?;
+                }
+                "calendar_field" => calendar::build_field(node, spec, object)?,
+                "graph" => {
+                    set_children(object, plan, index)?;
+                    graph::build_root(node, object)?;
+                }
+                "graph_field" => graph::build_field(node, spec, object)?,
                 "pivot_field" => {
                     let field = field(spec, node)?;
                     object.set("field", |value| value.field_handle(spec.name, field.name))?;
@@ -2461,7 +2505,8 @@ fn source_expression(
 mod tests {
     use erp_sdk::views::{
         DescriptionBudget, DescriptionBuilder, DescriptionEncoder, ViewCatalogue, ViewDescriptor,
-        ViewError, ViewLimits, form_schema, list_schema, pivot_schema, search_schema,
+        ViewError, ViewLimits, calendar_schema, form_schema, graph_schema, kanban_schema,
+        list_schema, pivot_schema, search_schema,
     };
     use erp_sdk::{
         __private::{FieldDecl, ModelDecl},
@@ -2529,6 +2574,9 @@ mod tests {
             "list" => list_schema()?,
             "search" => search_schema()?,
             "pivot" => pivot_schema()?,
+            "kanban" => kanban_schema()?,
+            "calendar" => calendar_schema()?,
+            "graph" => graph_schema()?,
             _ => panic!("test kind"),
         };
         let payload = DescriptionBuilder::new(&schema, budget)
@@ -2538,6 +2586,218 @@ mod tests {
     }
 
     include!("tests/h18_dashboard.rs");
+    include!("tests/h18_kanban.rs");
+    include!("tests/h18_calendar.rs");
+
+    // ---- graph ----
+    fn graph_refused(xml: &str) -> String {
+        match fixture(xml, "graph").unwrap_err() {
+            ViewError::InvalidDescription(message) => message,
+            other => panic!("Unexpected error kind: {other:?}"),
+        }
+    }
+    fn graph_fields(value: &Value) -> Vec<(String, String, Option<String>)> {
+        value["nodes"].as_array().unwrap()[1..]
+            .iter()
+            .map(|node| {
+                assert_eq!(node["kind"], "graph_field");
+                (
+                    node["field"]["name"].as_str().unwrap().to_owned(),
+                    node["role"].as_str().unwrap().to_owned(),
+                    node.get("interval")
+                        .map(|interval| interval.as_str().unwrap().to_owned()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn graph_arch_defaults() {
+        let value = fixture(r#"<graph><field name="state"/></graph>"#, "graph").unwrap();
+        assert_eq!(value["root"], 0);
+        let root = value["nodes"][0].as_object().unwrap();
+        assert_eq!(root["kind"], "graph");
+        assert_eq!(root["children"], serde_json::json!([1]));
+        assert_eq!(root["mode"], "bar");
+        assert_eq!(root["stacked"], true);
+        assert_eq!(root["cumulated"], false);
+        assert_eq!(root["disable_linking"], false);
+        assert!(!root.contains_key("order"), "{root:?}");
+        assert_eq!(
+            graph_fields(&value),
+            [("state".to_owned(), "group".to_owned(), None)]
+        );
+    }
+
+    #[test]
+    fn graph_arch_types_flags_and_roles() {
+        for mode in ["bar", "line", "pie"] {
+            let value = fixture(&format!(r#"<graph type="{mode}"/>"#), "graph").unwrap();
+            assert_eq!(value["nodes"][0]["mode"], mode);
+        }
+        let value = fixture(
+            r#"<graph string="Deadlines" type="line" stacked="0" cumulated="True" order="DESC" disable_linking="1"><field name="deadline" type="row" interval="month"/><field name="count" type="measure" string="Total"/><field name="partner_id" type="col"/><field name="ratio" type="measure"/></graph>"#,
+            "graph",
+        )
+        .unwrap();
+        let root = &value["nodes"][0];
+        assert_eq!(root["mode"], "line");
+        assert_eq!(root["stacked"], false);
+        assert_eq!(root["cumulated"], true);
+        assert_eq!(root["order"], "desc");
+        assert_eq!(root["disable_linking"], true);
+        assert_eq!(root["children"], serde_json::json!([1, 2, 3, 4]));
+        assert_eq!(
+            graph_fields(&value),
+            [
+                (
+                    "deadline".to_owned(),
+                    "group".to_owned(),
+                    Some("month".to_owned())
+                ),
+                ("count".to_owned(), "measure".to_owned(), None),
+                ("partner_id".to_owned(), "group".to_owned(), None),
+                ("ratio".to_owned(), "measure".to_owned(), None),
+            ]
+        );
+        assert_eq!(value["nodes"][2]["label"], "Total");
+        let ascending = fixture(r#"<graph order="asc"/>"#, "graph").unwrap();
+        assert_eq!(ascending["nodes"][0]["order"], "asc");
+    }
+
+    #[test]
+    fn graph_refuses_what_the_chart_does_not_draw() {
+        for (xml, message) in [
+            (
+                r#"<graph type="area"/>"#,
+                "The graph view draws a bar, line or pie chart; type=\"area\" is none of them.",
+            ),
+            (
+                r#"<graph order="up"/>"#,
+                "The graph view sorts its groups asc or desc; order=\"up\" is neither.",
+            ),
+            (
+                r#"<graph stacked="context.get('x')"/>"#,
+                "Dynamic 'stacked' modifier is unsupported by the current human UI contract.",
+            ),
+            (
+                r#"<graph sample="1"/>"#,
+                "View attribute 'sample' is unsupported by the current human UI contract.",
+            ),
+            (
+                r#"<graph cumulated_start="1"/>"#,
+                "View attribute 'cumulated_start' is unsupported by the current human UI contract.",
+            ),
+            (
+                r#"<graph><field name="count" type="measure" widget="float"/></graph>"#,
+                "View attribute 'widget' is unsupported by the current human UI contract.",
+            ),
+            (
+                r#"<graph><field name="count" type="measure" invisible="1"/></graph>"#,
+                "View attribute 'invisible' is unsupported by the current human UI contract.",
+            ),
+            (
+                r#"<graph><field name="state" type="series"/></graph>"#,
+                "Graph field 'h18.fixture.state' has type=\"series\"; it must be row, col or measure (or absent for a grouping).",
+            ),
+            (
+                r#"<graph><field name="source"/></graph>"#,
+                "Graph field 'h18.fixture.source' cannot group the chart: it is a text field; the graph view groups by stored boolean, char, integer, selection, many2one, date and datetime fields.",
+            ),
+            (
+                r#"<graph><field name="ratio" type="row"/></graph>"#,
+                "Graph field 'h18.fixture.ratio' cannot group the chart: it is a float field; the graph view groups by stored boolean, char, integer, selection, many2one, date and datetime fields.",
+            ),
+            (
+                r#"<graph><field name="child_ids"/></graph>"#,
+                "Graph field 'h18.fixture.child_ids' cannot group the chart: it is a one2many field; the graph view groups by stored boolean, char, integer, selection, many2one, date and datetime fields.",
+            ),
+            (
+                r#"<graph><field name="state" interval="month"/></graph>"#,
+                "Graph field 'h18.fixture.state' has an interval but is a selection field; 'interval' applies to date and datetime fields.",
+            ),
+            (
+                r#"<graph><field name="deadline" interval="hour"/></graph>"#,
+                "Graph field 'h18.fixture.deadline' has interval \"hour\"; it must be one of day, week, month, quarter or year.",
+            ),
+            (
+                r#"<graph><field name="state"/><field name="stage"/><field name="active"/></graph>"#,
+                "A graph view groups by at most 2 fields (the axis, then the series); this one declares 3.",
+            ),
+            (
+                r#"<graph><field name="deadline" interval="year"/><field name="deadline" interval="month"/></graph>"#,
+                "Graph field 'h18.fixture.deadline' is declared twice as a grouping; a chart groups by a field once.",
+            ),
+            (
+                r#"<graph><field name="name" type="measure"/></graph>"#,
+                "Graph measure 'h18.fixture.name' must be a stored integer, float or monetary field that adds up.",
+            ),
+            (
+                r#"<graph><field name="count" type="measure" interval="month"/></graph>"#,
+                "Graph measure 'h18.fixture.count' has an interval; 'interval' applies to date and datetime groupings.",
+            ),
+            (
+                r#"<graph><field name="count" type="measure"/><field name="count" type="measure" string="Again"/></graph>"#,
+                "Graph measure 'h18.fixture.count' is declared more than once.",
+            ),
+            (
+                r#"<graph><field name="unknown"/></graph>"#,
+                "View references unknown field 'h18.fixture.unknown'.",
+            ),
+        ] {
+            assert_eq!(graph_refused(xml), message, "{xml}");
+        }
+        assert_eq!(
+            graph_refused(r#"<graph><group/></graph>"#),
+            "View element <group> is not allowed under <graph>. Unsupported form layout requires a later release."
+        );
+        // Two groupings and any number of measures are the most the chart takes.
+        fixture(
+            r#"<graph><field name="state"/><field name="count" type="measure"/><field name="stage" type="col"/><field name="ratio" type="measure"/></graph>"#,
+            "graph",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn graph_refuses_fields_without_a_column() {
+        static COMPUTED: ModelDecl = ModelDecl::new("base", "h18.graph_computed").fields(&[
+            FieldDecl::integer("score")
+                .compute("_compute_score")
+                .store(false),
+            FieldDecl::selection("level", &[("low", "Low"), ("high", "High")])
+                .compute("_compute_level")
+                .store(false),
+        ]);
+        let registry = RegistryBuilder::new([&erp_addon_base::ADDON, &crate::ADDON])
+            .with_decls([&COMPUTED])
+            .build()
+            .unwrap();
+        let spec = registry.model("h18.graph_computed").unwrap();
+        let refused = |xml: &str| {
+            let catalogue =
+                ViewCatalogue::new(vec![ViewDescriptor::new(1, "fixture", spec.name, xml)])
+                    .unwrap();
+            let combined = catalogue.combine(1).unwrap();
+            let schema = graph_schema().unwrap();
+            let budget = DescriptionBudget::new();
+            match DescriptionBuilder::new(&schema, &budget)
+                .build(|root| super::lower_tree(combined.arch().root(), spec, "graph", root))
+                .unwrap_err()
+            {
+                ViewError::InvalidDescription(message) => message,
+                other => panic!("Unexpected error kind: {other:?}"),
+            }
+        };
+        assert_eq!(
+            refused(r#"<graph><field name="score" type="measure"/></graph>"#),
+            "Graph measure 'h18.graph_computed.score' must be a stored integer, float or monetary field that adds up."
+        );
+        assert_eq!(
+            refused(r#"<graph><field name="level"/></graph>"#),
+            "Graph field 'h18.graph_computed.level' cannot group the chart: it is a selection field without a column; the graph view groups by stored boolean, char, integer, selection, many2one, date and datetime fields."
+        );
+    }
 
     #[test]
     fn pivot_arch_defaults_and_roles() {

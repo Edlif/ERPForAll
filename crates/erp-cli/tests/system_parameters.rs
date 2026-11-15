@@ -27,7 +27,13 @@ fn uom_parameters() -> Result<Vec<ParameterDecl>> {
     Ok(vec![
         ParameterDecl::integer("uom.test_low_count", "Low", 1, (1, 10))?,
         ParameterDecl::integer("uom.test_high_count", "High", 10, (1, 10))?,
-        ParameterDecl::float("uom.test_ratio", "Ratio", 1.5, (0.5, 2.0))?,
+        ParameterDecl::float_floor_below_one(
+            "uom.test_ratio",
+            "Ratio",
+            1.5,
+            (0.5, 2.0),
+            "a factor",
+        )?,
         ParameterDecl::selection(
             "uom.test_mode",
             "Mode",
@@ -60,7 +66,9 @@ fn uom_groups() -> Result<Vec<SettingGroupDecl>> {
 static UOM_PARAMETERS: erp_sdk::params::ParameterContribution =
     erp_sdk::params::ParameterContribution::new(&erp_addon_uom::ADDON, uom_parameters, uom_groups);
 
-async fn initialized(db: &erp_testkit::TestDb) -> erp_orm::Orm {
+async fn initialized(
+    db: &erp_testkit::TestDb,
+) -> (erp_modules::system::ModuleSystem, erp_orm::Orm) {
     let mut index = erp_modules::AddonIndex::new(true);
     index.add_dev_path(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -91,12 +99,19 @@ async fn initialized(db: &erp_testkit::TestDb) -> erp_orm::Orm {
     )
     .await
     .unwrap();
+    // A secret declared by an addon that is linked but not installed (uom, here; an uninstalled
+    // addon later) stays hidden: its row survives uninstall (review cycle 16 security S3).
+    let secrets = erp_addon_base::ir_config_parameter::secret_keys(init.orm.registry()).unwrap();
+    assert!(secrets.iter().any(|k| k == "uom.test_api_token"));
     // uom is installed by a later operation: its default rows come with that operation
     let env = init.orm.env(SUPERUSER_ID, erp_orm::Context::new());
-    Box::pin(system.button_immediate_install(&env, &[erp_modules::ModuleName::new("uom").unwrap()]))
-        .await
-        .unwrap()
-        .orm
+    let orm = Box::pin(
+        system.button_immediate_install(&env, &[erp_modules::ModuleName::new("uom").unwrap()]),
+    )
+    .await
+    .unwrap()
+    .orm;
+    (system, orm)
 }
 
 async fn stored(orm: &erp_orm::Orm, key: &str) -> Option<Option<String>> {
@@ -114,15 +129,28 @@ async fn stored(orm: &erp_orm::Orm, key: &str) -> Option<Option<String>> {
 
 /// `set_str` through the model in its own transaction, committed only when accepted.
 async fn set(orm: &erp_orm::Orm, key: &str, value: Option<&str>) -> Result<()> {
-    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    set_as(orm, SUPERUSER_ID, "set_str", key, value).await
+}
+
+/// `method` (`set_str` or `erp_replace_secret`) as `who`, committed only when accepted.
+async fn set_as(
+    orm: &erp_orm::Orm,
+    who: erp_orm::UserId,
+    method: &'static str,
+    key: &str,
+    value: Option<&str>,
+) -> Result<()> {
+    let mut tx = orm.begin(who).await.unwrap();
     let params = tx.env().records("ir.config_parameter").unwrap();
-    let outcome: Result<String> = params
-        .call(
-            &mut tx,
-            "set_str",
-            (key.to_owned(), value.map(str::to_owned)),
-        )
-        .await;
+    let args = (key.to_owned(), value.map(str::to_owned));
+    let outcome: Result<()> = if method == "set_str" {
+        params
+            .call::<_, String>(&mut tx, method, args)
+            .await
+            .map(drop)
+    } else {
+        params.call(&mut tx, method, args).await
+    };
     match outcome {
         Ok(_) => {
             tx.commit().await.unwrap();
@@ -164,13 +192,16 @@ fn two_addons_declare_check_and_read_parameters() {
 )]
 async fn walk() {
     let db = erp_testkit::TestDb::create().await.unwrap();
-    let orm = initialized(&db).await;
+    let (system, orm) = initialized(&db).await;
     default_rows(&orm).await;
     technical_writes(&orm).await;
     groups(&orm).await;
     typed_reads(&orm).await;
     declared_secret(&orm).await;
+    audited_writes(&orm, &db).await;
+    publication_checks_stored_rows(&system, &orm).await;
     drop(orm);
+    drop(system);
     db.cleanup().await.unwrap();
 }
 
@@ -200,6 +231,14 @@ async fn default_rows(orm: &erp_orm::Orm) {
     );
     // no row for the per-login threshold: absent, it stays four times the per-address value
     assert_eq!(stored(orm, "base.login_cooldown_after_login").await, None);
+    // no row for the hashing costs: absent, they follow the floor of the running release
+    for key in [
+        "password.hashing.rounds",
+        "password.hashing.argon2_memory_kib",
+        "password.hashing.argon2_time",
+    ] {
+        assert_eq!(stored(orm, key).await, None, "{key}");
+    }
 }
 
 // Technical write checks and the prefix rule.
@@ -372,4 +411,162 @@ async fn typed_reads(orm: &erp_orm::Orm) {
         )
     );
     tx.rollback().await.unwrap();
+}
+
+/// An ORM with the user policy of the served stack, and an administrator (`base.group_system`).
+async fn administrator(
+    orm: &erp_orm::Orm,
+    db: &erp_testkit::TestDb,
+) -> (erp_orm::Orm, erp_orm::UserId) {
+    use erp_sdk::{Cell, Command, RawVals, RecId};
+    use std::sync::Arc;
+    let mut setup = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company: i64 = setup
+        .query("SELECT id::int8 FROM res_company ORDER BY id LIMIT 1", &[])
+        .await
+        .unwrap()[0]
+        .get(0);
+    let group: i64 = setup.query("SELECT res_id::int8 FROM ir_model_data WHERE module='base' AND name='group_system' AND model='res.groups'", &[]).await.unwrap()[0].get(0);
+    let users = setup
+        .env()
+        .records("res.users")
+        .unwrap()
+        .create(
+            &mut setup,
+            vec![
+                RawVals::new()
+                    .set_cell("name", Cell::Str("Parameter administrator".into()))
+                    .set_cell("login", Cell::Str("parameter-admin".into()))
+                    .set_cell("active", Cell::Bool(true))
+                    .set_cell("company_id", Cell::Id(company))
+                    .set_commands(
+                        "company_ids",
+                        [Command::set([RecId::from_real(company).unwrap()])],
+                    )
+                    .set_commands(
+                        "group_ids",
+                        [Command::set([RecId::from_real(group).unwrap()])],
+                    ),
+            ],
+        )
+        .await
+        .unwrap();
+    let admin = erp_orm::UserId::new(users.ids()[0]).unwrap();
+    setup.commit().await.unwrap();
+    let policy =
+        erp_security::source::PolicySource::build(Arc::clone(orm.registry()), db.pool().clone())
+            .await
+            .unwrap();
+    let served = erp_orm::Orm::builder(Arc::clone(orm.registry()), db.pool().clone())
+        .resolver(erp_security::resolver::Resolver::for_registry(orm.registry()).unwrap())
+        .policy(Arc::new(policy) as Arc<dyn erp_orm::PolicyProvider>)
+        .impls(erp_modules::base_models::IMPLS.iter().copied())
+        .constraints(erp_modules::base_models::CONSTRAINTS.iter().copied())
+        .build()
+        .unwrap();
+    (served, admin)
+}
+
+/// The audit rows of the uom test parameters and the global Settings revision.
+async fn audit_trail(orm: &erp_orm::Orm) -> (Vec<String>, String) {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let rows = tx
+        .query(
+            "SELECT setting_key || ' ' || old_value || '>' || new_value || ' ' || actor || ' @' || revision \
+             FROM ir_config_setting_audit WHERE setting_key LIKE 'uom.test\\_%' ORDER BY id",
+            &[],
+        )
+        .await
+        .unwrap();
+    let revision: String = tx
+        .query(
+            "SELECT COALESCE((SELECT revision::text FROM ir_config_setting_scope WHERE identity='global'), '0')",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    tx.rollback().await.unwrap();
+    (rows.iter().map(|row| row.get(0)).collect(), revision)
+}
+
+// An administrator's change of a declared parameter takes the global Settings lock, advances its
+// revision and leaves an audit row; a refused write, a no-op and an emptied value equal to the
+// default leave none, and a secret's row never shows the value (review cycle 16 Rust S1).
+async fn audited_writes(orm: &erp_orm::Orm, db: &erp_testkit::TestDb) {
+    let (served, admin) = administrator(orm, db).await;
+    // superuser-mode writes of the steps before audit nothing
+    let (before, start) = audit_trail(orm).await;
+    assert!(before.is_empty(), "{before:?}");
+    let start: u64 = start.parse().unwrap();
+    let actor = format!("user:{}", admin.get());
+    set_as(&served, admin, "set_str", "uom.test_mode", Some("exact"))
+        .await
+        .unwrap();
+    set_as(&served, admin, "set_str", "uom.test_mode", Some("exact"))
+        .await
+        .unwrap();
+    refused(
+        set_as(&served, admin, "set_str", "uom.test_ratio", Some("abc")).await,
+        ErrorKind::Validation,
+        "uom.test_ratio takes a number from 0.5 to 2.",
+    );
+    // the emptied high count holds no text; writing its default text changes no effective value
+    set_as(&served, admin, "set_str", "uom.test_high_count", Some("10"))
+        .await
+        .unwrap();
+    set_as(
+        &served,
+        admin,
+        "erp_replace_secret",
+        "uom.test_api_token",
+        Some("tok-new"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        audit_trail(orm).await,
+        (
+            vec![
+                format!("uom.test_mode rounded>exact {actor} @{}", start + 1),
+                format!(
+                    "uom.test_api_token (secret)>(secret) {actor} @{}",
+                    start + 2
+                ),
+            ],
+            (start + 2).to_string()
+        )
+    );
+    assert_eq!(
+        stored(orm, "uom.test_api_token").await,
+        Some(Some("tok-new".into()))
+    );
+}
+
+// Publication checks every declared key's stored row and group: a value written around the
+// model stops it naming the key, as its consumer would fail (review cycle 16 Rust S2).
+async fn publication_checks_stored_rows(
+    system: &erp_modules::system::ModuleSystem,
+    orm: &erp_orm::Orm,
+) {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    tx.execute(
+        "UPDATE ir_config_parameter SET value='0' WHERE key='uom.test_low_count'",
+        &[],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let error = Box::pin(system.button_immediate_upgrade(
+        &system.system_env(erp_orm::Context::new()),
+        &[erp_modules::ModuleName::new("uom").unwrap()],
+    ))
+    .await
+    .map(drop)
+    .unwrap_err();
+    let text = format!("{error:?}");
+    assert!(
+        text.contains("Stored parameter uom.test_low_count is invalid."),
+        "{text}"
+    );
 }

@@ -24,7 +24,12 @@ async fn native_serving_root_publishes_web_view_types() {
         .declarations()
         .map(|(_, declaration)| declaration.key())
         .collect();
-    assert_eq!(keys, ["form", "list", "pivot", "search"]);
+    assert_eq!(
+        keys,
+        [
+            "calendar", "form", "graph", "kanban", "list", "pivot", "search"
+        ]
+    );
     for key in keys {
         assert!(std::ptr::eq(
             published.owner(key).unwrap(),

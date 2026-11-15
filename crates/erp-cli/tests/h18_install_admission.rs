@@ -10,31 +10,6 @@ use erp_modules::{AddonIndex, InitOptions, ModuleName, ModuleSystem};
 use erp_sdk::Context;
 use erp_testkit::TestDb;
 
-// Test-only registered nonbuiltin: no renderer behavior is exercised by lifecycle admission.
-fn kanban_type() -> erp_sdk::views::ViewResult<erp_sdk::views::ViewTypeDecl> {
-    use erp_views::*;
-    static ROOT: SchemaNode = SchemaNode::Object(&[]);
-    fn validate(_: &CheckedViewInput<'_>, budget: &DescriptionBudget) -> ViewResult<()> {
-        budget.check()
-    }
-    fn build(
-        _: &CheckedViewInput<'_>,
-        root: DescriptionValueBuilder<'_>,
-    ) -> ViewResult<DescriptionValue> {
-        root.object(|_| Ok(()))
-    }
-    ViewTypeDecl::builder("web", "kanban")
-        .wire_major(1)
-        .renderer("kanban")
-        .schema(&ViewSchema::new(1, &ROOT)?)
-        .validator(validate)
-        .builder(build)
-        .metadata_fields(MetadataFieldSet::builder().arch_references().finish()?)
-        .methods(&[])
-        .finish()
-}
-static EXTRA_TYPES: [erp_sdk::views::ViewTypeDeclFn; 1] = [kanban_type];
-
 fn orm_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> &'a erp_sdk::Error {
     if let Some(error) = error.downcast_ref::<erp_sdk::Error>() {
         return error;
@@ -98,7 +73,7 @@ async fn install_admission() {
         ),
         (
             "h18_bad_view",
-            "<record id='bad' model='ir.ui.view'><field name='name'>Bad H18 view</field><field name='model'>res.partner</field><field name='arch' type='xml'><kanban><field name='name'/></kanban></field></record>",
+            "<record id='bad' model='ir.ui.view'><field name='name'>Bad H18 view</field><field name='model'>res.partner</field><field name='arch' type='xml'><kanban><templates><t t-name='card'><field name='name'/></t></templates></kanban></field></record>",
         ),
     ];
     for (module, xml) in cases {
@@ -149,9 +124,7 @@ async fn install_admission() {
             &erp_addon_web::ADDON,
             &erp_addon_uom::ADDON,
         ])
-        .view_types(erp_addon_web::view_type_contributions().into_iter().chain([
-            erp_sdk::views::ViewTypeContribution::new(&erp_addon_web::ADDON, &EXTRA_TYPES),
-        ]))
+        .view_types(erp_addon_web::view_type_contributions())
         .require_core_tables(erp_security::auth::core_tables())
         .build()
         .unwrap();

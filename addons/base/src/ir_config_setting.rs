@@ -26,21 +26,65 @@ struct ParameterBridge(bool);
 pub(crate) struct ParameterEdit {
     scope_id: i64,
     revision: u64,
-    old: u64,
+    // the managed attachment size before the edit, when the edit touches it
+    old_max: Option<u64>,
+    // each touched declared parameter with its stored text before the edit
+    old_declared: Vec<(String, Option<String>)>,
 }
 
-pub(crate) async fn begin_parameter_edit(tx: &mut Transaction) -> Result<Option<ParameterEdit>> {
-    if tx.extension::<ParameterBridge>().0 {
+/// The stored text of each of `keys` (`None` for no row or NULL).
+async fn parameter_texts(
+    tx: &mut Transaction,
+    keys: &[String],
+) -> Result<Vec<(String, Option<String>)>> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let model = tx.env().records("ir.config_parameter")?.model_id();
+    tx.flush_model(model).await?;
+    let rows = tx
+        .query(
+            "SELECT key::text, value::text FROM ir_config_parameter WHERE key=ANY($1::text[])",
+            &[&keys],
+        )
+        .await?;
+    let mut found = BTreeMap::new();
+    for row in &rows {
+        let key: String = row.try_get(0).map_err(|_| corrupt())?;
+        let value: Option<String> = row.try_get(1).map_err(|_| corrupt())?;
+        found.insert(key, value);
+    }
+    Ok(keys
+        .iter()
+        .map(|key| (key.clone(), found.get(key).cloned().flatten()))
+        .collect())
+}
+
+/// Serialise a parameter write on the global scope row (for the managed
+/// attachment size): `managed` when it touches `base.attachment_max_bytes`, `declared` the
+/// declared parameters it touches. `None` inside the Settings writer, which owns the lock.
+pub(crate) async fn begin_parameter_edit(
+    tx: &mut Transaction,
+    managed: bool,
+    declared: &[String],
+) -> Result<Option<ParameterEdit>> {
+    if tx.extension::<ParameterBridge>().0 || (!managed && declared.is_empty()) {
         return Ok(None);
     }
     tx.execute("INSERT INTO ir_config_setting_scope(identity,revision) VALUES ('global','0') ON CONFLICT(identity) DO NOTHING", &[]).await.map_err(scope_lock_error)?;
     let rows = tx.query("SELECT id::int8,revision FROM ir_config_setting_scope WHERE identity='global' FOR UPDATE", &[]).await.map_err(scope_lock_error)?;
     let row = rows.first().ok_or_else(corrupt)?;
     let current: String = row.try_get(1).map_err(|_| corrupt())?;
+    let old_max = if managed {
+        Some(crate::attachments::settings::max_file_bytes(tx).await?)
+    } else {
+        None
+    };
     Ok(Some(ParameterEdit {
         scope_id: row.try_get(0).map_err(|_| corrupt())?,
         revision: revision(&current)?,
-        old: crate::attachments::settings::max_file_bytes(tx).await?,
+        old_max,
+        old_declared: parameter_texts(tx, declared).await?,
     }))
 }
 
@@ -58,6 +102,12 @@ fn audit_actor(env: &Env) -> Result<String> {
     }
 }
 
+/// The audit text of a declared secret: the row records that it changed, never the value.
+const SECRET_AUDIT_TEXT: &str = "(secret)";
+
+/// Advance the global revision and write one audit row per parameter whose effective value the
+/// edit changed; nothing when none did (default data, a no-op, an emptied value equal to the
+/// default).
 pub(crate) async fn finish_parameter_edit(
     tx: &mut Transaction,
     edit: Option<ParameterEdit>,
@@ -65,9 +115,45 @@ pub(crate) async fn finish_parameter_edit(
     let Some(edit) = edit else {
         return Ok(());
     };
-    let new = crate::attachments::settings::max_file_bytes(tx).await?;
-    // Default data installation or a no-op changes no effective value/revision.
-    if edit.old == new {
+    let mut changes: Vec<(String, String, String)> = Vec::new();
+    if let Some(old) = edit.old_max {
+        let new = crate::attachments::settings::max_file_bytes(tx).await?;
+        if old != new {
+            changes.push((
+                crate::attachments::settings::MAX_FILE_KEY.to_owned(),
+                old.to_string(),
+                new.to_string(),
+            ));
+        }
+    }
+    if !edit.old_declared.is_empty() {
+        let params = erp_sdk::params::registry(&tx.env())?;
+        let keys: Vec<String> = edit
+            .old_declared
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect();
+        let now = parameter_texts(tx, &keys).await?;
+        for ((key, old), (_, new)) in edit.old_declared.iter().zip(now) {
+            let decl = params
+                .get(key)
+                .ok_or_else(|| Error::programming(format!("Parameter {key} is not declared.")))?;
+            // the write path checked the new text; an old text written around the model is named so
+            let old = decl
+                .effective_text(old.as_deref())
+                .unwrap_or_else(|_| "(invalid)".to_owned());
+            let new = decl.effective_text(new.as_deref())?;
+            if old != new {
+                let (old, new) = if decl.is_secret() {
+                    (SECRET_AUDIT_TEXT.to_owned(), SECRET_AUDIT_TEXT.to_owned())
+                } else {
+                    (old, new)
+                };
+                changes.push((key.clone(), old, new));
+            }
+        }
+    }
+    if changes.is_empty() {
         return Ok(());
     }
     let next = edit
@@ -78,8 +164,9 @@ pub(crate) async fn finish_parameter_edit(
     let env = tx.env();
     let actor = audit_actor(&env)?;
     let subject = env.uid().to_string();
-    let key = crate::attachments::settings::MAX_FILE_KEY;
-    tx.execute("INSERT INTO ir_config_setting_audit(scope_id,actor,subject_uid,setting_key,old_value,new_value,revision,create_date) VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP AT TIME ZONE 'UTC')", &[&edit.scope_id,&actor,&subject,&key,&edit.old.to_string(),&new.to_string(),&next]).await?;
+    for (key, old, new) in &changes {
+        tx.execute("INSERT INTO ir_config_setting_audit(scope_id,actor,subject_uid,setting_key,old_value,new_value,revision,create_date) VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP AT TIME ZONE 'UTC')", &[&edit.scope_id,&actor,&subject,key,old,new,&next]).await?;
+    }
     tx.execute(
         "UPDATE ir_config_setting_scope SET revision=$2 WHERE id=$1",
         &[&edit.scope_id, &next],

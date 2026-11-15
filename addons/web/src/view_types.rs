@@ -1,4 +1,5 @@
-//! The builtin H18 view-type declarations: `list`, `form`, `search` and `pivot`.
+//! The builtin H18 view-type declarations: `list`, `form`, `search`, `pivot`,
+//! `calendar`, `graph` and `kanban`.
 //!
 //! Each gets its closed builtin schema, the arch-reference metadata field set and an empty
 //! data-method list. The validator and builder callbacks are typed against the checked host input.
@@ -6,8 +7,8 @@
 //! invokes these callbacks from the exact generation's published declarations.
 use erp_sdk::views::{
     CheckedViewInput, DescriptionBudget, DescriptionValue, DescriptionValueBuilder, FieldPredicate,
-    MetadataFieldSet, ViewResult, ViewSchema, ViewTypeDecl, form_schema, list_schema, pivot_schema,
-    search_schema,
+    MetadataFieldSet, ViewResult, ViewSchema, ViewTypeDecl, calendar_schema, form_schema,
+    graph_schema, kanban_schema, list_schema, pivot_schema, search_schema,
 };
 
 macro_rules! builtin_callbacks {
@@ -27,6 +28,9 @@ builtin_callbacks!(validate_list, build_list, "list");
 builtin_callbacks!(validate_form, build_form, "form");
 builtin_callbacks!(validate_search, build_search, "search");
 builtin_callbacks!(validate_pivot, build_pivot, "pivot");
+builtin_callbacks!(validate_kanban, build_kanban, "kanban");
+builtin_callbacks!(validate_calendar, build_calendar, "calendar");
+builtin_callbacks!(validate_graph, build_graph, "graph");
 
 fn declare(
     key: &'static str,
@@ -42,6 +46,9 @@ fn declare(
             "form" => "web.form",
             "search" => "web.search_sections_v1",
             "pivot" => "web.pivot",
+            "kanban" => "web.kanban",
+            "calendar" => "web.calendar",
+            "graph" => "web.graph",
             _ => {
                 return Err(erp_sdk::views::ViewError::InvalidDescription(
                     "Unknown builtin view type.".to_owned(),
@@ -80,6 +87,44 @@ pub(crate) fn pivot_view_type() -> ViewResult<ViewTypeDecl> {
     )
 }
 
+/// `kanban` (H18): metadata for the fields its arch references. Cards
+/// load through the generic ORM methods (`web_search_read`, `web_read_group`, `read_progress_bar`).
+pub(crate) fn kanban_view_type() -> ViewResult<ViewTypeDecl> {
+    let fields = MetadataFieldSet::builder().arch_references().finish()?;
+    declare(
+        "kanban",
+        &kanban_schema()?,
+        validate_kanban,
+        build_kanban,
+        fields,
+    )
+}
+
+/// `calendar` (H18): metadata for the fields its arch references, the
+/// date, colour and all-day fields named on its root included.
+pub(crate) fn calendar_view_type() -> ViewResult<ViewTypeDecl> {
+    let fields = MetadataFieldSet::builder().arch_references().finish()?;
+    declare(
+        "calendar",
+        &calendar_schema()?,
+        validate_calendar,
+        build_calendar,
+        fields,
+    )
+}
+
+/// `graph` (H18): metadata for the fields its arch references.
+pub(crate) fn graph_view_type() -> ViewResult<ViewTypeDecl> {
+    let fields = MetadataFieldSet::builder().arch_references().finish()?;
+    declare(
+        "graph",
+        &graph_schema()?,
+        validate_graph,
+        build_graph,
+        fields,
+    )
+}
+
 /// `search` (H18): the arch references plus every readable field of the root model, for
 /// the custom filter/domain editor.
 pub(crate) fn search_view_type() -> ViewResult<ViewTypeDecl> {
@@ -107,6 +152,9 @@ mod tests {
             form_view_type,
             search_view_type,
             pivot_view_type,
+            kanban_view_type,
+            calendar_view_type,
+            graph_view_type,
         ]
         .into_iter()
         .map(|declare| declare().unwrap())
@@ -115,7 +163,7 @@ mod tests {
 
     /// values and publication are WP3b)
     #[test]
-    fn web_declares_list_form_search_and_pivot_as_the_owner() {
+    fn web_declares_its_builtin_view_types_as_the_owner() {
         let decls = all();
         let refs: Vec<_> = decls.iter().collect();
         validate_view_types(&refs).unwrap();
@@ -138,6 +186,9 @@ mod tests {
                 ("web", "form", 1, "web.form", 1),
                 ("web", "search", 1, "web.search_sections_v1", 1),
                 ("web", "pivot", 1, "web.pivot", 1),
+                ("web", "kanban", 1, "web.kanban", 1),
+                ("web", "calendar", 1, "web.calendar", 1),
+                ("web", "graph", 1, "web.graph", 1),
             ]
         );
     }
@@ -166,12 +217,17 @@ mod tests {
     }
 
     #[test]
-    fn linkme_slice_carries_the_four_declarations() {
+    fn linkme_slice_carries_the_builtin_declarations() {
         let mut keys: Vec<String> = erp_sdk::views::VIEW_TYPES
             .iter()
             .map(|declare| declare().unwrap().key().to_owned())
             .collect();
         keys.sort();
-        assert_eq!(keys, ["form", "list", "pivot", "search"]);
+        assert_eq!(
+            keys,
+            [
+                "calendar", "form", "graph", "kanban", "list", "pivot", "search"
+            ]
+        );
     }
 }

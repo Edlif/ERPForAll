@@ -132,6 +132,18 @@
             </list>
         </field>
     </record>
+    <record id="loan_calendar" model="ir.ui.view">
+        <field name="name">sample_library.loan.calendar</field>
+        <field name="model">sample_library.loan</field>
+        <field name="arch" type="xml">
+            <calendar string="Loans" date_start="loan_date" date_stop="due_date" color="borrower_id" mode="month">
+                <field name="book_id"/>
+                <field name="borrower_id" filters="1"/>
+                <field name="state" filters="1"/>
+                <field name="return_date"/>
+            </calendar>
+        </field>
+    </record>
     <record id="loan_form" model="ir.ui.view">
         <field name="name">sample_library.loan.form</field>
         <field name="model">sample_library.loan</field>
@@ -229,6 +241,58 @@
             </pivot>
         </field>
     </record>
+    <!-- Books as cards: title, author and website, an initials tile from the title (images come later), and the genres,
+         rating and favourite flag along the bottom. The progress bar counts formats once the board is grouped. -->
+    <record id="book_kanban" model="ir.ui.view">
+        <field name="name">sample_library.book.kanban</field>
+        <field name="model">sample_library.book</field>
+        <field name="arch" type="xml">
+            <kanban string="Books">
+                <progressbar field="book_format" colors='{"hardcover": "success", "paperback": "info", "ebook": "warning"}'/>
+                <templates>
+                    <t t-name="card">
+                        <main>
+                            <field name="title"/>
+                            <field name="author_id"/>
+                            <field name="website" widget="url"/>
+                        </main>
+                        <aside>
+                            <field name="title"/>
+                        </aside>
+                        <footer>
+                            <field name="genre_ids" widget="many2many_tags"/>
+                            <field name="rating" widget="priority"/>
+                            <field name="favorite" widget="boolean_favorite"/>
+                        </footer>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+    <!-- Books per year published, one series per format: the bars stack, the last measure (pages) is drawn first and price is the
+         other one to switch to. -->
+    <record id="book_graph" model="ir.ui.view">
+        <field name="name">sample_library.book.graph</field>
+        <field name="model">sample_library.book</field>
+        <field name="arch" type="xml">
+            <graph string="Books" type="bar">
+                <field name="published_on" interval="year"/>
+                <field name="book_format"/>
+                <field name="price" type="measure"/>
+                <field name="pages" type="measure"/>
+            </graph>
+        </field>
+    </record>
+    <record id="loan_graph" model="ir.ui.view">
+        <field name="name">sample_library.loan.graph</field>
+        <field name="model">sample_library.loan</field>
+        <field name="arch" type="xml">
+            <graph string="Loans" type="line">
+                <field name="loan_date" interval="month"/>
+                <field name="state"/>
+            </graph>
+        </field>
+    </record>
     <record id="author_action" model="ir.actions.act_window">
         <field name="name">Authors</field>
         <field name="res_model">sample_library.author</field>
@@ -237,13 +301,13 @@
     <record id="book_action" model="ir.actions.act_window">
         <field name="name">Books</field>
         <field name="res_model">sample_library.book</field>
-        <field name="view_mode">list,form,pivot</field>
+        <field name="view_mode">list,kanban,form,pivot,graph</field>
         <field name="search_view_id" ref="book_search"/>
     </record>
     <record id="loan_action" model="ir.actions.act_window">
         <field name="name">Loans</field>
         <field name="res_model">sample_library.loan</field>
-        <field name="view_mode">list,form</field>
+        <field name="view_mode">list,form,calendar,graph</field>
     </record>
     <record id="genre_action" model="ir.actions.act_window">
         <field name="name">Genres</field>

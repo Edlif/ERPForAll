@@ -2241,9 +2241,51 @@ fn module_error(error: erp_modules::Error) -> erp_fields::Error {
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
-        other => erp_fields::Error::new(erp_fields::ErrorKind::UserError, other.to_string())
+        other => erp_fields::Error::new(erp_fields::ErrorKind::UserError, module_message(&other))
             .with_source(other),
     }
+}
+/// The module error's message followed by the causes that are safe to show (`Module "base":
+/// _register_hook() of x failed: <the hook's refusal>`): the step line alone hides why it failed.
+/// Only step lines (fixed text) and ORM messages without a SQLSTATE and not of the Database kind
+/// are added; the walk stops at anything else, so no cause it adds carries PostgreSQL text (the
+/// outermost error's own line is unchanged).
+fn module_message(error: &erp_modules::Error) -> String {
+    use erp_modules::Error as M;
+    let mut text = error.to_string();
+    let mut cause = std::error::Error::source(error);
+    while let Some(next) = cause {
+        // thiserror hands a boxed source (`source: Box<Error>`) over as the Box itself
+        let module = next
+            .downcast_ref::<M>()
+            .or_else(|| next.downcast_ref::<Box<M>>().map(|b| &**b));
+        let orm = next
+            .downcast_ref::<erp_fields::Error>()
+            .or_else(|| next.downcast_ref::<Box<erp_fields::Error>>().map(|b| &**b))
+            .or(match module {
+                Some(M::Orm(inner)) => Some(inner),
+                _ => None,
+            });
+        let shown = match (orm, module) {
+            (Some(orm), _)
+                if orm.sqlstate().is_none() && orm.kind() != erp_fields::ErrorKind::Database =>
+            {
+                orm.message().to_owned()
+            }
+            (None, Some(step @ M::StepFailed { .. })) => step.to_string(),
+            _ => break,
+        };
+        // Wrappers such as `Registry` already end with their source's message.
+        if !text.ends_with(&shown) {
+            text.push_str(": ");
+            text.push_str(&shown);
+        }
+        if orm.is_some() {
+            break;
+        }
+        cause = next.source();
+    }
+    text
 }
 fn cli_field_error(error: CliError) -> erp_fields::Error {
     match error {
@@ -2970,7 +3012,9 @@ mod h18_request_composition_tests {
                 .declarations()
                 .map(|(_, declaration)| declaration.key())
                 .collect::<Vec<_>>(),
-            ["form", "list", "pivot", "search"]
+            [
+                "calendar", "form", "graph", "kanban", "list", "pivot", "search"
+            ]
         );
     }
 }
@@ -3061,5 +3105,69 @@ mod audit_admission_tests {
                 )
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod module_message_tests {
+    use super::module_message;
+    use erp_modules::{Error as M, ModuleName, ModuleStep};
+
+    fn step(source: M) -> M {
+        step_of("ir.config_parameter", source)
+    }
+
+    fn step_of(model: &'static str, source: M) -> M {
+        M::StepFailed {
+            module: ModuleName::new("base").unwrap(),
+            step: ModuleStep::RegisterHook { model },
+            file: None,
+            source: Box::new(source),
+        }
+    }
+
+    #[test]
+    fn a_failed_step_shows_the_orm_refusal_behind_it() {
+        let error = step(M::Orm(erp_fields::Error::validation(
+            "Stored parameter k is invalid.",
+        )));
+        assert_eq!(
+            module_message(&error),
+            "Module \"base\": _register_hook() of ir.config_parameter failed: \
+             Stored parameter k is invalid."
+        );
+    }
+
+    #[test]
+    fn database_text_is_never_added() {
+        let io = std::io::Error::other("driver");
+        for orm in [
+            erp_fields::Error::database(
+                erp_fields::ErrorKind::Validation,
+                Some("22P02".to_owned()),
+                "invalid input syntax: \"stored-secret\"",
+                io,
+            ),
+            erp_fields::Error::db("relation private_table is locked"),
+        ] {
+            let message = module_message(&step(M::Orm(orm)));
+            assert_eq!(
+                message,
+                "Module \"base\": _register_hook() of ir.config_parameter failed"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_steps_show_each_line_once() {
+        let error = step(step_of(
+            "res.partner",
+            M::Orm(erp_fields::Error::validation("refused")),
+        ));
+        assert_eq!(
+            module_message(&error),
+            "Module \"base\": _register_hook() of ir.config_parameter failed: \
+             Module \"base\": _register_hook() of res.partner failed: refused"
+        );
     }
 }

@@ -270,27 +270,7 @@ pub async fn issue(
     let now = DateTime::from_micros(column(row, 5)?);
     let count: i64 = column(row, 6)?;
     let limit: Option<String> = column(row, 7)?;
-    let limit = match limit {
-        None => 10,
-        Some(limit) => {
-            if limit.len() > 10 || limit.is_empty() || !limit.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(Error::validation(
-                    "base.programmatic_api_keys_limit must be a positive 32-bit integer",
-                ));
-            }
-            let parsed = limit.parse::<u32>().map_err(|_| {
-                Error::validation(
-                    "base.programmatic_api_keys_limit must be a positive 32-bit integer",
-                )
-            })?;
-            if parsed == 0 {
-                return Err(Error::validation(
-                    "base.programmatic_api_keys_limit must be a positive 32-bit integer",
-                ));
-            }
-            parsed
-        }
-    };
+    let limit = programmatic_limit(limit.as_deref())?;
     let enabled: Option<String> = column(row, 8)?;
     let enabled = programmatic_enabled(enabled.as_deref())?;
     if !caller_system && !enabled {
@@ -449,10 +429,11 @@ SELECT EXISTS(SELECT FROM res_users WHERE id=$2 AND active IS TRUE),
  EXISTS(SELECT FROM durations WHERE api_key_duration<0 OR api_key_duration IN ('NaN'::float8,'Infinity'::float8,'-Infinity'::float8)),
  (extract(epoch FROM now())*1000000)::int8,
  (SELECT count(*) FROM res_users_apikeys WHERE user_id=$1 AND (expiration_date IS NULL OR expiration_date>=now() AT TIME ZONE 'utc')),
- -- Only an absent row returns SQL NULL. Invalid present values use an
- -- unparseable sentinel so they fail loudly, with bounded client allocation.
- (SELECT CASE WHEN value IS NULL OR octet_length(value)>10 THEN 'invalid' ELSE value END FROM ir_config_parameter WHERE key='base.programmatic_api_keys_limit'),
- (SELECT CASE WHEN value IS NULL OR octet_length(value)>128 THEN 'invalid' ELSE value END FROM ir_config_parameter WHERE key='base.enable_programmatic_api_keys')
+ -- An absent row, NULL or empty text is the declared default and returns SQL
+ -- NULL. Oversized values use an unparseable sentinel so they fail loudly, with bounded
+ -- client allocation.
+ (SELECT CASE WHEN value IS NULL OR value='' THEN NULL WHEN octet_length(value)>64 THEN 'invalid' ELSE value END FROM ir_config_parameter WHERE key='base.programmatic_api_keys_limit'),
+ (SELECT CASE WHEN value IS NULL OR value='' THEN NULL WHEN octet_length(value)>128 THEN 'invalid' ELSE value END FROM ir_config_parameter WHERE key='base.enable_programmatic_api_keys')
 "#;
 
 async fn ensure_schema(tx: &mut Transaction) -> Result<()> {
@@ -460,7 +441,27 @@ async fn ensure_schema(tx: &mut Transaction) -> Result<()> {
     Ok(())
 }
 
+/// The per-user cap, parsed as its declaration parses it (`base` `system_parameters.rs`: trimmed
+/// whole number from 1 to `u32::MAX`, default 10), so a value the System Parameters form accepts
+/// is never refused here (review cycle 16 Rust S3).
+fn programmatic_limit(limit: Option<&str>) -> Result<u32> {
+    let Some(limit) = limit.filter(|text| !text.is_empty()) else {
+        return Ok(10);
+    };
+    limit
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .and_then(|parsed| u32::try_from(parsed).ok())
+        .filter(|parsed| *parsed > 0)
+        .ok_or_else(|| {
+            Error::validation("base.programmatic_api_keys_limit must be a positive 32-bit integer")
+        })
+}
+
+/// The switch, parsed as its declaration parses it; absent or empty is the default (off).
 pub(super) fn programmatic_enabled(enabled: Option<&str>) -> Result<bool> {
+    let enabled = enabled.filter(|text| !text.is_empty());
     match enabled
         .map(str::trim)
         .map(str::to_ascii_lowercase)
@@ -478,6 +479,20 @@ pub(super) fn programmatic_enabled(enabled: Option<&str>) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn policy_parameters_parse_as_their_declarations() {
+        assert_eq!(programmatic_limit(None).unwrap(), 10);
+        assert_eq!(programmatic_limit(Some("")).unwrap(), 10);
+        assert_eq!(programmatic_limit(Some(" +3 ")).unwrap(), 3);
+        assert_eq!(programmatic_limit(Some("4294967295")).unwrap(), u32::MAX);
+        for bad in ["0", "-1", "4294967296", "bad", " "] {
+            assert!(programmatic_limit(Some(bad)).is_err(), "{bad:?}");
+        }
+        assert!(!programmatic_enabled(None).unwrap());
+        assert!(!programmatic_enabled(Some("")).unwrap());
+        assert!(programmatic_enabled(Some(" True ")).unwrap());
+        assert!(programmatic_enabled(Some(" ")).is_err());
+    }
     #[test]
     fn expiry_arithmetic_never_overflows() {
         let e = validate_expiry(

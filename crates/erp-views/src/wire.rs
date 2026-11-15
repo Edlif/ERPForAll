@@ -253,6 +253,29 @@ object!(/// Empty options for the currently supported basic fields and Addons se
     EmptyOptions {});
 choice!(RecordMode { Record, Service });
 choice!(PivotRole { Row, Col, Measure });
+choice!(KanbanRegion {
+    Main,
+    Aside,
+    Footer
+});
+choice!(ProgressTone {
+    Success,
+    Warning,
+    Danger,
+    Info,
+    Muted
+});
+object!(/// One coloured value of a kanban progress bar.
+    ProgressColor { value: String, tone: ProgressTone });
+choice!(CalendarScale {
+    Day,
+    Week,
+    Month,
+    Year
+});
+choice!(GraphMode { Bar, Line, Pie });
+choice!(GraphRole { Group, Measure });
+choice!(GraphOrder { Asc, Desc });
 choice!(ButtonType { Object });
 choice!(ButtonVariant {
     Primary,
@@ -933,6 +956,122 @@ pub enum ViewNode {
         /// What the field does in the table.
         role: PivotRole,
         /// Date grouping interval: day, week, month, quarter or year (date and datetime row/column fields only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        interval: Option<String>,
+    },
+    /// Kanban root: one card and at most one progress bar.
+    Kanban {
+        /// Child arena indexes (`kanban_card`, `kanban_progressbar`).
+        children: Vec<u32>,
+        /// Cards per page from the arch `limit`; absent keeps the client's list default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        page_limit: Option<WirePageLimit>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        default_group_by: Option<FieldRef>,
+        quick_create: bool,
+        records_draggable: bool,
+        groups_draggable: bool,
+        archivable: bool,
+        can_open: bool,
+        /// Whether new records can be created from this view.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        create: Option<bool>,
+        /// Whether records can be edited from this view.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        edit: Option<bool>,
+        /// Whether records can be deleted from this view.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        delete: Option<bool>,
+    },
+    /// The card of a kanban (`<t t-name="card">`): fields and regions.
+    KanbanCard {
+        /// Child arena indexes (`field`, `kanban_section`).
+        children: Vec<u32>,
+    },
+    /// A card region (`<main>`, `<aside>`, `<footer>`), holding fields only.
+    KanbanSection {
+        /// Which region.
+        region: KanbanRegion,
+        /// Child arena indexes (`field`).
+        children: Vec<u32>,
+    },
+    /// A kanban progress bar declaration (`<progressbar>`), drawn by grouped columns.
+    KanbanProgressbar {
+        /// Field whose values the segments count.
+        field: FieldRef,
+        /// Coloured values in arch order.
+        colors: Vec<ProgressColor>,
+        /// Field summed per column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        sum_field: Option<FieldRef>,
+        /// Help text of the bar.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        help: Option<String>,
+    },
+    /// Calendar root: which fields place an event and what the grid offers.
+    Calendar {
+        /// Child arena indexes (only `calendar_field`).
+        children: Vec<u32>,
+        date_start: FieldRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        date_stop: Option<FieldRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        all_day: Option<FieldRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        color: Option<FieldRef>,
+        mode: CalendarScale,
+        scales: Vec<CalendarScale>,
+        create: bool,
+        edit: bool,
+        delete: bool,
+        quick_create: bool,
+        hide_date: bool,
+        hide_time: bool,
+        month_overflow: bool,
+        event_limit: u32,
+    },
+    /// One `<field>` of a calendar: shown in the event popover unless invisible; with `filters`, a side-panel filter.
+    CalendarField {
+        /// Accessible field handle.
+        field: FieldRef,
+        /// Display label.
+        label: String,
+        /// Read for the event but not shown in its popover.
+        invisible: bool,
+        filters: bool,
+    },
+    /// Graph root: the chart a graph view draws first.
+    Graph {
+        /// Child arena indexes (only `graph_field`).
+        children: Vec<u32>,
+        mode: GraphMode,
+        stacked: bool,
+        cumulated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        order: Option<GraphOrder>,
+        disable_linking: bool,
+    },
+    /// One `<field>` of a graph: a grouping (first: the axis, second: the series) or a measure.
+    GraphField {
+        /// Accessible field handle.
+        field: FieldRef,
+        /// Display label.
+        label: String,
+        /// What the field does in the chart.
+        role: GraphRole,
+        /// Date grouping interval: day, week, month, quarter or year (date and datetime groupings only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "schema-gen", ts(optional))]
         interval: Option<String>,

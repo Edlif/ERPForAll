@@ -23,6 +23,11 @@ import { createGroupRow, decodeGroups } from "./list-groups.js";
 import { applyContext, archState, decodePivotFields, paramsState, PIVOT_PARAMS, PIVOT_MAX_LEVELS, PivotModel, readPivotView, resolveSpec, snapshotParams, type PivotGroupItem, type PivotLimits, type PivotParams, type PivotSnapshot } from "./pivot.js";
 import { saveFile } from "./file-save.js";
 import { mountPivot, type PivotCellTarget } from "./pivot-view.js";
+import { CALENDAR_PARAMS, CalendarModel, paramsFromState, readCalendarView, stateFromParams, type CalendarParams } from "./calendar.js";
+import { mountCalendar } from "./calendar-view.js";
+import { GRAPH_MAX_GROUPINGS, GRAPH_PARAMS, GraphModel, graphGrouping, graphParams, graphParamsState, readGraphView, type GraphParams } from "./graph.js";
+import { mountGraph, type GraphTarget } from "./graph-view.js";
+import { focusKanbanCard, kanbanLayout, kanbanRoot, renderKanbanCards } from "./kanban.js";
 import type { GroupByCatalogue, GroupableField } from "./search/types.js";
 import { createContext, decodeAst, evalAst, parseBoundedJson } from "../../../../../web/packages/expr/src/index.js";
 import { expressionValue, jsonValue } from "./field-relations.js";
@@ -90,17 +95,23 @@ function listRouteOf(route: Route): Route {
   return list;
 }
 
-/** The route of a view switch. The pivot keeps its own state (`pivot_*`) and its search model refuses a list's `search_groupby`, so that one is not carried over. */
-function switchedRoute(route: Route, view: "list" | "form" | "pivot"): Route {
+type SwitchableView = "list" | "form" | "pivot" | "calendar" | "graph" | "kanban";
+const SWITCHABLE_VIEWS: readonly string[] = ["list", "form", "pivot", "calendar", "graph", "kanban"];
+const switchable = (view: string): view is SwitchableView => SWITCHABLE_VIEWS.includes(view);
+/** The route of a view switch. The pivot, the calendar and the graph keep their own state (`pivot_*`, `calendar_*`, `graph_*`), and their search models refuse a list's `search_groupby` (so does the kanban's), so that one is not carried over. */
+function switchedRoute(route: Route, view: SwitchableView): Route {
   const next: Route = { ...route, id: view === "form" ? route.id : undefined, view_type: view };
-  if (view === "pivot") delete next.search_groupby;
+  if (view === "pivot" || view === "calendar" || view === "graph" || view === "kanban") delete next.search_groupby;
+  if (view !== "pivot") for (const key of PIVOT_PARAMS) delete next[key];
+  if (view !== "calendar") for (const key of CALENDAR_PARAMS) delete next[key];
+  if (view !== "graph") for (const key of GRAPH_PARAMS) delete next[key];
   return next;
 }
 
 /** Labels remain available to assistive technology and tooltips. */
-function decorateViewButton(target: HTMLButtonElement, kind: "list" | "form" | "pivot"): void {
-  const label = el("span", kind === "list" ? "List" : kind === "pivot" ? "Pivot" : "Form", "view-button-label");
-  target.replaceChildren(icon(kind === "list" ? "list" : kind === "pivot" ? "layout-grid" : "panels-top-left"), label);
+function decorateViewButton(target: HTMLButtonElement, kind: SwitchableView): void {
+  const label = el("span", kind === "list" ? "List" : kind === "pivot" ? "Pivot" : kind === "calendar" ? "Calendar" : kind === "graph" ? "Graph" : kind === "kanban" ? "Kanban" : "Form", "view-button-label");
+  target.replaceChildren(icon(kind === "list" ? "list" : kind === "pivot" ? "layout-grid" : kind === "calendar" ? "calendar-days" : kind === "graph" ? "chart-column" : kind === "kanban" ? "kanban" : "panels-top-left"), label);
   target.title = `${label.textContent} view`;
 }
 
@@ -203,6 +214,8 @@ export class HumanApp {
   private userDropdown?: HTMLElement;
   private currentRootId: number | undefined;
 
+  /** The kanban page a card was opened from (its address, page, scroll and card), so the way back shows it as it was left. */
+  private kanbanResume?: { url: string; offset: number; scroll: number; id: number };
   private listContext?: {
     ids: number[]; total: number; offset: number; limit: number;
     /** Loads the ids of another page of the same search and order, so the form pager can cross a page edge. */
@@ -1854,6 +1867,7 @@ export class HumanApp {
       let nextService: ServiceController | undefined;
       let nextDispose: (() => void) | undefined;
       let nextSettle: (() => void) | undefined;
+      let nextRestore: (() => void) | undefined;
       let panelDispose: (() => void) | undefined;
 
       if (!route.action) {
@@ -1948,9 +1962,25 @@ export class HumanApp {
           nextDispose = list.dispose;
           nextSettle = list.settle;
           stagedDisposers.push(nextDispose);
+        } else if (view.type === "kanban") {
+          const hasForm = !entry || views.some(view => view[1] === "form");
+          const canCreate = hasForm && view.canCreate !== false && !isFalsy(context["create"]);
+          if (canCreate) controls.append(actionButton("New", () => this.run(() => this.navigate({ ...route, id: undefined, view_type: "form" })), "primary"));
+          const kanban = await this.kanbanView(staging, panel, actionTitle, description, view, route, generation, views as [number | null, string][], {baseDomain: entry?.result.domain ?? actionDomain, context, hasForm});
+          nextDispose = kanban.dispose;
+          nextRestore = kanban.restore;
+          stagedDisposers.push(nextDispose);
         } else if (view.type === "pivot") {
           const pivot = await this.pivotView(staging, panel, actionTitle, description, view, route, generation, views as [number | null, string][], {baseDomain: entry?.result.domain ?? actionDomain, context});
           nextDispose = pivot.dispose;
+          stagedDisposers.push(nextDispose);
+        } else if (view.type === "calendar") {
+          const calendar = await this.calendarView(staging, panel, actionTitle, description, view, route, generation, views as [number | null, string][], {baseDomain: entry?.result.domain ?? actionDomain, context});
+          nextDispose = calendar.dispose;
+          stagedDisposers.push(nextDispose);
+        } else if (view.type === "graph") {
+          const graph = await this.graphView(staging, panel, actionTitle, description, view, route, generation, views as [number | null, string][], {baseDomain: entry?.result.domain ?? actionDomain, context});
+          nextDispose = graph.dispose;
           stagedDisposers.push(nextDispose);
         } else {
           await attachSubviews(description, view, async relation =>
@@ -1995,6 +2025,7 @@ export class HumanApp {
       // A new page starts at the top instead.
       this.content.focus({ preventScroll: true });
       documentScroller().scrollTop = 0;
+      nextRestore?.();
     } finally {
       for (const dispose of stagedDisposers) dispose();
       if (!committed && generation === this.generation) {
@@ -2052,6 +2083,43 @@ export class HumanApp {
     return { groupable: decoded.groupable, measures: decoded.measures, items, groupBy: { ...catalogue, items: catalogue.items.filter(item => items.some(found => found.id === item.id)) } };
   }
 
+  /** Registers the action list's dashboard cards on a view's own search model, so a card kept in the address (the list wrote
+   *  `dashboard_<name>`) narrows this view the same way; the list registers the same ids. A card that cannot be offered now (no strip,
+   *  hidden for this user, read failed, a related list) is dropped from the address with a warning instead of refusing the view.
+   *  Returns the address parameters to restore the search from. */
+  private async restoreDashboardFilters(searchModel: SearchModel, description: Description, route: Route, generation: number, baseDomain: unknown[], context: Record<string, unknown>): Promise<URLSearchParams> {
+    const params = new URL(routeUrl(route), window.location.origin).searchParams;
+    let asked: unknown;
+    try { asked = JSON.parse(params.get("search_filters") ?? "[]"); } catch { return params; } // malformed: the search model refuses it by name
+    const cards = Array.isArray(asked) ? asked.filter((id): id is string => typeof id === "string" && id.startsWith("dashboard_")) : [];
+    if (!cards.length) return params;
+    const list = description.views.get("list"), strip = route.method_action === undefined ? list?.dashboard : undefined;
+    const action = route.action === undefined ? undefined : rpcId(route.action);
+    if (strip && action !== undefined && list?.id !== undefined) {
+      const current = () => generation === this.generation && !this.expired;
+      const dashboard = mountDashboard({
+        config: strip, current,
+        read: (domain, period) => this.rpc.call(description.model, "erp_read_dashboard", { action_id: action, view_id: list.id, revision: strip.revision, period, domain_scope: domain, context }),
+        apply: () => undefined, selected: name => cards.includes(`dashboard_${name}`),
+      });
+      let read: Map<string, unknown[]>;
+      try { await dashboard.refresh(baseDomain); read = dashboard.domains(); } finally { dashboard.dispose(); } // dispose clears the domains
+      const label = (name: string) => strip.items.find(item => item.name === name)!.label;
+      searchModel.addDeclaredFilters([...read].map(([name, domain]) => ({ id: `dashboard_${name}`, description: label(name), domain, isActive: false })));
+    }
+    const known = new Set(searchModel.getFilters().map(filter => filter.id));
+    const dropped = cards.filter(id => !known.has(id));
+    if (!dropped.length) return params;
+    dropAbsentDashboardFilters(params, known);
+    const kept = params.get("search_filters");
+    if (kept === null) delete route.search_filters; else route.search_filters = kept;
+    if (generation === this.generation && !this.expired) {
+      const names = dropped.map(id => strip?.items.find(item => `dashboard_${item.name}` === id)?.label ?? id.slice("dashboard_".length));
+      this.messages.notifications.add(`The dashboard card ${names.map(name => `“${name}”`).join(", ")} could not be applied here, so this view shows the records without it.`, { level: "warning" });
+    }
+    return params;
+  }
+
   /** The pivot view: the search bar's domain, grouped reads narrowed to the header that opens, the table, and its state in the address. */
   private async pivotView(staging: HTMLElement, panel: HTMLElement, actionTitle: string, description: Description, view: View, route: Route, generation: number, availableViews: [number | null, string][], scope: { baseDomain: unknown[]; context: Record<string, unknown> }): Promise<{ dispose: () => void }> {
     const { context, baseDomain } = scope;
@@ -2084,7 +2152,7 @@ export class HumanApp {
       // The search's Group By sets the rows (reference pivot_model.js), in the order chosen, with date intervals.
       groupBy: { load: async () => catalogue.groupBy, multiple: true, maxLevels: PIVOT_MAX_LEVELS }
     });
-    searchModel.loadFromUrlParams(new URL(routeUrl(route), window.location.origin).searchParams);
+    searchModel.loadFromUrlParams(await this.restoreDashboardFilters(searchModel, description, route, generation, baseDomain, context));
     if (route.search && !new URL(routeUrl(route), window.location.origin).searchParams.has("search_facets")) {
       // The pivot arch declares only its groupings and measures, so `name` is looked for in the model's fields as well: the list builds this facet on `name`.
       const field = searchModel.getSearchableFields().find(f => f.name === "name") ?? (description.fields.get("name")?.kind === "char" ? description.fields.get("name") : undefined) ?? searchModel.getSearchableFields()[0];
@@ -2175,15 +2243,13 @@ export class HumanApp {
 
     const switcher = el("div", undefined, "view-switcher");
     for (const [, vType] of availableViews) {
-      if (vType !== "list" && vType !== "form" && vType !== "pivot" || availableViews.length < 2) continue;
+      if (!switchable(vType) || availableViews.length < 2) continue;
       const vBtn = button(vType.charAt(0).toUpperCase() + vType.slice(1), () => this.run(async () => {
-        const leaving = { ...route, id: undefined, view_type: vType as "list" | "form" | "pivot" };
-        if (vType !== "pivot") for (const key of PIVOT_PARAMS) delete leaving[key];
-        await this.navigate(leaving);
+        await this.navigate(vType === "pivot" ? { ...route, id: undefined, view_type: "pivot" } : switchedRoute(route, vType));
       }), `view-btn ${vType === "pivot" ? "active" : ""}`);
       vBtn.setAttribute("aria-label", `${vType} view`);
       if (vType === "pivot") vBtn.setAttribute("aria-current", "page");
-      decorateViewButton(vBtn, vType);
+      decorateViewButton(vBtn, vType as SwitchableView);
       switcher.append(vBtn);
     }
     const toolsArea = panel.querySelector("[data-control-tools]");
@@ -2192,6 +2258,398 @@ export class HumanApp {
     staging.append(pivot.element);
     return { dispose: () => { pivot.dispose(); searchBar.dispose(); } };
   }
+
+  /** The calendar view: the search bar's domain, the events of the visible range, the grids and the side panel, and the scale and day in the address. */
+  private async calendarView(staging: HTMLElement, panel: HTMLElement, actionTitle: string, description: Description, view: View, route: Route, generation: number, availableViews: [number | null, string][], scope: { baseDomain: unknown[]; context: Record<string, unknown> }): Promise<{ dispose: () => void }> {
+    const { context, baseDomain } = scope;
+    if (route.id !== undefined) throw new ClientError("validation", "The calendar view shows a range of records; the address cannot name one record.");
+    const config = readCalendarView(view), zone = this.editorLocale.tz;
+    const params: CalendarParams = {
+      ...(route.calendar_scale === undefined ? {} : { calendar_scale: route.calendar_scale }),
+      ...(route.calendar_date === undefined ? {} : { calendar_date: route.calendar_date }),
+    };
+    const initial = stateFromParams(params, config.root, zone);
+    const response = object(await this.rpc.call("ir.config.setting", "erp_read_values", { scope: { kind: "global" }, keys: ["web.calendar_max_events"], context }, { signal: this.lifetime.signal }), "calendar settings");
+    if (response["wire_major"] !== 1) throw new ClientError("unsupported", "Unsupported settings response. Reload the page.");
+    const found = array(response["values"], "calendar settings values").map(value => object(value, "calendar setting")).filter(value => value["key"] === "web.calendar_max_events");
+    const maxEvents = found.length === 1 ? found[0]!["value"] : undefined;
+    if (typeof maxEvents !== "number" || !Number.isSafeInteger(maxEvents) || maxEvents < 1) throw new ClientError("server", "Invalid calendar setting web.calendar_max_events.");
+    panel.classList.add("control-panel-list");
+    const breadcrumbs = panel.querySelector<HTMLElement>("[data-control-breadcrumbs]") || panel.querySelector<HTMLElement>("h1");
+    if (breadcrumbs) {
+      this.breadcrumbs.clear();
+      this.breadcrumbs.push({
+        id: `action-${route.action}-calendar`, title: actionTitle, isFormView: false,
+        get route() { return { ...route }; }, get url() { return routeUrl(route); },
+        onSelected: async () => { await this.navigate({ ...route }, false, false, undefined, { autosave: true }); }
+      });
+      const title = el("h1", actionTitle, "breadcrumb-current");
+      title.setAttribute("aria-current", "page");
+      breadcrumbs.replaceChildren(title);
+    }
+    const searchModel = new SearchModel({
+      model: description.model, fields: description.fields, viewFields: view.fields,
+      nameSearch: async (relation, name) => array(await this.rpc.call(relation, "web_name_search", { name, specification: { display_name: {} }, limit: 8, context }), "relation search").map(row => {
+        const found = object(row);
+        return { id: integer(found["id"], "relation id"), display_name: text(found["display_name"], "relation name") };
+      }),
+      userId: this.userId, companyId: this.companyId, initialDomain: baseDomain
+    });
+    // The list's dashboard cards narrow the calendar the same way (the pivot does this too).
+    searchModel.loadFromUrlParams(await this.restoreDashboardFilters(searchModel, description, route, generation, baseDomain, context));
+    if (route.search && !new URL(routeUrl(route), window.location.origin).searchParams.has("search_facets")) {
+      // The calendar arch names few fields, so `name` is looked for in the model's fields as well: the list builds this facet on `name`.
+      const field = searchModel.getSearchableFields().find(f => f.name === "name") ?? (description.fields.get("name")?.kind === "char" ? description.fields.get("name") : undefined) ?? searchModel.getSearchableFields()[0];
+      if (!field) throw new ClientError("unsupported", "Text search is not available for this model.");
+      searchModel.addFieldFacet(field.name, route.search);
+    }
+    const read = { display_name: {}, ...specification(config.readFields) };
+    const model = new CalendarModel(config, ({ domain, limit }) => this.rpc.call(description.model, "web_search_read", {
+      domain, specification: read, limit, order: `${config.root.dateStart.name} asc, id asc`, context
+    }), () => searchModel.getDomain(), { maxEvents }, zone, initial);
+    let refused: unknown;
+    try { await model.load(); }
+    catch (error) { if (!(error instanceof ClientError) || error.kind !== "validation") throw error; refused = error; } // the bound: the view opens and says why it is empty
+    const current = (): boolean => generation === this.generation && !this.expired;
+    const writeAddress = (): void => {
+      if (!current()) return; // the user left this calendar: the address is the next page's
+      const proposed = { ...route, ...paramsFromState(model.state) };
+      const url = routeUrl(proposed);
+      Object.assign(route, paramsFromState(model.state));
+      if (url !== this.currentUrl) { history.replaceState({ erpIndex: this.historyIndex }, "", url); this.currentUrl = url; }
+    };
+    const leave = (): Route => { const next = { ...route }; for (const key of CALENDAR_PARAMS) delete next[key]; return next; };
+    const calendar = mountCalendar({
+      model, locale: this.editorLocale, popovers: this.messages.popovers, run: job => this.run(job), changed: writeAddress,
+      open: async event => {
+        if (!availableViews.some(item => item[1] === "form")) throw new ClientError("unsupported", "This action has no form view to open the record in.");
+        await this.navigate({ ...leave(), id: String(event.id), view_type: "form" });
+      },
+      remove: async event => {
+        if (await this.choose("Delete this event?", `“${event.title}” and its record are removed for good.`, ["Delete", "Cancel"]) !== "Delete") return false;
+        await this.rpc.call(description.model, "unlink", { ids: [event.id], context }, { write: true });
+        return true;
+      },
+      failed: refused === undefined ? undefined : (refused as ClientError).message,
+    });
+
+    let request = 0; // the same stale-answer guard the list uses: request number, route generation, expiry
+    const searchBar = createSearchBar(searchModel, () => this.run(async () => {
+      const mine = ++request;
+      const parameters = new URLSearchParams();
+      searchModel.serializeToUrlParams(parameters);
+      const proposed = { ...route };
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) {
+        const value = parameters.get(key);
+        if (value === null) delete proposed[key]; else proposed[key] = value;
+      }
+      const url = routeUrl(proposed); // validated whole before anything is committed
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) { if (proposed[key] === undefined) delete route[key]; else route[key] = proposed[key]; }
+      if (url !== this.currentUrl) { history.replaceState({ erpIndex: this.historyIndex }, "", url); this.currentUrl = url; }
+      await calendar.reload(() => mine === request && current());
+    }));
+    const searchArea = panel.querySelector("[data-control-search]") || panel;
+    if (searchArea !== panel) searchArea.replaceChildren(searchBar.element); else panel.append(searchBar.element);
+
+    const switcher = el("div", undefined, "view-switcher");
+    for (const [, vType] of availableViews) {
+      if (!switchable(vType) || availableViews.length < 2) continue;
+      const vBtn = button(vType.charAt(0).toUpperCase() + vType.slice(1), () => this.run(async () => {
+        await this.navigate(vType === "calendar" ? { ...route, id: undefined, view_type: "calendar" } : switchedRoute(route, vType));
+      }), `view-btn ${vType === "calendar" ? "active" : ""}`);
+      vBtn.setAttribute("aria-label", `${vType} view`);
+      if (vType === "calendar") vBtn.setAttribute("aria-current", "page");
+      decorateViewButton(vBtn, vType);
+      switcher.append(vBtn);
+    }
+    const toolsArea = panel.querySelector("[data-control-tools]");
+    if (toolsArea) toolsArea.replaceChildren(switcher);
+    else (panel.querySelector(".control-panel-heading") || panel).append(el("div", undefined, "control-panel-tools"), switcher);
+    staging.append(calendar.element);
+    return { dispose: () => { calendar.dispose(); searchBar.dispose(); } };
+  }
+
+  /** The graph view: the search bar's domain and Group By (two levels), one grouped read per change of what is drawn, the chart, and its state in the address. */
+  private async graphView(staging: HTMLElement, panel: HTMLElement, actionTitle: string, description: Description, view: View, route: Route, generation: number, availableViews: [number | null, string][], scope: { baseDomain: unknown[]; context: Record<string, unknown> }): Promise<{ dispose: () => void }> {
+    const { context, baseDomain } = scope;
+    if (route.id !== undefined) throw new ClientError("validation", "The graph view draws a whole chart; the address cannot name one record.");
+    const [settings, catalogue] = await Promise.all([
+      this.rpc.call("ir.config.setting", "erp_read_values", { scope: { kind: "global" }, keys: ["web.graph_max_groups"], context }, { signal: this.lifetime.signal }),
+      this.pivotCatalogue(description.model, context)
+    ]);
+    const response = object(settings, "graph settings");
+    if (response["wire_major"] !== 1) throw new ClientError("unsupported", "Unsupported settings response. Reload the page.");
+    const values = array(response["values"], "graph settings values").map(value => object(value, "graph setting"));
+    const maxGroups = values.length === 1 && values[0]!["key"] === "web.graph_max_groups" ? values[0]!["value"] : undefined;
+    if (typeof maxGroups !== "number" || !Number.isSafeInteger(maxGroups) || maxGroups < 1) throw new ClientError("server", "Invalid graph setting web.graph_max_groups.");
+    const config = readGraphView(view, catalogue);
+    const params: GraphParams = {};
+    for (const key of GRAPH_PARAMS) if (route[key] !== undefined) params[key] = route[key];
+    const initial = graphParamsState(params, config);
+    panel.classList.add("control-panel-list");
+    const breadcrumbs = panel.querySelector<HTMLElement>("[data-control-breadcrumbs]") || panel.querySelector<HTMLElement>("h1");
+    if (breadcrumbs) {
+      this.breadcrumbs.clear();
+      this.breadcrumbs.push({
+        id: `action-${route.action}-graph`, title: actionTitle, isFormView: false,
+        get route() { return { ...route }; }, get url() { return routeUrl(route); },
+        onSelected: async () => { await this.navigate({ ...route }, false, false, undefined, { autosave: true }); }
+      });
+      const title = el("h1", actionTitle, "breadcrumb-current");
+      title.setAttribute("aria-current", "page");
+      breadcrumbs.replaceChildren(title);
+    }
+    const searchModel = new SearchModel({
+      model: description.model, fields: description.fields, viewFields: view.fields,
+      nameSearch: async (relation, name) => array(await this.rpc.call(relation, "web_name_search", { name, specification: { display_name: {} }, limit: 8, context }), "relation search").map(row => {
+        const found = object(row);
+        return { id: integer(found["id"], "relation id"), display_name: text(found["display_name"], "relation name") };
+      }),
+      userId: this.userId, companyId: this.companyId, initialDomain: baseDomain,
+      // The search's Group By sets the axis, then the series (reference graph_model.js), with date intervals.
+      groupBy: { load: async () => catalogue.groupBy, multiple: true, maxLevels: GRAPH_MAX_GROUPINGS }
+    });
+    // The list's dashboard cards kept in the address narrow the chart the same way.
+    searchModel.loadFromUrlParams(await this.restoreDashboardFilters(searchModel, description, route, generation, baseDomain, context));
+    if (route.search && !new URL(routeUrl(route), window.location.origin).searchParams.has("search_facets")) {
+      const field = searchModel.getSearchableFields().find(f => f.name === "name") ?? (description.fields.get("name")?.kind === "char" ? description.fields.get("name") : undefined) ?? searchModel.getSearchableFields()[0];
+      if (!field) throw new ClientError("unsupported", "Text search is not available for this model.");
+      searchModel.addFieldFacet(field.name, route.search);
+    }
+    const model = new GraphModel(config, ({ groupingSets, aggregates, domain }) => this.rpc.call(description.model, "formatted_read_grouping_sets", {
+      domain, grouping_sets: groupingSets, aggregates, context
+    }), () => searchModel.getDomain(), maxGroups, initial);
+    await model.load();
+    // Only what differs from the arch is kept, so a reload (or a link) draws the same chart.
+    const writeAddress = (): void => {
+      if (generation !== this.generation || this.expired) return; // the user left this graph: the address is the next page's
+      const proposed: Route = { ...route };
+      for (const key of GRAPH_PARAMS) delete proposed[key];
+      Object.assign(proposed, graphParams(model.current, config));
+      const url = routeUrl(proposed);
+      for (const key of GRAPH_PARAMS) { if (proposed[key] === undefined) delete route[key]; else route[key] = proposed[key]; }
+      if (url !== this.currentUrl) { history.replaceState({ erpIndex: this.historyIndex }, "", url); this.currentUrl = url; }
+    };
+    // A bar or slice opens the list of its records; the way back is this graph's address, so the chart comes back as it was left.
+    const open = async (target: GraphTarget): Promise<void> => {
+      const list = availableViews.find(item => item[1] === "list"), form = availableViews.find(item => item[1] === "form");
+      const name = target.labels.join(" / ").slice(0, 200) || actionTitle;
+      const result = actionResult({ wire_major: 1, result: { kind: "current_window", name, model: description.model, domain: target.domain, context: {},
+        views: [{ id: list?.[0] ?? null, type: "list" }, ...(form ? [{ id: form[0], type: "form" }] : [])] } });
+      if (result.kind !== "current_window") throw new ClientError("server", "The chart did not open its records as a list.");
+      const listContext = Object.fromEntries(Object.entries(context).filter(([key]) => !key.startsWith("graph_")));
+      const id = this.methodActions.add({ result, context: listContext, origin: { ...route }, originLabel: actionTitle });
+      try { await this.navigate({ action: route.action, menu: route.menu, cids: route.cids, method_action: id, model: description.model, view_type: "list" }); }
+      catch (error) { this.methodActions.remove(id); throw error; }
+    };
+    const graph = mountGraph({ model, locale: this.numericLocale, run: job => this.run(job), open, changed: writeAddress });
+
+    let request = 0; // the list's stale-answer guard: request number, route generation, expiry
+    let appliedGroupBy = ""; // the search's groupings the chart follows; empty: the arch's (or the address's)
+    const searchBar = createSearchBar(searchModel, () => this.run(async () => {
+      const mine = ++request, current = (): boolean => mine === request && generation === this.generation && !this.expired;
+      const parameters = new URLSearchParams();
+      searchModel.serializeToUrlParams(parameters);
+      const proposed = { ...route };
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) {
+        const value = parameters.get(key);
+        if (value === null) delete proposed[key]; else proposed[key] = value;
+      }
+      const url = routeUrl(proposed);
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) { if (proposed[key] === undefined) delete route[key]; else route[key] = proposed[key]; }
+      if (url !== this.currentUrl) { history.replaceState({ erpIndex: this.historyIndex }, "", url); this.currentUrl = url; }
+      const wanted = searchModel.getGroupBy();
+      try {
+        if (wanted.join(",") !== appliedGroupBy) {
+          try { await model.setGroupBy(wanted.length ? wanted.map(spec => graphGrouping(spec, config.groupable)) : null); }
+          catch (error) {
+            // The chart did not change: the facet would say otherwise, so it goes, and the refusal says so.
+            if (!(error instanceof ClientError) || error.kind !== "validation") throw error;
+            const facet = searchModel.getFacets().find(item => item.type === "groupBy");
+            if (facet) searchModel.removeFacet(facet.id);
+            appliedGroupBy = "";
+            throw new ClientError("validation", `Group By removed: ${error.message}`);
+          }
+          appliedGroupBy = wanted.join(",");
+        } else await model.load();
+      } finally { if (current()) graph.render(); } // a failed read draws the chart as unavailable
+      if (current()) writeAddress();
+    }));
+    const searchArea = panel.querySelector("[data-control-search]") || panel;
+    if (searchArea !== panel) searchArea.replaceChildren(searchBar.element); else panel.append(searchBar.element);
+
+    const switcher = el("div", undefined, "view-switcher");
+    for (const [, vType] of availableViews) {
+      if (!switchable(vType) || availableViews.length < 2) continue;
+      const vBtn = button(vType.charAt(0).toUpperCase() + vType.slice(1), () => this.run(async () => {
+        await this.navigate(vType === "graph" ? { ...route, id: undefined, view_type: "graph" } : switchedRoute(route, vType));
+      }), `view-btn ${vType === "graph" ? "active" : ""}`);
+      vBtn.setAttribute("aria-label", `${vType} view`);
+      if (vType === "graph") vBtn.setAttribute("aria-current", "page");
+      decorateViewButton(vBtn, vType as SwitchableView);
+      switcher.append(vBtn);
+    }
+    const toolsArea = panel.querySelector("[data-control-tools]");
+    if (toolsArea) toolsArea.replaceChildren(switcher);
+    else (panel.querySelector(".control-panel-heading") || panel).append(el("div", undefined, "control-panel-tools"), switcher);
+    staging.append(graph.element);
+    return { dispose: () => { graph.dispose(); searchBar.dispose(); } };
+  }
+
+  /**
+    The kanban view, ungrouped: the search bar's domain, one page of cards, the pager and the way back to the card
+   *  that was opened. Grouped columns, drag and drop and quick create are.
+   */
+  private async kanbanView(staging: HTMLElement, panel: HTMLElement, actionTitle: string, description: Description, view: View, route: Route, generation: number, availableViews: [number | null, string][], scope: { baseDomain: unknown[]; context: Record<string, unknown>; hasForm: boolean }): Promise<{ dispose: () => void; restore: () => void }> {
+    const { context, baseDomain, hasForm } = scope;
+    if (route.id !== undefined) throw new ClientError("validation", "The kanban view shows many records; the address cannot name one record.");
+    const root = kanbanRoot(view), layout = kanbanLayout(view);
+    const resume = this.kanbanResume?.url === routeUrl(route) ? this.kanbanResume : undefined;
+    this.kanbanResume = undefined;
+    const pageSize = view.pageLimit ?? 40;
+    let offset = resume?.offset ?? 0, request = 0, total = 0;
+    panel.classList.add("control-panel-list");
+    const breadcrumbs = panel.querySelector<HTMLElement>("[data-control-breadcrumbs]") || panel.querySelector<HTMLElement>("h1");
+    if (breadcrumbs) {
+      this.breadcrumbs.clear();
+      this.breadcrumbs.push({
+        id: `action-${route.action}-kanban`, title: actionTitle, isFormView: false,
+        get route() { return { ...route }; }, get url() { return routeUrl(route); },
+        onSelected: async () => { await this.navigate({ ...route }, false, false, undefined, { autosave: true }); }
+      });
+      const title = el("h1", actionTitle, "breadcrumb-current");
+      title.setAttribute("aria-current", "page");
+      breadcrumbs.replaceChildren(title);
+    }
+    const searchModel = new SearchModel({
+      model: description.model, fields: description.fields, viewFields: view.fields,
+      nameSearch: async (relation, name) => array(await this.rpc.call(relation, "web_name_search", { name, specification: { display_name: {} }, limit: 8, context }), "relation search").map(row => {
+        const found = object(row);
+        return { id: integer(found["id"], "relation id"), display_name: text(found["display_name"], "relation name") };
+      }),
+      userId: this.userId, companyId: this.companyId, initialDomain: baseDomain
+    });
+    searchModel.loadFromUrlParams(await this.restoreDashboardFilters(searchModel, description, route, generation, baseDomain, context));
+    if (route.search && !new URL(routeUrl(route), window.location.origin).searchParams.has("search_facets")) {
+      const field = searchModel.getSearchableFields().find(f => f.name === "name") ?? searchModel.getSearchableFields()[0];
+      if (!field) throw new ClientError("unsupported", "Text search is not available for this model.");
+      searchModel.addFieldFacet(field.name, route.search);
+    }
+
+    const results = el("div", undefined, "kanban-view");
+    if (root.defaultGroupBy) results.append(el("p", `Grouped columns are not available yet, so the cards are not grouped by ${root.defaultGroupBy.label}.`, "kanban-notice muted"));
+    const body = el("div", undefined, "kanban-results");
+    results.append(body);
+    const currencies = new CurrencyDisplayCache();
+    const readonlyFields = view.fields.map(field => ({ ...field, readonly: true }));
+    let cards: { node: HTMLElement; dispose: () => void } | undefined;
+    const pager = el("div", undefined, "pager");
+    const count = el("span", "", "pager-count muted");
+    const previous = actionButton("Previous", () => this.run(async () => { offset = Math.max(0, offset - pageSize); await load(); }), "pager-btn pager-prev");
+    const next = actionButton("Next", () => this.run(async () => { offset += pageSize; await load(); }), "pager-btn pager-next");
+    previous.replaceChildren(icon("chevron-left")); previous.setAttribute("aria-label", "Previous page"); previous.title = "Previous page";
+    next.replaceChildren(icon("chevron-right")); next.setAttribute("aria-label", "Next page"); next.title = "Next page";
+    pager.append(count, previous, next);
+
+    const fetchRows = async (from: number): Promise<{ records: Record<string, unknown>[]; length: number }> => {
+      const answer = object(await this.rpc.call(description.model, "web_search_read", { domain: searchModel.getDomain(), specification: specification(view.fields), offset: from, limit: pageSize, context }));
+      return { records: array(answer["records"], "records").map(row => object(row)), length: integer(answer["length"], "record count") };
+    };
+    const open = hasForm && root.canOpen ? (id: number): void => this.run(async () => {
+      this.kanbanResume = { url: routeUrl(route), offset, scroll: documentScroller().scrollTop, id };
+      await this.navigate({ ...route, id: String(id), view_type: "form" });
+    }) : undefined;
+    const load = async (): Promise<void> => {
+      const mine = ++request, current = (): boolean => mine === request && generation === this.generation && !this.expired;
+      body.setAttribute("aria-busy", "true");
+      let page: { records: Record<string, unknown>[]; length: number };
+      try { page = await fetchRows(offset); }
+      catch (error) {
+        if (!current()) return;
+        body.removeAttribute("aria-busy");
+        count.textContent = "Results unavailable"; previous.disabled = true; next.disabled = true;
+        if (results.isConnected) this.listContext = undefined;
+        cards?.dispose(); cards = undefined;
+        const message = el("p", "Unable to load these records. Adjust the search or reload the page.", "list-load-error");
+        message.setAttribute("role", "alert"); body.replaceChildren(message);
+        throw error;
+      }
+      if (!current()) return;
+      body.removeAttribute("aria-busy");
+      if (!page.records.length && offset > 0 && page.length > 0) { offset = Math.floor((page.length - 1) / pageSize) * pageSize; return load(); } // the page shrank under a search
+      total = page.length;
+      count.textContent = total ? `${offset + 1}-${offset + page.records.length} / ${total}` : "0 records";
+      previous.disabled = offset === 0; next.disabled = offset + page.records.length >= total;
+      this.listContext = { ids: page.records.map(row => integer(row["id"], "record id")), total, offset, limit: pageSize, page: async from => {
+        const rows = await fetchRows(from);
+        return { ids: rows.records.map(row => integer(row["id"], "record id")), total: rows.length };
+      } };
+      cards?.dispose();
+      if (!page.records.length) {
+        cards = undefined;
+        const empty = noContentHelp();
+        empty.replaceChildren(...(searchModel.getFacets().length ? [el("h2", "No matching records"), el("p", "Try another search or clear the filter.")] : [el("h2", "No records yet"), el("p", hasForm ? "Create a record to begin working here." : "Records appear here once they exist.")]));
+        body.replaceChildren(empty);
+        return;
+      }
+      cards = renderKanbanCards({ layout, records: page.records, open, renderField: (field, record) => {
+        const adapter = resolveFieldWidget(field.widget ?? field.kind, "card");
+        return adapter.render({
+          field: { ...field, readonly: true }, value: record[field.name], values: record, fields: readonlyFields, viewContext: "list",
+          rpc: this.rpc, context, currencies, numericLocale: this.numericLocale, editorLocale: this.editorLocale,
+          messages: this.messages, run: this.run, report: error => this.reportError(error), signal: this.lifetime.signal,
+          openRecord: (model, related) => this.openRelatedRecord(model, related), change: () => { throw new ClientError("validation", "Kanban card fields cannot be edited here."); },
+        });
+      } });
+      body.replaceChildren(cards.node);
+    };
+    await load();
+
+    const searchBar = createSearchBar(searchModel, () => this.run(async () => {
+      const parameters = new URLSearchParams();
+      searchModel.serializeToUrlParams(parameters);
+      const proposed = { ...route };
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) {
+        const value = parameters.get(key);
+        if (value === null) delete proposed[key]; else proposed[key] = value;
+      }
+      const url = routeUrl(proposed); // validated whole before anything is committed
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) { if (proposed[key] === undefined) delete route[key]; else route[key] = proposed[key]; }
+      if (url !== this.currentUrl) { history.replaceState({ erpIndex: this.historyIndex }, "", url); this.currentUrl = url; }
+      offset = 0;
+      await load();
+    }));
+    const searchArea = panel.querySelector("[data-control-search]") || panel;
+    if (searchArea !== panel) searchArea.replaceChildren(searchBar.element); else panel.append(searchBar.element);
+
+    const switcher = el("div", undefined, "view-switcher");
+    for (const [, vType] of availableViews) {
+      if (!switchable(vType) || availableViews.length < 2) continue;
+      const vBtn = button(vType, () => this.run(async () => { await this.navigate(switchedRoute(route, vType as SwitchableView)); }), `view-btn ${vType === "kanban" ? "active" : ""}`);
+      vBtn.setAttribute("aria-label", `${vType} view`);
+      if (vType === "kanban") vBtn.setAttribute("aria-current", "page");
+      decorateViewButton(vBtn, vType as SwitchableView);
+      switcher.append(vBtn);
+    }
+    const toolsArea = panel.querySelector("[data-control-tools]");
+    if (toolsArea) toolsArea.replaceChildren(pager, switcher);
+    else {
+      const tools = el("div", undefined, "control-panel-tools");
+      tools.append(pager, switcher);
+      (panel.querySelector(".control-panel-heading") || panel).append(tools);
+    }
+    staging.append(results);
+    return {
+      dispose: () => { request++; cards?.dispose(); searchBar.dispose(); },
+      // After the page is in the document and scrolled to its top: the way back from a card restores its scroll and focus.
+      restore: () => {
+        if (!resume || !cards) return;
+        documentScroller().scrollTop = resume.scroll;
+        focusKanbanCard(cards.node, resume.id);
+      }
+    };
+  }
+
 
   /** What the Group By menu offers for `model`: the search view's declared items and the fields the server can group by. */
   private async groupByCatalogue(model: string, context: Record<string, unknown>): Promise<GroupByCatalogue> {
@@ -2507,12 +2965,12 @@ export class HumanApp {
     const viewSwitcher = el("div", undefined, "view-switcher");
     if (availableViews && availableViews.length > 1) {
       for (const [, vType] of availableViews) {
-        if (vType === "list" || vType === "form" || vType === "pivot") {
+        if (switchable(vType)) {
           const vBtn = button(vType.charAt(0).toUpperCase() + vType.slice(1), () => this.run(async () => {
-            await this.navigate(switchedRoute(route, vType));
+            await this.navigate(switchedRoute(route, vType as SwitchableView));
           }), `view-btn ${vType === "list" ? "active" : ""}`);
           vBtn.setAttribute("aria-label", `${vType} view`);
-          decorateViewButton(vBtn, vType);
+          decorateViewButton(vBtn, vType as SwitchableView);
           viewSwitcher.append(vBtn);
         }
       }
@@ -3250,12 +3708,12 @@ export class HumanApp {
     if (toolsArea && availableViews && availableViews.length > 1) {
       const viewSwitcher = el("div", undefined, "view-switcher");
       for (const [, vType] of availableViews) {
-        if (vType === "list" || vType === "form" || vType === "pivot") {
+        if (switchable(vType)) {
           const vBtn = button(vType.charAt(0).toUpperCase() + vType.slice(1), () => runFormAction(async () => {
-            await this.navigate(switchedRoute(route, vType));
+            await this.navigate(switchedRoute(route, vType as SwitchableView));
           }), `view-btn ${vType === "form" ? "active" : ""}`);
           vBtn.setAttribute("aria-label", `${vType} view`);
-          decorateViewButton(vBtn, vType);
+          decorateViewButton(vBtn, vType as SwitchableView);
           viewSwitcher.append(vBtn);
         }
       }

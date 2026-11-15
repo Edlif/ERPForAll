@@ -63,20 +63,17 @@ pub const SECRET_KEYS: [&str; 18] = [
 /// rotated by `erp db rotate-secret`).
 const IDENTITY_KEYS: [&str; 2] = [keys::SECRET, "database.uuid"];
 
-/// Every secret key of `registry`: [`SECRET_KEYS`] and the installed parameters declared secret.
+/// Every secret key of `registry`: [`SECRET_KEYS`] and the parameters declared secret by every
+/// linked addon, installed or not (`erp_sdk::params::linked_secret_keys`).
 /// # Errors
-/// The refusals of the parameter registry (`erp_sdk::params::registry_of`).
+/// The refusals of the parameter registry (`erp_sdk::params::registry_of`); a factory's error.
 pub fn secret_keys(registry: &erp_sdk::Registry) -> Result<Vec<String>> {
-    let declared = erp_sdk::params::registry_of(registry)?;
+    // publication checks of the installed declarations still refuse a bad registry
+    erp_sdk::params::registry_of(registry)?;
     Ok(SECRET_KEYS
         .iter()
         .map(|k| (*k).to_owned())
-        .chain(
-            declared
-                .iter()
-                .filter(|d| d.is_secret())
-                .map(|d| d.key().to_owned()),
-        )
+        .chain(erp_sdk::params::linked_secret_keys()?)
         .collect())
 }
 
@@ -511,8 +508,11 @@ async fn check_written_settings(
     check_related_changes(tx, &params, changes).await
 }
 
-/// Create a row holding the declared default for every declared key without one.
-/// An existing row, emptied or shipped by a data file, keeps its value.
+/// Check the stored row of every declared key against its declaration and groups, then create a
+/// row holding the declared default for every declared key without one (§7
+/// "Validity"). A stored value outside its declaration stops the publication (an upgrade, a
+/// start) naming the key, as its consumer would fail; nothing is clamped. An existing row,
+/// emptied or shipped by a data file, keeps its value.
 async fn create_default_rows(
     this: &RecordSet<IrConfigParameter>,
     tx: &mut Transaction,
@@ -525,20 +525,32 @@ async fn create_default_rows(
     tx.flush_model(this.as_records().model_id()).await?;
     let rows = tx
         .query(
-            "SELECT ARRAY(SELECT key::text FROM ir_config_parameter WHERE key = ANY($1::text[]))",
+            "SELECT key::text, value::text FROM ir_config_parameter WHERE key = ANY($1::text[])",
             &[&declared],
         )
         .await?;
-    let present: Vec<String> = rows
-        .first()
-        .ok_or_else(|| Error::programming("the declared keys statement returned no row"))?
-        .try_get(0)
-        .map_err(|e| Error::db(format!("ir_config_parameter keys: {e}")))?;
+    let mut stored = std::collections::BTreeMap::new();
+    for row in &rows {
+        let key: String = row
+            .try_get(0)
+            .map_err(|e| Error::db(format!("ir_config_parameter key: {e}")))?;
+        let value: Option<String> = row
+            .try_get(1)
+            .map_err(|e| Error::db(format!("ir_config_parameter value: {e}")))?;
+        stored.insert(key, value);
+    }
+    let mut values = std::collections::BTreeMap::new();
+    for decl in params.iter() {
+        let text = stored.get(decl.key()).and_then(Option::as_deref);
+        values.insert(decl.key().to_owned(), decl.read_text(text)?);
+    }
+    params.validate_groups(&values)?;
+    let present: Vec<String> = stored.into_keys().collect();
     let sudo = this.sudo(true);
-    for decl in params.iter().filter(|d| {
-        // an absent per-login threshold follows the per-address one (4x); a row would freeze it
-        d.key() != keys::COOLDOWN_AFTER_LOGIN && !present.iter().any(|p| p == d.key())
-    }) {
+    for decl in params
+        .iter()
+        .filter(|d| d.has_default_row() && !present.iter().any(|p| p == d.key()))
+    {
         let created = tx
             .savepoint(async |tx| {
                 let vals = sudo
@@ -579,6 +591,23 @@ async fn protected_keys_of(
     found.sort();
     found.dedup();
     Ok(found)
+}
+
+/// The declared parameters among `keys` whose change is audited, sorted. None in
+/// superuser mode: framework code (install, `init`, default rows, an elevated write that its
+/// caller audits) changes no administrator's value; migrations audit by their own actor.
+fn audited_keys(env: &Env, keys: Vec<String>) -> Result<Vec<String>> {
+    if env.su() || keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let params = erp_sdk::params::registry(env)?;
+    let mut keys: Vec<String> = keys
+        .into_iter()
+        .filter(|key| params.get(key).is_some())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
 }
 
 #[methods(IrConfigParameter)]
@@ -734,15 +763,19 @@ impl IrConfigParameter {
             }
         }
         let mut managed = false;
+        let mut keys = Vec::new();
         for vals in &vals_list {
-            managed |=
-                written(vals, "key")?.flatten() == Some(crate::attachments::settings::MAX_FILE_KEY);
+            let key = written(vals, "key")?.flatten();
+            managed |= key == Some(crate::attachments::settings::MAX_FILE_KEY);
+            keys.extend(key.map(str::to_owned));
         }
-        let created: Records = if managed {
+        let declared = audited_keys(this.env(), keys)?;
+        let created: Records = if managed || !declared.is_empty() {
             tx.savepoint(async |tx| {
                 // Match managed writes: acquire the settings scope before the auth-policy
                 // lock, and roll back the entire mixed batch if either validator refuses it.
-                let edit = crate::ir_config_setting::begin_parameter_edit(tx).await?;
+                let edit =
+                    crate::ir_config_setting::begin_parameter_edit(tx, managed, &declared).await?;
                 check_created_settings(tx, &vals_list).await?;
                 let rows: Records = sup.call(tx, this.as_records(), (vals_list,)).await?;
                 crate::ir_config_setting::finish_parameter_edit(tx, edit).await?;
@@ -779,19 +812,35 @@ impl IrConfigParameter {
                 )));
             }
         }
-        let key = crate::attachments::settings::MAX_FILE_KEY;
-        let renames_to_managed = written(&vals, "key")?.flatten() == Some(key);
+        // the keys of the records (read around access: refusals stay with the checks below) and
+        // a new key
+        let new_key = written(&vals, "key")?.flatten().map(str::to_owned);
         let ids = this.as_records().ids();
-        let rows = tx.query("SELECT EXISTS(SELECT 1 FROM ir_config_parameter WHERE id=ANY($1::int8[]) AND key=$2)", &[&ids,&key]).await?;
-        let row = rows
+        tx.flush_model(this.as_records().model_id()).await?;
+        let rows = tx
+            .query(
+                "SELECT ARRAY(SELECT key::text FROM ir_config_parameter WHERE id=ANY($1::int8[]))",
+                &[&ids],
+            )
+            .await?;
+        let mut keys: Vec<String> = rows
             .first()
-            .ok_or_else(|| Error::db("Missing managed parameter result."))?;
-        let managed: bool = row
+            .ok_or_else(|| Error::db("Missing parameter keys result."))?
             .try_get(0)
-            .map_err(|e| Error::db(format!("managed parameter: {e}")))?;
-        if managed || renames_to_managed {
+            .map_err(|e| Error::db(format!("parameter keys: {e}")))?;
+        keys.extend(new_key);
+        let managed = keys
+            .iter()
+            .any(|k| k == crate::attachments::settings::MAX_FILE_KEY);
+        let declared = if vals.contains("key") || vals.contains("value") {
+            audited_keys(this.env(), keys)?
+        } else {
+            Vec::new()
+        };
+        if managed || !declared.is_empty() {
             tx.savepoint(async |tx| {
-                let edit = crate::ir_config_setting::begin_parameter_edit(tx).await?;
+                let edit =
+                    crate::ir_config_setting::begin_parameter_edit(tx, managed, &declared).await?;
                 check_written_settings(this, tx, &vals).await?;
                 sup.call(tx, this.as_records(), (vals,)).await?;
                 crate::ir_config_setting::finish_parameter_edit(tx, edit).await
@@ -940,27 +989,34 @@ impl IrConfigParameter {
                  RPC{rotate}."
             )));
         }
+        // the caller is the actor of the audit row of a declared secret; the elevated write
+        // below audits nothing itself
+        let declared = audited_keys(this.env(), vec![key.clone()])?;
         let sudo = this.sudo(true);
         let stored: Option<Arc<str>> = value.map(Arc::from);
-        match row_of(&sudo, tx, &key).await? {
-            None => {
-                sudo.create(
-                    tx,
-                    vec![
-                        sudo.vals()
-                            .set(IrConfigParameter::KEY, key.as_str())
-                            .set(IrConfigParameter::VALUE, stored),
-                    ],
-                )
-                .await?;
-            }
-            Some((id, _)) => {
-                sudo.browse([id])?
-                    .write(tx, sudo.vals().set(IrConfigParameter::VALUE, stored))
+        tx.savepoint(async |tx| {
+            let edit = crate::ir_config_setting::begin_parameter_edit(tx, false, &declared).await?;
+            match row_of(&sudo, tx, &key).await? {
+                None => {
+                    sudo.create(
+                        tx,
+                        vec![
+                            sudo.vals()
+                                .set(IrConfigParameter::KEY, key.as_str())
+                                .set(IrConfigParameter::VALUE, stored),
+                        ],
+                    )
                     .await?;
+                }
+                Some((id, _)) => {
+                    sudo.browse([id])?
+                        .write(tx, sudo.vals().set(IrConfigParameter::VALUE, stored))
+                        .await?;
+                }
             }
-        }
-        Ok(())
+            crate::ir_config_setting::finish_parameter_edit(tx, edit).await
+        })
+        .await
     }
 }
 

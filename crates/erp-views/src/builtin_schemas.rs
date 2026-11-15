@@ -1,4 +1,4 @@
-//! Builtin closed description schemas for the `list`, `form`, `search` and `pivot` view types.
+//! Builtin closed description schemas for the `list`, `form`, `search`, `pivot`, `calendar`, `graph` and `kanban` view types.
 //!
 //! Each payload is the wire arena of `wire::View` minus its envelope: `{root, nodes}`, where every
 //! node is a tagged union on `kind` whose variants mirror the `wire::ViewNode` shapes of that view
@@ -328,6 +328,47 @@ static PIVOT_FIELD_NODE: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("role", &SHORT),
     SchemaProperty::optional("interval", &SHORT),
 ]);
+static SCALES: SchemaNode = SchemaNode::Array {
+    item: &SHORT,
+    max_items: 4,
+};
+static CALENDAR_NODE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("children", &CHILDREN),
+    SchemaProperty::required("date_start", &FIELD_REF),
+    SchemaProperty::optional("date_stop", &FIELD_REF),
+    SchemaProperty::optional("all_day", &FIELD_REF),
+    SchemaProperty::optional("color", &FIELD_REF),
+    SchemaProperty::required("mode", &SHORT),
+    SchemaProperty::required("scales", &SCALES),
+    SchemaProperty::required("create", &BOOL),
+    SchemaProperty::required("edit", &BOOL),
+    SchemaProperty::required("delete", &BOOL),
+    SchemaProperty::required("quick_create", &BOOL),
+    SchemaProperty::required("hide_date", &BOOL),
+    SchemaProperty::required("hide_time", &BOOL),
+    SchemaProperty::required("month_overflow", &BOOL),
+    SchemaProperty::required("event_limit", &INT),
+]);
+static CALENDAR_FIELD_NODE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("field", &FIELD_REF),
+    SchemaProperty::required("label", &LABEL),
+    SchemaProperty::required("invisible", &BOOL),
+    SchemaProperty::required("filters", &BOOL),
+]);
+static GRAPH_NODE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("children", &CHILDREN),
+    SchemaProperty::required("mode", &SHORT),
+    SchemaProperty::required("stacked", &BOOL),
+    SchemaProperty::required("cumulated", &BOOL),
+    SchemaProperty::optional("order", &SHORT),
+    SchemaProperty::required("disable_linking", &BOOL),
+]);
+static GRAPH_FIELD_NODE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("field", &FIELD_REF),
+    SchemaProperty::required("label", &LABEL),
+    SchemaProperty::required("role", &SHORT),
+    SchemaProperty::optional("interval", &SHORT),
+]);
 static EMPTY_NODE: SchemaNode = SchemaNode::Object(&[]);
 static CHATTER_NODE: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("reload_on_post", &BOOL),
@@ -430,6 +471,22 @@ static PIVOT_UNION: SchemaNode = SchemaNode::TaggedUnion {
     ],
 };
 
+static CALENDAR_UNION: SchemaNode = SchemaNode::TaggedUnion {
+    discriminator: "kind",
+    variants: &[
+        SchemaVariant::new("calendar", &CALENDAR_NODE),
+        SchemaVariant::new("calendar_field", &CALENDAR_FIELD_NODE),
+    ],
+};
+static CALENDAR_NODES: SchemaNode = SchemaNode::Array {
+    item: &CALENDAR_UNION,
+    max_items: MAX_NODES,
+};
+static CALENDAR_ROOT: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("root", &INT),
+    SchemaProperty::required("nodes", &CALENDAR_NODES),
+]);
+
 static LIST_NODES: SchemaNode = SchemaNode::Array {
     item: &LIST_UNION,
     max_items: MAX_NODES,
@@ -442,6 +499,21 @@ static SEARCH_NODES: SchemaNode = SchemaNode::Array {
     item: &SEARCH_UNION,
     max_items: MAX_NODES,
 };
+static GRAPH_UNION: SchemaNode = SchemaNode::TaggedUnion {
+    discriminator: "kind",
+    variants: &[
+        SchemaVariant::new("graph", &GRAPH_NODE),
+        SchemaVariant::new("graph_field", &GRAPH_FIELD_NODE),
+    ],
+};
+static GRAPH_NODES: SchemaNode = SchemaNode::Array {
+    item: &GRAPH_UNION,
+    max_items: MAX_NODES,
+};
+static GRAPH_ROOT: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("root", &INT),
+    SchemaProperty::required("nodes", &GRAPH_NODES),
+]);
 static PIVOT_NODES: SchemaNode = SchemaNode::Array {
     item: &PIVOT_UNION,
     max_items: MAX_NODES,
@@ -463,6 +535,61 @@ static SEARCH_ROOT: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("nodes", &SEARCH_NODES),
 ]);
 
+// ---- kanban ----------------------------------------------------------------
+static KANBAN_NODE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("children", &CHILDREN),
+    SchemaProperty::optional("page_limit", &INT),
+    SchemaProperty::optional("default_group_by", &FIELD_REF),
+    SchemaProperty::required("quick_create", &BOOL),
+    SchemaProperty::required("records_draggable", &BOOL),
+    SchemaProperty::required("groups_draggable", &BOOL),
+    SchemaProperty::required("archivable", &BOOL),
+    SchemaProperty::required("can_open", &BOOL),
+    SchemaProperty::optional("create", &BOOL),
+    SchemaProperty::optional("edit", &BOOL),
+    SchemaProperty::optional("delete", &BOOL),
+]);
+static KANBAN_SECTION_NODE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("region", &SHORT),
+    SchemaProperty::required("children", &CHILDREN),
+]);
+static PROGRESS_COLOR: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("value", &SHORT),
+    SchemaProperty::required("tone", &SHORT),
+]);
+static PROGRESS_COLORS: SchemaNode = SchemaNode::Array {
+    item: &PROGRESS_COLOR,
+    max_items: 64,
+};
+static KANBAN_PROGRESSBAR_NODE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("field", &FIELD_REF),
+    SchemaProperty::required("colors", &PROGRESS_COLORS),
+    SchemaProperty::optional("sum_field", &FIELD_REF),
+    SchemaProperty::optional("help", &LABEL),
+]);
+static KANBAN_UNION: SchemaNode = SchemaNode::TaggedUnion {
+    discriminator: "kind",
+    variants: &[
+        SchemaVariant::new("kanban", &KANBAN_NODE),
+        SchemaVariant::new("kanban_card", &CHILDREN_ONLY),
+        SchemaVariant::new("kanban_section", &KANBAN_SECTION_NODE),
+        SchemaVariant::new("kanban_progressbar", &KANBAN_PROGRESSBAR_NODE),
+        SchemaVariant::new("field", &FIELD_NODE),
+    ],
+};
+static KANBAN_NODES: SchemaNode = SchemaNode::Array {
+    item: &KANBAN_UNION,
+    max_items: MAX_NODES,
+};
+static KANBAN_ROOT: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("root", &INT),
+    SchemaProperty::required("nodes", &KANBAN_NODES),
+]);
+/// The closed description schema of the builtin `kanban` view type.
+pub fn kanban_schema() -> ViewResult<ViewSchema> {
+    ViewSchema::new(REVISION, &KANBAN_ROOT)
+}
+
 /// The closed description schema of the builtin `list` view type.
 pub fn list_schema() -> ViewResult<ViewSchema> {
     ViewSchema::new(REVISION, &LIST_ROOT)
@@ -479,6 +606,15 @@ pub fn search_schema() -> ViewResult<ViewSchema> {
 pub fn pivot_schema() -> ViewResult<ViewSchema> {
     ViewSchema::new(REVISION, &PIVOT_ROOT)
 }
+/// The closed description schema of the builtin `graph` view type.
+pub fn graph_schema() -> ViewResult<ViewSchema> {
+    ViewSchema::new(REVISION, &GRAPH_ROOT)
+}
+
+/// The closed description schema of the builtin `calendar` view type.
+pub fn calendar_schema() -> ViewResult<ViewSchema> {
+    ViewSchema::new(REVISION, &CALENDAR_ROOT)
+}
 
 /// Borrow a builtin's static root without constructing or validating a schema allocation.
 pub(crate) fn builtin_root(kind: crate::wire::ViewType) -> Option<&'static SchemaNode> {
@@ -487,6 +623,9 @@ pub(crate) fn builtin_root(kind: crate::wire::ViewType) -> Option<&'static Schem
         crate::wire::ViewType::Form => Some(&FORM_ROOT),
         crate::wire::ViewType::Search => Some(&SEARCH_ROOT),
         crate::wire::ViewType::Pivot => Some(&PIVOT_ROOT),
+        crate::wire::ViewType::Kanban => Some(&KANBAN_ROOT),
+        crate::wire::ViewType::Calendar => Some(&CALENDAR_ROOT),
+        crate::wire::ViewType::Graph => Some(&GRAPH_ROOT),
         _ => None,
     }
 }

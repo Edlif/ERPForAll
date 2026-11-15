@@ -130,16 +130,21 @@ test.each([
   { defaults: false, expected: [] },
 ])("new forms normalize relation defaults $defaults before onchange and save", async ({ defaults, expected }) => {
   const calls: { path: string; args: Record<string, unknown> }[] = [];
+  // The first onchange answers every linked record with its row (LINK commands, as the server's
+  // first call does) and leaves an emptied relation out.
+  const ids: number[] = expected;
+  const linked = ids.map(id => [4, id, { id, display_name: `Group ${id}` }]);
   const rpc = new RpcClient(async (path, init) => {
     calls.push({ path: String(path), args: JSON.parse(String(init?.body)) });
     const value = String(path).endsWith("default_get") ? { name: "New user", group_ids: defaults }
-      : String(path).endsWith("onchange") ? { value: {} }
+      : String(path).endsWith("onchange") ? { value: linked.length ? { group_ids: linked } : {} }
       : [{ id: 17, name: "New user", group_ids: expected }];
     return new Response(JSON.stringify(value));
   }, () => {});
   const state = new RecordState(rpc, "res.users", [...fields, defaultGroups], {});
   await state.load();
-  expect(state.values["group_ids"]).toEqual(expected);
+  // one entry per id with the row's fields, not the bare default ids plus the linked rows
+  expect(state.values["group_ids"]).toEqual(ids.map(id => ({ id, display_name: `Group ${id}` })));
   expect(calls[1]?.args["values"]).toEqual({ name: "New user", group_ids: [[6, 0, expected]] });
   expect(state.dirty).toBe(false);
   await state.save();
@@ -175,11 +180,80 @@ test("the first onchange of a new form replaces its one2many default lines inste
   }, () => {});
   const state = new RecordState(rpc, "test.parent", [lineField], {});
   await state.load();
-  expect(calls[1]?.args["values"]).toEqual({ line_ids: [[0, 0, { repartition_type: "base" }], [0, 0, { repartition_type: "tax" }]] });
+  // the unsaved default lines go out with their client keys, so later commands can name them
+  expect(calls[1]?.args["values"]).toEqual({ line_ids: [[0, expect.stringMatching(/^line_/), { repartition_type: "base" }], [0, expect.stringMatching(/^line_/), { repartition_type: "tax" }]] });
   expect((state.values["line_ids"] as Record<string, unknown>[]).map(line => [line["repartition_type"], line["sequence"]])).toEqual([["base", 1], ["tax", 1]]);
   expect(state.dirty).toBe(false);
   await state.save();
   expect(calls[2]?.args["vals"]).toEqual({ line_ids: [[0, 0, { repartition_type: "base" }], [0, 0, { repartition_type: "tax" }]] });
+});
+
+function repartitionLines(): Field {
+  const kind: Field = { name: "repartition_type", kind: "char", label: "Type", readonly: false, required: true, selection: null, relation: null, relationField: null };
+  const sequence: Field = { name: "sequence", kind: "integer", label: "Sequence", readonly: false, required: false, selection: null, relation: null, relationField: null };
+  const subview = { model: "test.line", list: [kind, sequence], form: undefined, fields: new Map([[kind.name, kind], [sequence.name, sequence]]) };
+  return { name: "line_ids", kind: "one2many", label: "Lines", readonly: false, required: false, selection: null, relation: "test.line", relationField: "parent_id", subview };
+}
+const note: Field = { name: "note", kind: "char", label: "Note", readonly: false, required: false, selection: null, relation: null, relationField: null };
+
+test("a first onchange that empties the default lines leaves none, instead of keeping the defaults", async () => {
+  // The complete first answer leaves out an x2many without lines (no commands to send).
+  const calls: { path: string; args: Record<string, unknown> }[] = [];
+  const rpc = new RpcClient(async (path, init) => {
+    calls.push({ path: String(path), args: JSON.parse(String(init?.body)) });
+    const value = String(path).endsWith("default_get") ? { line_ids: [[0, 0, { repartition_type: "base" }], [0, 0, { repartition_type: "tax" }]] }
+      : String(path).endsWith("onchange") ? { value: {} }
+      : [{ id: 3, line_ids: [] }];
+    return new Response(JSON.stringify(value));
+  }, () => {});
+  const state = new RecordState(rpc, "test.parent", [repartitionLines()], {});
+  await state.load();
+  expect(state.values["line_ids"]).toEqual([]);
+  expect(state.dirty).toBe(false);
+  await state.save();
+  expect(calls[2]?.args["vals"]).toEqual({ line_ids: [] });
+});
+
+test("a later onchange removes and updates unsaved lines by their client keys, applied as a diff on the replaced lines", async () => {
+  const calls: { path: string; args: Record<string, unknown> }[] = [];
+  const rpc = new RpcClient(async (path, init) => {
+    const args = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    calls.push({ path: String(path), args });
+    let value: unknown;
+    if (String(path).endsWith("default_get")) value = { line_ids: [[0, 0, { repartition_type: "base" }], [0, 0, { repartition_type: "tax" }]] };
+    else if (String(path).endsWith("onchange") && (args["field_names"] as string[]).length === 0) value = { value: { line_ids: [[0, 0, { repartition_type: "base", sequence: 1 }], [0, 0, { repartition_type: "tax", sequence: 1 }]] } };
+    else if (String(path).endsWith("onchange")) {
+      // the server names the unsaved lines by the keys the client sent with them
+      const [first, second] = (args["values"] as Record<string, unknown[][]>)["line_ids"]!.map(command => command[1]);
+      value = { value: { line_ids: [[2, first, 0], [1, second, { sequence: 5 }], [0, 0, { repartition_type: "tax", sequence: 6 }]] } };
+    } else value = [{ id: 3, line_ids: [] }];
+    return new Response(JSON.stringify(value));
+  }, () => {});
+  const state = new RecordState(rpc, "test.parent", [repartitionLines(), note], {});
+  await state.load();
+  state.change("note", "rewrite the lines");
+  await state.onchange("note");
+  const sent = (calls[2]?.args["values"] as Record<string, unknown[][]>)["line_ids"]!;
+  expect(sent.map(command => [command[0], typeof command[1]])).toEqual([[0, "string"], [0, "string"]]);
+  expect(sent[0]![1]).not.toEqual(sent[1]![1]);
+  expect((state.values["line_ids"] as Record<string, unknown>[]).map(line => [line["repartition_type"], line["sequence"]])).toEqual([["tax", 5], ["tax", 6]]);
+  await state.save();
+  expect(calls[3]?.args["vals"]).toEqual({ line_ids: [[0, 0, { repartition_type: "tax", sequence: 5 }], [0, 0, { repartition_type: "tax", sequence: 6 }]], note: "rewrite the lines" });
+});
+
+test("an onchange command for an unsaved line it cannot name fails loudly", async () => {
+  const rpc = new RpcClient(async (path, init) => {
+    const args = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const value = String(path).endsWith("default_get") ? { line_ids: [[0, 0, { repartition_type: "base" }]] }
+      : (args["field_names"] as string[]).length === 0 ? { value: { line_ids: [[0, 0, { repartition_type: "base" }]] } }
+      : { value: { line_ids: [[2, 0, 0]] } };
+    return new Response(JSON.stringify(value));
+  }, () => {});
+  const state = new RecordState(rpc, "test.parent", [repartitionLines(), note], {});
+  await state.load();
+  state.change("note", "x");
+  await expect(state.onchange("note")).rejects.toMatchObject({ kind: "server", message: "Onchange returned a line command for a line it cannot name." });
+  expect((state.values["line_ids"] as unknown[]).length).toBe(1);
 });
 
 test.each(["many2one", "char","text", "selection", "date", "datetime", "integer", "float", "boolean"] as const)("empty %s uses the RPC null sentinel without changing boolean false", async kind => {

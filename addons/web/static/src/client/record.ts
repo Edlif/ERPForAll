@@ -33,13 +33,17 @@ export function newLineKey(): string { return `line_${++nextLine}`; }
 function lines(value: unknown, label: string): Line[] {
   return value === undefined || value === false ? [] : array(value, label).map(line => object(line, "one2many line"));
 }
-/** Nested one2many lines are never written from a line. */
-export function lineCommands(field: Field, value: unknown, initial: unknown): unknown[] {
+/**
+ *  With `refs` (an onchange) a new line carries its `__key` (`[0, key,
+ *  vals]`) so the server's later commands can name it. Nested one2many lines are never written
+ *  from a line. 
+ */
+export function lineCommands(field: Field, value: unknown, initial: unknown, refs = false): unknown[] {
   const subview = field.subview, commands: unknown[] = [], kept = new Set<number>();
   for (const line of lines(value, "one2many lines")) {
     if (line["id"] === undefined) {
       if (!subview) throw new ClientError("unsupported", `${field.label}: lines cannot be created without the line views.`);
-      commands.push([0, 0, lineVals(subview, line, null)]);
+      commands.push([0, refs && typeof line["__key"] === "string" && line["__key"] ? line["__key"] : 0, lineVals(subview, line, null)]);
       continue;
     }
     const id = integer(line["id"], "line id");
@@ -81,8 +85,20 @@ function lineDiff(previous: unknown, update: unknown): Line[] {
     const command = array(raw, "line command"), code = command[0];
     if (code === 5) { values = []; continue; }
     if (code === 0) { values.push({ ...object(command[2], "new line"), __key: newLineKey() }); continue; }
-    if (typeof command[1] !== "number") throw new ClientError("unsupported", "Onchange returned a line command for a line that is not stored yet.");
-    const id = integer(command[1], "line id");
+    const ref = command[1];
+    if (typeof ref === "string" && ref) {
+      // a line not stored yet, named by the `__key` the client sent with it
+      const unsaved = (line: Line): boolean => line["id"] === undefined && line["__key"] === ref;
+      if (code === 2 || code === 3) { values = values.filter(line => !unsaved(line)); continue; }
+      if (code !== 1) throw new ClientError("unsupported", "Onchange returned a line command for a line that is not stored yet.");
+      const index = values.findIndex(unsaved);
+      if (index < 0) throw new ClientError("server", "Onchange updated an unknown line.");
+      values[index] = { ...values[index], ...object(command[2], "line update") };
+      continue;
+    }
+    if (typeof ref !== "number") throw new ClientError("unsupported", "Onchange returned a line command for a line that is not stored yet.");
+    const id = integer(ref, "line id");
+    if (id === 0) throw new ClientError("server", "Onchange returned a line command for a line it cannot name.");
     if (code === 2 || code === 3) values = values.filter(line => line["id"] !== id);
     else if (code === 4) { if (!values.some(line => line["id"] === id)) values.push({ ...(command[2] && typeof command[2] === "object" ? object(command[2], "linked line") : {}), id }); }
     else if (code === 1) {
@@ -93,8 +109,8 @@ function lineDiff(previous: unknown, update: unknown): Line[] {
   }
   return values;
 }
-function writableValue(field: Field, value: unknown, initial?: unknown): unknown {
-  if (field.kind === "one2many") return lineCommands(field, value, initial);
+function writableValue(field: Field, value: unknown, initial?: unknown, refs = false): unknown {
+  if (field.kind === "one2many") return lineCommands(field, value, initial, refs);
   // RPC distinguishes JSON null (the ORM unset sentinel) from a boolean false.
   // Empty widgets/onchange values use false locally; retain it only for Boolean fields.
   if (value === false && field.kind !== "boolean") return field.kind === "many2many" ? [[6, 0, []]] : null;
@@ -257,24 +273,32 @@ export class RecordState {
   }
   change(name: string, value: unknown): void { this.changeMany({ [name]: value }); }
   discard(): void { this.draftVersion += 1; this.resetIdentity = {}; this.values = structuredClone(this.initial); this.changes.clear(); this.warning = ""; this.warningDetails = undefined; this.editorOwner?.reset(); }
-  private vals(all: boolean, withReadonly = false): Record<string, unknown> {
-    return Object.fromEntries(this.effectiveFields.filter(field => field.name !== "id" && (withReadonly || !field.readonly || field.forceSave) && (all || this.changes.has(field.name)) && Object.hasOwn(this.values, field.name)).map(field => [field.name, writableValue(field, this.values[field.name], this.initial[field.name])]));
+  private vals(all: boolean, withReadonly = false, refs = false): Record<string, unknown> {
+    return Object.fromEntries(this.effectiveFields.filter(field => field.name !== "id" && (withReadonly || !field.readonly || field.forceSave) && (all || this.changes.has(field.name)) && Object.hasOwn(this.values, field.name)).map(field => [field.name, writableValue(field, this.values[field.name], this.initial[field.name], refs)]));
   }
   private async applyOnchange(name: string | readonly string[]): Promise<void> {
     const identity = this.resetIdentity;
-    const response = await this.rpc.call(this.model, "onchange", this.args({ ids: this.id === undefined ? [] : [this.id], values: this.vals(true, true), field_names: typeof name === "string" ? name ? [name] : [] : [...name], fields_spec: specification(this.fields) }));
+    const response = await this.rpc.call(this.model, "onchange", this.args({ ids: this.id === undefined ? [] : [this.id], values: this.vals(true, true, true), field_names: typeof name === "string" ? name ? [name] : [] : [...name], fields_spec: specification(this.fields) }));
     if (identity !== this.resetIdentity) throw new ClientError("validation", "Onchange was superseded by a record reset.");
     const result = object(response, "onchange response");
     const update = object(result["value"], "onchange values");
     // Draft admission precedes mutation so a malformed source cannot destroy an accepted draft.
     this.editorOwner?.admit({ ...this.values, ...update });
+    const firstCall = name.length === 0;
     for (const [key, value] of Object.entries(update)) {
       if (!this.fields.some(field => field.name === key)) throw new ClientError("server", "Onchange returned an unrequested field.");
       const field = this.fields.find(candidate => candidate.name === key)!;
-      const previous = name.length === 0 ? undefined : this.values[key];
+      const previous = firstCall ? undefined : this.values[key];
       const resolved = field.kind === "many2many" ? relationDiff(previous, value) : field.kind === "one2many" ? lineDiff(previous, value) : value;
       this.values = { ...this.values, [key]: resolved };
-      if (name) this.changes.add(key);
+      if (!firstCall) this.changes.add(key);
+    }
+    // The complete first answer leaves out an x2many whose lines it emptied (no commands): the
+    // default lines sent are gone, not kept.
+    if (firstCall) {
+      for (const field of this.fields) {
+        if ((field.kind === "one2many" || field.kind === "many2many") && Object.hasOwn(this.values, field.name) && !Object.hasOwn(update, field.name)) this.values = { ...this.values, [field.name]: [] };
+      }
     }
     this.editorOwner?.onchangeAccepted(this.values);
     if (result["warning"] !== undefined) {

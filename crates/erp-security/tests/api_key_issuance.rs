@@ -568,7 +568,8 @@ async fn configured_cap_is_strict() {
     let hash = hasher();
     let c = support::connect(&h).await;
     c.batch_execute("INSERT INTO ir_config_parameter(key,value) VALUES('base.programmatic_api_keys_limit','bad')").await.unwrap();
-    for value in ["bad", "0", "-1", "+1", " 1", "4294967296", ""] {
+    // the cap parses as its declaration does: " 1" and "+1" are 1, empty is the default (below)
+    for value in ["bad", "0", "-1", " ", "1.5", "4294967296"] {
         c.execute(
             "UPDATE ir_config_parameter SET value=$1 WHERE key='base.programmatic_api_keys_limit'",
             &[&value],
@@ -959,36 +960,53 @@ async fn runtime_private_column_admission() {
 }
 
 #[tokio::test]
-async fn null_and_oversized_settings_refuse() {
+async fn null_empty_and_oversized_settings() {
     let h = support::harness().await;
     users(&h).await;
     let hash = hasher();
     let c = support::connect(&h).await;
+    const LIMIT: &str = "base.programmatic_api_keys_limit";
+    const ENABLED: &str = "base.enable_programmatic_api_keys";
+    let put = async |key: &str, value: Option<&str>| {
+        c.execute("INSERT INTO ir_config_parameter(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",&[&key, &value]).await.unwrap();
+    };
+    // clearing a declared value resets it to the default (review cycle 16 Rust S3)
+    for empty in [None, Some("")] {
+        put(LIMIT, empty).await;
+        let mut tx = h.begin_as(20).await.unwrap();
+        let clock = now(&mut tx).await;
+        let req = request(Some(DateTime::from_micros(clock.micros() + 3_600_000_000)));
+        for _ in 0..10 {
+            issue(&mut tx, &hash, &req).await.unwrap();
+        }
+        error(
+            issue(&mut tx, &hash, &req).await.err().unwrap(),
+            ErrorKind::UserError,
+            "Limit of 10 API keys is reached for programmatic creation",
+        );
+        tx.rollback().await.unwrap();
+        put(ENABLED, empty).await;
+        let mut tx = h.begin_as(20).await.unwrap();
+        error(
+            issue(&mut tx, &hash, &req).await.err().unwrap(),
+            ErrorKind::UserError,
+            "Programmatic API keys are not enabled",
+        );
+        tx.rollback().await.unwrap();
+        put(ENABLED, Some("True")).await;
+    }
     for (key, message) in [
         (
-            "base.programmatic_api_keys_limit",
+            LIMIT,
             "base.programmatic_api_keys_limit must be a positive 32-bit integer",
         ),
         (
-            "base.enable_programmatic_api_keys",
+            ENABLED,
             "base.enable_programmatic_api_keys must be a boolean",
         ),
     ] {
-        c.execute("INSERT INTO ir_config_parameter(key,value) VALUES($1,NULL) ON CONFLICT(key) DO UPDATE SET value=NULL",&[&key]).await.unwrap();
-        let mut tx = h.begin().await.unwrap();
-        error(
-            issue(&mut tx, &hash, &request(None)).await.err().unwrap(),
-            ErrorKind::Validation,
-            message,
-        );
-        tx.rollback().await.unwrap();
         let huge = "True".to_owned() + &" ".repeat(4096);
-        c.execute(
-            "UPDATE ir_config_parameter SET value=$1 WHERE key=$2",
-            &[&huge, &key],
-        )
-        .await
-        .unwrap();
+        put(key, Some(huge.as_str())).await;
         let mut tx = h.begin().await.unwrap();
         error(
             issue(&mut tx, &hash, &request(None)).await.err().unwrap(),

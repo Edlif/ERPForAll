@@ -51,37 +51,74 @@ fn declarations_check_floor_default_and_bound_by_key() {
         )),
         "Parameter shop.import_batch needs a finite floor not above its hard bound."
     );
-    // a quantity never has a floor below 1, so 0 can never mean unlimited
+    // every number has a floor of at least 1 whatever its key is called, so 0 can never mean
+    // unlimited (review cycle 16 Rust S6: `_ms`, `_attempts`, `max_*` keys escaped a word list)
+    let refusal = |key: &str| {
+        format!(
+            "Parameter {key} has a floor below 1; a number whose 0 or fraction has a meaning is \
+             declared with integer_floor_below_one or float_floor_below_one and the reason."
+        )
+    };
     for key in [
         "shop.import_batch",
-        "shop.page_limit",
-        "shop.file_size",
-        "shop.retry_count",
-        "shop.http_timeout",
-        "shop.poll_interval",
-        "shop.wait_secs",
-        "shop.max_bytes",
+        "shop.retry_base_ms",
+        "shop.quant_max_attempts",
+        "shop.max_lines",
+        "shop.horizon_months",
     ] {
         assert_eq!(
             message(ParameterDecl::integer(key, "Quantity", 0, (0, 10))),
-            format!(
-                "Parameter {key} is a limit, size, count, timeout, batch or interval; its floor must be at least 1."
-            )
+            refusal(key)
         );
     }
     assert_eq!(
         message(ParameterDecl::float(
-            "shop.wait_secs",
-            "Wait",
+            "shop.ratio",
+            "Ratio",
             0.5,
             (0.5, 10.0)
         )),
-        "Parameter shop.wait_secs is a limit, size, count, timeout, batch or interval; its floor must be at least 1."
+        refusal("shop.ratio")
     );
-    // a number that is not a quantity may start at 0 (a switch-off threshold, a percentage)
-    assert!(ParameterDecl::integer("shop.after_login", "After login", 0, (0, 10)).is_ok());
-    assert!(ParameterDecl::float("shop.ratio", "Ratio", 0.0, (0.0, 1.0)).is_ok());
-    assert!(ParameterDecl::float("shop.ratio", "Ratio", 0.0, (0.0, f64::INFINITY)).is_err());
+    // a lower floor that has a meaning is declared with its reason
+    let off = ParameterDecl::integer_floor_below_one(
+        "shop.after_login",
+        "After login",
+        0,
+        (0, 10),
+        "0 turns the rule off",
+    )
+    .unwrap();
+    assert!(matches!(
+        off.kind(),
+        SettingKind::Integer { min: 0, max: 10 }
+    ));
+    assert!(
+        ParameterDecl::float_floor_below_one("shop.ratio", "Ratio", 0.0, (0.0, 1.0), "a share")
+            .is_ok()
+    );
+    for (floor, reason) in [(0, " "), (1, "not below one")] {
+        assert_eq!(
+            message(ParameterDecl::integer_floor_below_one(
+                "shop.after_login",
+                "After login",
+                1,
+                (floor, 10),
+                reason
+            )),
+            "Parameter shop.after_login is declared with a floor below 1 but has no reason or no such floor."
+        );
+    }
+    assert!(
+        ParameterDecl::float_floor_below_one(
+            "shop.ratio",
+            "Ratio",
+            0.0,
+            (0.0, f64::INFINITY),
+            "a share"
+        )
+        .is_err()
+    );
     assert_eq!(
         message(ParameterDecl::selection(
             "shop.mode",
@@ -137,11 +174,13 @@ fn proposed_text_is_checked_by_kind_and_bounds_without_echoing_it() {
         flag.check_text(Some("maybe")).unwrap_err().message(),
         "shop.flag takes true or false."
     );
-    let ratio = ParameterDecl::float("shop.ratio", "Ratio", 1.0, (0.5, 2.0)).unwrap();
+    let ratio =
+        ParameterDecl::float_floor_below_one("shop.ratio", "Ratio", 1.0, (0.5, 2.0), "a factor")
+            .unwrap();
     assert_eq!(ratio.default_text(), "1.0");
     assert!(ratio.check_text(Some("NaN")).is_err());
     assert!(ratio.check_text(Some("2.5")).is_err());
-    let even = ParameterDecl::integer("shop.even", "Even", 2, (0, 10))
+    let even = ParameterDecl::integer("shop.even", "Even", 2, (1, 10))
         .unwrap()
         .validator(|value| match value {
             Value::Int(n) if n % 2 == 0 => Ok(()),
@@ -153,7 +192,7 @@ fn proposed_text_is_checked_by_kind_and_bounds_without_echoing_it() {
         "shop.even must be even."
     );
     assert!(
-        ParameterDecl::integer("shop.even", "Even", 1, (0, 10))
+        ParameterDecl::integer("shop.even", "Even", 1, (1, 10))
             .unwrap()
             .validator(|_| Err(erp_fields::Error::validation("never")))
             .is_err()
@@ -175,6 +214,15 @@ fn stored_text_outside_the_declaration_is_invalid_never_the_default() {
             "Stored parameter shop.import_batch is invalid."
         );
     }
+    // the canonical text an audit row compares: the default for an empty row, trimmed numbers
+    assert_eq!(batch.effective_text(None).unwrap(), "500");
+    assert_eq!(batch.effective_text(Some(" +7 ")).unwrap(), "7");
+    assert!(batch.effective_text(Some("0")).is_err());
+    let flag = ParameterDecl::boolean("shop.flag", "Flag", false).unwrap();
+    assert_eq!(flag.effective_text(Some("on")).unwrap(), "True");
+    // a default row is shipped unless the declaration says the absent value follows something else
+    assert!(batch.has_default_row());
+    assert!(!batch.without_default_row().has_default_row());
 }
 
 fn installed(names: &[&str]) -> BTreeSet<String> {

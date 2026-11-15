@@ -17,7 +17,8 @@ erp_sdk::addon!(name = "web", depends = ["base"]);
 
 /// The pivot view's bounds, set in Settings (database-wide): the most groups one grouping may return, the most headers a
 /// user may keep expanded and the most cells the table holds. Each has a default, a floor and a hard bound; the web client
-/// reads them when it opens a pivot.
+/// reads them when it opens a pivot. The graph view's bound is the most groups one chart read may return (both groupings
+/// crossed); the client refuses a larger answer by name instead of drawing part of it.
 fn settings() -> erp_sdk::Result<Vec<erp_sdk::settings::SettingDecl>> {
     use erp_sdk::settings::{ScopeKind, SettingDecl};
     Ok(vec![
@@ -45,6 +46,14 @@ fn settings() -> erp_sdk::Result<Vec<erp_sdk::settings::SettingDecl>> {
             (1_000, 1_000_000),
         )?
         .access(&["base.group_user"], &["base.group_system"])?,
+        SettingDecl::integer(
+            "web.graph_max_groups",
+            "Graph view: most groups one chart may draw",
+            ScopeKind::Global,
+            1000,
+            (50, 20_000),
+        )?
+        .access(&["base.group_user"], &["base.group_system"])?,
     ])
 }
 erp_sdk::setting_declarations!(settings);
@@ -52,6 +61,7 @@ erp_sdk::setting_declarations!(settings);
 pub mod assets;
 
 mod action_result;
+mod calendar_settings;
 mod dashboard;
 mod dashboard_period;
 mod dashboard_settings;
@@ -260,6 +270,19 @@ pub static SEARCH_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::search
 #[linkme(crate = erp_sdk::__private::linkme)]
 pub static PIVOT_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::pivot_view_type;
 
+/// `kanban` view type (H18).
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::VIEW_TYPES)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+pub static KANBAN_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::kanban_view_type;
+/// `calendar` view type (H18).
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::VIEW_TYPES)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+pub static CALENDAR_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::calendar_view_type;
+/// `graph` view type (H18).
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::VIEW_TYPES)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+pub static GRAPH_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::graph_view_type;
+
 /// The native H18 declarations owned by this exact web addon descriptor.
 ///
 /// Composition roots pass these contributions to `ModuleSystemBuilder::view_types` along with
@@ -271,11 +294,14 @@ pub static PIVOT_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::pivot_v
 /// assert!(std::ptr::eq(contributions[0].owner(), &erp_addon_web::ADDON));
 /// ```
 pub fn view_type_contributions() -> [erp_sdk::views::ViewTypeContribution; 1] {
-    static DECLARATIONS: [erp_sdk::views::ViewTypeDeclFn; 4] = [
+    static DECLARATIONS: [erp_sdk::views::ViewTypeDeclFn; 7] = [
         view_types::list_view_type,
         view_types::form_view_type,
         view_types::search_view_type,
         view_types::pivot_view_type,
+        view_types::kanban_view_type,
+        view_types::calendar_view_type,
+        view_types::graph_view_type,
     ];
     [erp_sdk::views::ViewTypeContribution::new(
         &ADDON,
@@ -294,7 +320,7 @@ pub mod metadata_test_support {
 
 #[cfg(test)]
 mod pivot_settings_tests {
-    /// The pivot bounds are declared settings with a default, a floor and a hard bound, readable by internal users and written by administrators.
+    /// The pivot and graph bounds are declared settings with a default, a floor and a hard bound, readable by internal users and written by administrators.
     #[test]
     fn pivot_bounds_are_declared_with_default_floor_and_hard_bound() {
         use erp_sdk::settings::SettingKind;
@@ -303,6 +329,7 @@ mod pivot_settings_tests {
             ("web.pivot_max_groups", 2000, 100, 50_000),
             ("web.pivot_max_open_headers", 200, 10, 2_000),
             ("web.pivot_max_cells", 20_000, 1_000, 1_000_000),
+            ("web.graph_max_groups", 1000, 50, 20_000),
         ];
         assert_eq!(declarations.len(), expected.len());
         for (setting, (key, default, floor, bound)) in declarations.iter().zip(expected) {

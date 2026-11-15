@@ -187,3 +187,45 @@ fn every_view_type_the_client_routes_is_an_address_the_server_admits() {
         assert_eq!(policy.shell(&address).unwrap(), address);
     }
 }
+
+#[test]
+fn calendar_address_state_is_admitted_with_closed_shapes() {
+    let policy = RedirectPolicy::new("https://erp.example.test", SHELL_VIEW_TYPES).unwrap();
+    for address in [
+        "/erp/action-28?view_type=calendar&calendar_scale=month&calendar_date=2026-11-15",
+        "/erp/action-28?view_type=calendar&calendar_scale=year&calendar_date=2024-02-29",
+    ] {
+        assert_eq!(policy.shell(address).unwrap(), address);
+    }
+    for address in [
+        "/erp/action-28?view_type=calendar&calendar_scale=fortnight",
+        "/erp/action-28?view_type=calendar&calendar_date=2026-02-30",
+        "/erp/action-28?view_type=calendar&calendar_date=2025-02-29",
+        "/erp/action-28?view_type=calendar&calendar_date=2026-13-01",
+        "/erp/action-28?view_type=calendar&calendar_date=0999-01-01",
+        "/erp/action-28?view_type=calendar&calendar_date=2026-1-01",
+        "/erp/action-28?view_type=calendar&calendar_date=%EF%BC%92026-01-01",
+    ] {
+        assert!(policy.shell(address).is_err(), "{address}");
+    }
+}
+
+#[test]
+fn the_graph_state_in_the_address_survives_a_reload_and_a_malformed_value_is_refused() {
+    let policy = RedirectPolicy::new("https://erp.example.test", SHELL_VIEW_TYPES).unwrap();
+    let address = "/erp/action-28?view_type=graph&graph_mode=line&graph_measure=size&graph_groupby=published%3Amonth%2Cstate&graph_order=none&graph_stacked=0&graph_cumulated=1";
+    assert_eq!(policy.shell(address).unwrap(), address);
+    for bad in [
+        "graph_mode=area",
+        "graph_measure=Size",
+        "graph_groupby=a%2Cb%2Cc",
+        "graph_groupby=state%2Cstate",
+        "graph_groupby=published%3Ahour",
+        "graph_order=up",
+        "graph_stacked=true",
+        "graph_cumulated=2",
+    ] {
+        let address = format!("/erp/action-28?view_type=graph&{bad}");
+        assert!(policy.shell(&address).is_err(), "{address}");
+    }
+}
