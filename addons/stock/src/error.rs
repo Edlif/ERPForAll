@@ -20,11 +20,13 @@ pub enum StockError {
     CompanyChangeForbidden,
     /// Location warehouse membership is maintained from the tree and warehouse roots.
     LocationOwnershipDerived,
-    /// The negative-stock guard is not delivered yet, so a location policy row
-    /// cannot switch it on (amendment B3).
-    ForbidNegativeUnavailable {
+    /// The negative-stock switch cannot be turned on while the location holds negative quants
+    /// (1); correct them first.
+    ForbidNegativeBlocked {
         /// The location whose policy row was written.
         location_id: i64,
+        /// Quants of that exact location with a negative on-hand.
+        negative: i64,
     },
     /// A tracking change would leave lot or serial rows the new mode cannot hold (6).
     TrackingChangeBlocked {
@@ -48,6 +50,67 @@ pub enum StockError {
         /// The label of the field the key names.
         field: String,
     },
+    /// A create or write named a column of a transfer that its moves decide (the counter vector
+    /// and the state,.3), or a create carried a `default_<field>` context
+    /// key for one. Refused for every caller, superuser included.
+    ///
+    /// ```
+    /// let error: erp_sdk::Error = erp_addon_stock::StockError::DerivedFromMoves {
+    ///     field: "Status".into(),
+    ///     default: false,
+    /// }
+    /// .into();
+    /// assert_eq!(error.kind(), erp_sdk::ErrorKind::Programming);
+    /// ```
+    DerivedFromMoves {
+        /// The label of the field named.
+        field: String,
+        /// Named by a context default rather than in the values.
+        default: bool,
+    },
+    /// A create or write named the reference set of a transfer or the transfers of a reference:
+    /// both follow from the references of the moves (topology ADR D3), or a create carried a
+    /// `default_<field>` context key for one. Refused for every caller, superuser included.
+    ///
+    /// ```
+    /// let error: erp_sdk::Error = erp_addon_stock::StockError::ReferenceProjection {
+    ///     field: "References".into(),
+    ///     default: false,
+    /// }
+    /// .into();
+    /// assert_eq!(error.kind(), erp_sdk::ErrorKind::Programming);
+    /// ```
+    ReferenceProjection {
+        /// The label of the field named.
+        field: String,
+        /// Named by a context default rather than in the values.
+        default: bool,
+    },
+    /// A deadline change would reach more linked open moves than the system parameter
+    /// `stock.move_chain_limit` admits. Nothing is changed.
+    ///
+    /// ```
+    /// let error: erp_sdk::Error = erp_addon_stock::StockError::ChainLimit { limit: 3 }.into();
+    /// assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    /// ```
+    ChainLimit {
+        /// The limit in force.
+        limit: i64,
+    },
+    /// A create or write named a unit snapshot column of a stock move (factors, digits, product-unit
+    /// quantities) with a value other than the unit service's conversion (6).
+    ///
+    /// ```
+    /// let error: erp_sdk::Error = erp_addon_stock::StockError::UnitSnapshot {
+    ///     field: "Unit Factor".into(),
+    /// }
+    /// .into();
+    /// assert_eq!(error.kind(), erp_sdk::ErrorKind::Programming);
+    /// ```
+    UnitSnapshot {
+        /// The label of the field named.
+        field: String,
+    },
     /// A create or write named the generated identity of a route or rule (warehouse, addon, role),
     /// or a create carried a `default_<field>` context key for it. Only the warehouse setup that
     /// generates the record sets it, through [`crate::set_generated_identity`].
@@ -69,10 +132,13 @@ impl fmt::Display for StockError {
             Self::LocationOwnershipDerived => f.write_str(
                 "Location warehouse ownership is derived from its hierarchy and cannot be assigned."
             ),
-            Self::ForbidNegativeUnavailable { location_id } => write!(
+            Self::ForbidNegativeBlocked {
+                location_id,
+                negative,
+            } => write!(
                 f,
-                "Location {location_id} cannot forbid negative stock yet: the negative-stock \
-                 guard is not supported until a later release."
+                "Negative stock cannot be forbidden at location {location_id}: {negative} stock \
+                 balances there are below zero. Correct them first."
             ),
             Self::TrackingChangeBlocked { product, count } => write!(
                 f,
@@ -89,6 +155,47 @@ impl fmt::Display for StockError {
                 f,
                 "{field} of a {what} is recorded by the stock engine; a new {what} cannot take \
                  it from a default in the context."
+            ),
+            Self::DerivedFromMoves {
+                field,
+                default: false,
+            } => write!(
+                f,
+                "{field} of a transfer follows from its moves; it cannot be set directly."
+            ),
+            Self::DerivedFromMoves {
+                field,
+                default: true,
+            } => write!(
+                f,
+                "{field} of a transfer follows from its moves; a new transfer cannot take it \
+                 from a default in the context."
+            ),
+            Self::ReferenceProjection {
+                field,
+                default: false,
+            } => write!(
+                f,
+                "{field} follows from the references of the moves; set the references on the moves \
+                 instead."
+            ),
+            Self::ReferenceProjection {
+                field,
+                default: true,
+            } => write!(
+                f,
+                "{field} follows from the references of the moves; a new record cannot take it from \
+                 a default in the context."
+            ),
+            Self::ChainLimit { limit } => write!(
+                f,
+                "This deadline change would reach more than {limit} linked moves (system parameter \
+                 stock.move_chain_limit); nothing was changed."
+            ),
+            Self::UnitSnapshot { field } => write!(
+                f,
+                "{field} of a stock move is converted from its unit and product by the unit \
+                 service; it cannot be set to another value."
             ),
             Self::GeneratedIdentity { what, field } => write!(
                 f,
@@ -110,8 +217,12 @@ impl From<StockError> for erp_sdk::Error {
             | StockError::EngineOnlyField { .. }
             | StockError::EngineOnlyDefault { .. }
             | StockError::GeneratedIdentity { .. } => Self::user(error.to_string()),
-            StockError::ForbidNegativeUnavailable { .. }
-            | StockError::TrackingChangeBlocked { .. } => Self::validation(error.to_string()),
+            StockError::DerivedFromMoves { .. }
+            | StockError::ReferenceProjection { .. }
+            | StockError::UnitSnapshot { .. } => Self::programming(error.to_string()),
+            StockError::ForbidNegativeBlocked { .. }
+            | StockError::TrackingChangeBlocked { .. }
+            | StockError::ChainLimit { .. } => Self::validation(error.to_string()),
         };
         result.with_source(error)
     }

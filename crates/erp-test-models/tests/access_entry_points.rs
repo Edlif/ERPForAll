@@ -143,6 +143,7 @@ const GROUP_CHECK: &str = "asks the policy about the groups or capabilities of t
 const PARITY_EXISTS: &str =
     "existence only, no rule (the reference ERP exists(), models.py _existing;)";
 const PARITY_LOCK: &str = "row locks without a rule, as the reference ERP (models.py:5056-5112 lock_for_update/try_lock_for_update select ids FOR UPDATE with no access check); a user can lock rows it cannot read: flagged for a later release";
+const SEQUENCE_DRAW: &str = "the model-level read check on ir.sequence through the engine before the draw (the reference ERP check_access('read') on an empty recordset, ir_sequence.py:291,301; the reference ERP has no record rule on ir.sequence); the lookup by code keeps the caller's validated current company or the shared scope, as the reference ERP's search (ir_sequence.py:302-303); the counter row and a new date range are then written with raw SQL under the framework's rights, as the reference ERP's _next and sudo() create (tests: base_sequences.rs, a_user_without_read_access_on_ir_sequence_cannot_draw and a_user_with_read_access_only_draws_for_each_company)";
 const DEFAULTS: &str = "no record of the model is read: field defaults (ir.default through ir_default::get_model_defaults); default x2many commands check their comodel's model access (defaults.rs); field groups a later release";
 
 /// Every public entry point of `erp-orm` that takes the transaction.
@@ -988,23 +989,14 @@ const ENTRY_POINTS: &[(&str, Class)] = &[
             "raw SQL with hand-written checks (group_user may delete only own rows, else Access, as unlink does; a later release); addon ir.access rows and record rules are not seen; moves to search().unlink() when ir.default becomes a model (a later release)",
         ),
     ),
-    (
-        "sequence::next_by_code",
-        Gap(
-            "raw SQL on ir_sequence; the reference ERP checks ir.sequence read access and searches with the caller's rules first (ir_sequence.py:301-303); owner of ir.sequence (base)",
-        ),
-    ),
+    ("sequence::next_by_code", Unchecked(SEQUENCE_DRAW)),
     (
         "sequence::next_by_code_with_clock",
-        Gap(
-            "raw SQL on ir_sequence; the reference ERP checks ir.sequence read access and searches with the caller's rules first (ir_sequence.py:301-303); owner of ir.sequence (base)",
-        ),
+        Unchecked(SEQUENCE_DRAW),
     ),
     (
         "sequence::next_by_code_with_wait_mode",
-        Gap(
-            "raw SQL on ir_sequence; the reference ERP checks ir.sequence read access and searches with the caller's rules first (ir_sequence.py:301-303); owner of ir.sequence (base)",
-        ),
+        Unchecked(SEQUENCE_DRAW),
     ),
     (
         "Transaction::visible_under_company_restriction",
@@ -1018,17 +1010,12 @@ const ENTRY_POINTS: &[(&str, Class)] = &[
             "writes one adapter-owned projection table (not a model: no ordinary model or RPC access, no record rule) from a netted batch the consumer built inside its own checked source write; returns only the applied measures to that consumer; the access proof of each consumer table is its adapter's reviewed design",
         ),
     ),
-    (
-        "sequence::next_by_id",
-        Gap(
-            "raw SQL on ir_sequence; the reference ERP checks ir.sequence read access first (ir_sequence.py:291); owner of ir.sequence (base)",
-        ),
-    ),
+    ("sequence::draw_by_code", Unchecked(SEQUENCE_DRAW)),
+    ("sequence::draw_by_id", Unchecked(SEQUENCE_DRAW)),
+    ("sequence::next_by_id", Unchecked(SEQUENCE_DRAW)),
     (
         "sequence::next_by_id_with_wait_mode",
-        Gap(
-            "raw SQL on ir_sequence; the reference ERP checks ir.sequence read access first (ir_sequence.py:291); owner of ir.sequence (base)",
-        ),
+        Unchecked(SEQUENCE_DRAW),
     ),
 ];
 
@@ -1052,6 +1039,16 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "account/fiscal/settings.rs::read",
         1,
         "reads the fiscal calendar settings (year end, horizon) of a root company for period creation; the framework reads its own configuration, and a user whose entry needs a period needs no settings group; the values are bounded and only named in refusals (a later release)",
+    ),
+    (
+        "account/journal/dashboard.rs::journals",
+        1,
+        "reads only `currency_id` of the companies of the journals the caller's own search returned, to give each dashboard card the currency of its amounts; a user who may read a journal may see its company's currency, and no company row is returned",
+    ),
+    (
+        "account/journal/dashboard.rs::read",
+        1,
+        "reads the two global dashboard settings (chart months, balance days) for the card payload; the framework reads its own configuration, and reading a card needs no settings group",
     ),
     (
         "account/journal/mod.rs::check_accounts_as_default",
@@ -1092,6 +1089,16 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "account/ledger/root.rs::ensure_roots",
         1,
         "creates the missing `account.root` nodes for the prefixes of a code that is being stored; called from the create and write of a code row after their own access checks; root nodes are derived rows nobody creates by hand",
+    ),
+    (
+        "account/moves/post.rs::account_names",
+        1,
+        "reads only `name` of the archived or other-company accounts a posting refusal names, archived ones included; they are accounts the lines of the entries being posted already use, and write access to those entries was checked before",
+    ),
+    (
+        "account/moves/post.rs::number",
+        1,
+        "reads the journals of the entries being numbered, archived ones included, for their numbering pattern (prefix, padding, reset); posting was authorized on the entries before, and a number must not depend on which journals the caller's rules show",
     ),
     (
         "account/numbering/mod.rs::from_settings",

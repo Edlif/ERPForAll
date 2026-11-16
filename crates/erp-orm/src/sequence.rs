@@ -10,6 +10,7 @@
 use erp_fields::{Condition, Date, Error, ErrorKind, Result, Value};
 use rustc_hash::FxHashMap;
 
+use crate::Operation;
 use crate::Transaction;
 use crate::env::Env;
 use crate::records::Records;
@@ -838,6 +839,20 @@ where
     Ok(format!("{prefix}{padded}{suffix}"))
 }
 
+async fn check_draw_access(tx: &mut Transaction, env: &Env) -> Result<()> {
+    let model = env
+        .registry()
+        .model("ir.sequence")
+        .ok_or_else(|| {
+            Error::programming(
+                "ir.sequence is not in the registry: install the base addon before drawing a number",
+            )
+        })?
+        .id;
+    tx.prepare_access(env).await?;
+    tx.check_model(env, model, Operation::Read)
+}
+
 async fn next_by_code_with_clock_and_wait_mode<F>(
     tx: &mut Transaction,
     env: &Env,
@@ -851,6 +866,7 @@ where
 {
     // validated against the subject's newest resolution, also under sudo (review S1)
     let company_id = tx.companies(env).await?.first().map(|c| c.get());
+    check_draw_access(tx, env).await?;
 
     let sql = r#"
         SELECT id, implementation, prefix, suffix, number_next, number_increment, padding, use_date_range, name, COALESCE(wait_mode, 'nowait')
@@ -882,6 +898,7 @@ async fn next_by_id_with_clock_and_wait_mode<F>(
 where
     F: Fn() -> Date,
 {
+    check_draw_access(tx, env).await?;
     let sql = r#"
         SELECT id, implementation, prefix, suffix, number_next, number_increment, padding, use_date_range, name, COALESCE(wait_mode, 'nowait')
         FROM ir_sequence
@@ -899,7 +916,51 @@ where
     Ok(Some(drawn))
 }
 
-/// Draw the next number for sequence code.
+/// The next number of the sequence with `code` for `company`: the addon-facing draw
+/// (`erp_sdk::sequence`, guide, "Drawing a number").
+///
+///   In superuser mode the check passes.
+/// - **Company:** the record of `company` wins over the shared record (no company); `company`
+///   must be one of the companies `env` may use, else the companies' refusal.
+/// - **Date:** `date`, else the context's `ir_sequence_date`, else today.
+/// - **Concurrency:** two transactions never receive the same number. A `standard` sequence draws
+///   from a PostgreSQL sequence without a row lock: numbers of rolled-back transactions are lost
+///   (gaps).
+///
+/// # Errors
+pub async fn draw_by_code(
+    tx: &mut Transaction,
+    env: &Env,
+    code: &str,
+    company: crate::CompanyId,
+    date: Option<Date>,
+) -> Result<String> {
+    let env = env.with_company(company.get())?;
+    next_by_code(tx, &env, code, date).await?.ok_or_else(|| {
+        Error::user(format!(
+            "No sequence with the code '{code}' exists for company {} or for all companies.",
+            company.get()
+        ))
+    })
+}
+
+/// # Errors
+///
+/// `Access` without read access on `ir.sequence`; `UserError` naming the id when no such record
+/// exists; the errors of [`draw_by_code`] otherwise.
+pub async fn draw_by_id(
+    tx: &mut Transaction,
+    env: &Env,
+    sequence_id: i64,
+    date: Option<Date>,
+) -> Result<String> {
+    next_by_id(tx, env, sequence_id, date)
+        .await?
+        .ok_or_else(|| Error::user(format!("The sequence {sequence_id} does not exist.")))
+}
+
+/// Checks read access on `ir.sequence` first. Addons call
+/// [`draw_by_code`], which refuses instead.
 pub async fn next_by_code(
     tx: &mut Transaction,
     env: &Env,
@@ -939,7 +1000,8 @@ pub async fn next_by_code_with_wait_mode(
     .await
 }
 
-/// Draw the next number for a sequence record id.
+/// Draw the next number for a sequence record id: `None` when the record
+/// does not exist. Checks read access on `ir.sequence` first. Addons call [`draw_by_id`].
 pub async fn next_by_id(
     tx: &mut Transaction,
     env: &Env,

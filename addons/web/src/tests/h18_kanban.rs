@@ -245,3 +245,27 @@ fn kanban_progressbar_declaration_is_closed() {
         assert!(message.contains(expected), "{bar}: {message}");
     }
 }
+
+/// The dashboard card widget is admitted on a text card field and
+/// refused by name on any other type.
+#[test]
+fn kanban_admits_the_dashboard_card_widget_on_text_fields_only() {
+    let value = fixture(
+        &kanban_arch(r#"<field name="name"/><field name="source" widget="dashboard_card"/>"#),
+        "kanban",
+    )
+    .unwrap();
+    let nodes = value["nodes"].as_array().unwrap();
+    let card = &nodes[1];
+    let field = &nodes[card["children"][1].as_u64().unwrap() as usize];
+    assert_eq!(field["kind"], "field");
+    assert_eq!(field["field"]["name"], "source");
+    assert_eq!(field["widget"], "dashboard_card");
+    let message = kanban_refused(&kanban_arch(
+        r#"<field name="name" widget="dashboard_card"/>"#,
+    ));
+    assert!(
+        message.contains("Field widget 'dashboard_card' does not support type 'char'."),
+        "{message}"
+    );
+}

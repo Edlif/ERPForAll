@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_stock_route_list" model="ir.ui.view">
+    <field name="name">stock.route.list</field>
+    <field name="model">stock.route</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="sequence"/>
+        <field name="name"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_route_form" model="ir.ui.view">
+    <field name="name">stock.route.form</field>
+    <field name="model">stock.route</field>
+    <field name="arch" type="xml">
+      <form record_mode="record">
+        <sheet>
+          <div class="oe_title"><h1><field name="name"/></h1></div>
+          <group>
+            <group string="Applicable On">
+              <field name="product_selectable"/>
+              <field name="product_categ_selectable"/>
+              <field name="warehouse_selectable"/>
+              <field name="package_type_selectable"/>
+            </group>
+            <group>
+              <field name="company_id"/>
+              <field name="sequence"/>
+              <field name="active"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Rules" name="rules">
+              <field name="rule_ids"/>
+            </page>
+            <page string="Warehouses" name="warehouses">
+              <field name="warehouse_ids"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="view_stock_route_search" model="ir.ui.view">
+    <field name="name">stock.route.search</field>
+    <field name="model">stock.route</field>
+    <field name="arch" type="xml">
+      <search string="Routes">
+        <field name="name"/>
+        <field name="company_id"/>
+        <filter name="inactive" string="Archived" domain="[('active', '=', False)]"/>
+      </search>
+    </field>
+  </record>
+  <record id="action_stock_route" model="ir.actions.act_window">
+    <field name="name">Routes</field>
+    <field name="res_model">stock.route</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_stock_route_list"/>
+    <field name="search_view_id" ref="view_stock_route_search"/>
+  </record>
+
+  <record id="view_stock_rule_list" model="ir.ui.view">
+    <field name="name">stock.rule.list</field>
+    <field name="model">stock.rule</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="action"/>
+        <field name="location_src_id"/>
+        <field name="location_dest_id"/>
+        <field name="route_id"/>
+        <field name="picking_type_id"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_rule_form" model="ir.ui.view">
+    <field name="name">stock.rule.form</field>
+    <field name="model">stock.rule</field>
+    <field name="arch" type="xml">
+      <form record_mode="record">
+        <sheet>
+          <div class="oe_title"><h1><field name="name"/></h1></div>
+          <group>
+            <group>
+              <field name="action"/>
+              <field name="picking_type_id"/>
+              <field name="location_src_id"/>
+              <field name="location_dest_id"/>
+              <field name="location_dest_from_rule"/>
+            </group>
+            <group>
+              <field name="route_id"/>
+              <field name="warehouse_id"/>
+              <field name="company_id"/>
+              <field name="sequence"/>
+              <field name="active"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Options" name="options">
+              <group>
+                <group>
+                  <field name="procure_method"/>
+                  <field name="auto" invisible="action != 'push'"/>
+                  <field name="push_domain" invisible="action != 'push'"/>
+                  <field name="delay"/>
+                </group>
+                <group>
+                  <field name="partner_address_id"/>
+                  <field name="propagate_cancel"/>
+                  <field name="propagate_carrier"/>
+                </group>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="view_stock_rule_search" model="ir.ui.view">
+    <field name="name">stock.rule.search</field>
+    <field name="model">stock.rule</field>
+    <field name="arch" type="xml">
+      <search string="Rules">
+        <field name="name"/>
+        <field name="route_id"/>
+        <field name="location_src_id"/>
+        <field name="location_dest_id"/>
+        <filter name="inactive" string="Archived" domain="[('active', '=', False)]"/>
+        <group>
+          <filter name="groupby_route" string="Route" context="{'group_by': 'route_id'}"/>
+          <filter name="groupby_action" string="Action" context="{'group_by': 'action'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+  <record id="action_stock_rule" model="ir.actions.act_window">
+    <field name="name">Rules</field>
+    <field name="res_model">stock.rule</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_stock_rule_list"/>
+    <field name="search_view_id" ref="view_stock_rule_search"/>
+  </record>
+</erp>

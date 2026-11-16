@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_stock_storage_category_list" model="ir.ui.view">
+    <field name="name">stock.storage.category.list</field>
+    <field name="model">stock.storage.category</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="max_weight"/>
+        <field name="allow_new_product"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_storage_category_form" model="ir.ui.view">
+    <field name="name">stock.storage.category.form</field>
+    <field name="model">stock.storage.category</field>
+    <field name="arch" type="xml">
+      <form record_mode="record">
+        <sheet>
+          <div class="oe_title"><h1><field name="name"/></h1></div>
+          <group>
+            <group>
+              <field name="max_weight"/>
+              <field name="allow_new_product"/>
+              <field name="company_id"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Capacity by Package" name="capacities">
+              <field name="capacity_ids"/>
+            </page>
+            <page string="Locations" name="locations">
+              <field name="location_ids"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="action_stock_storage_category" model="ir.actions.act_window">
+    <field name="name">Storage Categories</field>
+    <field name="res_model">stock.storage.category</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_stock_storage_category_list"/>
+  </record>
+
+  <record id="view_stock_storage_capacity_list" model="ir.ui.view">
+    <field name="name">stock.storage.category.capacity.list</field>
+    <field name="model">stock.storage.category.capacity</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="storage_category_id"/>
+        <field name="product_id"/>
+        <field name="package_type_id"/>
+        <field name="quantity"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_storage_capacity_form" model="ir.ui.view">
+    <field name="name">stock.storage.category.capacity.form</field>
+    <field name="model">stock.storage.category.capacity</field>
+    <field name="arch" type="xml">
+      <form record_mode="record">
+        <group>
+          <field name="storage_category_id"/>
+          <field name="product_id"/>
+          <field name="package_type_id"/>
+          <field name="quantity"/>
+        </group>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_stock_putaway_rule_list" model="ir.ui.view">
+    <field name="name">stock.putaway.rule.list</field>
+    <field name="model">stock.putaway.rule</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="sequence"/>
+        <field name="location_in_id"/>
+        <field name="product_id"/>
+        <field name="category_id"/>
+        <field name="package_type_ids" widget="many2many_tags"/>
+        <field name="location_out_id"/>
+        <field name="storage_category_id"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_putaway_rule_form" model="ir.ui.view">
+    <field name="name">stock.putaway.rule.form</field>
+    <field name="model">stock.putaway.rule</field>
+    <field name="arch" type="xml">
+      <form record_mode="record">
+        <sheet>
+          <group>
+            <group string="When">
+              <field name="location_in_id"/>
+              <field name="product_id"/>
+              <field name="category_id"/>
+              <field name="package_type_ids" widget="many2many_tags"/>
+            </group>
+            <group string="Store To">
+              <field name="location_out_id"/>
+              <field name="sublocation"/>
+              <field name="storage_category_id"/>
+              <field name="company_id"/>
+              <field name="sequence"/>
+              <field name="active"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="view_stock_putaway_rule_search" model="ir.ui.view">
+    <field name="name">stock.putaway.rule.search</field>
+    <field name="model">stock.putaway.rule</field>
+    <field name="arch" type="xml">
+      <search string="Putaway Rules">
+        <field name="location_in_id"/>
+        <field name="location_out_id"/>
+        <field name="product_id"/>
+        <field name="category_id"/>
+        <filter name="inactive" string="Archived" domain="[('active', '=', False)]"/>
+        <group>
+          <filter name="groupby_location_in" string="When In" context="{'group_by': 'location_in_id'}"/>
+          <filter name="groupby_location_out" string="Store To" context="{'group_by': 'location_out_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+  <record id="action_stock_putaway_rule" model="ir.actions.act_window">
+    <field name="name">Putaway Rules</field>
+    <field name="res_model">stock.putaway.rule</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_stock_putaway_rule_list"/>
+    <field name="search_view_id" ref="view_stock_putaway_rule_search"/>
+  </record>
+</erp>

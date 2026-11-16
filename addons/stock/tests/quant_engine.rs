@@ -1775,3 +1775,219 @@ fn orm_error(error: HarnessError) -> Error {
         other => panic!("not an ORM error: {other:?}"),
     }
 }
+
+async fn forbid_negative_at(tx: &mut Transaction, location: i64) {
+    tx.execute(
+        "UPDATE stock_location_policy SET forbid_negative = true WHERE location_id = $1",
+        &[&location],
+    )
+    .await
+    .unwrap();
+}
+
+/// that reaches it comes with the move slices)
+#[tokio::test]
+async fn flagged_location_refuses_a_change_that_goes_negative() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let key = f.key(f.p, f.l);
+    let fresh = f.key(f.q, f.l);
+    forbid_negative_at(&mut tx, f.l).await;
+    apply(&mut tx, &[change(key, "4", "0")]).await;
+    let error = refused(&mut tx, &[change(key, "-6", "0")]).await;
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    let text = error.message();
+    assert!(
+        text.contains(&format!("product {}", f.p))
+            && text.contains(&format!("location {}", f.l))
+            && text.contains("from 4 to -2"),
+        "{text}"
+    );
+    // a refusal, never a clamp: the balance is untouched
+    assert_eq!(stored(&mut tx, key).await, Some(("4".into(), "0".into())));
+    // a first-time key is refused too and leaves no zero row behind
+    let error = refused(&mut tx, &[change(fresh, "-1", "0")]).await;
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert!(error.message().contains("from 0 to -1"), "{error:?}");
+    assert_eq!(stored(&mut tx, fresh).await, None);
+    // exactly to zero, and a positive change, are allowed
+    apply(&mut tx, &[change(key, "-4", "0")]).await;
+    apply(&mut tx, &[change(fresh, "2", "0")]).await;
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// A flagged key already below zero (flag set later, or a virtual correction) can be repaid, and
+/// the netted change of a batch is what is checked.
+#[tokio::test]
+async fn flagged_location_allows_repaying_a_deficit_and_checks_the_net() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let key = f.key(f.p, f.l);
+    apply(&mut tx, &[change(key, "-3", "0")]).await;
+    forbid_negative_at(&mut tx, f.l).await;
+    apply(&mut tx, &[change(key, "1", "0")]).await;
+    assert_eq!(stored(&mut tx, key).await, Some(("-2".into(), "0".into())));
+    // -5 and +5 net to zero in one batch: not a negative change
+    apply(&mut tx, &[change(key, "-5", "0"), change(key, "5", "0")]).await;
+    // a further decrease at a still-negative flagged key is refused
+    let error = refused(&mut tx, &[change(key, "-1", "0")]).await;
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// Locations without the switch behave as before: negative on-hand is stored, also next to a
+/// flagged location in the same batch rolling back as a whole.
+#[tokio::test]
+async fn unflagged_location_still_goes_negative() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    // the plain key sorts first, so the batch after the first call stays in key order (D1.4)
+    let flagged = f.key(f.p, f.c);
+    let plain = f.key(f.p, f.l);
+    forbid_negative_at(&mut tx, f.c).await;
+    apply(&mut tx, &[change(plain, "-7", "0")]).await;
+    assert_eq!(
+        stored(&mut tx, plain).await,
+        Some(("-7".into(), "0".into()))
+    );
+    let error = refused(
+        &mut tx,
+        &[change(plain, "-1", "0"), change(flagged, "-1", "0")],
+    )
+    .await;
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert_eq!(
+        stored(&mut tx, plain).await,
+        Some(("-7".into(), "0".into()))
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// Enabling the switch is refused by name while the location holds a negative quant, and allowed
+/// once it is corrected.
+#[tokio::test]
+async fn forbid_negative_cannot_be_enabled_over_a_negative_quant() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let key = f.key(f.p, f.l);
+    apply(&mut tx, &[change(key, "-2", "0")]).await;
+    let policy = tx
+        .env()
+        .records("stock.location.policy")
+        .unwrap()
+        .search(
+            &mut tx,
+            &Domain::condition("location_id", Operator::Eq, f.l).unwrap(),
+        )
+        .await
+        .unwrap();
+    let on = RawVals::new().set_cell("forbid_negative", Cell::Bool(true));
+    let error = tx
+        .savepoint(async |tx| policy.write(tx, on.clone()).await)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert!(
+        error.message().contains(&format!("location {}", f.l))
+            && error.message().contains("1 stock balances"),
+        "{error:?}"
+    );
+    apply(&mut tx, &[change(key, "2", "0")]).await;
+    policy.write(&mut tx, on).await.unwrap();
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// The policy rows of `location`, switched on through the ORM write (its guard included).
+async fn switch_on(tx: &mut Transaction, location: i64) -> Result<()> {
+    tx.env()
+        .records("stock.location.policy")?
+        .search(
+            tx,
+            &Domain::condition("location_id", Operator::Eq, location)?,
+        )
+        .await?
+        .write(
+            tx,
+            RawVals::new().set_cell("forbid_negative", Cell::Bool(true)),
+        )
+        .await
+}
+
+/// Cycle 26 review, the engine behind the switch: E's snapshot predates a committed switch at L. E's
+/// call must not decide on the stale flag: it fails with a retryable `40001` and stores nothing.
+#[tokio::test]
+async fn an_engine_call_behind_a_committed_switch_is_retried() {
+    let f = fixture().await;
+    let key = f.key(f.p, f.l);
+    let mut e = f.h.begin().await.unwrap();
+    e.query("SELECT 1", &[]).await.unwrap();
+    let mut p = f.h.begin().await.unwrap();
+    switch_on(&mut p, f.l).await.unwrap();
+    p.commit().await.unwrap();
+    drop(p);
+    let error = apply_quant_changes(&mut e, &[change(key, "-1", "0")])
+        .await
+        .expect_err("the engine went negative on a stale forbid flag");
+    assert_eq!(error.sqlstate(), Some("40001"), "{error:?}");
+    e.rollback().await.unwrap();
+    drop(e);
+    let mut tx = f.h.begin().await.unwrap();
+    let error = refused(&mut tx, &[change(key, "-1", "0")]).await;
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert_eq!(stored(&mut tx, key).await, None);
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// Cycle 26 review, the switch behind the engine: E left L's key negative and has not committed; B
+/// switches L's flag on. B must not pass on a snapshot that cannot see E's balance: it is retried and,
+/// once E committed, refused.
+#[tokio::test]
+async fn a_switch_behind_an_open_engine_call_is_retried_and_refused() {
+    let f = fixture().await;
+    let key = f.key(f.p, f.l);
+    let mut e = f.h.begin().await.unwrap();
+    apply(&mut e, &[change(key, "-2", "0")]).await;
+    let attempts = AtomicUsize::new(0);
+    let switch = f.h.run(async |tx| {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        switch_on(tx, f.l).await
+    });
+    let release = async {
+        let started = Instant::now();
+        while attempts.load(Ordering::SeqCst) < 2 && started.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        e.commit().await.unwrap();
+    };
+    let (switch, ()) = tokio::join!(switch, release);
+    let error = orm_error(switch.expect_err("the switch passed over a negative balance"));
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert!(
+        error.message().contains(&format!("location {}", f.l)),
+        "{error:?}"
+    );
+    assert!(attempts.load(Ordering::SeqCst) >= 2);
+    let mut tx = f.h.begin().await.unwrap();
+    let flag: bool = tx
+        .query(
+            "SELECT forbid_negative FROM stock_location_policy WHERE location_id = $1",
+            &[&f.l],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert!(!flag);
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}

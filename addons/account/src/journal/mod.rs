@@ -6,6 +6,7 @@
 //! What needs journal entries (company change, archive with drafts, hash mode) and the creation
 //! of default accounts arrive with the move and company-field slices.
 
+pub mod dashboard;
 pub mod settings;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -224,6 +225,9 @@ pub struct AccountJournal {
     /// Shown on the accounting dashboard.
     #[field(boolean, default = true, string = "Show journal on dashboard")]
     pub show_on_dashboard: bool,
+    /// The journal's dashboard card, JSON of the card contract v1 ([`dashboard`]).
+    #[field(text, compute = "_compute_dashboard_card", string = "Dashboard Card")]
+    pub dashboard_card: Option<Arc<str>>,
 }
 
 fn text_of(value: &Option<Arc<str>>) -> &str {

@@ -7,6 +7,7 @@ pub async fn harness() -> Harness {
     let h = Harness::builder([
         &erp_data::model_data::ADDON,
         &erp_addon_base::ADDON,
+        &erp_addon_web::ADDON,
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_analytic::ADDON,
@@ -20,7 +21,7 @@ pub async fn harness() -> Harness {
     // identifiers for the linked settings catalog; permissions are tested on a real install.
     let mut groups = std::collections::BTreeSet::new();
     for entry in erp_sdk::settings::CONTRIBUTIONS {
-        if ["base", "uom", "product", "analytic", "account"].contains(&entry.addon.name) {
+        if ["base", "web", "uom", "product", "analytic", "account"].contains(&entry.addon.name) {
             for decl in (entry.declarations)().unwrap() {
                 groups.extend(decl.read_groups().iter().cloned());
                 groups.extend(decl.write_groups().iter().cloned());

@@ -27,6 +27,16 @@ pub static MANIFEST: SqlObjectManifest = SqlObjectManifest::new(
         "policy_update",
         "policy_delete",
         "policy_truncate",
+        "location_bypass_open_transfers",
+        "fn_move_counts",
+        "fn_picking_eval_state",
+        "fn_location_bypass",
+        "move_counts_insert",
+        "move_counts_update",
+        "move_counts_delete",
+        "picking_state_insert",
+        "picking_state_update",
+        "location_bypass_update",
     ],
 );
 
@@ -37,6 +47,8 @@ macro_rules! object {
         static $name: SqlObjectDecl = $decl;
     };
 }
+// the move counter objects (`move_counter_sql`) are declared with the same macro
+pub(crate) use object;
 
 object!(
     DONE_CONDITION,

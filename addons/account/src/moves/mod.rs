@@ -7,22 +7,20 @@
 //! given is converted through the rate at the entry date (see the guide's
 //! "Lines in another currency").
 //!
-//! This part delivers drafts only (lead ruling V1-V5 of 2026-11-13): an entry can be created,
-//! edited, checked for balance and deleted. Nothing posts: [`AccountMove`]'s `action_post` and
-//! every write of a state other than draft are refused naming [`POST_TASK`], and two named CHECK
-//! constraints keep the tables draft-only against raw SQL until replaces them with its
-//! posted-row guards. Rules the database will enforce with (company of accounts and
-//! journals, the line's entry never changing, amount in currency equal to the balance in the company
-//! currency) are checked by the ORM in this part.
+//! An entry is created and edited as a draft, checked for balance and deleted while it is one.
+//! Its state changes only through the posting service in [`post`]: `action_post`, `button_draft`
+//! and `button_cancel`; a caller-written state is refused. A posted or cancelled entry
+//! and its items keep their accounting fields. Rules the database will enforce with the posted-row
+//! guards (company of accounts and journals, the line's entry never changing, amount in currency
+//! equal to the balance in the company currency) are checked by the ORM for now.
 
 mod line;
+mod post;
 
 pub use line::AccountMoveLine;
+pub use post::{POSTER_GROUP, REVERSAL_TASK, cancel_moves, post_moves, reset_moves};
 
 use erp_sdk::prelude::*;
-
-/// The task that adds posting, the posted-row guards and numbering at posting.
-pub const POST_TASK: &str = "a later release";
 
 /// The context key that skips the balance check of drafts (`check_move_validity`).
 pub const CHECK_KEY: &str = "check_move_validity";
@@ -30,7 +28,7 @@ pub const CHECK_KEY: &str = "check_move_validity";
 /// The selection keys of a line's `display_type` that carry no amount and no account.
 pub(crate) const TEXT_LINE_TYPES: [&str; 3] = ["line_section", "line_subsection", "line_note"];
 
-/// `account.move`: a journal entry. Only drafts exist until.
+/// `account.move`: a journal entry, draft, posted or cancelled.
 #[model(
     name = "account.move",
     description = "Journal Entry",
@@ -38,14 +36,9 @@ pub(crate) const TEXT_LINE_TYPES: [&str; 3] = ["line_section", "line_subsection"
     check_company_auto = true,
     company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
     owner_only_stored_fields = [],
-    constraints = [(
-        "_draft_until_posting",
-        "CHECK (state = 'draft')",
-        "Journal entries stay in draft until posting is delivered (a later release)."
-    )],
 )]
 pub struct AccountMove {
-    /// Number of the entry; empty on a draft that was never numbered (numbering comes with posting).
+    /// Number of the entry; empty on a draft that was never numbered, given at posting.
     #[field(char, copy = false, string = "Number")]
     pub name: Option<Arc<str>>,
     /// Reference of the entry.
@@ -54,7 +47,8 @@ pub struct AccountMove {
     /// Accounting date; today when none is given.
     #[field(date, required = true, string = "Date")]
     pub date: Option<Date>,
-    /// Draft, posted or cancelled; only the posting service may change it (task).
+    /// Draft, posted or cancelled; only the posting service changes it (`action_post`,
+    /// `button_draft`, `button_cancel`).
     #[field(
         selection,
         selection = [("draft", "Draft"), ("posted", "Posted"), ("cancel", "Cancelled")],
@@ -65,10 +59,17 @@ pub struct AccountMove {
         string = "Status"
     )]
     pub state: Option<Arc<str>>,
-    /// The kind of entry; invoices and receipts add their kinds with the invoicing slices.
+    /// The kind of entry: a plain journal entry, or a customer or vendor invoice or credit note
+    /// (receipts come with a later invoicing slice).
     #[field(
         selection,
-        selection = [("entry", "Journal Entry")],
+        selection = [
+            ("entry", "Journal Entry"),
+            ("out_invoice", "Customer Invoice"),
+            ("out_refund", "Customer Credit Note"),
+            ("in_invoice", "Vendor Bill"),
+            ("in_refund", "Vendor Credit Note"),
+        ],
         required = true,
         default = "entry",
         string = "Type"
@@ -122,6 +123,82 @@ pub struct AccountMove {
         string = "Journal Items"
     )]
     pub line_ids: Vec<RecId>,
+    /// Invoice or bill date; a customer document confirmed without one takes today.
+    #[field(date, copy = false, string = "Invoice/Bill Date")]
+    pub invoice_date: Option<Date>,
+    /// Due date: the invoice date unless set by hand, until payment terms exist (task).
+    #[field(
+        date,
+        string = "Due Date",
+        help = "The invoice date unless set by hand; payment terms (a later release) will compute it."
+    )]
+    pub invoice_date_due: Option<Date>,
+    /// The lines a user edits on an invoice: products, sections and notes (the tax and
+    /// receivable/payable lines of `line_ids` are kept in step by the invoice line sync).
+    #[field(
+        one2many,
+        comodel = "account.move.line",
+        inverse_name = "move_id",
+        domain = [("display_type", "in", ["product", "line_section", "line_subsection", "line_note"])],
+        copy = false,
+        string = "Invoice Lines"
+    )]
+    pub invoice_line_ids: Vec<RecId>,
+    /// Total without taxes, in the document currency, signed so an invoice reads positive.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        readonly = true,
+        copy = false,
+        string = "Untaxed Amount"
+    )]
+    pub amount_untaxed: Decimal,
+    /// Total of the taxes, in the document currency.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        readonly = true,
+        copy = false,
+        string = "Tax"
+    )]
+    pub amount_tax: Decimal,
+    /// Untaxed amount plus taxes, in the document currency.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        readonly = true,
+        copy = false,
+        string = "Total"
+    )]
+    pub amount_total: Decimal,
+    /// Amount still due.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        readonly = true,
+        copy = false,
+        string = "Amount Due",
+        help = "Equals the total until payments and reconciliation exist (a later release)."
+    )]
+    pub amount_residual: Decimal,
+    /// Payment status.
+    #[field(
+        selection,
+        selection = [
+            ("not_paid", "Not Paid"),
+            ("in_payment", "In Payment"),
+            ("paid", "Paid"),
+            ("partial", "Partially Paid"),
+            ("reversed", "Reversed"),
+            ("blocked", "Blocked"),
+        ],
+        readonly = true,
+        copy = false,
+        default = "not_paid",
+        string = "Payment Status",
+        help = "Not Paid on every invoice until payments exist (a later release)."
+    )]
+    pub payment_state: Option<Arc<str>>,
 }
 
 #[methods(AccountMove, addon = "account")]
@@ -137,12 +214,15 @@ impl AccountMove {
     ) -> Result<Records> {
         let env = this.env().clone();
         let skip = skip_balance_check(&env)?;
+        refuse_context_defaults(&env, &["state"])?;
         for vals in &mut vals_list {
             refuse_state(vals, "state")?;
+            crate::invoice::prepare_create(tx, &env, vals).await?;
             fill_defaults(tx, &env, vals).await?;
         }
         let records = unchecked(this.as_records());
         let created = sup.call(tx, &records, (vals_list,)).await?;
+        crate::invoice::sync_lines(tx, &env, &created.ids()).await?;
         if !skip {
             check_balanced(tx, &created.ids()).await?;
         }
@@ -150,7 +230,9 @@ impl AccountMove {
     }
 
     /// A journal change of a never-posted draft clears its number; line commands
-    /// are checked for balance once, after all of them ran.
+    /// are checked for balance once, after all of them ran. On a posted or cancelled entry only
+    /// [`post::POSTED_MOVE_WRITABLE`] may be written; a written state is refused there too, since
+    /// the state changes only through Post, Reset to Draft and Cancel.
     #[method(override)]
     async fn write(
         this: &RecordSet<AccountMove>,
@@ -164,7 +246,17 @@ impl AccountMove {
             vals.insert("name".into(), Cell::Null);
         }
         let lines_changed = vals.commands("line_ids").is_some();
+        let sync = crate::invoice::prepare_write(tx, this.as_records(), &mut vals).await?;
+        // on the final values: the invoice date above may have added the accounting date
+        let closed = post::closed_fields(&vals, &post::POSTED_MOVE_WRITABLE);
+        if !closed.is_empty() {
+            let what = format!("change {} of", closed.join(", "));
+            post::refuse_closed_entries(tx, &this.ids(), &what).await?;
+        }
         sup.call(tx, &unchecked(this.as_records()), (vals,)).await?;
+        if sync {
+            crate::invoice::sync_lines(tx, this.env(), &this.ids()).await?;
+        }
         if lines_changed && !skip {
             check_balanced(tx, &this.ids()).await?;
         }
@@ -172,24 +264,20 @@ impl AccountMove {
     }
 
     /// Deleting a draft deletes its lines; no balance check runs on the way.
+    /// A posted or cancelled entry is refused.
     #[method(override)]
     async fn unlink(this: &RecordSet<AccountMove>, tx: &mut Transaction, sup: Super) -> Result<()> {
+        tx.flush().await?;
+        post::refuse_closed_entries(tx, &this.ids(), "delete").await?;
         sup.call(tx, &unchecked(this.as_records()), ()).await
-    }
-
-    /// Posting is not delivered yet: refused naming the task that adds it.
-    #[method]
-    #[rpc(effect = write)]
-    pub async fn action_post(_this: &RecordSet<AccountMove>, _tx: &mut Transaction) -> Result<()> {
-        Err(posting_refusal())
     }
 }
 
-/// The refusal of every way to post or cancel an entry before [`POST_TASK`].
-pub(crate) fn posting_refusal() -> Error {
-    Error::user(format!(
-        "Journal entries can only be saved as drafts for now: posting comes with task {POST_TASK}."
-    ))
+/// The refusal of a caller-written state.
+pub(crate) fn state_refusal() -> Error {
+    Error::user(
+        "The status of a journal entry changes only through Post, Reset to Draft and Cancel.",
+    )
 }
 
 /// Refuses a caller-supplied state other than draft (`field` is `state` on entries,
@@ -198,8 +286,23 @@ pub(crate) fn refuse_state(vals: &RawVals, field: &str) -> Result<()> {
     match vals.get(field) {
         None => Ok(()),
         Some(Cell::Str(state)) if field == "state" && state.as_ref() == "draft" => Ok(()),
-        Some(_) => Err(posting_refusal()),
+        Some(_) => Err(state_refusal()),
     }
+}
+
+/// Refuses a context default for a field this addon guards on create. The base create applies
+/// `default_<field>` after the checks here have read the values, so such a key would go around them:
+/// an entry born posted, an item attached to a posted entry.
+pub(crate) fn refuse_context_defaults(env: &Env, fields: &[&str]) -> Result<()> {
+    for field in fields {
+        if env.context().contains(&format!("default_{field}")) {
+            return Err(Error::user(format!(
+                "The context key default_{field} is not accepted when a journal entry or a journal \
+                 item is created; give the value with the record."
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// True when the caller's context skips the balance check; any value but a boolean is refused.

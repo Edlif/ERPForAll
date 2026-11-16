@@ -1,10 +1,13 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { saveFile } from "../src/client/file-save.js";
 import { binaryContent, forgetBinaryContent, isBinarySize } from "../src/client/binary-content.js";
 import { createFieldControl } from "../src/client/fields.js";
-import type { Field } from "../src/client/metadata.js";
+import type { Field, Subview } from "../src/client/metadata.js";
 import { RecordState } from "../src/client/record.js";
 import { RpcClient } from "../src/client/transport.js";
+
+vi.mock("../src/client/file-save.js", () => ({ saveFile: vi.fn() }));
 
 const PNG = "iVBORw0KGgo=";
 const SMALL = "iVBORw0KGgpz";
@@ -43,7 +46,7 @@ describe("content of binary fields read with bin_size", () => {
     // the file was removed after its size was read: no content, not an error
     expect(await second).toBe("");
     expect(call).toHaveBeenCalledTimes(1);
-    expect(call).toHaveBeenCalledWith("res.partner", "read", { ids: [1, 2], fields: ["image_128"], context: { lang: "en_US", bin_size: false } }, { background: true });
+    expect(call).toHaveBeenCalledWith("res.partner", "read", { ids: [1, 2], fields: ["image_128"], context: { lang: "en_US", bin_size: false } }, { background: true, signal: expect.any(AbortSignal) });
     // kept until a view reads its records again
     await binaryContent(rpc, "res.partner", 1, "image_128", { lang: "en_US", bin_size: true }, "1.00 Kb");
     expect(call).toHaveBeenCalledTimes(1);
@@ -100,15 +103,24 @@ describe("image widget on a bin_size value", () => {
 
     const download = handle.node.querySelector<HTMLAnchorElement>(".o_download_file_button")!;
     expect(download.hidden).toBe(false);
-    const pressed: string[] = [];
-    download.addEventListener("click", event => { pressed.push(download.getAttribute("href")!); event.preventDefault(); });
-    download.click();
+    vi.mocked(saveFile).mockClear();
+    download.click(); download.click();
+    // the press is shown while the field is read, and a second press before the answer is ignored
+    expect(root.getAttribute("aria-busy")).toBe("true");
+    expect(handle.node.querySelector(".field-image-status")!.textContent).toBe("Reading Image to download…");
     await tick();
     expect(call).toHaveBeenCalledTimes(2);
     expect(call.mock.calls[1]![2]).toEqual({ ids: [7], fields: ["image_1920"], context: { lang: "en_US", bin_size: false } });
-    // first press reads, then the link holds the content and is pressed again
-    expect(pressed).toEqual(["#", `data:image/png;base64,${PNG}`]);
-    expect(download.download).toBe("image_1920.png");
+    expect(root.hasAttribute("aria-busy")).toBe(false);
+    expect(saveFile).toHaveBeenCalledTimes(1);
+    const [blob, name] = vi.mocked(saveFile).mock.calls[0]!;
+    expect(name).toBe("image_1920.png");
+    expect(blob.type).toBe("image/png");
+    expect(blob.size).toBe(atob(PNG).length);
+    // content is known now: the next press saves at once, without a read
+    download.click();
+    expect(saveFile).toHaveBeenCalledTimes(2);
+    expect(call).toHaveBeenCalledTimes(2);
     handle.dispose();
   });
 
@@ -173,6 +185,71 @@ describe("image widget on a bin_size value", () => {
   });
 });
 
+describe("image widget: download, enlarge and cancel on a bin_size value", () => {
+  test("Download of a file removed meanwhile says so and saves nothing", async () => {
+    const { rpc } = client(async () => [{ id: 7, image_1920: false }]);
+    const handle = mount(rpc, imageField(), { id: 7, image_1920: "2.50 Mb" });
+    await tick();
+    vi.mocked(saveFile).mockClear();
+    handle.node.querySelector<HTMLAnchorElement>(".o_download_file_button")!.click();
+    await tick();
+    expect(saveFile).not.toHaveBeenCalled();
+    expect(handle.node.querySelector(".field-image-status")!.textContent).toBe("Image is no longer stored on this record. Reload to see its current state.");
+    handle.dispose();
+  });
+
+  test("enlarging reads the field and shows it only while the pointer is still on the picture", async () => {
+    vi.useFakeTimers();
+    try {
+      const releases: Array<(rows: unknown) => void> = [];
+      const { rpc, call } = client(() => new Promise(resolve => { releases.push(resolve); }));
+      const handle = mount(rpc, imageField({ zoom: true, preview_image: { name: "image_128", model: "res.partner" } }), { id: 7, image_1920: "2.50 Mb", image_128: "3.10 Kb" });
+      await vi.advanceTimersByTimeAsync(0); // the batched read leaves in a microtask
+      releases.shift()!([{ id: 7, image_128: SMALL }]);
+      await vi.advanceTimersByTimeAsync(0);
+      const stage = handle.node.querySelector<HTMLElement>(".field-image-stage")!;
+      // pointer leaves before the field arrives: no enlarged view
+      stage.dispatchEvent(new Event("mouseenter"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(call).toHaveBeenCalledTimes(2);
+      stage.dispatchEvent(new Event("mouseleave"));
+      releases.shift()!([{ id: 7, image_1920: PNG }]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handle.node.querySelector(".field-image-zoom")).toBeNull();
+      // the content is kept now: the next hover enlarges at once
+      stage.dispatchEvent(new Event("mouseenter"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handle.node.querySelector(".field-image-zoom img")).not.toBeNull();
+      handle.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+
+  test("a read nobody waits for any more is cancelled; one another widget still waits for is not", async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    const { rpc } = client(async (_model, _method, _args, options) => { signals.push(options?.["signal"] as AbortSignal | undefined); return new Promise(() => {}); });
+    const first = new AbortController(), second = new AbortController();
+    const a = binaryContent(rpc, "res.partner", 1, "image_1920", {}, "1.00 Kb", first.signal);
+    void binaryContent(rpc, "res.partner", 1, "image_1920", {}, "1.00 Kb", second.signal);
+    await tick();
+    first.abort();
+    expect(signals[0]!.aborted).toBe(false);
+    second.abort();
+    expect(signals[0]!.aborted).toBe(true);
+    await expect(a).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  test("a widget disposed while its read runs cancels it and shows no error", async () => {
+    let signal: AbortSignal | undefined;
+    const { rpc } = client(async (_model, _method, _args, options) => { signal = options?.["signal"] as AbortSignal; return new Promise(() => {}); });
+    const handle = mount(rpc, imageField(), { id: 7, image_1920: "2.50 Mb" });
+    await tick();
+    handle.dispose();
+    await tick();
+    expect(signal!.aborted).toBe(true);
+    expect(handle.node.querySelector(".field-image-status")!.textContent).toBe("");
+  });
+});
+
 describe("record state and bin_size", () => {
   const fields: Field[] = [
     { name: "name", label: "Name", kind: "char", readonly: false, required: false, relation: null, relationField: null, selection: null },
@@ -215,5 +292,48 @@ describe("record state and bin_size", () => {
     state.change("image_1920", false);
     await state.save();
     expect(last(calls, "web_save")["vals"]).toEqual({ image_1920: null });
+  });
+
+  test("a line's binary column holding a size is never written back; new content is", async () => {
+    const field = (name: string, kind: Field["kind"], extra: Partial<Field> = {}): Field => ({ name, kind, label: name, required: false, readonly: false, relation: null, relationField: null, selection: null, ...extra });
+    const title = field("title", "char"), picture = field("image_1920", "binary", { widget: "image" });
+    const subview: Subview = { model: "library.book", list: [title, picture], form: { type: "form", mode: "record", fields: [title, picture], nodes: [] }, fields: new Map([[title.name, title], [picture.name, picture]]) };
+    const lines = field("book_ids", "one2many", { relation: "library.book", relationField: "author_id", subview });
+    const calls: { path: string; body: Record<string, unknown> }[] = [];
+    const rpc = new RpcClient(async (path, init) => {
+      calls.push({ path: String(path), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      const book = { id: 2, title: "Earthsea", image_1920: "2.50 Mb" };
+      return new Response(JSON.stringify([{ id: 9, name: "Le Guin", book_ids: [book] }]), { headers: { "Content-Type": "application/json" } });
+    }, () => {});
+    const state = new RecordState(rpc, "library.author", [field("name", "char"), lines], {});
+    await state.load(9);
+    state.change("book_ids", [{ id: 2, title: "Earthsea 2", image_1920: "2.50 Mb", __changed: ["title", "image_1920"] }, { title: "Lavinia", image_1920: PNG, __key: "line_9" }]);
+    await state.save();
+    const commands = (calls.filter(call => call.path.endsWith("web_save")).at(-1)!.body["vals"] as Record<string, unknown[][]>)["book_ids"]!;
+    expect(commands[0]).toEqual([1, 2, { title: "Earthsea 2" }]);
+    expect(commands[1]).toEqual([0, 0, { title: "Lavinia", image_1920: PNG }]);
+  });
+
+  test("a view's record read drops loaded content, so a replaced file of the same shown size is read again", async () => {
+    const calls: string[] = [];
+    const rpc = new RpcClient(async (path, init) => {
+      calls.push(String(path).split("/").at(-1)!);
+      const reading = String(path).endsWith("/read");
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify(reading ? (body["ids"] as number[]).map(id => ({ id, image_1920: PNG })) : [{ id: 5, name: "Chair", image_1920: "2.50 Mb" }]), { headers: { "Content-Type": "application/json" } });
+    }, () => {});
+    const state = new RecordState(rpc, "product.template", fields, {});
+    await state.load(5);
+    await binaryContent(rpc, "product.template", 5, "image_1920", {}, "2.50 Mb");
+    await binaryContent(rpc, "product.template", 5, "image_1920", {}, "2.50 Mb");
+    expect(calls.filter(call => call === "read")).toHaveLength(1);
+    await state.load(5);
+    await binaryContent(rpc, "product.template", 5, "image_1920", {}, "2.50 Mb");
+    expect(calls.filter(call => call === "read")).toHaveLength(2);
+    // a save answers the record again: the same
+    state.change("name", "Desk");
+    await state.save();
+    await binaryContent(rpc, "product.template", 5, "image_1920", {}, "2.50 Mb");
+    expect(calls.filter(call => call === "read")).toHaveLength(3);
   });
 });

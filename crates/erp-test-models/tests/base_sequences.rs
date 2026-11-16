@@ -1993,3 +1993,235 @@ async fn test_next_by_id_and_wait_mode_overrides() {
     drop(tx);
     h.cleanup().await.unwrap();
 }
+
+// ----- the addon-facing draw and its access rule (erp_sdk::sequence) -----------------------------
+
+/// The user of the access tests: allowed companies 1 and 2, working in company 1.
+const SEQ_USER: i64 = 2;
+
+/// A harness under `policy` with companies 1 and 2 and the user [`SEQ_USER`] committed.
+async fn draw_harness(policy: erp_testkit::DomainPolicy) -> Harness {
+    let h = Harness::builder([&base_users::ADDON, &erp_addon_base::ADDON])
+        .policy(policy)
+        .build()
+        .await
+        .expect("harness");
+    let mut tx = h.begin().await.unwrap();
+    let currency = erp_testkit::fixtures::seed_currency_in(&mut tx)
+        .await
+        .unwrap();
+    tx.execute(
+        "INSERT INTO res_company (id, name, currency_id) VALUES (1, 'Company 1', $1), (2, 'Company 2', $1) ON CONFLICT DO NOTHING",
+        &[&currency],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "INSERT INTO res_users (id, name, login, active, share) VALUES (2, 'demo', 'demo', true, false) ON CONFLICT DO NOTHING",
+        &[],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h
+}
+
+/// A transaction of [`SEQ_USER`] (no superuser mode: the policy decides).
+async fn begin_seq_user(h: &Harness) -> erp_orm::Transaction {
+    let companies = [1, 2].map(|c| erp_orm::CompanyId::new(c).unwrap());
+    let principal = erp_orm::PrincipalBuilder::user(erp_orm::UserId::new(SEQ_USER).unwrap())
+        .resolution(
+            erp_orm::Resolution::in_id_order(
+                erp_orm::GroupSet::default(),
+                companies,
+                std::num::NonZeroU64::MIN,
+            )
+            .unwrap(),
+        )
+        .companies(vec![companies[0]])
+        .build()
+        .unwrap();
+    h.orm()
+        .begin_opts(BeginOptions::for_principal(principal))
+        .await
+        .unwrap()
+}
+
+fn company(id: i64) -> erp_orm::CompanyId {
+    erp_orm::CompanyId::new(id).unwrap()
+}
+
+/// `number_next` of a gapless sequence, read with raw SQL.
+async fn number_next(tx: &mut erp_orm::Transaction, id: i64) -> i32 {
+    tx.query("SELECT number_next FROM ir_sequence WHERE id = $1", &[&id])
+        .await
+        .unwrap()[0]
+        .get(0)
+}
+
+#[tokio::test]
+async fn a_user_without_read_access_on_ir_sequence_cannot_draw() {
+    use erp_orm::Operation;
+    let policy = erp_testkit::DomainPolicy::builder(erp_testkit::Otherwise::Allow)
+        .deny("ir.sequence", Operation::Read)
+        .build()
+        .unwrap();
+    let h = draw_harness(policy).await;
+    let mut tx = h.begin().await.unwrap();
+    let id = create_seq(
+        &mut tx,
+        "SO C1",
+        "SO",
+        "no_gap",
+        Some("SO/"),
+        None,
+        3,
+        1,
+        1,
+        Some(1),
+        false,
+    )
+    .await;
+    tx.commit().await.unwrap();
+
+    let mut tx = begin_seq_user(&h).await;
+    let env = tx.env();
+    let err = erp_sdk::sequence::draw_by_code(&mut tx, &env, "SO", company(1), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Access, "{err}");
+    assert!(err.message().contains("ir.sequence"), "{err}");
+    let err = erp_sdk::sequence::draw_by_id(&mut tx, &env, id, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Access, "{err}");
+    drop(tx);
+
+    let mut tx = h.begin().await.unwrap();
+    assert_eq!(number_next(&mut tx, id).await, 1);
+    let env = tx.env();
+    let drawn = erp_sdk::sequence::draw_by_code(&mut tx, &env, "SO", company(1), None)
+        .await
+        .unwrap();
+    assert_eq!(drawn, "SO/001");
+    drop(tx);
+    h.cleanup().await.unwrap();
+}
+
+/// A user who may only read `ir.sequence` (no create, write or unlink on it or on its date
+/// ranges) draws numbers: company 1 gets its own record before the shared one, company 2 the
+/// shared one, a date-range sequence creates its range; an unknown code, a missing id and a
+/// company the user may not use are refused by name.
+#[tokio::test]
+async fn a_user_with_read_access_only_draws_for_each_company() {
+    use erp_orm::Operation;
+    let mut builder = erp_testkit::DomainPolicy::builder(erp_testkit::Otherwise::Allow);
+    for model in ["ir.sequence", "ir.sequence.date_range"] {
+        for op in [Operation::Create, Operation::Write, Operation::Unlink] {
+            builder = builder.deny(model, op);
+        }
+    }
+    let h = draw_harness(builder.build().unwrap()).await;
+    let mut tx = h.begin().await.unwrap();
+    let own = create_seq(
+        &mut tx,
+        "SO C1",
+        "SO",
+        "no_gap",
+        Some("C1/"),
+        None,
+        3,
+        1,
+        1,
+        Some(1),
+        false,
+    )
+    .await;
+    create_seq(
+        &mut tx,
+        "SO shared",
+        "SO",
+        "standard",
+        Some("ALL/"),
+        None,
+        3,
+        1,
+        1,
+        None,
+        false,
+    )
+    .await;
+    create_seq(
+        &mut tx,
+        "PO shared",
+        "PO",
+        "standard",
+        Some("PO/%(range_year)s/"),
+        None,
+        2,
+        1,
+        1,
+        None,
+        true,
+    )
+    .await;
+    tx.commit().await.unwrap();
+
+    let mut tx = begin_seq_user(&h).await;
+    let env = tx.env();
+    assert_eq!(
+        erp_sdk::sequence::draw_by_code(&mut tx, &env, "SO", company(1), None)
+            .await
+            .unwrap(),
+        "C1/001"
+    );
+    assert_eq!(
+        erp_sdk::sequence::draw_by_code(&mut tx, &env, "SO", company(1), None)
+            .await
+            .unwrap(),
+        "C1/002"
+    );
+    assert_eq!(
+        erp_sdk::sequence::draw_by_code(&mut tx, &env, "SO", company(2), None)
+            .await
+            .unwrap(),
+        "ALL/001"
+    );
+    assert_eq!(
+        erp_sdk::sequence::draw_by_id(&mut tx, &env, own, None)
+            .await
+            .unwrap(),
+        "C1/003"
+    );
+    let date = Date::from_ymd(2026, 5, 15).unwrap();
+    assert_eq!(
+        erp_sdk::sequence::draw_by_code(&mut tx, &env, "PO", company(2), Some(date))
+            .await
+            .unwrap(),
+        "PO/2026/01"
+    );
+
+    let err = erp_sdk::sequence::draw_by_code(&mut tx, &env, "NONEXISTENT", company(2), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::UserError, "{err}");
+    assert_eq!(
+        err.message(),
+        "No sequence with the code 'NONEXISTENT' exists for company 2 or for all companies."
+    );
+    let err = erp_sdk::sequence::draw_by_id(&mut tx, &env, own + 1000, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::UserError, "{err}");
+    assert_eq!(
+        err.message(),
+        format!("The sequence {} does not exist.", own + 1000)
+    );
+    // company 3 is not one of the user's companies
+    let err = erp_sdk::sequence::draw_by_code(&mut tx, &env, "SO", company(3), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Access, "{err}");
+    drop(tx);
+    h.cleanup().await.unwrap();
+}

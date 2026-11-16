@@ -2176,6 +2176,14 @@ async fn technical_menu_and_views() {
             &ordinary,
         )
         .await;
+        // Internal users read sequences and their date ranges since the SDK draw checks that read
+        // before it writes the counter with the framework's rights (base ir.access rows, as the
+        // reference grants them); the screens stay under Settings Administration.
+        if matches!(screen.model, "ir.sequence" | "ir.sequence.date_range") {
+            assert_eq!(status, 200, "{} internal read: {body}", screen.model);
+            read_probes += 1;
+            continue;
+        }
         assert_eq!(status, 403, "{} internal read: {body}", screen.model);
         assert_eq!(
             body["name"], "erp.exceptions.AccessError",
@@ -2190,7 +2198,8 @@ async fn technical_menu_and_views() {
         );
         read_probes += 1;
     }
-    // the ten read-only models of the lead's r3 decision plus `ir.config_parameter` (Managed)
+    // the ten read-only models of the lead's r3 decision plus `ir.config_parameter` (Managed); two of
+    // them, the sequence models, answer an internal user (probed above as 200)
     assert_eq!(read_probes, 11, "internal-user read probes");
 
     drop(service);

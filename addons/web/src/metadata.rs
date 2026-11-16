@@ -1404,9 +1404,11 @@ async fn load_action(
         seen.push(view_type);
         result_views.push(wire::ActionView::new(id, wire_type(&env, view_type)?));
     }
-    let action_domain = ensure_action_sources(
+    let (action_domain, action_context) = ensure_action_sources(
         optional_text(row, "domain")?,
         optional_text(row, "context")?,
+        &model,
+        &RegistryLookup(&env),
     )?;
     Ok(wire::WindowAction::new(
         wire_id(id)?,
@@ -1415,16 +1417,20 @@ async fn load_action(
         target,
         result_views,
         action_domain,
-        None,
+        action_context,
     ))
 }
+
+type ActionSources = (Option<wire::WireDocument>, Option<wire::WireDocument>);
 
 fn ensure_action_sources(
     domain: Option<&str>,
     context: Option<&str>,
-) -> Result<Option<wire::WireDocument>> {
-    ensure_action_context(context)?;
-    parse_action_domain(domain)
+    model: &str,
+    lookup: &dyn crate::action_result::ModelLookup,
+) -> Result<ActionSources> {
+    let context = parse_action_context(context, model, lookup)?;
+    Ok((parse_action_domain(domain)?, context))
 }
 
 fn parse_action_domain(domain: Option<&str>) -> Result<Option<wire::WireDocument>> {
@@ -1450,16 +1456,75 @@ fn parse_action_domain(domain: Option<&str>) -> Result<Option<wire::WireDocument
     Ok(Some(doc))
 }
 
-fn ensure_action_context(context: Option<&str>) -> Result<()> {
-    // Keep exact prior emptiness: outer whitespace around {} is accepted; whitespace-only
-    // and differently formatted nonempty source is refused before parsing or AST allocation.
-    let context = context.filter(|source| !source.is_empty() && source.trim() != "{}");
-    if context.is_some() {
-        return Err(fail(
-            "Non-empty window-action context expressions are not supported by the current human UI client; additional action expressions require a later release.",
-        ));
+/// Most keys of a window-action context (the source is also bounded by `MAX_ACTION_EXPR_BYTES`).
+const MAX_ACTION_CONTEXT_KEYS: usize = 16;
+/// The browser's exact integer range (`Number.MAX_SAFE_INTEGER`).
+const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
+
+/// A window action's own context, admitted only as a literal dictionary of `default_<field>` keys
+/// naming fields of the action's model, each with a text, integer or boolean literal. Everything
+/// else (expressions, `search_default_*`, session keys, other keys) is refused by name.
+fn parse_action_context(
+    context: Option<&str>,
+    model: &str,
+    lookup: &dyn crate::action_result::ModelLookup,
+) -> Result<Option<wire::WireDocument>> {
+    use erp_sdk::expr::{Expr, Literal};
+    let Some(source) = context.filter(|source| !source.is_empty() && source.trim() != "{}") else {
+        return Ok(None);
+    };
+    let refuse = |why: String| fail(format!("Window action context {why}"));
+    let parsed = erp_sdk::expr::parse(source.trim())
+        .map_err(|error| refuse(format!("is not a literal dictionary: {error}")))?;
+    let Expr::Dict(entries) = &parsed else {
+        return Err(refuse("must be a literal dictionary.".into()));
+    };
+    if entries.len() > MAX_ACTION_CONTEXT_KEYS {
+        return Err(refuse(format!(
+            "declares more than {MAX_ACTION_CONTEXT_KEYS} keys."
+        )));
     }
-    Ok(())
+    let mut seen = BTreeSet::new();
+    for (key, value) in entries {
+        let Expr::Literal(Literal::Str(key)) = key else {
+            return Err(refuse("keys must be text literals.".into()));
+        };
+        let shown: String = key.chars().take(64).collect();
+        if key.starts_with("search_default_") {
+            return Err(refuse(format!(
+                "key '{shown}' is not admitted: default search filters of an action are not delivered yet; only default_<field> keys are."
+            )));
+        }
+        let Some(field) = key.strip_prefix("default_").filter(|name| !name.is_empty()) else {
+            return Err(refuse(format!(
+                "key '{shown}' is not admitted: only default_<field> keys are."
+            )));
+        };
+        if !lookup.has_field(model, field) {
+            return Err(refuse(format!(
+                "key '{shown}' names no field of '{model}'."
+            )));
+        }
+        if !seen.insert(key.as_str()) {
+            return Err(refuse(format!("repeats the key '{shown}'.")));
+        }
+        match value {
+            Expr::Literal(Literal::Str(_) | Literal::Bool(_)) => {}
+            Expr::Literal(Literal::Int(number))
+                if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(number) => {}
+            _ => {
+                return Err(refuse(format!(
+                    "value of '{shown}' must be a text, safe integer or boolean literal."
+                )));
+            }
+        }
+    }
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    wire::WireDocument::from_expr(&parsed)
+        .map(Some)
+        .map_err(|error| refuse(format!("cannot be sent: {error}")))
 }
 
 fn get_i32(row: &BTreeMap<String, Value>, field: &str) -> Result<i32> {
@@ -3088,6 +3153,66 @@ impl WebIrActionsActWindow {
         let action = load_action(this.as_records(), tx, &mut admission).await?;
         admission.wire(&action)
     }
+
+    /// Load one caller-authorized window action named by its XML id (`module.name`), for clients that
+    /// carry action references (dashboard cards). An unknown XML
+    /// id, an XML id of another model and an action the caller may not read give the same error, so
+    /// the method tells nothing about which XML ids exist.
+    #[method]
+    #[rpc(effect = read, model)]
+    async fn erp_load_web_action_ref(
+        this: &RecordSet<IrActionsActWindow>,
+        tx: &mut Transaction,
+        xml_id: String,
+    ) -> Result<Value> {
+        let mut admission = ResponseAdmission::new();
+        let action = load_action_ref(this.env(), tx, &xml_id, &mut admission).await?;
+        admission.wire(&action)
+    }
+}
+
+/// The one refusal of [`load_action_ref`] for a missing, foreign or unreadable action.
+const ACTION_REF_DENIED: &str = "You may not read this window action.";
+
+async fn load_action_ref(
+    env: &Env,
+    tx: &mut Transaction,
+    xml_id: &str,
+    admission: &mut ResponseAdmission,
+) -> Result<wire::WindowAction> {
+    env.companies()?;
+    let parsed = erp_sdk::QualifiedXmlId::parse(xml_id)
+        .map_err(|error| fail(format!("Window action reference: {error}.")))?;
+    // The external-id table is readable by system users only; this lookup discloses nothing by itself:
+    // the action is returned only after the full caller authorization of `erp_load_web_action`.
+    let rows = tx
+        .query(
+            "SELECT res_id::int8 FROM ir_model_data \
+              WHERE module = $1 AND name = $2 AND model = 'ir.actions.act_window'",
+            &[&parsed.module(), &parsed.name()],
+        )
+        .await?;
+    if rows.len() > 1 {
+        return Err(Error::invariant(
+            "A window action XML id names several records.",
+        ));
+    }
+    let Some(row) = rows.first() else {
+        return Err(Error::access(ACTION_REF_DENIED));
+    };
+    let id: i64 = row
+        .try_get(0)
+        .map_err(|error| Error::db(format!("unexpected window action identity: {error}")))?;
+    if id <= 0 {
+        return Err(Error::invariant("Invalid window action identity."));
+    }
+    let records = env.records("ir.actions.act_window")?.browse([id])?;
+    match load_action(&records, tx, admission).await {
+        Err(error) if error.kind() == ErrorKind::Access => Err(Error::access(ACTION_REF_DENIED)),
+        // A dangling XML id (its action deleted) is the same answer as an unknown one.
+        Err(error) if error.kind() == ErrorKind::Missing => Err(Error::access(ACTION_REF_DENIED)),
+        other => other,
+    }
 }
 
 struct RegistryLookup<'a>(&'a Env);
@@ -4469,37 +4594,140 @@ pub async fn test_load_action_probed(
 mod producer_admission_tests {
     #![allow(clippy::unwrap_used, reason = "admission assertions")]
     use super::*;
+    struct Moves;
+    impl crate::action_result::ModelLookup for Moves {
+        fn has_model(&self, model: &str) -> bool {
+            model == "t.move"
+        }
+        fn has_field(&self, model: &str, field: &str) -> bool {
+            model == "t.move" && matches!(field, "move_type" | "journal_id" | "to_check")
+        }
+    }
+    fn sources(domain: Option<&str>, context: Option<&str>) -> Result<ActionSources> {
+        ensure_action_sources(domain, context, "t.move", &Moves)
+    }
     #[test]
-    fn unsupported_action_source_is_refused_without_changing_empty_semantics() {
+    fn empty_action_sources_keep_their_empty_semantics() {
         for (domain, context) in [
             (None, None),
             (Some(""), Some("")),
             (Some(" [] "), Some(" {} ")),
+            (None, Some("{ }")),
         ] {
-            assert!(ensure_action_sources(domain, context).unwrap().is_none());
+            assert!(matches!(sources(domain, context).unwrap(), (None, None)));
         }
         for (domain, context) in [
             (Some("[('name','=','x')]"), None),
             (Some("[('parent_id', '=', False)]"), None),
         ] {
-            assert!(ensure_action_sources(domain, context).unwrap().is_some());
-        }
-        for (domain, context) in [
-            (None, Some(" ")),
-            (None, Some("{ }")),
-            (None, Some("[]")),
-            (None, Some("{'key': 'value'}")),
-        ] {
-            let error = ensure_action_sources(domain, context).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Validation);
-            assert_eq!(
-                error.message(),
-                "Non-empty window-action context expressions are not supported by the current human UI client; additional action expressions require a later release."
-            );
+            assert!(sources(domain, context).unwrap().0.is_some());
         }
         for (domain, context) in [(Some(" "), None), (Some("{invalid"), None)] {
-            let error = ensure_action_sources(domain, context).unwrap_err();
+            let error = sources(domain, context).unwrap_err();
             assert_eq!(error.kind(), ErrorKind::Validation);
+        }
+    }
+    #[test]
+    fn literal_default_contexts_reach_the_wire() {
+        for context in [
+            "{'default_move_type': 'out_invoice'}",
+            " {'default_journal_id': 5, 'default_to_check': True} ",
+            "{'default_journal_id': 9007199254740991}",
+        ] {
+            let (_, document) = sources(None, Some(context)).unwrap();
+            let document = document.expect("an admitted context is sent");
+            let parsed = erp_sdk::expr::parse(context.trim()).unwrap();
+            assert_eq!(
+                serde_json::to_value(&document).unwrap(),
+                serde_json::to_value(wire::WireDocument::from_expr(&parsed).unwrap()).unwrap(),
+                "{context}"
+            );
+        }
+    }
+    #[test]
+    fn every_other_action_context_is_refused_by_name() {
+        let many = format!(
+            "{{{}}}",
+            (0..=MAX_ACTION_CONTEXT_KEYS)
+                .map(|_| "'default_move_type': 'entry'")
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for (context, message) in [
+            (" ", "Window action context is not a literal dictionary"),
+            ("[]", "Window action context must be a literal dictionary."),
+            (
+                "dict(default_move_type='entry')",
+                "Window action context must be a literal dictionary.",
+            ),
+            (
+                "{'key': 'value'}",
+                "Window action context key 'key' is not admitted: only default_<field> keys are.",
+            ),
+            (
+                "{'default_': 1}",
+                "Window action context key 'default_' is not admitted: only default_<field> keys are.",
+            ),
+            (
+                "{'allowed_company_ids': [1]}",
+                "Window action context key 'allowed_company_ids' is not admitted",
+            ),
+            (
+                "{'search_default_posted': 1}",
+                "Window action context key 'search_default_posted' is not admitted: default search filters",
+            ),
+            (
+                "{'default_ghost': 1}",
+                "Window action context key 'default_ghost' names no field of 't.move'.",
+            ),
+            (
+                "{1: 'entry'}",
+                "Window action context keys must be text literals.",
+            ),
+            (
+                "{'default_move_type': 'a', 'default_move_type': 'b'}",
+                "Window action context repeats the key 'default_move_type'.",
+            ),
+            (
+                "{'default_move_type': context.get('x')}",
+                "Window action context value of 'default_move_type' must be",
+            ),
+            (
+                "{'default_journal_id': uid}",
+                "Window action context value of 'default_journal_id' must be",
+            ),
+            (
+                "{'default_journal_id': [1]}",
+                "Window action context value of 'default_journal_id' must be",
+            ),
+            (
+                "{'default_journal_id': -1}",
+                "Window action context value of 'default_journal_id' must be",
+            ),
+            (
+                "{'default_journal_id': 1.5}",
+                "Window action context value of 'default_journal_id' must be",
+            ),
+            (
+                "{'default_journal_id': None}",
+                "Window action context value of 'default_journal_id' must be",
+            ),
+            (
+                "{'default_journal_id': 9007199254740992}",
+                "Window action context value of 'default_journal_id' must be",
+            ),
+            (
+                many.as_str(),
+                "Window action context declares more than 16 keys.",
+            ),
+        ] {
+            let error = sources(None, Some(context)).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Validation, "{context}");
+            assert!(
+                error.message().starts_with(message),
+                "{context}: {}",
+                error.message()
+            );
         }
     }
     #[test]

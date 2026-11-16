@@ -90,6 +90,7 @@ async fn stable_state(client: &Client) -> Vec<Vec<String>> {
         security_contents(client).await,
         image(client, "SELECT row_to_json(t)::text FROM stock_picking_type t ORDER BY id").await,
         image(client, "SELECT json_build_array(gid,hid)::text FROM res_groups_implied_rel ORDER BY gid,hid").await,
+        image(client, "SELECT row_to_json(p)::text FROM stock_picking p ORDER BY id").await,
         image(client, "SELECT json_build_array(key,physical_identity,shape,encode(declaration_sha256,'hex'),encode(installed_sha256,'hex'))::text FROM erp_schema_sql_object WHERE addon='stock' ORDER BY key").await,
     ]
 }
@@ -147,6 +148,15 @@ async fn restore_legacy_shape(client: &Client, operations: &[i64]) -> Vec<i64> {
         DROP FUNCTION stock_guard_correction();
         DROP FUNCTION stock_create_location_policies();
         DROP FUNCTION stock_guard_location_policy();
+        DROP TRIGGER stock_move_counts_insert ON stock_move;
+        DROP TRIGGER stock_move_counts_update ON stock_move;
+        DROP TRIGGER stock_move_counts_delete ON stock_move;
+        DROP TRIGGER stock_picking_state_insert ON stock_picking;
+        DROP TRIGGER stock_picking_state_update ON stock_picking;
+        DROP TRIGGER stock_location_bypass_guard ON stock_location;
+        DROP FUNCTION stock_move_counts();
+        DROP FUNCTION stock_picking_eval_state();
+        DROP FUNCTION stock_guard_location_bypass();
         DELETE FROM erp_schema_sql_object WHERE addon='stock';
         CREATE TEMP TABLE later_stock_security ON COMMIT DROP AS
             SELECT id,model,res_id FROM ir_model_data WHERE module='stock'
@@ -169,6 +179,106 @@ async fn restore_legacy_shape(client: &Client, operations: &[i64]) -> Vec<i64> {
     let gaps = client.query("INSERT INTO stock_location(name,usage,active) VALUES ('Legacy active gap','view',true),('Legacy archived gap','view',false) RETURNING id", &[]).await.unwrap().iter().map(|row| row.get(0)).collect();
     client.batch_execute("COMMIT").await.unwrap();
     gaps
+}
+
+/// The counter vector of a transfer and an independent fold of its moves (3: open
+/// demand is non-zero demand, confirmed demand is positive demand), with its stored state.
+const VECTOR_SQL: &str = "SELECT json_build_array(move_count,draft_count,waiting_count,confirmed_count,
+    partially_available_count,assigned_count,done_count,cancel_count,done_scrap_count,cancel_scrap_count,
+    assigned_zero_demand_count,open_positive_demand_count,confirmed_positive_demand_count,mto_nonscrap_count)::text,
+    (SELECT json_build_array(count(*),count(*) FILTER (WHERE m.state='draft'),count(*) FILTER (WHERE m.state='waiting'),
+        count(*) FILTER (WHERE m.state='confirmed'),count(*) FILTER (WHERE m.state='partially_available'),
+        count(*) FILTER (WHERE m.state='assigned'),count(*) FILTER (WHERE m.state='done'),
+        count(*) FILTER (WHERE m.state='cancel'),count(*) FILTER (WHERE m.state='done' AND m.is_scrap),
+        count(*) FILTER (WHERE m.state='cancel' AND m.is_scrap),
+        count(*) FILTER (WHERE m.state='assigned' AND m.product_uom_qty=0),
+        count(*) FILTER (WHERE m.state NOT IN ('done','cancel') AND m.product_uom_qty<>0),
+        count(*) FILTER (WHERE m.state='confirmed' AND m.product_uom_qty>0),
+        count(*) FILTER (WHERE NOT coalesce(m.is_scrap,false) AND m.procure_method='make_to_order'))::text
+     FROM stock_move m WHERE m.picking_id=p.id), state::text
+    FROM stock_picking p WHERE id=$1";
+
+/// Two transfers created before the legacy shape is restored: one leaving an internal location,
+/// one leaving the vendors location (which bypasses reservation). Returns the transfers and what
+/// the legacy moves need: company, product, unit, both sources.
+async fn counted_pickings(orm: &Orm, operation: i64) -> ([i64; 2], [i64; 5]) {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company: i64 = tx
+        .query(
+            "SELECT res_id FROM ir_model_data WHERE module='base' AND name='main_company'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let unit: i64 = tx
+        .query(
+            "SELECT res_id FROM ir_model_data WHERE module='uom' AND name='product_uom_unit'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let vendors: i64 = tx.query("SELECT res_id FROM ir_model_data WHERE module='stock' AND name='stock_location_suppliers'", &[]).await.unwrap()[0].get(0);
+    let env = tx.env().with_company(company).unwrap();
+    let create = async |tx: &mut erp_sdk::Transaction, model: &str, vals: RawVals| -> i64 {
+        env.records(model)
+            .unwrap()
+            .create(tx, vec![vals])
+            .await
+            .unwrap()
+            .ids()[0]
+    };
+    let product = create(
+        &mut tx,
+        "product.product",
+        RawVals::new().set_cell("name", Cell::Str("Counted widget".into())),
+    )
+    .await;
+    let internal = create(
+        &mut tx,
+        "stock.location",
+        RawVals::new().set_cell("name", Cell::Str("Counted stock".into())),
+    )
+    .await;
+    let mut pickings = [0; 2];
+    for (slot, (name, source)) in pickings
+        .iter_mut()
+        .zip([("LEGACY/1", internal), ("LEGACY/2", vendors)])
+    {
+        *slot = create(
+            &mut tx,
+            "stock.picking",
+            RawVals::new()
+                .set_cell("name", Cell::Str(name.into()))
+                .set_cell("company_id", Cell::Id(company))
+                .set_cell("picking_type_id", Cell::Id(operation))
+                .set_cell("location_id", Cell::Id(source))
+                .set_cell("location_dest_id", Cell::Id(internal)),
+        )
+        .await;
+    }
+    tx.commit().await.unwrap();
+    (pickings, [company, product, unit, internal, vendors])
+}
+
+/// Moves written while no counter trigger exists, as before stock 1.6: the vectors stay zero.
+async fn legacy_moves(client: &Client, pickings: [i64; 2], refs: [i64; 5]) {
+    let [company, product, unit, internal, vendors] = refs;
+    for (picking, source, state, qty, scrap) in [
+        (pickings[0], internal, "assigned", 5, false),
+        (pickings[0], internal, "confirmed", 5, false),
+        (pickings[1], vendors, "confirmed", 5, false),
+        (pickings[1], vendors, "cancel", 1, true),
+    ] {
+        client.execute(
+            "INSERT INTO stock_move (company_id, product_id, uom_id, location_id, location_dest_id, date, state,
+                procure_method, open_line_version, product_uom_qty, quantity, product_qty, quantity_product_uom,
+                uom_factor, product_uom_factor, product_unit_digits, picking_id, is_scrap)
+             VALUES ($1,$2,$3,$4,$5,now(),$6,'make_to_stock',0,$7::int4::numeric,0,$7::int4::numeric,0,1,1,2,$8,$9)",
+            &[&company, &product, &unit, &source, &internal, &state, &qty, &picking, &scrap],
+        ).await.unwrap();
+    }
 }
 
 async fn assert_security(client: &Client, expected: &[String]) {
@@ -288,6 +398,7 @@ fn stock_upgrade_from_main_1_0_preserves_rows_and_repeats() {
         let db = TestDb::create().await.unwrap();
         let installed = install(&db).await;
         let operations = operation_types(&installed).await;
+        let (pickings, refs) = counted_pickings(&installed, operations[0]).await;
         let client = db.client().await.unwrap();
         let expected_security = security_contents(&client).await;
         assert_security(&client, &expected_security).await;
@@ -309,6 +420,16 @@ fn stock_upgrade_from_main_1_0_preserves_rows_and_repeats() {
             .unwrap()
             .get(0);
         let gaps = restore_legacy_shape(&client, &operations).await;
+        legacy_moves(&client, pickings, refs).await;
+        for picking in pickings {
+            let row = client.query_one(VECTOR_SQL, &[&picking]).await.unwrap();
+            assert_eq!(
+                row.get::<_, String>(0),
+                "[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]",
+                "legacy vector"
+            );
+            assert_eq!(row.get::<_, String>(2), "draft");
+        }
         let legacy_ids = identities(&client).await;
         assert!(!legacy_ids.is_empty());
         assert_eq!(
@@ -411,7 +532,20 @@ fn stock_upgrade_from_main_1_0_preserves_rows_and_repeats() {
             assert_eq!((row.get::<_, i32>(1), row.get::<_, i32>(2)), expected);
         }
         assert_security(&client, &expected_security).await;
+        for (picking, state) in pickings.into_iter().zip(["assigned", "assigned"]) {
+            let row = client.query_one(VECTOR_SQL, &[&picking]).await.unwrap();
+            assert_eq!(
+                row.get::<_, String>(0),
+                row.get::<_, String>(1),
+                "transfer {picking}"
+            );
+            assert_eq!(row.get::<_, String>(2), state, "transfer {picking}");
+        }
         assert_reservation_checks(&upgraded.orm, operations[0]).await;
+        // the overview card composes on the upgraded registry: declared as a same-addon extension
+        // in a file sorting before the model's, it refused every registry holding stock
+        let picking_type = upgraded.orm.registry().model("stock.picking.type").unwrap();
+        assert!(picking_type.field("dashboard_card").is_some());
         let snapshot = stable_state(&client).await;
         drop(upgraded);
         let repeated = sys

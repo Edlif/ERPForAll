@@ -32,7 +32,10 @@
 //! **Location guards** (`quant_guards`): the validation read takes `FOR SHARE` on the key locations,
 //! which the location guards' `FOR UPDATE NOWAIT` refuses while a stock change is open, so a guard is
 //! retried instead of passing on a snapshot that cannot see a concurrent balance, and an engine call
-//! behind a guard waits for it and is retried on the guard's change.
+//! behind a guard waits for it and is retried on the guard's change. The same read takes `FOR SHARE` on
+//! the key locations' policy rows: a negative-stock switch committed after this transaction's snapshot
+//! fails the lock with `40001`, so the forbid decision is never taken on a stale flag, and the switch's
+//! own `FOR UPDATE NOWAIT` on the policy row is refused while an engine call holds it.
 //!
 //! **Access.** The engine reads and writes the quant table directly, as the reference's `sudo()` does:
 //! it checks no model access and no record rule. It is for the stock transitions (move validation,
@@ -287,6 +290,18 @@ pub enum QuantError {
         /// The configured digits.
         digits: u32,
     },
+    /// A change that would leave the on-hand of a key at a location whose policy forbids negative
+    /// stock below zero (7). Nothing was changed; never clamped to zero.
+    NegativeStockForbidden {
+        /// The key.
+        key: QuantKey,
+        /// The location's name.
+        location: String,
+        /// The locked on-hand before the change.
+        before: Decimal,
+        /// The on-hand the change would have produced.
+        after: Decimal,
+    },
     /// A release larger than the locked reserved counter (2): a defect, never clamped.
     ReservationUnderflow {
         /// The key.
@@ -375,6 +390,21 @@ impl fmt::Display for QuantError {
                 f,
                 "The {field} change {value} of a stock balance has more decimal digits than the \
                  {PRECISION_USAGE} precision allows ({digits})."
+            ),
+            Self::NegativeStockForbidden {
+                key,
+                location,
+                before,
+                after,
+            } => write!(
+                f,
+                "Location {location} does not allow negative stock: product {} at location {}{} \
+                 would go from {before} to {after}. Nothing was saved.",
+                key.product_id,
+                key.location_id,
+                key_parts(key),
+                before = before.normalize(),
+                after = after.normalize(),
             ),
             Self::ReservationUnderflow {
                 key,
@@ -648,18 +678,22 @@ fn numeric(values: &[MeasureValue], index: usize) -> Result<Decimal> {
 /// Validation read of every distinct key: product storable and company, location usage and company,
 /// lot product and company, owner company, package existence. One statement; names are read only to
 /// word a refusal. The same statement appends this call's number to [`CALLS_SETTING`] and returns the
-/// value, and takes `FOR SHARE` on the key locations (see the module's location guards).
+/// value, and takes `FOR SHARE` on the key locations, then on their policy rows (see the module's
+/// location guards). The trailing columns are read by [`VK_CALLS`] and [`VK_FORBID`].
 const VALIDATE_KEYS: &str = "\
 WITH g AS MATERIALIZED (SELECT set_config('erp.stock_quant_calls', \
        COALESCE(current_setting('erp.stock_quant_calls', true), '') || $7::text, true) AS calls), \
-lk AS MATERIALIZED (SELECT id FROM stock_location WHERE id = ANY($3) ORDER BY id FOR SHARE) \
+lk AS MATERIALIZED (SELECT id FROM stock_location WHERE id = ANY($3) ORDER BY id FOR SHARE), \
+pl AS MATERIALIZED (SELECT location_id, forbid_negative FROM stock_location_policy \
+       WHERE location_id = ANY($3) ORDER BY location_id FOR SHARE) \
 SELECT i.ord, i.company_id, i.product_id, i.location_id, i.lot_id, i.owner_id, \
        c.id IS NOT NULL, t.is_storable, (t.company_id IS NULL OR t.company_id = i.company_id), \
        l.usage, l.name, (l.company_id IS NULL OR l.company_id = i.company_id \
          OR ('/' || c.parent_path) LIKE ('%/' || l.company_id::text || '/%')), \
        lot.product_id, lot.name, (lot.company_id IS NULL OR lot.company_id = i.company_id), \
        o.id IS NOT NULL, (o.company_id IS NULL OR o.company_id = i.company_id), pk.id IS NOT NULL, \
-       g.calls, (SELECT count(*) FROM lk) \
+       g.calls, (SELECT count(*) FROM lk) + (SELECT count(*) FROM pl), \
+       COALESCE(pol.forbid_negative, FALSE) \
   FROM unnest($1::int8[], $2::int8[], $3::int8[], $4::int8[], $5::int8[], $6::int8[]) \
        WITH ORDINALITY AS i(company_id, product_id, location_id, lot_id, owner_id, package_id, ord) \
   CROSS JOIN g \
@@ -667,10 +701,15 @@ SELECT i.ord, i.company_id, i.product_id, i.location_id, i.lot_id, i.owner_id, \
   LEFT JOIN product_product p ON p.id = i.product_id \
   LEFT JOIN product_template t ON t.id = p.product_tmpl_id \
   LEFT JOIN stock_location l ON l.id = i.location_id \
+  LEFT JOIN pl pol ON pol.location_id = i.location_id \
   LEFT JOIN stock_lot lot ON lot.id = i.lot_id \
   LEFT JOIN res_partner o ON o.id = i.owner_id \
   LEFT JOIN stock_package pk ON pk.id = i.package_id \
  ORDER BY i.ord";
+/// [`VALIDATE_KEYS`] column of the call numbers.
+const VK_CALLS: usize = 18;
+/// [`VALIDATE_KEYS`] column of the forbid-negative flag (19 only forces both lock CTEs to run).
+const VK_FORBID: usize = 20;
 
 /// Step (a).3: lock every key of the batch in its canonical order, inserting a zero row
 /// for a missing key, and return the locked values (`inserted` rows are the zero rows). Under
@@ -737,8 +776,9 @@ struct Planned {
 /// for a new key), their new values are computed from the locked rows and refused before any write
 /// when the reserved counter would go below zero, then written by the synchronous guarded apply of,
 /// and finally given their incoming date, or deleted when they ended at zero with no count
-/// state. Negative on-hand is allowed (the reference's default); the per-location guard that refuses
-/// it is.
+/// state. Negative on-hand is allowed (the reference's default) except at a location whose policy row
+/// forbids it: a change that lowers such a key below zero is refused with
+/// [`QuantError::NegativeStockForbidden`] before any write.
 ///
 /// Incoming date of a key: the oldest of its own date (while its on-hand is positive) and the dates
 /// the changes carry, else now.
@@ -750,7 +790,7 @@ struct Planned {
 /// # Errors
 ///
 /// Validation: [`QuantError::EmptyChange`], [`QuantError::NotStorable`],
-/// [`QuantError::ViewLocation`], [`QuantError::LotOfOtherProduct`], [`QuantError::OtherCompany`],
+/// [`QuantError::NegativeStockForbidden`], [`QuantError::ViewLocation`], [`QuantError::LotOfOtherProduct`], [`QuantError::OtherCompany`],
 /// [`QuantError::Precision`]. Programming: [`QuantError::Missing`],
 /// [`QuantError::ReservationUnderflow`], [`QuantError::RowMismatch`], [`QuantError::LockOrder`] (a
 /// later call below a held key, see the module's lock order). ResourceExhausted above the batch
@@ -810,7 +850,7 @@ async fn apply_in_savepoint(
     }
     let call = tx.extension::<HeldKeys>().last + 1;
     tx.extension::<HeldKeys>().last = call;
-    let (stored, standing) = validate_keys(tx, &distinct, call).await?;
+    let (stored, standing, forbidding) = validate_keys(tx, &distinct, call).await?;
     tx.extension::<HeldKeys>().keep(&standing);
     let shape = shape(digits)?;
     let mut dates: HashMap<QuantKey, DateTime> = HashMap::new();
@@ -927,6 +967,20 @@ async fn apply_in_savepoint(
             }
             .into());
         }
+        // the row is locked, so no concurrent writer can pass this check with the same balance; a
+        // change that only repays an existing deficit (dq >= 0) is never refused
+        if dq < Decimal::ZERO
+            && new_quantity < Decimal::ZERO
+            && let Some(location) = forbidding.get(&key.location_id)
+        {
+            return Err(QuantError::NegativeStockForbidden {
+                key,
+                location: location.clone(),
+                before: quantity,
+                after: new_quantity,
+            }
+            .into());
+        }
         let own = own_date.filter(|_| quantity > Decimal::ZERO);
         let in_date = match (own, dates.get(&key).copied()) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -1031,7 +1085,7 @@ async fn validate_keys(
     tx: &mut Transaction,
     keys: &[QuantKey],
     call: u64,
-) -> Result<(HashSet<QuantKey>, HashSet<u64>)> {
+) -> Result<(HashSet<QuantKey>, HashSet<u64>, HashMap<i64, String>)> {
     let company: Vec<i64> = keys.iter().map(|k| k.company_id).collect();
     let product: Vec<i64> = keys.iter().map(|k| k.product_id).collect();
     let location: Vec<i64> = keys.iter().map(|k| k.location_id).collect();
@@ -1060,7 +1114,7 @@ async fn validate_keys(
     let calls: String = rows
         .first()
         .ok_or_else(|| Error::internal("stock quant validation read returned no row"))?
-        .try_get(18)
+        .try_get(VK_CALLS)
         .map_err(decode)?;
     let mut standing = HashSet::new();
     for part in calls.split(':').filter(|p| !p.is_empty()) {
@@ -1072,6 +1126,7 @@ async fn validate_keys(
         }
     }
     let mut stored = HashSet::new();
+    let mut forbidding = HashMap::new();
     for (key, row) in keys.iter().zip(&rows) {
         let company_found: bool = row.try_get(6).map_err(decode)?;
         if !company_found {
@@ -1169,9 +1224,13 @@ async fn validate_keys(
         }
         if !BYPASS_USAGES.contains(&usage.as_str()) {
             stored.insert(*key);
+            if row.try_get::<_, bool>(VK_FORBID).map_err(decode)? {
+                let name: Option<String> = row.try_get(10).map_err(decode)?;
+                forbidding.insert(key.location_id, name.unwrap_or_default());
+            }
         }
     }
-    Ok((stored, standing))
+    Ok((stored, standing, forbidding))
 }
 
 /// The `WHERE` of a read, over `q` (quants) and `l` (their location), with parameters `$1` company,

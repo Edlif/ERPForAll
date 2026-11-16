@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_stock_orderpoint_list" model="ir.ui.view">
+    <field name="name">stock.warehouse.orderpoint.list</field>
+    <field name="model">stock.warehouse.orderpoint</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="product_id"/>
+        <field name="location_id"/>
+        <field name="warehouse_id"/>
+        <field name="trigger"/>
+        <field name="product_min_qty"/>
+        <field name="product_max_qty"/>
+        <field name="route_id"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_orderpoint_form" model="ir.ui.view">
+    <field name="name">stock.warehouse.orderpoint.form</field>
+    <field name="model">stock.warehouse.orderpoint</field>
+    <field name="arch" type="xml">
+      <form record_mode="record">
+        <sheet>
+          <group>
+            <group>
+              <field name="product_id"/>
+              <field name="warehouse_id"/>
+              <field name="location_id"/>
+              <field name="route_id"/>
+              <field name="trigger"/>
+            </group>
+            <group>
+              <field name="product_min_qty"/>
+              <field name="product_max_qty"/>
+              <field name="replenishment_uom_id"/>
+              <field name="company_id"/>
+              <field name="active"/>
+            </group>
+          </group>
+          <group string="Forecast Based Limits">
+            <field name="min_max_based_on"/>
+            <field name="min_max_based_on_factor"/>
+            <field name="daily_demand"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="view_stock_orderpoint_search" model="ir.ui.view">
+    <field name="name">stock.warehouse.orderpoint.search</field>
+    <field name="model">stock.warehouse.orderpoint</field>
+    <field name="arch" type="xml">
+      <search string="Replenishment">
+        <field name="name"/>
+        <field name="product_id"/>
+        <field name="location_id"/>
+        <field name="warehouse_id"/>
+        <filter name="inactive" string="Archived" domain="[('active', '=', False)]"/>
+        <group>
+          <filter name="groupby_warehouse" string="Warehouse" context="{'group_by': 'warehouse_id'}"/>
+          <filter name="groupby_location" string="Location" context="{'group_by': 'location_id'}"/>
+          <filter name="groupby_product" string="Product" context="{'group_by': 'product_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+  <record id="action_stock_orderpoint" model="ir.actions.act_window">
+    <field name="name">Replenishment</field>
+    <field name="res_model">stock.warehouse.orderpoint</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_stock_orderpoint_list"/>
+    <field name="search_view_id" ref="view_stock_orderpoint_search"/>
+  </record>
+</erp>

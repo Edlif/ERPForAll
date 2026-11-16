@@ -32,6 +32,8 @@ export class Registry<T> {
   remove(key: string): boolean { return this.values.delete(key); }
 }
 export interface FieldWidgetProps { field: Field; value: unknown; change: (value: unknown) => void }
+/** A window action named by its XML id, opened as its list (or a new record in its form) with a concrete domain and context. */
+export interface ActionRequest { xmlId: string; viewMode: "form" | "list" | null; domain: unknown[]; context: Record<string, unknown> }
 export interface WidgetEnvironment extends FieldWidgetProps {
   numericLocale?: NumericLocale;
   currencies?: CurrencyDisplayCache;
@@ -51,6 +53,8 @@ export interface WidgetEnvironment extends FieldWidgetProps {
   /** Owner-scope disposal; stop reads and remove any protected child overlays when aborted. */
   signal?: AbortSignal;
   openRecord?: (model: string, id: number) => Promise<void>;
+  /** Opens a window action by XML id; present on kanban cards (the dashboard card widget). */
+  openAction?: (request: ActionRequest) => Promise<void>;
   rpc: RpcClient;
   context: Record<string, unknown>;
   run: (job: () => Promise<void>) => void;

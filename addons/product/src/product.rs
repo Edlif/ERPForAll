@@ -553,8 +553,9 @@ impl ProductProduct {
                 .next()
                 .flatten();
             let clears_nothing = value.is_none() && own.is_none();
+            // emptiness from the small stored size, not the full-size content
             let fills_template =
-                value.is_some() && picture(&template, tx, "image_1920").await?.is_none();
+                value.is_some() && picture(&template, tx, "image_128").await?.is_none();
             let to_template = clears_nothing || fills_template || {
                 let active = Domain::condition("product_tmpl_id", Operator::Eq, template_id.get())?
                     & Domain::condition("active", Operator::Eq, true)?;
@@ -792,7 +793,13 @@ impl ProductProduct {
 
 /// The picture a record holds in `field`, read by name: `None` when the field is empty.
 async fn picture(record: &Records, tx: &mut Transaction, field: &str) -> Result<Option<Blob>> {
-    match record.cell(tx, field).await? {
+    let cell = record.cell(tx, field).await?;
+    picture_cell(record, field, cell)
+}
+
+/// A picture cell of `record.field`: `None` when empty, an error for any other kind of value.
+fn picture_cell(record: &Records, field: &str, cell: Cell) -> Result<Option<Blob>> {
+    match cell {
         Cell::Bytes(content) => Ok(Some(content)),
         Cell::Null => Ok(None),
         other => Err(Error::programming(format!(
@@ -813,26 +820,25 @@ async fn shown_pictures(
 ) -> Result<Vec<Option<Blob>>> {
     let templates = this.mapped(tx, ProductProduct::PRODUCT_TMPL_ID).await?;
     let template_model = this.env().records("product.template")?;
-    // variants of one template share its picture: read it once per template
-    let mut by_template: HashMap<RecId, Option<Blob>> = HashMap::new();
-    let mut shown = Vec::with_capacity(own.len());
-    for (own, template) in own.into_iter().zip(templates) {
-        let picture = match (own, template) {
-            (Some(own), _) => Some(own),
-            (None, None) => None,
-            (None, Some(template)) => match by_template.get(&template) {
-                Some(held) => held.clone(),
-                None => {
-                    let read =
-                        picture(&template_model.browse_ids([template]), tx, template_field).await?;
-                    by_template.insert(template, read.clone());
-                    read
-                }
-            },
-        };
-        shown.push(picture);
+    // the templates of the variants without an own picture, read in one statement
+    let needed: BTreeSet<RecId> = own
+        .iter()
+        .zip(&templates)
+        .filter_map(|(own, template)| if own.is_none() { *template } else { None })
+        .collect();
+    let needed = template_model.browse_ids(needed);
+    let cells = needed.cells(tx, template_field).await?;
+    let mut by_template: HashMap<RecId, Option<Blob>> = HashMap::with_capacity(cells.len());
+    for (template, cell) in needed.rec_ids().iter().zip(cells) {
+        by_template.insert(*template, picture_cell(&needed, template_field, cell)?);
     }
-    Ok(shown)
+    Ok(own
+        .into_iter()
+        .zip(templates)
+        .map(|(own, template)| {
+            own.or_else(|| template.and_then(|t| by_template.get(&t).cloned().flatten()))
+        })
+        .collect())
 }
 
 /// Before variants are deleted: a variant's own picture moves to its template when the template
@@ -843,22 +849,47 @@ async fn keep_pictures_on_templates(
     tx: &mut Transaction,
 ) -> Result<()> {
     let existing = this.exists(tx).await?;
-    let pictures = existing
-        .mapped(tx, ProductProduct::IMAGE_VARIANT_1920)
+    // presence is decided on the small stored sizes, which are empty exactly when the full-size
+    // picture is; full-size content is read only for the variant that fills a template
+    let has_own = existing
+        .mapped(tx, ProductProduct::IMAGE_VARIANT_128)
         .await?;
     let templates = existing.mapped(tx, ProductProduct::PRODUCT_TMPL_ID).await?;
     let template_model = this.env().records("product.template")?;
-    for (own, template) in pictures.into_iter().zip(templates) {
-        let (Some(own), Some(template)) = (own, template) else {
+    let candidates: BTreeSet<RecId> = has_own
+        .iter()
+        .zip(&templates)
+        .filter_map(|(own, template)| if own.is_some() { *template } else { None })
+        .collect();
+    let candidates = template_model.browse_ids(candidates);
+    let cells = candidates.cells(tx, "image_128").await?;
+    let mut without_picture = BTreeSet::new();
+    for (template, cell) in candidates.rec_ids().iter().zip(cells) {
+        if picture_cell(&candidates, "image_128", cell)?.is_none() {
+            without_picture.insert(*template);
+        }
+    }
+    let ids = existing.as_records().rec_ids();
+    for ((own, template), id) in has_own.into_iter().zip(templates).zip(ids) {
+        let (Some(_), Some(template)) = (own, template) else {
             continue;
         };
-        let template = template_model.browse_ids([template]);
-        // read per variant: the first variant with a picture fills the template
-        if picture(&template, tx, "image_1920").await?.is_none() {
-            template
-                .write(tx, RawVals::new().set_cell("image_1920", Cell::Bytes(own)))
-                .await?;
+        // the first variant with a picture fills the template
+        if !without_picture.remove(&template) {
+            continue;
         }
+        // a set of this one variant: a read on `existing` would prefetch every full-size picture
+        let variant = existing.as_records().browse_ids([*id]);
+        let Some(content) = picture(&variant, tx, "image_variant_1920").await? else {
+            continue;
+        };
+        template_model
+            .browse_ids([template])
+            .write(
+                tx,
+                RawVals::new().set_cell("image_1920", Cell::Bytes(content)),
+            )
+            .await?;
     }
     Ok(())
 }

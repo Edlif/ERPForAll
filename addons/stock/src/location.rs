@@ -369,55 +369,43 @@ pub struct StockLocationPolicy {
     pub forbid_negative: bool,
 }
 
+/// The policy rows a negative-stock switch decides on; the quant engine holds them `FOR SHARE`.
+const LOCK_POLICIES: &str =
+    "SELECT FROM stock_location_policy WHERE id = ANY($1) ORDER BY location_id FOR UPDATE NOWAIT";
+
 #[methods(StockLocationPolicy, addon = "stock")]
 impl StockLocationPolicy {
-    /// Refuse a guard enabled explicitly or by default (a context key or a stored default) before
-    /// the policy unique key can mask the typed unavailable-feature error. Malformed values remain
-    /// the base create path's responsibility; the constraint below also checks its normalized result.
+    /// A write of the switch first locks its policy rows without waiting. An open quant engine call
+    /// at the location holds the row `FOR SHARE`, so the lock fails with `55P03`, answered as a
+    /// retryable `40001`, and the retry's count sees the engine's balance once it committed. An engine
+    /// call behind the switch waits on the row and fails with `40001` once the switch committed, so it
+    /// decides on the new flag. Policy rows are created only with their location (the insertion
+    /// trigger), so no create can race an engine call.
     #[method(override)]
-    async fn create(
+    async fn write(
         this: &RecordSet<StockLocationPolicy>,
         tx: &mut Transaction,
-        vals_list: Vec<RawVals>,
+        vals: RawVals,
         sup: Super,
-    ) -> Result<Records> {
-        this.as_records()
-            .check_access(tx, erp_sdk::Operation::Create)
+    ) -> Result<()> {
+        if !this.is_empty() && vals.contains("forbid_negative") {
+            crate::quant_guards::lock_guarded(
+                tx,
+                LOCK_POLICIES,
+                &this.ids(),
+                "stock location policies",
+            )
             .await?;
-        // a row without the flag takes its default (context key, stored default or false)
-        let defaulted = matches!(
-            this.as_records()
-                .default_get(tx, &["forbid_negative"])
-                .await?
-                .get("forbid_negative"),
-            Some(Value::Bool(true))
-        );
-        for vals in &vals_list {
-            let enabled = match vals.get("forbid_negative") {
-                Some(cell) => matches!(cell, Cell::Bool(true)),
-                None => defaulted,
-            };
-            if enabled
-                && let Some(Cell::Id(location_id)) = vals.get("location_id")
-                && *location_id > 0
-            {
-                let location = this
-                    .env()
-                    .records("stock.location")?
-                    .browse([*location_id])?;
-                location.check_access(tx, erp_sdk::Operation::Read).await?;
-                return Err(StockError::ForbidNegativeUnavailable {
-                    location_id: *location_id,
-                }
-                .into());
-            }
         }
-        sup.call(tx, this.as_records(), (vals_list,)).await
+        sup.call(tx, this.as_records(), (vals,)).await
     }
 
-    /// Until the negative-stock guard exists, switching it on is refused (B3).
+    /// Switching the guard on is refused while the location holds a negative quant (1).
+    /// The write locked the policy rows first (see `write`). Not covered, as for the location guards
+    /// (`quant_guards::lock_guarded`): an engine call that committed after this transaction's snapshot
+    /// and before that lock is invisible to the count.
     #[constrains("forbid_negative")]
-    async fn _check_forbid_negative_unavailable(
+    async fn _check_forbid_negative_blocked(
         this: &RecordSet<StockLocationPolicy>,
         tx: &mut Transaction,
     ) -> Result<()> {
@@ -426,12 +414,27 @@ impl StockLocationPolicy {
             .await?;
         let locations = this.mapped(tx, StockLocationPolicy::LOCATION_ID).await?;
         for (flag, location) in flags.into_iter().zip(locations) {
-            if flag {
-                let location = location.ok_or_else(|| {
-                    Error::internal("a stock location policy row has no location")
-                })?;
-                return Err(StockError::ForbidNegativeUnavailable {
-                    location_id: location.get(),
+            if !flag {
+                continue;
+            }
+            let location = location
+                .ok_or_else(|| Error::internal("a stock location policy row has no location"))?
+                .get();
+            let rows = tx
+                .query(
+                    "SELECT count(*) FROM stock_quant WHERE location_id = $1 AND quantity < 0",
+                    &[&location],
+                )
+                .await?;
+            let negative: i64 = rows
+                .first()
+                .ok_or_else(|| Error::internal("the negative quant count returned no row"))?
+                .try_get(0)
+                .map_err(|e| Error::internal(e.to_string()))?;
+            if negative > 0 {
+                return Err(StockError::ForbidNegativeBlocked {
+                    location_id: location,
+                    negative,
                 }
                 .into());
             }

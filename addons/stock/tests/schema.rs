@@ -332,10 +332,10 @@ async fn location_table_complete_name_and_policy_row() {
     h.cleanup().await.unwrap();
 }
 
-/// amendment B3: switching the negative-stock guard on is refused, naming the slice
-/// that delivers it, on create and on write; nothing is stored.
+/// 1: the policy row's flag can be switched on and off; a second row for the same
+/// location is still refused by the unique key.
 #[tokio::test]
-async fn policy_row_refuses_forbid_negative_until_its_slice() {
+async fn policy_row_accepts_forbid_negative() {
     let h = harness().await;
     let mut tx = h.begin().await.unwrap();
     let loc = location(&mut tx, "Guarded", "internal", None).await;
@@ -351,29 +351,24 @@ async fn policy_row_refuses_forbid_negative_until_its_slice() {
         .await
         .unwrap();
     assert_eq!(policy.ids().len(), 1);
-    let expected = format!(
-        "Location {id} cannot forbid negative stock yet: the negative-stock guard is not \
-         supported until a later release."
-    );
-    let error = write(
+    write(
         &mut tx,
         &policy,
         RawVals::new().set_cell("forbid_negative", Cell::Bool(true)),
     )
     .await
-    .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Validation);
-    assert_eq!(error.message(), expected);
-    let source = std::error::Error::source(&error).expect("typed source");
-    assert_eq!(
-        source.downcast_ref::<erp_addon_stock::StockError>(),
-        Some(&erp_addon_stock::StockError::ForbidNegativeUnavailable { location_id: id })
-    );
+    .unwrap();
     assert_eq!(
         policy.cell(&mut tx, "forbid_negative").await.unwrap(),
-        Cell::Bool(false)
+        Cell::Bool(true)
     );
-    // A create with the unavailable flag reports the same typed refusal as a write.
+    write(
+        &mut tx,
+        &policy,
+        RawVals::new().set_cell("forbid_negative", Cell::Bool(false)),
+    )
+    .await
+    .unwrap();
     let error = create(
         &mut tx,
         "stock.location.policy",
@@ -384,34 +379,10 @@ async fn policy_row_refuses_forbid_negative_until_its_slice() {
     .await
     .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Validation);
-    assert_eq!(error.message(), expected);
-    assert_eq!(
-        std::error::Error::source(&error)
-            .and_then(|source| source.downcast_ref::<erp_addon_stock::StockError>()),
-        Some(&erp_addon_stock::StockError::ForbidNegativeUnavailable { location_id: id })
-    );
-    let error = create(
-        &mut tx,
-        "stock.location.policy",
-        RawVals::new().set_cell("location_id", Cell::Id(id)),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Validation);
     assert_eq!(
         error.message(),
         "The database refused the change: A location has one stock policy."
     );
-    let stored = tx
-        .query(
-            "SELECT id,forbid_negative FROM stock_location_policy WHERE location_id=$1",
-            &[&id],
-        )
-        .await
-        .unwrap();
-    assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].get::<_, i64>(0), policy.ids()[0]);
-    assert!(!stored[0].get::<_, bool>(1));
     tx.rollback().await.unwrap();
     drop(tx);
     h.cleanup().await.unwrap();
@@ -1502,31 +1473,18 @@ async fn policy_create_preflight_keeps_empty_type_and_batch_boundaries() {
         error.message(),
         "invalid value Str(\"malformed\") for field stock.location.policy.forbid_negative of type boolean"
     );
-    let error = tx
-        .savepoint(async |tx| {
-            records
-                .create(
-                    tx,
-                    vec![
-                        RawVals::new()
-                            .set_cell("location_id", Cell::Id(id))
-                            .set_cell("forbid_negative", Cell::Bool(false)),
-                        RawVals::new()
-                            .set_cell("location_id", Cell::Id(id))
-                            .set_cell("forbid_negative", Cell::Bool(true)),
-                    ],
-                )
-                .await
-        })
-        .await
-        .unwrap_err();
+    // a second row for the location reaches the unique key like any other duplicate row (in a
+    // savepoint: the refused insert would otherwise abort the transaction)
+    let error = create(
+        &mut tx,
+        "stock.location.policy",
+        RawVals::new()
+            .set_cell("location_id", Cell::Id(id))
+            .set_cell("forbid_negative", Cell::Bool(true)),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Validation);
-    assert_eq!(
-        error.message(),
-        format!(
-            "Location {id} cannot forbid negative stock yet: the negative-stock guard is not supported until a later release."
-        )
-    );
     let rows = tx.query("SELECT count(*),bool_or(forbid_negative) FROM stock_location_policy WHERE location_id=$1", &[&id]).await.unwrap();
     assert_eq!(rows[0].get::<_, i64>(0), 1);
     assert!(!rows[0].get::<_, bool>(1));

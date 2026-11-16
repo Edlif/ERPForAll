@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Journal entries and journal items, Accounting > Accounting. -->
+<erp>
+  <record id="view_move_list" model="ir.ui.view">
+    <field name="name">account.move.list</field>
+    <field name="model">account.move</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="date"/>
+        <field name="journal_id"/>
+        <field name="partner_id"/>
+        <field name="ref"/>
+        <field name="state"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_move_form" model="ir.ui.view">
+    <field name="name">account.move.form</field>
+    <field name="model">account.move</field>
+    <field name="arch" type="xml">
+      <form>
+        <header>
+          <button name="action_post" type="object" string="Post" invisible="state != 'draft'"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,posted"/>
+        </header>
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="date"/>
+              <field name="journal_id"/>
+              <field name="ref"/>
+            </group>
+            <group>
+              <field name="partner_id"/>
+              <field name="company_id"/>
+              <field name="currency_id"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Journal Items" name="journal_items">
+              <!-- The lines show with the line model's default list (view_move_line_lines) and open in its form. -->
+              <field name="line_ids"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_move_search" model="ir.ui.view">
+    <field name="name">account.move.search</field>
+    <field name="model">account.move</field>
+    <field name="arch" type="xml">
+      <search string="Journal Entries">
+        <field name="name"/>
+        <field name="ref"/>
+        <field name="partner_id"/>
+        <field name="journal_id"/>
+        <filter name="draft" string="Draft" domain="[('state', '=', 'draft')]"/>
+        <filter name="posted" string="Posted" domain="[('state', '=', 'posted')]"/>
+        <group>
+          <filter name="groupby_journal" string="Journal" context="{'group_by': 'journal_id'}"/>
+          <filter name="groupby_date" string="Date" context="{'group_by': 'date'}"/>
+          <filter name="groupby_partner" string="Partner" context="{'group_by': 'partner_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_move_journal_line" model="ir.actions.act_window">
+    <field name="name">Journal Entries</field>
+    <field name="res_model">account.move</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_move_list"/>
+    <field name="search_view_id" ref="view_move_search"/>
+    <field name="domain">[('move_type', '=', 'entry')]</field>
+    <field name="context">{'default_move_type': 'entry'}</field>
+  </record>
+
+  <!-- The default list and form of a line, used for the lines of a journal entry and of an invoice: the client
+       shows a one2many with its comodel's default views and edits a line in that form (one list for both parents
+       until a field can name its own sub-list). -->
+  <record id="view_move_line_lines" model="ir.ui.view">
+    <field name="name">account.move.line.lines</field>
+    <field name="model">account.move.line</field>
+    <field name="priority" eval="10"/>
+    <field name="arch" type="xml">
+      <list>
+        <field name="product_id"/>
+        <field name="account_id"/>
+        <field name="partner_id"/>
+        <field name="name"/>
+        <field name="quantity"/>
+        <field name="product_uom_id"/>
+        <field name="price_unit"/>
+        <field name="discount"/>
+        <field name="tax_ids" widget="many2many_tags"/>
+        <field name="price_subtotal"/>
+        <field name="amount_currency"/>
+        <field name="currency_id"/>
+        <field name="debit"/>
+        <field name="credit"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_move_line_form" model="ir.ui.view">
+    <field name="name">account.move.line.form</field>
+    <field name="model">account.move.line</field>
+    <field name="arch" type="xml">
+      <form string="Journal Item">
+        <sheet>
+          <group>
+            <group>
+              <field name="account_id"/>
+              <field name="partner_id"/>
+              <field name="name"/>
+              <field name="display_type"/>
+              <field name="date_maturity"/>
+            </group>
+            <group>
+              <field name="product_id"/>
+              <field name="quantity"/>
+              <field name="product_uom_id"/>
+              <field name="price_unit"/>
+              <field name="discount"/>
+              <field name="tax_ids" widget="many2many_tags"/>
+              <field name="price_subtotal" readonly="1"/>
+            </group>
+          </group>
+          <group>
+            <group>
+              <field name="amount_currency"/>
+              <field name="currency_id"/>
+            </group>
+            <group>
+              <field name="debit"/>
+              <field name="credit"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_move_line_list" model="ir.ui.view">
+    <field name="name">account.move.line.list</field>
+    <field name="model">account.move.line</field>
+    <field name="arch" type="xml">
+      <list create="false" edit="false" delete="false">
+        <field name="date"/>
+        <field name="move_name"/>
+        <field name="journal_id"/>
+        <field name="account_id"/>
+        <field name="partner_id"/>
+        <field name="name"/>
+        <field name="debit"/>
+        <field name="credit"/>
+        <field name="balance"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_move_line_search" model="ir.ui.view">
+    <field name="name">account.move.line.search</field>
+    <field name="model">account.move.line</field>
+    <field name="arch" type="xml">
+      <search string="Journal Items">
+        <field name="name"/>
+        <field name="move_name"/>
+        <field name="account_id"/>
+        <field name="partner_id"/>
+        <filter name="posted" string="Posted" domain="[('parent_state', '=', 'posted')]"/>
+        <filter name="unposted" string="Unposted" domain="[('parent_state', '!=', 'posted')]"/>
+        <group>
+          <filter name="groupby_account" string="Account" context="{'group_by': 'account_id'}"/>
+          <filter name="groupby_journal" string="Journal" context="{'group_by': 'journal_id'}"/>
+          <filter name="groupby_partner" string="Partner" context="{'group_by': 'partner_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_account_moves_all" model="ir.actions.act_window">
+    <field name="name">Journal Items</field>
+    <field name="res_model">account.move.line</field>
+    <field name="view_mode">list</field>
+    <field name="view_id" ref="view_move_line_list"/>
+    <field name="search_view_id" ref="view_move_line_search"/>
+  </record>
+
+  <menuitem id="menu_finance_entries" name="Accounting" parent="menu_finance" sequence="40">
+    <menuitem id="menu_action_move_journal_line" name="Journal Entries" action="action_move_journal_line" sequence="10"/>
+    <menuitem id="menu_action_account_moves_all" name="Journal Items" action="action_account_moves_all" sequence="20"/>
+  </menuitem>
+</erp>

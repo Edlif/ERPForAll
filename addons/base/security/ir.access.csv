@@ -28,6 +28,8 @@ access_config_parameter_system,Manage system parameters,base.model_ir_config_par
 access_partner_internal,Read contacts,base.model_res_partner,base.group_user,r,
 access_company_internal,Read allowed companies,base.model_res_company,base.group_user,r,"[('id', 'in', company_ids)]"
 access_currency_internal,Read currencies,base.model_res_currency,base.group_user,r,
+access_sequences_internal,Read sequences,base.model_ir_sequence,base.group_user,r,
+access_sequence_ranges_internal,Read sequence date ranges,base.model_ir_sequence_date_range,base.group_user,r,
 access_lang_internal,Read languages,base.model_res_lang,base.group_user,r,
 access_menus_internal,Read menus,base.model_ir_ui_menu,base.group_user,r,
 access_actions_internal,Read window actions,base.model_ir_actions_act_window,base.group_user,r,

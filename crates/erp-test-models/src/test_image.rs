@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fixtures of Binary and Image fields (column-backed mode): one model with a plain
-//! binary field, an unbounded image, a bounded image, a stored size related to it and an editable
-//! alias of it. Load with `base` (the image limits are its system parameters).
+//! binary field, an unbounded image, a bounded image, a stored size related to it and two editable
+//! aliases of it (one an image, one a plain binary). Load with `base` (the image limits are its system parameters).
 
 use erp_sdk::prelude::*;
 
@@ -38,4 +38,8 @@ pub struct Picture {
     /// under the bounds of `image_1920`.
     #[field(image, related = "image_1920", readonly = false)]
     pub photo: Option<Blob>,
+    /// An editable alias of `image_1920` declared as a plain binary: no image bounds of its own,
+    /// so only its target makes a write load the image limits.
+    #[field(binary, related = "image_1920", readonly = false)]
+    pub picture: Option<Blob>,
 }

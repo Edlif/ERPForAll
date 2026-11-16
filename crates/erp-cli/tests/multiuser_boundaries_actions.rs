@@ -215,3 +215,63 @@ fn committed_revocation_reaches_both_warm_processes_and_survives_peer_loss() {
         // No mutation is retried by this test: each write has a terminal HTTP result and readback.
     });
 }
+
+/// A window action named by its XML id (dashboard cards): the same
+/// authorization as `erp_load_web_action`, and one answer for an unknown, foreign or unreadable reference.
+#[test]
+fn action_reference_loads_only_readable_window_actions_without_an_existence_oracle() {
+    run(|f| {
+        let by_ref = |subject, xml_id: &str| {
+            f.rpc(
+                subject,
+                "ir.actions.act_window",
+                "erp_load_web_action_ref",
+                json!({"xml_id": xml_id}),
+            )
+        };
+        // An ordinary user reads an action without groups on a model it may read, by reference as by id.
+        let action = success(&by_ref(Subject::A, "base.action_country"));
+        assert_eq!(action["model"], "res.country");
+        let by_id = success(&f.rpc(
+            Subject::A,
+            "ir.actions.act_window",
+            "erp_load_web_action",
+            json!({"ids":[f.xmlid("base", "action_country")]}),
+        ));
+        assert_eq!(action, by_id);
+        // A system-only action: the administrator reads it, the ordinary user gets the one refusal.
+        let technical = success(&by_ref(Subject::Admin, "base.technical_model_action"));
+        assert_eq!(technical["model"], "ir.model");
+        let denied = "You may not read this window action.";
+        for xml_id in [
+            "base.technical_model_action", // exists, caller may not read it
+            "base.group_system",           // exists, not a window action
+            "base.no_such_window_action",  // does not exist
+        ] {
+            error(&by_ref(Subject::A, xml_id), 403, ACCESS, denied);
+        }
+        // Not a window action and unknown are refused the same way for the administrator too.
+        for xml_id in ["base.group_system", "base.no_such_window_action"] {
+            error(&by_ref(Subject::Admin, xml_id), 403, ACCESS, denied);
+        }
+        // The input is a bounded `module.name`; anything else is refused by what is wrong with it.
+        let long = format!("base.{}", "a".repeat(260));
+        for (xml_id, problem) in [
+            ("action_country", "has no module part"),
+            ("base.a.b", "has more than one dot"),
+            ("base. action", "contains whitespace or control characters"),
+            (long.as_str(), "is longer than 256 bytes"),
+        ] {
+            let reply = by_ref(Subject::A, xml_id);
+            assert_eq!(reply.status, 422, "{problem}: unexpected HTTP status");
+            let body: serde_json::Value = serde_json::from_str(&reply.body).expect("error JSON");
+            assert_eq!(body["name"], "erp.exceptions.ValidationError");
+            let message = body["message"].as_str().expect("error message");
+            assert!(
+                message.starts_with("Window action reference: invalid XML id '")
+                    && message.ends_with(&format!("': it {problem}.")),
+                "{problem}: {message}"
+            );
+        }
+    });
+}

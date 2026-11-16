@@ -3450,6 +3450,35 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   .kanban-grid { grid-template-columns: 1fr; gap: 8px; }
 }
 
+/*
+  Dashboard card widget: buttons, figures and a compact chart on a kanban card. A board
+ of dashboard cards gets wider columns; the slot drops the one-line clipping of ordinary card lines. 
+ */
+.kanban-grid:has(.dashboard-card) { grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
+.kanban-card-line:has(> .dashboard-card, > .dashboard-card-error) { overflow: visible; white-space: normal; color: var(--text); }
+.dashboard-card { --dashboard-chart-height: 64px; display: flex; flex-direction: column; gap: 12px; margin-top: 8px; font-size: 13px; }
+.dashboard-card-empty { display: none; }
+.dashboard-card-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.dashboard-card-stats { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.dashboard-card-stat { display: grid; grid-template-columns: minmax(32px, auto) minmax(0, 1fr) auto; align-items: baseline; gap: 8px; width: 100%; min-height: 28px; padding: 4px 8px; border-radius: var(--radius-control); text-align: start; font-variant-numeric: tabular-nums; transition: background-color var(--motion-fast) ease-out; }
+.dashboard-card-stat:hover { background: var(--hover); }
+.dashboard-card-stat-count { font-weight: 600; text-align: end; }
+.dashboard-card-stat-amount { color: var(--muted); text-align: end; white-space: nowrap; }
+.dashboard-card-tone-neutral { --graph-colour: var(--accent); }
+.dashboard-card-tone-warning { --graph-colour: var(--warning); }
+.dashboard-card-tone-danger { --graph-colour: var(--danger); }
+.dashboard-card-tone-warning .dashboard-card-stat-count { color: var(--warning); }
+.dashboard-card-tone-danger .dashboard-card-stat-count { color: var(--danger); }
+.dashboard-card-chart { margin: 0; }
+.dashboard-card-chart-label { margin-bottom: 4px; color: var(--muted); font-size: 12px; font-weight: 500; }
+.dashboard-card-chart svg { display: block; width: 100%; height: var(--dashboard-chart-height); }
+.dashboard-card-chart .graph-line, .dashboard-card-chart .graph-axis { vector-effect: non-scaling-stroke; }
+.dashboard-card-chart-axis { display: grid; gap: 2px; margin-top: 4px; color: var(--muted); font-size: 11px; text-align: center; }
+.dashboard-card-chart-axis span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-card-chart-empty { margin: 0; color: var(--muted); }
+.dashboard-card-error { margin: 8px 0 0; color: var(--danger); white-space: normal; }
+@media (prefers-reduced-motion: reduce) { .dashboard-card-stat { transition: none; } }
+
 /* Image widget (IMG.WIDGET): image and image_url */
 .field-image { display: inline-flex; flex-direction: column; align-items: flex-start; gap: .5rem; max-width: 100%; }
 .field-image-stage { position: relative; display: inline-flex; align-items: center; justify-content: center; min-width: 4rem; min-height: 4rem; max-width: 100%; border-radius: var(--radius-control); }

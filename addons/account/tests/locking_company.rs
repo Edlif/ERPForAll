@@ -251,6 +251,7 @@ async fn a_nonmanager_cannot_change_lock_dates() {
     use erp_sdk::{BeginOptions, Context, UserId};
     let h = erp_testkit::Harness::builder([
         &erp_addon_base::ADDON,
+        &erp_addon_web::ADDON,
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_analytic::ADDON,
@@ -349,6 +350,7 @@ async fn generic_soft_writes_are_audited_and_savepoint_rollback_discards_events(
 async fn unavailable_audit_store_cannot_leave_a_company_date_changed() {
     let h = erp_testkit::Harness::builder([
         &erp_addon_base::ADDON,
+        &erp_addon_web::ADDON,
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_analytic::ADDON,

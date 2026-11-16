@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stock references (`stock.reference`): table only. A reference names the
-//! documents (sale order, purchase order, ...) a set of moves belongs to (topology ADR D3). Keeping
-//! the transfer union in step with the moves is's and's.
+//! documents (sale order, purchase order, ...) a set of moves belongs to (topology ADR D3). The
+//! transfer union is kept in step with the moves by [`crate::move_relations`].
 
 use erp_sdk::prelude::*;
 
@@ -30,8 +30,8 @@ pub struct StockReference {
         string = "Stock Moves"
     )]
     pub move_ids: Vec<RecId>,
-    /// `readonly` only marks it in the client: the ORM and RPC still
-    /// write it until adds D3's refusal of direct writes.
+    /// A create or write naming
+    /// it is refused for every caller.
     #[field(
         many2many,
         comodel = "stock.picking",
@@ -39,6 +39,7 @@ pub struct StockReference {
         column1 = "reference_id",
         column2 = "picking_id",
         readonly = true,
+        copy = false,
         string = "Transfers"
     )]
     pub picking_ids: Vec<RecId>,

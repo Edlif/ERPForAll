@@ -13,7 +13,8 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, classN
   if (className) node.className = className;
   return node;
 };
-const svg = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>, className?: string): SVGElementTagNameMap[K] => {
+/** One SVG element with its attributes (the dashboard card chart draws with it too). */
+export const svg = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>, className?: string): SVGElementTagNameMap[K] => {
   const node = document.createElementNS(SVG, tag);
   for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value));
   if (className) node.setAttribute("class", className);

@@ -262,6 +262,12 @@ static CODE_WIDGET: erp_sdk::views::WidgetDecl = erp_sdk::views::WidgetDecl::new
 #[linkme(crate = erp_sdk::__private::linkme)]
 static HTML_WIDGET: erp_sdk::views::WidgetDecl = erp_sdk::views::WidgetDecl::new("html", &["html"]);
 
+/// `dashboard_card`: a kanban card's buttons, figures and chart from one JSON text value.
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::FIELD_WIDGETS)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+static DASHBOARD_CARD_WIDGET: erp_sdk::views::WidgetDecl =
+    erp_sdk::views::WidgetDecl::new("dashboard_card", &["text"]);
+
 /// `list` view type (H18).
 #[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::VIEW_TYPES)]
 #[linkme(crate = erp_sdk::__private::linkme)]

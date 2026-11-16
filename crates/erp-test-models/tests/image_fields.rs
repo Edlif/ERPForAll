@@ -542,6 +542,44 @@ async fn a_write_through_an_editable_related_image_keeps_the_target_bounds() {
     h.cleanup().await.unwrap();
 }
 
+/// picture load the image limits and store under the target's bounds)
+#[tokio::test]
+async fn a_plain_binary_alias_of_a_picture_loads_the_image_limits() {
+    let h = harness().await;
+    // a new transaction per call: nothing before it loaded the image limits
+    let mut tx = h.begin().await.unwrap();
+    let record = create(&mut tx, "alias").await;
+    tx.commit().await.unwrap();
+    let mut tx = h.begin().await.unwrap();
+    record
+        .set_value(&mut tx, "picture", b64(&png(2400, 600)))
+        .await
+        .unwrap();
+    assert_eq!(
+        size(&mut tx, &record, "image_1920").await,
+        Some((1920, 480))
+    );
+    drop(tx);
+
+    let mut tx = h.begin().await.unwrap();
+    let created = tx
+        .env()
+        .records(MODEL)
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![RawVals::new().set_cell("picture", Cell::Bytes(png(600, 2400).into()))],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        size(&mut tx, &created, "image_1920").await,
+        Some((480, 1920))
+    );
+    drop(tx);
+    h.cleanup().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_new_record_holds_the_bounded_picture() {
     let h = harness().await;

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Draft journal entries and items (first part): defaults, amounts, the balance check,
-//! the line rules and the refusal of every way to post. Posting comes with.
+//! the line rules and the refusal of a written state. Posting is tested in
+//! `crates/erp-cli/tests/account_posting.rs` (a successful post needs a full install).
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     reason = "tests"
 )]
-use erp_addon_account::moves::{AccountMove, AccountMoveLine, POST_TASK};
+use erp_addon_account::moves::{AccountMove, AccountMoveLine};
 use erp_sdk::prelude::*;
 use erp_sdk::{Command, ErrorKind};
 use erp_testkit::Harness;
@@ -15,6 +16,7 @@ use erp_testkit::Harness;
 async fn harness() -> Harness {
     Harness::builder([
         &erp_addon_base::ADDON,
+        &erp_addon_web::ADDON,
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_analytic::ADDON,
@@ -533,11 +535,13 @@ async fn accounts_and_journals_of_another_company_are_refused() {
     h.cleanup().await.unwrap();
 }
 
+/// The state changes only through the posting service: a written state is refused, also as
+/// superuser, on entries and on items.
 #[tokio::test]
-async fn nothing_posts_an_entry_before_m6_post() {
+async fn a_written_state_is_refused() {
     let h = harness().await;
     let mut tx = h.begin().await.unwrap();
-    let l = ledger(&mut tx, "No posting").await;
+    let l = ledger(&mut tx, "No written state").await;
     let model = moves(&tx, l.company);
     let created = model
         .create(
@@ -546,12 +550,7 @@ async fn nothing_posts_an_entry_before_m6_post() {
         )
         .await
         .unwrap();
-    let error = created
-        .call::<(), ()>(&mut tx, "action_post", ())
-        .await
-        .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::UserError);
-    assert!(error.message().contains(POST_TASK), "{}", error.message());
+    const REFUSAL: &str = "changes only through Post, Reset to Draft and Cancel";
     for vals in [
         RawVals::new().set_cell(AccountMove::STATE.name(), text("posted")),
         RawVals::new().set_cell(AccountMove::STATE.name(), text("cancel")),
@@ -560,7 +559,7 @@ async fn nothing_posts_an_entry_before_m6_post() {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::UserError);
-        assert!(error.message().contains(POST_TASK), "{}", error.message());
+        assert!(error.message().contains(REFUSAL), "{}", error.message());
     }
     let error = try_create(
         &model.sudo(true),
@@ -569,7 +568,7 @@ async fn nothing_posts_an_entry_before_m6_post() {
     )
     .await
     .unwrap_err();
-    assert!(error.message().contains(POST_TASK), "{}", error.message());
+    assert!(error.message().contains(REFUSAL), "{}", error.message());
     let lines = lines_of(&created, &mut tx).await;
     let first = lines.browse([lines.ids()[0]]).unwrap();
     let error = try_write(
@@ -579,23 +578,7 @@ async fn nothing_posts_an_entry_before_m6_post() {
     )
     .await
     .unwrap_err();
-    assert!(error.message().contains(POST_TASK), "{}", error.message());
-    // raw SQL meets the draft-only constraints
-    for sql in [
-        "UPDATE account_move SET state = 'posted'",
-        "UPDATE account_move_line SET parent_state = 'posted'",
-    ] {
-        let error = tx
-            .savepoint(async |tx| tx.query(sql, &[]).await.map(|_| ()))
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error.sqlstate(),
-            Some("23514"),
-            "{sql}: {}",
-            error.message()
-        );
-    }
+    assert!(error.message().contains(REFUSAL), "{}", error.message());
     tx.rollback().await.unwrap();
     h.cleanup().await.unwrap();
 }

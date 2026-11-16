@@ -35,6 +35,7 @@ fn invoices() -> SequencePattern {
 async fn harness() -> (Harness, i64) {
     let h = Harness::builder([
         &erp_addon_base::ADDON,
+        &erp_addon_web::ADDON,
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_analytic::ADDON,

@@ -27,6 +27,9 @@ mod stock_access;
 #[path = "stock_install/settings.rs"]
 mod settings;
 
+#[path = "stock_install/overview.rs"]
+mod overview;
+
 #[path = "stock_install/quant_unit.rs"]
 mod quant_unit;
 

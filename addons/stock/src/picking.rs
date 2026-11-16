@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Transfers (`stock.picking`): table only. The
-//! name sequence draw, the state evaluation from the counter vector and the counter maintenance are
-//! 's and's; nothing here computes them.
+//! Transfers (`stock.picking`). The counter
+//! vector and the state are kept by the move counter triggers ([`crate::move_counters`])
+//! and refused on `create` and `write` (`move_guards`); the name sequence draw is's.
 
 use erp_sdk::DefaultContext;
 use erp_sdk::prelude::*;
@@ -134,7 +134,8 @@ pub struct StockPicking {
         string = "Shipping Policy"
     )]
     pub move_type: Option<Arc<str>>,
-    /// Status, evaluated from the counter vector.
+    /// Status, evaluated from the counter vector, the shipping policy and the source location by
+    /// the stock-owned expression `picking_state_sql!` in the statement that changes them.
     #[field(
         selection,
         selection = [
@@ -152,7 +153,8 @@ pub struct StockPicking {
         string = "Status"
     )]
     pub state: Option<Arc<str>>,
-    /// References of its moves (the other side of `stock_reference_picking_rel`).
+    /// References of its moves (the other side of `stock_reference_picking_rel`): the stored union
+    /// of its moves' references, rebuilt by [`crate::move_relations`]; never written directly.
     #[field(
         many2many,
         comodel = "stock.reference",
@@ -160,6 +162,7 @@ pub struct StockPicking {
         column1 = "picking_id",
         column2 = "reference_id",
         readonly = true,
+        copy = false,
         string = "References"
     )]
     pub reference_ids: Vec<RecId>,
@@ -271,46 +274,48 @@ pub struct StockPicking {
     #[field(boolean, default = true, string = "Show return button")]
     pub show_return: bool,
     /// Moves whose `picking_id` is this transfer, scrap included.
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub move_count: i32,
     /// Of them, in state draft.
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub draft_count: i32,
     /// Of them, waiting another move.
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub waiting_count: i32,
     /// Of them, confirmed.
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub confirmed_count: i32,
     /// Of them, partially available.
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub partially_available_count: i32,
     /// Of them, assigned.
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub assigned_count: i32,
     /// Of them, done.
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub done_count: i32,
     /// Of them, cancelled.
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub cancel_count: i32,
     /// Done scrap moves (within `done_count`).
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub done_scrap_count: i32,
     /// Cancelled scrap moves (within `cancel_count`).
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub cancel_scrap_count: i32,
     /// Assigned moves with zero demand, which leave the ranked state set (within `assigned_count`).
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub assigned_zero_demand_count: i32,
-    /// Open moves with demand, read by the `one` policy (within `move_count`).
-    #[field(integer, required = true, readonly = true, default = 0)]
+    /// Open moves with a non-zero demand (negative included, as the reference tests demand for
+    /// truth), read by the `one` policy and the `direct` zero-demand rule (within `move_count`).
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub open_positive_demand_count: i32,
-    /// Confirmed moves with demand, read by the `direct` policy (within `confirmed_count`).
-    #[field(integer, required = true, readonly = true, default = 0)]
+    /// Confirmed moves with a strictly positive demand, read by the `direct` policy (within
+    /// `confirmed_count`).
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub confirmed_positive_demand_count: i32,
     /// Non-scrap make-to-order moves (3). A source that bypasses reservation gives
     /// `assigned` only while it is 0, that is, while every non-scrap move is make-to-stock.
-    #[field(integer, required = true, readonly = true, default = 0)]
+    #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub mto_nonscrap_count: i32,
 }

@@ -150,14 +150,11 @@ pub mod audit {
     };
 }
 
-/// Pure functions only; the drawing
-/// functions of `erp_orm::sequence` are not re-exported until their access check lands
-/// (`access_entry_points.rs` lists them as gaps).
 pub mod sequence {
     pub use erp_orm::sequence::{
         FiscalYear, MAX_NAME_BYTES, MAX_PATTERN_PADDING, MAX_PATTERN_TEXT_BYTES, PeriodKey,
         SequencePattern, SequencePatternBuilder, SequenceReset, SequenceWaitMode, YearDigits,
-        render_sequence_format, resolve_period_key,
+        draw_by_code, draw_by_id, render_sequence_format, resolve_period_key,
     };
 }
 /// Record access: what `#[access_domain]` overrides, grant sources and

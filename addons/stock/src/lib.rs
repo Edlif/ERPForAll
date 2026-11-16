@@ -20,7 +20,10 @@
 //! Company stock lookups and company-dependent contact/user preferences are declared by stock.
 //! Provisioning remains a separate delivery; reading an empty company does not create topology.
 //! Operation types resolve location defaults, configure standard sequences, maintain per-user favorites,
-//! reschedule eligible move dates on method changes, and expose authorized basic transfer counts.
+//! reschedule eligible move dates on method changes, and expose authorized basic transfer counts
+//! and the overview card built from them.
+//! Each transfer's move counter vector and state follow its moves in the statement that changes
+//! them ([`move_counters`]).
 
 erp_sdk::addon!(
     name = "stock",
@@ -36,10 +39,12 @@ pub mod lot;
 mod migrations;
 mod operation_type;
 mod operation_type_counters;
+mod operation_type_dashboard;
 mod operation_type_reservation;
 pub mod orderpoint;
 pub mod package;
 pub mod picking;
+mod picking_detailed_operations;
 pub mod putaway;
 pub mod quant;
 pub mod reference;
@@ -84,6 +89,12 @@ pub use quant_unit::{QuantRetryExhausted, QuantUnit, run_quant_unit};
 mod quant_guards;
 // Engine-owned move and line columns (done time, membership, correction counter), lead ruling L6'.
 mod move_guards;
+// The transfer's move counter vector and state: statement triggers, root locks and the
+// cache notification after a move mutation.
+mod move_counter_sql;
+pub mod move_counters;
+pub mod move_relations;
+pub mod move_units;
 
 pub use quant_engine::{
     QuantBalance, QuantChange, QuantError, QuantFilter, QuantKey, apply_quant_changes,

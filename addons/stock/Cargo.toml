@@ -13,6 +13,7 @@ erp-addon-base = { workspace = true }
 erp-addon-barcodes = { workspace = true }
 erp-sdk = { workspace = true }
 erp-addon-product = { workspace = true }
+erp-addon-uom = { workspace = true }
 erp-addon-barcodes_gs1_nomenclature = { workspace = true }
 
 [lints]
@@ -26,7 +27,6 @@ erp-addon-analytic = { workspace = true }
 erp-testkit = { workspace = true }
 toml = { workspace = true }
 erp-addon-web = { workspace = true }
-erp-addon-uom = { workspace = true }
 erp-addon-barcodes = { workspace = true }
 erp-addon-delivery = { workspace = true }
 erp-addon-stock_delivery = { workspace = true }

@@ -472,6 +472,15 @@ pub struct StockPickingType {
     /// Role name within the warehouse and addon.
     #[field(char, copy = false)]
     pub generated_role: Option<Arc<str>>,
+    /// Overview card as JSON text (dashboard card contract v1), for the reader's access and companies.
+    #[field(
+        text,
+        compute = "_compute_dashboard_card",
+        readonly = true,
+        copy = false,
+        string = "Overview card"
+    )]
+    pub dashboard_card: Option<Arc<str>>,
 }
 
 // Use the public authorization API: base_check_write_fields is a reserved base-addon bridge.

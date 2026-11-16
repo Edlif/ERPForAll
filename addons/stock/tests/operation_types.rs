@@ -272,6 +272,37 @@ async fn update(tx: &mut Transaction, records: &Records, vals: RawVals) -> Resul
     tx.savepoint(async move |tx| records.write(tx, vals).await)
         .await
 }
+/// Give transfer `picking` of `company` one move of demand 1 in `state`. A transfer's state follows
+/// from its moves and is refused as a written value; with one such move from the internal
+/// fixture location it is the move's state.
+async fn move_in_state(
+    tx: &mut Transaction,
+    f: &Fixture,
+    picking: i64,
+    company: i64,
+    state: &str,
+) -> i64 {
+    let vals = RawVals::new()
+        .set_cell("company_id", Cell::Id(company))
+        .set_cell("product_id", Cell::Id(f.product))
+        .set_cell("uom_id", Cell::Id(f.unit))
+        .set_cell("location_id", Cell::Id(f.location))
+        .set_cell("location_dest_id", Cell::Id(f.other_location))
+        .set_cell("product_uom_qty", dec("1"))
+        .set_cell("product_qty", dec("1"))
+        .set_cell("picking_id", Cell::Id(picking))
+        .set_cell("state", text(state));
+    tx.env()
+        .sudo(true)
+        .with_company(company)
+        .unwrap()
+        .records("stock.move")
+        .unwrap()
+        .create(tx, vec![vals])
+        .await
+        .unwrap_or_else(|e| panic!("move in state {state}: {e:?}"))
+        .ids()[0]
+}
 async fn wh(tx: &mut Transaction, f: &Fixture) -> i64 {
     create(
         tx,
@@ -718,7 +749,6 @@ async fn basic_counter_hook_counts_transfer_states_lateness_and_backorders() {
                 .set_cell("picking_type_id", Cell::Id(f.picking_type))
                 .set_cell("location_id", Cell::Id(f.location))
                 .set_cell("location_dest_id", Cell::Id(f.other_location))
-                .set_cell("state", text(state))
                 .set_cell(
                     "scheduled_date",
                     Cell::DateTime(DateTime::parse_odoo("2099-01-01 00:00:00").unwrap()),
@@ -730,6 +760,7 @@ async fn basic_counter_hook_counts_transfer_states_lateness_and_backorders() {
                 vals = vals.set_cell("backorder_id", Cell::Id(first.unwrap()));
             }
             let id = create(&mut tx, "stock.picking", vals).await;
+            move_in_state(&mut tx, &f, id, f.company, state).await;
             if first.is_none() {
                 first = Some(id);
             }
@@ -1029,8 +1060,9 @@ async fn hidden_moves_refuse_rescheduling_without_partial_policy_change() {
 async fn counters_respect_transfer_record_rules_and_invalidate_after_writes() {
     let f = restricted_fixture().await;
     let mut tx = f.h.begin().await.unwrap();
+    let mut visible_move = None;
     for name in ["Visible transfer", "Hidden transfer"] {
-        create(
+        let picking = create(
             &mut tx,
             "stock.picking",
             RawVals::new()
@@ -1038,10 +1070,11 @@ async fn counters_respect_transfer_record_rules_and_invalidate_after_writes() {
                 .set_cell("company_id", Cell::Id(f.company))
                 .set_cell("picking_type_id", Cell::Id(f.picking_type))
                 .set_cell("location_id", Cell::Id(f.location))
-                .set_cell("location_dest_id", Cell::Id(f.other_location))
-                .set_cell("state", text("assigned")),
+                .set_cell("location_dest_id", Cell::Id(f.other_location)),
         )
         .await;
+        let mv = move_in_state(&mut tx, &f, picking, f.company, "assigned").await;
+        visible_move.get_or_insert(mv);
     }
     let all = row(&tx, "stock.picking.type", f.picking_type);
     let caller = all.with_user(7);
@@ -1053,17 +1086,9 @@ async fn counters_respect_transfer_record_rules_and_invalidate_after_writes() {
         caller.cell(&mut tx, "count_picking_ready").await.unwrap(),
         Cell::Int(1)
     );
-    let p = tx
-        .env()
-        .records("stock.picking")
-        .unwrap()
-        .search(
-            &mut tx,
-            &Domain::field("name").unwrap().eq("Visible transfer"),
-        )
-        .await
-        .unwrap();
-    update(&mut tx, &p, RawVals::new().set_cell("state", text("done")))
+    // the visible transfer becomes done through its move
+    let mv = row(&tx, "stock.move", visible_move.unwrap());
+    update(&mut tx, &mv, RawVals::new().set_cell("state", text("done")))
         .await
         .unwrap();
     assert_eq!(
@@ -1631,7 +1656,7 @@ async fn counters_batch_types_empty_groups_past_dates_and_company_rules() {
         (f.other_picking_type, f.other_company, 3),
     ] {
         for i in 0..n {
-            create(
+            let picking = create(
                 &mut tx,
                 "stock.picking",
                 RawVals::new()
@@ -1640,13 +1665,13 @@ async fn counters_batch_types_empty_groups_past_dates_and_company_rules() {
                     .set_cell("picking_type_id", Cell::Id(type_id))
                     .set_cell("location_id", Cell::Id(f.location))
                     .set_cell("location_dest_id", Cell::Id(f.other_location))
-                    .set_cell("state", text("confirmed"))
                     .set_cell(
                         "scheduled_date",
                         Cell::DateTime(DateTime::parse_odoo("1970-01-01 12:00:00").unwrap()),
                     ),
             )
             .await;
+            move_in_state(&mut tx, &f, picking, company, "confirmed").await;
         }
     }
     let types = tx
@@ -1692,6 +1717,204 @@ async fn counter_provider_field_denial_is_not_a_zero_fallback() {
         error.message(),
         "You do not have enough rights to access the field \"picking_type_id\" on Transfer (stock.picking). Please contact your system administrator.\n\nOperation: read"
     );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// The overview cards of `types`, parsed (dashboard card contract v1).
+async fn overview_cards(tx: &mut Transaction, types: &Records) -> Vec<erp_sdk::serde_json::Value> {
+    types
+        .cells(tx, "dashboard_card")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|cell| match cell {
+            Cell::Str(text) => erp_sdk::serde_json::from_str(&text).unwrap(),
+            other => panic!("dashboard_card is not text: {other:?}"),
+        })
+        .collect()
+}
+
+const OVERVIEW_COUNTERS: [&str; 4] = [
+    "count_picking_ready",
+    "count_picking_waiting",
+    "count_picking_late",
+    "count_picking_backorders",
+];
+
+/// each stat's link finds exactly the transfers it counts; drawing the card is the client's)
+#[tokio::test]
+async fn overview_card_matches_counters_and_links_for_each_operation_kind() {
+    use erp_sdk::serde_json::Value as Json;
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let mut types = vec![f.picking_type];
+    for (k, code) in ["incoming", "outgoing", "internal"].into_iter().enumerate() {
+        let id = create(
+            &mut tx,
+            "stock.picking.type",
+            RawVals::new()
+                .set_cell("name", text(code))
+                .set_cell("code", text(code))
+                .set_cell("company_id", Cell::Id(f.company))
+                .set_cell("default_location_src_id", Cell::Id(f.location))
+                .set_cell("default_location_dest_id", Cell::Id(f.other_location)),
+        )
+        .await;
+        // a different mix per kind, so a stat read from the wrong counter or type cannot pass
+        let mut first = None;
+        for (state, n, past, deadline) in [
+            ("assigned", 1 + k, false, false),
+            ("confirmed", 2, true, false),
+            ("waiting", k, false, true),
+            ("draft", 1, true, false),
+            ("done", 1, true, false),
+        ] {
+            for i in 0..n {
+                let date = if past {
+                    "1970-01-01 12:00:00"
+                } else {
+                    "2099-01-01 00:00:00"
+                };
+                let mut vals = RawVals::new()
+                    .set_cell("name", text(&format!("{code}/{state}/{i}")))
+                    .set_cell("company_id", Cell::Id(f.company))
+                    .set_cell("picking_type_id", Cell::Id(id))
+                    .set_cell("location_id", Cell::Id(f.location))
+                    .set_cell("location_dest_id", Cell::Id(f.other_location))
+                    .set_cell("has_deadline_issue", Cell::Bool(deadline))
+                    .set_cell(
+                        "scheduled_date",
+                        Cell::DateTime(DateTime::parse_odoo(date).unwrap()),
+                    );
+                if let (Some(back), "confirmed", 0) = (first, state, i) {
+                    vals = vals.set_cell("backorder_id", Cell::Id(back));
+                }
+                let picking = create(&mut tx, "stock.picking", vals).await;
+                move_in_state(&mut tx, &f, picking, f.company, state).await;
+                first.get_or_insert(picking);
+            }
+        }
+        types.push(id);
+    }
+    let records = tx
+        .env()
+        .records("stock.picking.type")
+        .unwrap()
+        .browse(types.clone())
+        .unwrap();
+    let cards = overview_cards(&mut tx, &records).await;
+    let pickings = tx.env().records("stock.picking").unwrap();
+    for (card, type_id) in cards.iter().zip(&types) {
+        assert_eq!(card["v"], 1);
+        assert_eq!(card["chart"], Json::Null);
+        let button = &card["buttons"][0];
+        assert_eq!(button["action"], "stock.action_picking_tree_all");
+        assert_eq!(button["view_mode"], "form");
+        assert_eq!(button["context"]["default_picking_type_id"], *type_id);
+        let stats = card["stats"].as_array().unwrap();
+        let labels: Vec<_> = stats.iter().map(|s| s["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, ["To Process", "Waiting", "Late", "Backorders"]);
+        let row = row(&tx, "stock.picking.type", *type_id);
+        for ((stat, field), busy_tone) in stats
+            .iter()
+            .zip(OVERVIEW_COUNTERS)
+            .zip(["neutral", "neutral", "danger", "warning"])
+        {
+            let Cell::Int(n) = row.cell(&mut tx, field).await.unwrap() else {
+                panic!("{field} is not an integer");
+            };
+            assert_eq!(stat["count"], n, "{type_id} {field}");
+            assert_eq!(stat["amount"], Json::Null);
+            assert_eq!(stat["currency_id"], Json::Null);
+            assert_eq!(stat["action"], "stock.action_picking_tree_all");
+            assert_eq!(stat["tone"], if n > 0 { busy_tone } else { "neutral" });
+            let domain = Domain::from_json(&stat["domain"]).unwrap();
+            assert_eq!(
+                pickings.search_count(&mut tx, &domain, None).await.unwrap(),
+                u64::try_from(n).unwrap(),
+                "{type_id} {field}: the link lists what the card counts"
+            );
+        }
+    }
+    // the fixture's type has no transfers: every stat is zero, nothing is invented
+    assert!(
+        cards[0]["stats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["count"] == 0)
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// installed company rules are the security tests')
+#[tokio::test]
+async fn overview_card_never_shows_another_companys_types_or_counts() {
+    let main_only = || Domain::field("company_id.name").unwrap().eq("Main Company");
+    let policy = erp_testkit::DomainPolicy::builder(erp_testkit::Otherwise::Allow)
+        .rule("stock.picking", erp_sdk::Operation::Read, main_only())
+        .rule("stock.picking.type", erp_sdk::Operation::Read, main_only())
+        .build()
+        .unwrap();
+    let f = fixture_with_domains(policy).await;
+    let mut tx = f.h.begin().await.unwrap();
+    for (type_id, company, n) in [
+        (f.picking_type, f.company, 2),
+        (f.other_picking_type, f.other_company, 3),
+    ] {
+        for i in 0..n {
+            let picking = create(
+                &mut tx,
+                "stock.picking",
+                RawVals::new()
+                    .set_cell("name", text(&format!("overview {company}/{i}")))
+                    .set_cell("company_id", Cell::Id(company))
+                    .set_cell("picking_type_id", Cell::Id(type_id))
+                    .set_cell("location_id", Cell::Id(f.location))
+                    .set_cell("location_dest_id", Cell::Id(f.other_location)),
+            )
+            .await;
+            move_in_state(&mut tx, &f, picking, company, "assigned").await;
+        }
+    }
+    let caller = tx.env().records("stock.picking.type").unwrap().with_user(7);
+    let seen = caller
+        .search(
+            &mut tx,
+            &Domain::field("id")
+                .unwrap()
+                .in_(vec![f.picking_type, f.other_picking_type]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(seen.ids(), vec![f.picking_type]);
+    let cards = overview_cards(&mut tx, &seen).await;
+    let ready = &cards[0]["stats"][0];
+    let Cell::Int(n) = seen.cell(&mut tx, "count_picking_ready").await.unwrap() else {
+        panic!("count_picking_ready is not an integer");
+    };
+    assert_eq!(ready["count"], n);
+    let domain = Domain::from_json(&ready["domain"]).unwrap();
+    let own = tx
+        .env()
+        .records("stock.picking")
+        .unwrap()
+        .with_user(7)
+        .search_count(&mut tx, &domain, None)
+        .await
+        .unwrap();
+    assert_eq!(own, u64::try_from(n).unwrap());
+    // another company's card is refused, never shown as zero
+    let error = row(&tx, "stock.picking.type", f.other_picking_type)
+        .with_user(7)
+        .cell(&mut tx, "dashboard_card")
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Access);
     tx.rollback().await.unwrap();
     drop(tx);
     f.h.cleanup().await.unwrap();

@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Customer invoices, vendor bills and their credit notes: Accounting > Customers and Accounting > Vendors. -->
+<erp>
+  <record id="view_invoice_list" model="ir.ui.view">
+    <field name="name">account.move.invoice.list</field>
+    <field name="model">account.move</field>
+    <field name="priority" eval="20"/>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name" string="Number"/>
+        <field name="partner_id"/>
+        <field name="invoice_date"/>
+        <field name="invoice_date_due"/>
+        <field name="amount_untaxed"/>
+        <field name="amount_total"/>
+        <field name="amount_residual"/>
+        <field name="currency_id"/>
+        <field name="state" widget="badge"/>
+        <field name="payment_state" widget="badge"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_invoice_form" model="ir.ui.view">
+    <field name="name">account.move.invoice.form</field>
+    <field name="model">account.move</field>
+    <field name="priority" eval="20"/>
+    <field name="arch" type="xml">
+      <form>
+        <header>
+          <button name="action_post" type="object" string="Confirm" class="btn-primary" invisible="state != 'draft'"/>
+          <button name="button_draft" type="object" string="Reset to Draft" invisible="state == 'draft'"/>
+          <button name="button_cancel" type="object" string="Cancel" invisible="state != 'draft'"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,posted"/>
+        </header>
+        <sheet>
+          <div class="oe_title">
+            <field name="move_type" invisible="1"/>
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="partner_id" readonly="state != 'draft'"/>
+              <field name="ref" readonly="state != 'draft'"/>
+            </group>
+            <group>
+              <field name="invoice_date" readonly="state != 'draft'"/>
+              <field name="invoice_date_due" readonly="state != 'draft'"/>
+              <field name="journal_id" readonly="state != 'draft'"/>
+              <field name="currency_id" readonly="state != 'draft'"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Invoice Lines" name="invoice_lines">
+              <!-- Lines show with the line model's default list and form (account_move_views.xml). -->
+              <field name="invoice_line_ids" readonly="state != 'draft'"/>
+              <group name="totals">
+                <group/>
+                <group string="Totals">
+                  <field name="amount_untaxed"/>
+                  <field name="amount_tax"/>
+                  <field name="amount_total"/>
+                  <field name="amount_residual"/>
+                  <field name="payment_state"/>
+                </group>
+              </group>
+            </page>
+            <page string="Journal Items" name="journal_items">
+              <field name="line_ids" readonly="1"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_invoice_search" model="ir.ui.view">
+    <field name="name">account.move.invoice.search</field>
+    <field name="model">account.move</field>
+    <field name="priority" eval="20"/>
+    <field name="arch" type="xml">
+      <search string="Invoices">
+        <field name="name"/>
+        <field name="partner_id"/>
+        <field name="ref"/>
+        <field name="journal_id"/>
+        <filter name="draft" string="Draft" domain="[('state', '=', 'draft')]"/>
+        <filter name="posted" string="Posted" domain="[('state', '=', 'posted')]"/>
+        <separator/>
+        <filter name="unpaid" string="Unpaid" domain="[('state', '=', 'posted'), ('payment_state', 'in', ('not_paid', 'partial'))]"/>
+        <group>
+          <filter name="groupby_partner" string="Partner" context="{'group_by': 'partner_id'}"/>
+          <filter name="groupby_journal" string="Journal" context="{'group_by': 'journal_id'}"/>
+          <filter name="groupby_invoice_date" string="Invoice Date" context="{'group_by': 'invoice_date'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_move_out_invoice_type" model="ir.actions.act_window">
+    <field name="name">Invoices</field>
+    <field name="res_model">account.move</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_invoice_list"/>
+    <field name="search_view_id" ref="view_invoice_search"/>
+    <field name="domain">[('move_type', '=', 'out_invoice')]</field>
+    <field name="context">{'default_move_type': 'out_invoice'}</field>
+  </record>
+  <record id="action_move_out_invoice_type_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_move_out_invoice_type"/>
+    <field name="view_id" ref="view_invoice_list"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_move_out_invoice_type_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_move_out_invoice_type"/>
+    <field name="view_id" ref="view_invoice_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+
+  <record id="action_move_out_refund_type" model="ir.actions.act_window">
+    <field name="name">Credit Notes</field>
+    <field name="res_model">account.move</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_invoice_list"/>
+    <field name="search_view_id" ref="view_invoice_search"/>
+    <field name="domain">[('move_type', '=', 'out_refund')]</field>
+    <field name="context">{'default_move_type': 'out_refund'}</field>
+  </record>
+  <record id="action_move_out_refund_type_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_move_out_refund_type"/>
+    <field name="view_id" ref="view_invoice_list"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_move_out_refund_type_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_move_out_refund_type"/>
+    <field name="view_id" ref="view_invoice_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+
+  <record id="action_move_in_invoice_type" model="ir.actions.act_window">
+    <field name="name">Bills</field>
+    <field name="res_model">account.move</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_invoice_list"/>
+    <field name="search_view_id" ref="view_invoice_search"/>
+    <field name="domain">[('move_type', '=', 'in_invoice')]</field>
+    <field name="context">{'default_move_type': 'in_invoice'}</field>
+  </record>
+  <record id="action_move_in_invoice_type_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_move_in_invoice_type"/>
+    <field name="view_id" ref="view_invoice_list"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_move_in_invoice_type_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_move_in_invoice_type"/>
+    <field name="view_id" ref="view_invoice_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+
+  <record id="action_move_in_refund_type" model="ir.actions.act_window">
+    <field name="name">Refunds</field>
+    <field name="res_model">account.move</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_invoice_list"/>
+    <field name="search_view_id" ref="view_invoice_search"/>
+    <field name="domain">[('move_type', '=', 'in_refund')]</field>
+    <field name="context">{'default_move_type': 'in_refund'}</field>
+  </record>
+  <record id="action_move_in_refund_type_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_move_in_refund_type"/>
+    <field name="view_id" ref="view_invoice_list"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_move_in_refund_type_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_move_in_refund_type"/>
+    <field name="view_id" ref="view_invoice_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+
+  <menuitem id="menu_finance_receivables" name="Customers" parent="menu_finance" sequence="20">
+    <menuitem id="menu_action_move_out_invoice_type" name="Invoices" action="action_move_out_invoice_type" sequence="10"/>
+    <menuitem id="menu_action_move_out_refund_type" name="Credit Notes" action="action_move_out_refund_type" sequence="20"/>
+  </menuitem>
+  <menuitem id="menu_finance_payables" name="Vendors" parent="menu_finance" sequence="30">
+    <menuitem id="menu_action_move_in_invoice_type" name="Bills" action="action_move_in_invoice_type" sequence="10"/>
+    <menuitem id="menu_action_move_in_refund_type" name="Refunds" action="action_move_in_refund_type" sequence="20"/>
+  </menuitem>
+</erp>

@@ -4,13 +4,14 @@
 
 erp_sdk::addon!(
     name = "account",
-    depends = ["base", "product", "analytic"],
+    depends = ["base", "web", "product", "analytic"],
     exact_only = true
 );
 
 pub mod company;
 pub mod fiscal;
 pub mod fpos;
+pub mod invoice;
 pub mod journal;
 pub mod ledger;
 pub mod locking;

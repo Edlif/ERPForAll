@@ -202,9 +202,15 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                 d.insert(
                     "align".into(),
                     string(match align {
+                        CrossAlignment::Start => "start",
                         CrossAlignment::Center => "center",
                         CrossAlignment::End => "end",
-                        _ => "start",
+                        _ => {
+                            return Err(ReportError::Unsupported {
+                                feature: "row alignment",
+                                task: "a later release",
+                            });
+                        }
                     }),
                 );
                 d.insert("children".into(), indices(cells));

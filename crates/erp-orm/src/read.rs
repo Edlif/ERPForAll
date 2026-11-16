@@ -640,6 +640,18 @@ impl Transaction {
         records: &Records,
         fid: FieldId,
     ) -> Result<()> {
+        self.field_read_checks_with(records, fid, true).await
+    }
+
+    /// [`Self::field_read_checks`]; with `may_load` false a cold stored value is not loaded to
+    /// carry the record decision, which is then taken without the column (the read memo, or an
+    /// id-only statement under the rule domain): a `bin_size` read never loads file content.
+    async fn field_read_checks_with(
+        &mut self,
+        records: &Records,
+        fid: FieldId,
+        may_load: bool,
+    ) -> Result<()> {
         self.admit_records(records).await?;
         if !records.env().su() {
             // a read served from the cache still decides on the field and record checks, so bring
@@ -692,7 +704,8 @@ impl Transaction {
                 .graph
                 .generated_read((records.model_id(), fid))
                 .is_some();
-        let load_cold = !generated_alias
+        let load_cold = may_load
+            && !generated_alias
             && records
                 .rec_ids()
                 .iter()
@@ -798,10 +811,7 @@ impl Transaction {
     ) -> Result<Vec<Option<usize>>> {
         let model = records.model_id();
         let ids = records.rec_ids();
-        let by_column = field.store
-            && field.has_column()
-            && field.inherited.is_none()
-            && records.spec().has_table()
+        let by_column = sized_by_column(records.spec(), field)
             && ids.iter().all(|id| {
                 !id.is_new()
                     && !self.cache.contains(model, field.id, *id)
@@ -1067,10 +1077,14 @@ impl Records {
         } else {
             fields.to_vec()
         };
+        // `bin_size`: a stored file is sized by PostgreSQL, never fetched (`fields_to_fetch`), so
+        // it cannot tell which records exist
+        let bin_size = self.env().context().bin_size();
+        let sized = |field: &FieldSpec| bin_size && sized_by_column(spec, field);
         let mut probe = None;
         for name in &names {
             let field = field_of(spec, name)?;
-            if probe.is_none() && field.has_column() {
+            if probe.is_none() && field.has_column() && !sized(field) {
                 probe = Some(field.id);
             }
             if probe.is_none()
@@ -1087,7 +1101,9 @@ impl Records {
             let graph = tx.shared.graph.model(spec.id);
             let mut visited = FxHashSet::default();
             for name in &names {
-                if let Ok(field) = field_of(spec, name) {
+                if let Ok(field) = field_of(spec, name)
+                    && !sized(field)
+                {
                     let mut deps = Vec::new();
                     crate::search::resolve_stored_dependencies(
                         spec,
@@ -1109,7 +1125,16 @@ impl Records {
             names.iter().copied(),
             FieldOp::Read,
         )?;
-        self.fetch(tx, Some(&names)).await?;
+        let mut fetched = names.clone();
+        if probe.is_none() && names.iter().any(|n| field_of(spec, n).is_ok_and(sized)) {
+            // only sized files are named: a readable prefetched column tells which records exist
+            let mask = tx.field_mask(self.env(), self.model_id())?;
+            if let Some(&first) = spec.prefetch_fields.iter().find(|f| mask.readable(**f)) {
+                probe = Some(first);
+                fetched.push(spec.field_by_id(first).name);
+            }
+        }
+        self.fetch(tx, Some(&fetched)).await?;
         let model = self.model_id();
         let present = match probe {
             Some(fid) => {
@@ -1225,7 +1250,7 @@ impl Transaction {
         let n = records.len();
         if matches!(field.ty, FieldType::Binary { .. }) && records.env().context().bin_size() {
             // `bin_size`: the size as text in place of the content (false when empty)
-            self.field_read_checks(records, fid).await?;
+            self.field_read_checks_with(records, fid, false).await?;
             let mut sink = Sink::text(n);
             for size in self.binary_sizes(records, field).await? {
                 sink.push_cell(match size {
@@ -1293,6 +1318,16 @@ fn not_cached(records: &Records, id: RecId, field: &FieldSpec) -> Error {
         records.model_name(),
         field.name
     ))
+}
+
+/// A binary field whose `bin_size` read is sized by PostgreSQL (`octet_length` of its own
+/// column) rather than from fetched content.
+pub(crate) fn sized_by_column(spec: &ModelSpec, field: &FieldSpec) -> bool {
+    matches!(field.ty, FieldType::Binary { .. })
+        && field.store
+        && field.has_column()
+        && field.inherited.is_none()
+        && spec.has_table()
 }
 
 #[cfg(test)]

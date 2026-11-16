@@ -32,13 +32,13 @@ import { focusKanbanCard, kanbanLayout, kanbanRoot, renderKanbanCards } from "./
 import type { GroupByCatalogue, GroupableField } from "./search/types.js";
 import { createContext, decodeAst, evalAst, parseBoundedJson } from "../../../../../web/packages/expr/src/index.js";
 import { expressionValue, jsonValue } from "./field-relations.js";
-import { array, describeViews, integer, noExpression, object, text, type ButtonNode, type Description, type Field, type Node, type View } from "./metadata.js";
+import { array, describeViews, integer, object, text, type ButtonNode, type Description, type Field, type Node, type View } from "./metadata.js";
 import { actionButton, button, choose, confirmChoice, el, errorMessage, relabelActionButton } from "./dom.js";
 import { buttonHidden, lockButtonControls, runObjectButton, buttonExpression, type ButtonEnvironment } from "./buttons.js";
 import { viewButton, ButtonDebouncer, ButtonHotkeys } from "./view-button.js";
 import { runUrlButton } from "./button-url.js";
 import { CurrencyDisplayCache } from "./field-currency.js";
-import { fieldWidgets, resolveFieldWidget } from "./registry.js";
+import { fieldWidgets, resolveFieldWidget, type ActionRequest } from "./registry.js";
 import { ListGroupModel, type ListGroupNode } from "./list-group-model.js";
 import type { ListGroupState } from "./list-group-state.js";
 import type { NumericLocale } from "./numeric-values.js";
@@ -1159,6 +1159,51 @@ export class HumanApp {
     return curr;
   }
 
+  /** A window action's own domain, evaluated for the user and `context`. */
+  private actionDomain(action: Record<string, unknown>, context: Record<string, unknown>): unknown[] {
+    if (!action["domain"]) return [];
+    const ast = decodeAst(parseBoundedJson(JSON.stringify(action["domain"])));
+    const val = jsonValue(evalAst(ast, createContext({ names: { context: expressionValue(context, 0), uid: expressionValue(this.userId, 0) } })));
+    if (!Array.isArray(val)) throw new ClientError("validation", "Action domain must evaluate to a list.");
+    return val;
+  }
+
+  /** A window action's own context: the server admits only a literal dictionary of `default_<field>` text, safe
+   *  integer or boolean values (`addons/web/src/metadata.rs`, `parse_action_context`); the same is checked here. */
+  private actionContext(action: Record<string, unknown>): Record<string, unknown> {
+    if (action["context"] === null) return {};
+    const ast = decodeAst(parseBoundedJson(JSON.stringify(action["context"])));
+    const value = jsonValue(evalAst(ast, createContext({ names: {} })));
+    const context = object(value, "action context");
+    for (const [key, item] of Object.entries(context)) {
+      if (!/^default_[a-z_][a-z0-9_]*$/.test(key)) throw new ClientError("unsupported", `Unsupported action context key: ${key}.`);
+      if (!(typeof item === "string" || typeof item === "boolean" || typeof item === "number" && Number.isSafeInteger(item))) {
+        throw new ClientError("server", `Invalid action context value for ${key}.`);
+      }
+    }
+    return context;
+  }
+
+  /** Opens a window action named by its XML id (dashboard cards): its list, or a new record in its form, filtered by
+   *  the action's domain and the request's, with the request's context and the way back to `origin`. */
+  private async openActionRequest(request: ActionRequest, origin: Route, originLabel: string): Promise<void> {
+    const action = object(await this.rpc.call("ir.actions.act_window", "erp_load_web_action_ref", { xml_id: request.xmlId, context: this.context }));
+    if (action["wire_major"] !== 1 || action["target"] !== "current") throw new ClientError("unsupported", "Unsupported or mismatched window action.");
+    // The action's defaults first, then the request's (a figure opened with `{}` still creates with the action's).
+    const context = { ...this.context, ...this.actionContext(action), ...request.context };
+    const views = actionViews(action), list = views.find(view => view[1] === "list"), form = views.find(view => view[1] === "form");
+    // A related window opens a list (and its form) only (actions.ts `current_window`); other view types come with that result.
+    if (!list) throw new ClientError("unsupported", `The action ${request.xmlId} has no list view, so a dashboard card cannot open it yet.`);
+    if (request.viewMode === "form" && !form) throw new ClientError("unsupported", `The action ${request.xmlId} has no form view to create a record in.`);
+    const result = actionResult({ wire_major: 1, result: { kind: "current_window", name: text(action["name"], "action name"), model: text(action["model"], "action model"),
+      domain: [...this.actionDomain(action, context), ...request.domain], context: {},
+      views: [{ id: list[0] ?? null, type: "list" }, ...(form ? [{ id: form[0] ?? null, type: "form" }] : [])] } });
+    if (result.kind !== "current_window") throw new ClientError("server", "The dashboard action did not open as a list.");
+    const id = this.methodActions.add({ result, context, origin: { ...origin }, originLabel });
+    try { await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: id, model: result.model, view_type: request.viewMode === "form" ? "form" : "list" }); }
+    catch (error) { this.methodActions.remove(id); throw error; }
+  }
+
   /** Navigation and prefetch share one caller-bound action/view metadata producer. */
   private async windowAction(id: number, options: CallOptions = {}): Promise<Record<string, unknown>> {
     return object((await this.windowBundle(id, options))["action"]);
@@ -1880,23 +1925,14 @@ export class HumanApp {
         const actionId = rpcId(route.action);
         const entry = route.method_action ? this.methodActions.get(route.method_action) : undefined;
         if (entry && entry.origin.action !== route.action) throw new ClientError("validation", "Related action does not belong to this route.");
-        const context = entry?.context ?? this.context;
         const action: Record<string, unknown> = entry
           ? { ...entry.result, wire_major: 1, target: "current", id: rpcId(route.action) }
           : await this.windowAction(actionId);
         if (action["wire_major"] !== 1 || action["target"] !== "current" || action["id"] !== rpcId(route.action)) {
           throw new ClientError("unsupported", "Unsupported or mismatched window action.");
         }
-        let actionDomain: unknown[] = [];
-        if (!entry) {
-          if (action["domain"]) {
-            const ast = decodeAst(parseBoundedJson(JSON.stringify(action["domain"])));
-            const val = jsonValue(evalAst(ast, createContext({ names: { context: expressionValue(context, 0), uid: expressionValue(this.userId, 0) } })));
-            if (!Array.isArray(val)) throw new ClientError("validation", "Action domain must evaluate to a list.");
-            actionDomain = val;
-          }
-          noExpression(action["context"], "action contexts");
-        }
+        const context = entry?.context ?? { ...this.context, ...this.actionContext(action) };
+        const actionDomain: unknown[] = entry ? [] : this.actionDomain(action, context);
         const model = text(action["model"], "action model");
         if (route.model && route.model !== model) throw new ClientError("validation", "URL model does not match the action.");
         const views = actionViews(action);
@@ -2603,6 +2639,7 @@ export class HumanApp {
           rpc: this.rpc, context, currencies, numericLocale: this.numericLocale, editorLocale: this.editorLocale,
           messages: this.messages, run: this.run, report: error => this.reportError(error), signal: this.lifetime.signal,
           openRecord: (model, related) => this.openRelatedRecord(model, related), change: () => { throw new ClientError("validation", "Kanban card fields cannot be edited here."); },
+          openAction: request => this.openActionRequest(request, route, actionTitle),
         });
       } });
       body.replaceChildren(cards.node);

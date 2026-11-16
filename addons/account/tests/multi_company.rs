@@ -12,6 +12,7 @@ use erp_testkit::Harness;
 async fn harness() -> Harness {
     Harness::builder([
         &erp_addon_base::ADDON,
+        &erp_addon_web::ADDON,
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_analytic::ADDON,

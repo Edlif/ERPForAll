@@ -66,9 +66,11 @@ async fn install_on_base_and_product() {
         })
         .collect();
     let system = ModuleSystem::builder(db.pool().clone(), index)
+        .view_types(erp_addon_web::view_type_contributions())
         .native_artifact_identities(identities)
         .code([
             &erp_addon_base::ADDON,
+            &erp_addon_web::ADDON,
             &erp_addon_uom::ADDON,
             &erp_addon_product::ADDON,
             &erp_addon_analytic::ADDON,

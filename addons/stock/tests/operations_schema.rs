@@ -617,22 +617,12 @@ async fn reference_name_and_relation_tables() {
 
 /// One reference relates to several moves, and the association reads the same from both sides (the
 /// reference's `move_ids` and each move's `reference_ids` share `stock_reference_move_rel`); the
-/// stored transfer side shares `stock_reference_picking_rel` with the picking's `reference_ids`.
+/// stored transfer side shares `stock_reference_picking_rel` with the picking's `reference_ids` (rebuilt
+/// from the moves of the transfer; the transfer side itself is never written).
 #[tokio::test]
 async fn reference_relates_to_several_moves_from_both_sides() {
     let f = fixture().await;
     let mut tx = f.h.begin().await.unwrap();
-    let mut moves = Vec::new();
-    for _ in 0..3 {
-        moves.push(
-            create_move(&mut tx, f.company, move_vals(&f, f.company))
-                .await
-                .unwrap(),
-        );
-    }
-    let other = create_move(&mut tx, f.company, move_vals(&f, f.company))
-        .await
-        .unwrap();
     let picking = create_picking(
         &mut tx,
         f.company,
@@ -640,13 +630,27 @@ async fn reference_relates_to_several_moves_from_both_sides() {
     )
     .await
     .unwrap();
+    let mut moves = Vec::new();
+    for _ in 0..3 {
+        moves.push(
+            create_move(
+                &mut tx,
+                f.company,
+                move_vals(&f, f.company).set_cell("picking_id", Cell::Id(picking)),
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    let other = create_move(&mut tx, f.company, move_vals(&f, f.company))
+        .await
+        .unwrap();
     let reference = create(
         &mut tx,
         "stock.reference",
         RawVals::new()
             .set_cell("name", text("PO/0007"))
-            .set_commands("move_ids", [Command::set(rec_ids(&moves))])
-            .set_commands("picking_ids", [Command::set(rec_ids(&[picking]))]),
+            .set_commands("move_ids", [Command::set(rec_ids(&moves))]),
     )
     .await;
     let references = tx.env().records("stock.reference").unwrap();
@@ -1059,7 +1063,7 @@ async fn picking_counter_vector_checks() {
         "stock_picking_counts_subsets",
         PICK_SUBSETS,
     );
-    // the ORM path reports the same check with its kind and message
+    // the ORM path never reaches the checks: the vector follows from the moves
     let error = create_picking(
         &mut tx,
         f.company,
@@ -1068,7 +1072,7 @@ async fn picking_counter_vector_checks() {
     )
     .await
     .unwrap_err();
-    assert_violation(&error, "23514", "stock_picking_counts_sum", PICK_SUM);
+    assert_eq!(error.kind(), ErrorKind::Programming, "{error:?}");
     // the shipping weight is a finite number; a finite value is accepted
     for value in ["NaN", "Infinity", "-Infinity"] {
         let sql =
@@ -1410,8 +1414,8 @@ async fn move_checks_refuse_and_accept_boundaries() {
     for case in &accepted {
         assert_eq!(insert_move(&f, &mut tx, case).await.unwrap(), 1);
     }
-    // the ORM path: the conversion check with its kind and message
-    let constraint = "stock_move_product_qty_conversion";
+    // the ORM path never reaches the conversion check: the unit service fills the converted demand
+    // and refuses a supplied value that differs, by name, before the insert
     let error = create_move(
         &mut tx,
         f.company,
@@ -1421,7 +1425,21 @@ async fn move_checks_refuse_and_accept_boundaries() {
     )
     .await
     .unwrap_err();
-    assert_violation(&error, "23514", constraint, move_message(constraint));
+    assert_eq!(error.sqlstate(), None, "{error:?}");
+    assert_eq!(
+        error.message(),
+        erp_addon_stock::StockError::UnitSnapshot {
+            field: tx
+                .registry()
+                .model("stock.move")
+                .unwrap()
+                .field("product_qty")
+                .unwrap()
+                .string
+                .to_string()
+        }
+        .to_string()
+    );
     // unit price and packaging quantity are finite numbers; finite values are accepted
     insert_move(&f, &mut tx, &MoveRow::zero()).await.unwrap();
     let last: i64 = tx
@@ -1849,6 +1867,2159 @@ async fn deleting_a_partner_who_owns_a_transfer_or_restricts_a_move_is_refused()
     .await
     .unwrap();
     assert_eq!(delete(&mut tx).await.unwrap(), 1);
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+// ---- the transfer's move counter vector and state (3) ----
+
+/// `vals` with demand `qty` in both the move unit and the product unit (factor one, two digits).
+fn with_demand(vals: RawVals, qty: &str) -> RawVals {
+    vals.set_cell("product_uom_qty", dec(qty))
+        .set_cell("product_qty", dec(qty))
+}
+
+/// One move of the fixture's company in `picking`: `state`, demand `qty`, scrap flag, supply
+/// method.
+fn counted_move(
+    f: &Fixture,
+    picking: i64,
+    state: &str,
+    qty: &str,
+    scrap: bool,
+    mto: bool,
+) -> RawVals {
+    with_demand(move_vals(f, f.company), qty)
+        .set_cell("picking_id", Cell::Id(picking))
+        .set_cell("state", text(state))
+        .set_cell("is_scrap", Cell::Bool(scrap))
+        .set_cell(
+            "procure_method",
+            text(if mto {
+                "make_to_order"
+            } else {
+                "make_to_stock"
+            }),
+        )
+}
+
+async fn create_moves(tx: &mut Transaction, company: i64, vals: Vec<RawVals>) -> Result<Vec<i64>> {
+    tx.savepoint(async |tx| {
+        Ok(tx
+            .env()
+            .with_company(company)?
+            .records("stock.move")?
+            .create(tx, vals)
+            .await?
+            .ids())
+    })
+    .await
+}
+
+async fn write_moves(tx: &mut Transaction, company: i64, ids: &[i64], vals: RawVals) -> Result<()> {
+    tx.savepoint(async |tx| {
+        tx.env()
+            .with_company(company)?
+            .records("stock.move")?
+            .browse(ids.iter().copied())?
+            .write(tx, vals)
+            .await
+    })
+    .await
+}
+
+async fn unlink_moves(tx: &mut Transaction, company: i64, ids: &[i64]) -> Result<()> {
+    tx.savepoint(async |tx| {
+        tx.env()
+            .with_company(company)?
+            .records("stock.move")?
+            .browse(ids.iter().copied())?
+            .unlink(tx)
+            .await
+    })
+    .await
+}
+
+/// The stored vector of `picking` (in [`COUNTERS`] order) and its state.
+async fn stored_vector(tx: &mut Transaction, picking: i64) -> (Vec<i64>, String) {
+    let columns: Vec<String> = COUNTERS.iter().map(|c| format!("{c}::int8")).collect();
+    let sql = format!(
+        "SELECT {}, state::text FROM stock_picking WHERE id = $1",
+        columns.join(", ")
+    );
+    let row = tx.query(&sql, &[&picking]).await.unwrap().remove(0);
+    let vector = (0..COUNTERS.len()).map(|i| row.get::<_, i64>(i)).collect();
+    (vector, row.get(COUNTERS.len()))
+}
+
+/// An independent fold of the moves of `picking` by the.3 definitions, in
+/// [`COUNTERS`] order: open demand is non-zero demand, confirmed demand is positive demand.
+async fn folded_vector(tx: &mut Transaction, picking: i64) -> Vec<i64> {
+    let row = tx
+        .query(
+            "SELECT count(*)::int8, \
+                count(*) FILTER (WHERE state = 'draft')::int8, \
+                count(*) FILTER (WHERE state = 'waiting')::int8, \
+                count(*) FILTER (WHERE state = 'confirmed')::int8, \
+                count(*) FILTER (WHERE state = 'partially_available')::int8, \
+                count(*) FILTER (WHERE state = 'assigned')::int8, \
+                count(*) FILTER (WHERE state = 'done')::int8, \
+                count(*) FILTER (WHERE state = 'cancel')::int8, \
+                count(*) FILTER (WHERE state = 'done' AND is_scrap)::int8, \
+                count(*) FILTER (WHERE state = 'cancel' AND is_scrap)::int8, \
+                count(*) FILTER (WHERE state = 'assigned' AND product_uom_qty = 0)::int8, \
+                count(*) FILTER (WHERE state NOT IN ('done', 'cancel') AND product_uom_qty <> 0)::int8, \
+                count(*) FILTER (WHERE state = 'confirmed' AND product_uom_qty > 0)::int8, \
+                count(*) FILTER (WHERE NOT coalesce(is_scrap, false) AND procure_method = 'make_to_order')::int8 \
+             FROM stock_move WHERE picking_id = $1",
+            &[&picking],
+        )
+        .await
+        .unwrap()
+        .remove(0);
+    (0..COUNTERS.len()).map(|i| row.get::<_, i64>(i)).collect()
+}
+
+async fn assert_folded(tx: &mut Transaction, pickings: &[i64], step: &str) {
+    for picking in pickings {
+        let (stored, _) = stored_vector(tx, *picking).await;
+        assert_eq!(
+            stored,
+            folded_vector(tx, *picking).await,
+            "{step}: transfer {picking}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn move_counters_follow_ordinary_move_mutations() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let a = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "CNT/A"),
+    )
+    .await
+    .unwrap();
+    let b = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "CNT/B"),
+    )
+    .await
+    .unwrap();
+    // one create statement adds several moves to two transfers
+    let moves = create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            counted_move(&f, a, "confirmed", "0", false, false),
+            counted_move(&f, a, "assigned", "4", false, true),
+            counted_move(&f, a, "done", "1", true, false),
+            counted_move(&f, b, "cancel", "2", false, false),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_folded(&mut tx, &[a, b], "create").await;
+    // a demand-only change (0 to 5, no state change) moves the confirmed move into both
+    // demand counts
+    write_moves(
+        &mut tx,
+        f.company,
+        &moves[..1],
+        with_demand(RawVals::new(), "5"),
+    )
+    .await
+    .unwrap();
+    assert_folded(&mut tx, &[a, b], "demand").await;
+    let (vector, _) = stored_vector(&mut tx, a).await;
+    assert_eq!(
+        vector[11..13],
+        [2_i64, 1],
+        "open and confirmed demand counts after 0 -> 5"
+    );
+    // a state write and a reparent in one write
+    write_moves(
+        &mut tx,
+        f.company,
+        &moves[1..2],
+        RawVals::new()
+            .set_cell("state", text("partially_available"))
+            .set_cell("picking_id", Cell::Id(b)),
+    )
+    .await
+    .unwrap();
+    assert_folded(&mut tx, &[a, b], "reparent").await;
+    // a write naming no counted column changes nothing
+    let before = (
+        stored_vector(&mut tx, a).await,
+        stored_vector(&mut tx, b).await,
+    );
+    write_moves(
+        &mut tx,
+        f.company,
+        &moves,
+        RawVals::new().set_cell("origin", text("SO1")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            stored_vector(&mut tx, a).await,
+            stored_vector(&mut tx, b).await
+        ),
+        before
+    );
+    // a trusted raw insert is counted by the same statement
+    tx.execute(
+        "INSERT INTO stock_move (company_id, product_id, uom_id, location_id, location_dest_id, \
+            date, state, procure_method, open_line_version, product_uom_qty, quantity, product_qty, \
+            quantity_product_uom, uom_factor, product_uom_factor, product_unit_digits, picking_id) \
+         VALUES ($1, $2, $3, $4, $5, now(), 'waiting', 'make_to_stock', 0, 3, 0, 3, 0, 1, 1, 2, $6)",
+        &[&f.company, &f.product, &f.unit, &f.location, &f.other_location, &a],
+    )
+    .await
+    .unwrap();
+    assert_folded(&mut tx, &[a, b], "raw insert").await;
+    // a delete
+    unlink_moves(&mut tx, f.company, &moves[3..]).await.unwrap();
+    assert_folded(&mut tx, &[a, b], "unlink").await;
+    tx.commit().await.unwrap();
+    // a rolled-back mutation leaves the committed vector
+    let mut tx = f.h.begin().await.unwrap();
+    let committed = (
+        stored_vector(&mut tx, a).await,
+        stored_vector(&mut tx, b).await,
+    );
+    create_moves(
+        &mut tx,
+        f.company,
+        vec![counted_move(&f, a, "draft", "1", false, false)],
+    )
+    .await
+    .unwrap();
+    assert_folded(&mut tx, &[a], "inside the rolled-back unit").await;
+    tx.rollback().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    assert_eq!(
+        (
+            stored_vector(&mut tx, a).await,
+            stored_vector(&mut tx, b).await
+        ),
+        committed
+    );
+    assert_folded(&mut tx, &[a, b], "after rollback").await;
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// One state-rule case: shipping policy, bypassing source, moves `(state, demand, scrap, mto)`,
+/// the expected state.
+type StateCase = (
+    &'static str,
+    bool,
+    &'static [(&'static str, &'static str, bool, bool)],
+    &'static str,
+);
+
+#[tokio::test]
+async fn picking_state_follows_the_reference_rule_from_counters() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let supplier = create(
+        &mut tx,
+        "stock.location",
+        RawVals::new()
+            .set_cell("name", text("Vendors"))
+            .set_cell("usage", text("supplier")),
+    )
+    .await;
+    let cases: &[StateCase] = &[
+        ("direct", false, &[], "draft"),
+        (
+            "direct",
+            false,
+            &[
+                ("draft", "1", false, false),
+                ("assigned", "1", false, false),
+            ],
+            "draft",
+        ),
+        (
+            "direct",
+            false,
+            &[("cancel", "1", false, false), ("cancel", "1", false, false)],
+            "cancel",
+        ),
+        (
+            "direct",
+            false,
+            &[("done", "1", false, false), ("cancel", "1", false, false)],
+            "done",
+        ),
+        (
+            "direct",
+            false,
+            &[("done", "1", true, false), ("cancel", "1", false, false)],
+            "cancel",
+        ),
+        (
+            "direct",
+            false,
+            &[
+                ("assigned", "5", false, false),
+                ("confirmed", "5", false, false),
+            ],
+            "assigned",
+        ),
+        (
+            "one",
+            false,
+            &[
+                ("assigned", "5", false, false),
+                ("confirmed", "5", false, false),
+            ],
+            "confirmed",
+        ),
+        (
+            "one",
+            false,
+            &[
+                ("confirmed", "0", false, false),
+                ("waiting", "0", false, false),
+            ],
+            "assigned",
+        ),
+        (
+            "direct",
+            true,
+            &[("confirmed", "5", false, false)],
+            "assigned",
+        ),
+        // the other branches of the ranked rule
+        (
+            "direct",
+            true,
+            &[("confirmed", "5", false, true)],
+            "confirmed",
+        ),
+        (
+            "direct",
+            false,
+            &[("assigned", "0", false, false)],
+            "assigned",
+        ),
+        (
+            "direct",
+            false,
+            &[("confirmed", "5", false, false)],
+            "confirmed",
+        ),
+        (
+            "direct",
+            false,
+            &[("confirmed", "0", false, false)],
+            "assigned",
+        ),
+        (
+            "direct",
+            false,
+            &[("confirmed", "-1", false, false)],
+            "confirmed",
+        ),
+        (
+            "direct",
+            false,
+            &[
+                ("confirmed", "-1", false, false),
+                ("confirmed", "0", false, false),
+            ],
+            "assigned",
+        ),
+        (
+            "direct",
+            false,
+            &[
+                ("waiting", "5", false, false),
+                ("confirmed", "5", false, false),
+            ],
+            "waiting",
+        ),
+        (
+            "one",
+            false,
+            &[
+                ("waiting", "5", false, false),
+                ("assigned", "5", false, false),
+            ],
+            "waiting",
+        ),
+        (
+            "one",
+            false,
+            &[
+                ("partially_available", "5", false, false),
+                ("assigned", "5", false, false),
+            ],
+            "confirmed",
+        ),
+    ];
+    for (i, (policy, bypass, moves, expected)) in cases.iter().enumerate() {
+        let source = if *bypass { supplier } else { f.location };
+        let picking = create_picking(
+            &mut tx,
+            f.company,
+            picking_vals(&f, f.company, f.picking_type, &format!("RULE/{i}"))
+                .set_cell("move_type", text(policy))
+                .set_cell("location_id", Cell::Id(source)),
+        )
+        .await
+        .unwrap();
+        let vals = moves
+            .iter()
+            .map(|(state, qty, scrap, mto)| counted_move(&f, picking, state, qty, *scrap, *mto))
+            .collect::<Vec<_>>();
+        if !vals.is_empty() {
+            create_moves(&mut tx, f.company, vals).await.unwrap();
+        }
+        assert_folded(&mut tx, &[picking], &format!("case {i}")).await;
+        let (_, state) = stored_vector(&mut tx, picking).await;
+        assert_eq!(state, *expected, "case {i}: {policy} {moves:?}");
+        let cached = tx
+            .env()
+            .records("stock.picking")
+            .unwrap()
+            .browse([picking])
+            .unwrap()
+            .cell(&mut tx, "state")
+            .await
+            .unwrap();
+        assert_eq!(
+            cached,
+            text(expected),
+            "case {i}: the ORM reads the stored state"
+        );
+    }
+    // a policy change re-evaluates the state in its own statement (case 6 becomes direct)
+    let picking: i64 = tx
+        .query("SELECT id FROM stock_picking WHERE name = 'RULE/6'", &[])
+        .await
+        .unwrap()[0]
+        .get(0);
+    let records = tx
+        .env()
+        .records("stock.picking")
+        .unwrap()
+        .browse([picking])
+        .unwrap();
+    records
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("move_type", text("direct")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        records.cell(&mut tx, "state").await.unwrap(),
+        text("assigned")
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn picking_derived_columns_are_refused_by_name() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let picking = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "DER/1"),
+    )
+    .await
+    .unwrap();
+    let label = |tx: &Transaction, field: &str| {
+        tx.registry()
+            .model("stock.picking")
+            .unwrap()
+            .field(field)
+            .unwrap()
+            .string
+            .to_string()
+    };
+    for (field, value) in [
+        ("state", text("done")),
+        ("move_count", Cell::Int(0)),
+        ("mto_nonscrap_count", Cell::Int(0)),
+    ] {
+        let expected = erp_addon_stock::StockError::DerivedFromMoves {
+            field: label(&tx, field),
+            default: false,
+        }
+        .to_string();
+        let error = create_picking(
+            &mut tx,
+            f.company,
+            picking_vals(&f, f.company, f.picking_type, &format!("DER/{field}"))
+                .set_cell(field, value.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ErrorKind::Programming,
+            "create {field}: {error:?}"
+        );
+        assert_eq!(error.message(), expected);
+        for sudo in [false, true] {
+            let error = tx
+                .savepoint(async |tx| {
+                    tx.env()
+                        .sudo(sudo)
+                        .records("stock.picking")?
+                        .browse([picking])?
+                        .write(tx, RawVals::new().set_cell(field, value.clone()))
+                        .await
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ErrorKind::Programming,
+                "write {field} sudo={sudo}"
+            );
+            assert_eq!(error.message(), expected);
+        }
+    }
+    let error = tx
+        .savepoint(async |tx| {
+            tx.env()
+                .with_company(f.company)?
+                .with_context([("default_state", Value::str("done"))])
+                .records("stock.picking")?
+                .create(
+                    tx,
+                    vec![picking_vals(&f, f.company, f.picking_type, "DER/default")],
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Programming, "{error:?}");
+    assert_eq!(
+        error.message(),
+        erp_addon_stock::StockError::DerivedFromMoves {
+            field: label(&tx, "state"),
+            default: true,
+        }
+        .to_string()
+    );
+    let (vector, state) = stored_vector(&mut tx, picking).await;
+    assert_eq!((vector, state.as_str()), (vec![0; COUNTERS.len()], "draft"));
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn move_counters_reach_cached_reads_and_the_overview() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let id = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "CACHE/1"),
+    )
+    .await
+    .unwrap();
+    let picking = tx
+        .env()
+        .records("stock.picking")
+        .unwrap()
+        .browse([id])
+        .unwrap();
+    let operation = tx
+        .env()
+        .records("stock.picking.type")
+        .unwrap()
+        .browse([f.picking_type])
+        .unwrap();
+    // preload every value the move changes
+    assert_eq!(picking.cell(&mut tx, "state").await.unwrap(), text("draft"));
+    assert_eq!(
+        picking.cell(&mut tx, "assigned_count").await.unwrap(),
+        Cell::Int(0)
+    );
+    assert_eq!(
+        operation
+            .cell(&mut tx, "count_picking_ready")
+            .await
+            .unwrap(),
+        Cell::Int(0)
+    );
+    assert_eq!(
+        operation
+            .cell(&mut tx, "count_picking_draft")
+            .await
+            .unwrap(),
+        Cell::Int(1)
+    );
+    create_moves(
+        &mut tx,
+        f.company,
+        vec![counted_move(&f, id, "assigned", "2", false, false)],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        picking.cell(&mut tx, "state").await.unwrap(),
+        text("assigned")
+    );
+    assert_eq!(
+        picking.cell(&mut tx, "assigned_count").await.unwrap(),
+        Cell::Int(1)
+    );
+    assert_eq!(
+        picking.cell(&mut tx, "move_count").await.unwrap(),
+        Cell::Int(1)
+    );
+    assert_eq!(
+        operation
+            .cell(&mut tx, "count_picking_ready")
+            .await
+            .unwrap(),
+        Cell::Int(1)
+    );
+    assert_eq!(
+        operation
+            .cell(&mut tx, "count_picking_draft")
+            .await
+            .unwrap(),
+        Cell::Int(0)
+    );
+    tx.commit().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    let operation = tx
+        .env()
+        .records("stock.picking.type")
+        .unwrap()
+        .browse([f.picking_type])
+        .unwrap();
+    assert_eq!(
+        operation
+            .cell(&mut tx, "count_picking_ready")
+            .await
+            .unwrap(),
+        Cell::Int(1)
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_move_writers_serialize_on_transfer_roots() {
+    let f = fixture().await;
+    let mut setup = f.h.begin().await.unwrap();
+    let p1 = create_picking(
+        &mut setup,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "ROOT/1"),
+    )
+    .await
+    .unwrap();
+    let p2 = create_picking(
+        &mut setup,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "ROOT/2"),
+    )
+    .await
+    .unwrap();
+    let moves = create_moves(
+        &mut setup,
+        f.company,
+        vec![
+            counted_move(&f, p1, "confirmed", "1", false, false),
+            counted_move(&f, p2, "confirmed", "1", false, false),
+        ],
+    )
+    .await
+    .unwrap();
+    setup.commit().await.unwrap();
+    drop(setup);
+    let retryable = |error: &Error| {
+        assert_eq!(error.kind(), ErrorKind::Concurrency, "{error:?}");
+        assert_eq!(error.sqlstate(), Some("40001"), "{error:?}");
+    };
+    // same transfer: B's snapshot predates A's commit, so B's root lock refuses retryably
+    let mut a = f.h.begin().await.unwrap();
+    let mut b = f.h.begin().await.unwrap();
+    b.query("SELECT 1", &[]).await.unwrap();
+    create_moves(
+        &mut a,
+        f.company,
+        vec![counted_move(&f, p1, "draft", "1", false, false)],
+    )
+    .await
+    .unwrap();
+    a.commit().await.unwrap();
+    drop(a);
+    let error = create_moves(
+        &mut b,
+        f.company,
+        vec![counted_move(&f, p1, "draft", "1", false, false)],
+    )
+    .await
+    .unwrap_err();
+    retryable(&error);
+    b.rollback().await.unwrap();
+    drop(b);
+    // opposite reparents: A moves the first move to P2, B the second to P1; both lock P1 then P2
+    let mut a = f.h.begin().await.unwrap();
+    let mut b = f.h.begin().await.unwrap();
+    b.query("SELECT 1", &[]).await.unwrap();
+    write_moves(
+        &mut a,
+        f.company,
+        &moves[..1],
+        RawVals::new().set_cell("picking_id", Cell::Id(p2)),
+    )
+    .await
+    .unwrap();
+    a.commit().await.unwrap();
+    drop(a);
+    let error = write_moves(
+        &mut b,
+        f.company,
+        &moves[1..],
+        RawVals::new().set_cell("picking_id", Cell::Id(p1)),
+    )
+    .await
+    .unwrap_err();
+    retryable(&error);
+    b.rollback().await.unwrap();
+    drop(b);
+    // the retry on a fresh snapshot succeeds, and every vector equals its fold
+    let mut retry = f.h.begin().await.unwrap();
+    write_moves(
+        &mut retry,
+        f.company,
+        &moves[1..],
+        RawVals::new().set_cell("picking_id", Cell::Id(p1)),
+    )
+    .await
+    .unwrap();
+    retry.commit().await.unwrap();
+    drop(retry);
+    let mut check = f.h.begin().await.unwrap();
+    assert_folded(&mut check, &[p1, p2], "after the serialized writers").await;
+    assert_eq!(stored_vector(&mut check, p1).await.0[0], 2);
+    assert_eq!(stored_vector(&mut check, p2).await.0[0], 1);
+    check.rollback().await.unwrap();
+    drop(check);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_bypass_change_is_refused_while_transfers_are_open() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let picking = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "BYP/1"),
+    )
+    .await
+    .unwrap();
+    create_moves(
+        &mut tx,
+        f.company,
+        vec![counted_move(&f, picking, "confirmed", "5", false, false)],
+    )
+    .await
+    .unwrap();
+    let message = "The location type cannot switch between a type that reserves stock and one \
+                   that does not while transfers leaving from it are open.";
+    let error = tx
+        .savepoint(async |tx| {
+            tx.execute(
+                "UPDATE stock_location SET usage = 'supplier' WHERE id = $1",
+                &[&f.location],
+            )
+            .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert_eq!(error.sqlstate(), Some("ERP04"));
+    assert_eq!(
+        error.constraint(),
+        Some("stock_location_bypass_open_transfers")
+    );
+    assert_eq!(error.message(), message);
+    // a usage change that keeps the bypass class is allowed
+    tx.savepoint(async |tx| {
+        tx.execute(
+            "UPDATE stock_location SET usage = 'transit' WHERE id = $1",
+            &[&f.location],
+        )
+        .await
+    })
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// The shipped stock 1.6 backfill (lead condition M3).
+const BACKFILL_SQL: &str = include_str!("../migrations/1.6/post-move-counters.sql");
+
+#[tokio::test]
+async fn backfill_sets_vectors_with_the_triggers_installed() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let ready = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "FILL/1"),
+    )
+    .await
+    .unwrap();
+    let done = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "FILL/2"),
+    )
+    .await
+    .unwrap();
+    let empty = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "FILL/3"),
+    )
+    .await
+    .unwrap();
+    create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            counted_move(&f, ready, "assigned", "5", false, false),
+            counted_move(&f, ready, "confirmed", "5", false, true),
+            counted_move(&f, done, "done", "1", false, false),
+            counted_move(&f, done, "cancel", "1", true, false),
+        ],
+    )
+    .await
+    .unwrap();
+    let expected: Vec<(Vec<i64>, String)> = vec![
+        stored_vector(&mut tx, ready).await,
+        stored_vector(&mut tx, done).await,
+        stored_vector(&mut tx, empty).await,
+    ];
+    assert_eq!(
+        expected.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>(),
+        ["assigned", "done", "draft"]
+    );
+    // a pre-1.6 shape: vectors that do not match the moves (a trusted raw write; the state
+    // trigger then evaluates the corrupted vector)
+    tx.execute(
+        "UPDATE stock_picking SET move_count = 0, draft_count = 0, waiting_count = 0, \
+            confirmed_count = 0, partially_available_count = 0, assigned_count = 0, done_count = 0, \
+            cancel_count = 0, done_scrap_count = 0, cancel_scrap_count = 0, \
+            assigned_zero_demand_count = 0, open_positive_demand_count = 0, \
+            confirmed_positive_demand_count = 0, mto_nonscrap_count = 0 WHERE id = ANY($1)",
+        &[&vec![ready, done, empty]],
+    )
+    .await
+    .unwrap();
+    assert_eq!(stored_vector(&mut tx, ready).await.1, "draft");
+    tx.batch(BACKFILL_SQL).await.unwrap();
+    for (picking, want) in [ready, done, empty].into_iter().zip(&expected) {
+        assert_eq!(
+            &stored_vector(&mut tx, picking).await,
+            want,
+            "transfer {picking}"
+        );
+    }
+    assert_folded(&mut tx, &[ready, done, empty], "backfill").await;
+    let versions = "SELECT ctid::text FROM stock_picking WHERE id = ANY($1) ORDER BY id";
+    let ids = vec![ready, done, empty];
+    let before: Vec<String> = tx
+        .query(versions, &[&ids])
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    tx.batch(BACKFILL_SQL).await.unwrap();
+    let after: Vec<String> = tx
+        .query(versions, &[&ids])
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(after, before, "a second backfill writes no transfer row");
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// The shipped stock 1.7 projection rebuild, which an operator repeats after an upgrade that ran
+/// with older nodes still writing.
+const REFERENCES_SQL: &str = include_str!("../migrations/1.7/post-move-references.sql");
+
+#[tokio::test]
+async fn reference_rebuild_repairs_the_projection_and_repeats_safely() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let a = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "FIX/A"),
+    )
+    .await
+    .unwrap();
+    let refs = create_references(&mut tx, &["SO/F1", "SO/F2"]).await;
+    create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            counted_move(&f, a, "draft", "1", false, false)
+                .set_cell("reference_ids", id_list(&refs[..1])),
+        ],
+    )
+    .await
+    .unwrap();
+    // drift: the supported pair is missing and an unsupported one is present (trusted raw writes)
+    tx.execute(
+        "DELETE FROM stock_reference_picking_rel WHERE picking_id = $1",
+        &[&a],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "INSERT INTO stock_reference_picking_rel (reference_id, picking_id) VALUES ($1, $2)",
+        &[&refs[1], &a],
+    )
+    .await
+    .unwrap();
+    tx.batch(REFERENCES_SQL).await.unwrap();
+    tx.invalidate_model("stock.picking", None).await.unwrap();
+    assert_projection(&mut tx, a, &refs[..1], "rebuilt").await;
+    tx.batch(REFERENCES_SQL).await.unwrap();
+    assert_projection(&mut tx, a, &refs[..1], "repeated").await;
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+// ---- move references and chains (topology ADR D3) ----
+
+fn id_list(ids: &[i64]) -> Cell {
+    Cell::Ids(
+        ids.iter()
+            .map(|id| RecId::from_real(*id).unwrap())
+            .collect(),
+    )
+}
+
+async fn create_references(tx: &mut Transaction, names: &[&str]) -> Vec<i64> {
+    let vals = names
+        .iter()
+        .map(|name| RawVals::new().set_cell("name", text(name)))
+        .collect();
+    tx.env()
+        .records("stock.reference")
+        .unwrap()
+        .create(tx, vals)
+        .await
+        .unwrap()
+        .ids()
+}
+
+async fn write_reference(tx: &mut Transaction, reference: i64, vals: RawVals) -> Result<()> {
+    tx.savepoint(async |tx| {
+        tx.env()
+            .records("stock.reference")?
+            .browse([reference])?
+            .write(tx, vals)
+            .await
+    })
+    .await
+}
+
+/// The stored projection of `picking`, ascending.
+async fn projection(tx: &mut Transaction, picking: i64) -> Vec<i64> {
+    let sql =
+        "SELECT reference_id FROM stock_reference_picking_rel WHERE picking_id = $1 ORDER BY 1";
+    tx.query(sql, &[&picking])
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+/// An independent fold of the references of the moves of `picking`, ascending.
+async fn reference_union(tx: &mut Transaction, picking: i64) -> Vec<i64> {
+    let sql = "SELECT DISTINCT r.reference_id FROM stock_reference_move_rel r \
+               JOIN stock_move m ON m.id = r.move_id WHERE m.picking_id = $1 ORDER BY 1";
+    tx.query(sql, &[&picking])
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+/// The ids of the x2many `field` of record `id` as the ORM reads it in `tx`, ascending.
+async fn orm_ids(tx: &mut Transaction, model: &str, id: i64, field: &str) -> Vec<i64> {
+    let cell = tx
+        .env()
+        .records(model)
+        .unwrap()
+        .browse([id])
+        .unwrap()
+        .cell(tx, field)
+        .await
+        .unwrap();
+    let Cell::Ids(ids) = cell else {
+        panic!("{model}.{field} is not an id list: {cell:?}");
+    };
+    let mut out: Vec<i64> = ids.iter().map(|id| id.get()).collect();
+    out.sort_unstable();
+    out
+}
+
+async fn assert_projection(tx: &mut Transaction, picking: i64, want: &[i64], step: &str) {
+    let stored = projection(tx, picking).await;
+    assert_eq!(stored, reference_union(tx, picking).await, "{step}: fold");
+    assert_eq!(stored, want, "{step}: stored");
+    assert_eq!(
+        orm_ids(tx, "stock.picking", picking, "reference_ids").await,
+        want,
+        "{step}: cached read"
+    );
+}
+
+#[tokio::test]
+async fn picking_references_are_the_union_of_their_moves() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let a = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "REF/A"),
+    )
+    .await
+    .unwrap();
+    let b = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "REF/B"),
+    )
+    .await
+    .unwrap();
+    let refs = create_references(&mut tx, &["SO/1", "SO/2"]).await;
+    let (r1, r2) = (refs[0], refs[1]);
+    let moves = create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            counted_move(&f, a, "draft", "1", false, false),
+            counted_move(&f, a, "draft", "1", false, false),
+            counted_move(&f, b, "draft", "1", false, false),
+        ],
+    )
+    .await
+    .unwrap();
+    let (m1, m2, m3) = (moves[0], moves[1], moves[2]);
+    // the move side of the relation
+    write_moves(
+        &mut tx,
+        f.company,
+        &[m1],
+        RawVals::new().set_cell("reference_ids", id_list(&[r1])),
+    )
+    .await
+    .unwrap();
+    assert_projection(&mut tx, a, &[r1], "move side").await;
+    assert_projection(&mut tx, b, &[], "move side").await;
+    // the reference side of the relation
+    write_reference(
+        &mut tx,
+        r2,
+        RawVals::new().set_cell("move_ids", id_list(&[m2, m3])),
+    )
+    .await
+    .unwrap();
+    assert_projection(&mut tx, a, &[r1, r2], "reference side").await;
+    assert_projection(&mut tx, b, &[r2], "reference side").await;
+    assert_eq!(
+        orm_ids(&mut tx, "stock.reference", r2, "picking_ids").await,
+        vec![a, b]
+    );
+    // a move changing transfer takes its references along and keeps them
+    write_moves(
+        &mut tx,
+        f.company,
+        &[m2],
+        RawVals::new().set_cell("picking_id", Cell::Id(b)),
+    )
+    .await
+    .unwrap();
+    assert_projection(&mut tx, a, &[r1], "reparent").await;
+    assert_projection(&mut tx, b, &[r2], "reparent").await;
+    assert_eq!(
+        orm_ids(&mut tx, "stock.move", m2, "reference_ids").await,
+        vec![r2]
+    );
+    // deleting one of several supporting moves keeps the pair, the last one removes it
+    unlink_moves(&mut tx, f.company, &[m3]).await.unwrap();
+    assert_projection(&mut tx, b, &[r2], "one of two removed").await;
+    write_moves(
+        &mut tx,
+        f.company,
+        &[m2],
+        RawVals::new().set_cell("reference_ids", id_list(&[])),
+    )
+    .await
+    .unwrap();
+    assert_projection(&mut tx, b, &[], "last support removed").await;
+    assert_projection(&mut tx, a, &[r1], "untouched").await;
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn reference_projection_is_refused_by_name() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let picking = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "PRJ/1"),
+    )
+    .await
+    .unwrap();
+    let reference = create_references(&mut tx, &["SO/PRJ"]).await[0];
+    let label = |tx: &Transaction, model: &str, field: &str| {
+        tx.registry()
+            .model(model)
+            .unwrap()
+            .field(field)
+            .unwrap()
+            .string
+            .to_string()
+    };
+    let refused = |field: String, default: bool| {
+        erp_addon_stock::StockError::ReferenceProjection { field, default }.to_string()
+    };
+    let picking_refs = label(&tx, "stock.picking", "reference_ids");
+    let reference_pickings = label(&tx, "stock.reference", "picking_ids");
+    for sudo in [false, true] {
+        let error = tx
+            .savepoint(async |tx| {
+                tx.env()
+                    .sudo(sudo)
+                    .records("stock.picking")?
+                    .browse([picking])?
+                    .write(
+                        tx,
+                        RawVals::new().set_cell("reference_ids", id_list(&[reference])),
+                    )
+                    .await
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ErrorKind::Programming,
+            "sudo={sudo}: {error:?}"
+        );
+        assert_eq!(error.message(), refused(picking_refs.clone(), false));
+        let error = tx
+            .savepoint(async |tx| {
+                tx.env()
+                    .sudo(sudo)
+                    .records("stock.reference")?
+                    .browse([reference])?
+                    .write(
+                        tx,
+                        RawVals::new().set_cell("picking_ids", id_list(&[picking])),
+                    )
+                    .await
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ErrorKind::Programming,
+            "sudo={sudo}: {error:?}"
+        );
+        assert_eq!(error.message(), refused(reference_pickings.clone(), false));
+    }
+    let error = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "PRJ/2")
+            .set_cell("reference_ids", id_list(&[reference])),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.message(), refused(picking_refs.clone(), false));
+    let error = tx
+        .savepoint(async |tx| {
+            tx.env()
+                .records("stock.reference")?
+                .create(
+                    tx,
+                    vec![
+                        RawVals::new()
+                            .set_cell("name", text("SO/PRJ2"))
+                            .set_cell("picking_ids", id_list(&[picking])),
+                    ],
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.message(), refused(reference_pickings, false));
+    let error = tx
+        .savepoint(async |tx| {
+            tx.env()
+                .with_company(f.company)?
+                .with_context([(
+                    "default_reference_ids",
+                    Value::List(vec![Value::Int(reference)].into()),
+                )])
+                .records("stock.picking")?
+                .create(
+                    tx,
+                    vec![picking_vals(&f, f.company, f.picking_type, "PRJ/3")],
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Programming, "{error:?}");
+    assert_eq!(error.message(), refused(picking_refs, true));
+    assert_eq!(projection(&mut tx, picking).await, Vec::<i64>::new());
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// The form RPC, data files and `copy` deliver x2many values as commands, never as a plain id list.
+#[tokio::test]
+async fn reference_commands_are_refused_or_rebuilt_like_plain_values() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let a = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "CMD/A"),
+    )
+    .await
+    .unwrap();
+    let refs = create_references(&mut tx, &["SO/C1", "SO/C2"]).await;
+    let (r1, r2) = (refs[0], refs[1]);
+    let moves = create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            counted_move(&f, a, "draft", "1", false, false),
+            counted_move(&f, a, "draft", "1", false, false),
+        ],
+    )
+    .await
+    .unwrap();
+    write_moves(
+        &mut tx,
+        f.company,
+        &moves[..1],
+        RawVals::new().set_commands("reference_ids", [Command::set(rec_ids(&[r1]))]),
+    )
+    .await
+    .unwrap();
+    assert_projection(&mut tx, a, &[r1], "move side, commands").await;
+    write_reference(
+        &mut tx,
+        r2,
+        RawVals::new().set_commands("move_ids", [Command::link(rec_ids(&moves[1..])[0])]),
+    )
+    .await
+    .unwrap();
+    assert_projection(&mut tx, a, &[r1, r2], "reference write, commands").await;
+    let r3 = tx
+        .savepoint(async |tx| {
+            Ok(tx
+                .env()
+                .records("stock.reference")?
+                .create(
+                    tx,
+                    vec![
+                        RawVals::new()
+                            .set_cell("name", text("SO/C3"))
+                            .set_commands("move_ids", [Command::set(rec_ids(&moves))]),
+                    ],
+                )
+                .await?
+                .ids()[0])
+        })
+        .await
+        .unwrap();
+    let mut all = vec![r1, r2, r3];
+    all.sort_unstable();
+    assert_projection(&mut tx, a, &all, "reference create, commands").await;
+    let refused = |model: &str, field: &str, tx: &Transaction| {
+        let field = tx
+            .registry()
+            .model(model)
+            .unwrap()
+            .field(field)
+            .unwrap()
+            .string
+            .to_string();
+        erp_addon_stock::StockError::ReferenceProjection {
+            field,
+            default: false,
+        }
+        .to_string()
+    };
+    let error = tx
+        .savepoint(async |tx| {
+            tx.env()
+                .records("stock.picking")?
+                .browse([a])?
+                .write(
+                    tx,
+                    RawVals::new().set_commands("reference_ids", [Command::Clear]),
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.message(),
+        refused("stock.picking", "reference_ids", &tx)
+    );
+    let error = tx
+        .savepoint(async |tx| {
+            tx.env()
+                .records("stock.reference")?
+                .browse([r1])?
+                .write(
+                    tx,
+                    RawVals::new().set_commands("picking_ids", [Command::Clear]),
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.message(),
+        refused("stock.reference", "picking_ids", &tx)
+    );
+    let error = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "CMD/B")
+            .set_commands("reference_ids", [Command::set(rec_ids(&[r1]))]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.message(),
+        refused("stock.picking", "reference_ids", &tx)
+    );
+    let error = tx
+        .savepoint(async |tx| {
+            tx.env()
+                .records("stock.reference")?
+                .create(
+                    tx,
+                    vec![
+                        RawVals::new()
+                            .set_cell("name", text("SO/C4"))
+                            .set_commands("picking_ids", [Command::set(rec_ids(&[a]))]),
+                    ],
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.message(),
+        refused("stock.reference", "picking_ids", &tx)
+    );
+    assert_projection(&mut tx, a, &all, "after the refusals").await;
+    // a copy of the transfer has no move, so no reference
+    let mut defaults = erp_sdk::ValueMap::new();
+    defaults.insert("name".into(), Value::Str("CMD/A copy".into()));
+    let copy = tx
+        .env()
+        .with_company(f.company)
+        .unwrap()
+        .records("stock.picking")
+        .unwrap()
+        .browse([a])
+        .unwrap()
+        .copy(&mut tx, Some(defaults))
+        .await
+        .unwrap()
+        .ids()[0];
+    assert_projection(&mut tx, copy, &[], "copy").await;
+    assert_projection(&mut tx, a, &all, "copy source").await;
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_linked_move_without_references_takes_the_transfers() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let a = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "INH/A"),
+    )
+    .await
+    .unwrap();
+    let b = create_picking(
+        &mut tx,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "INH/B"),
+    )
+    .await
+    .unwrap();
+    let refs = create_references(&mut tx, &["SO/I1", "SO/I2"]).await;
+    let (r1, r2) = (refs[0], refs[1]);
+    // one create: the first move carries R1, the second none and takes it from its transfer
+    let moves = create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            counted_move(&f, a, "draft", "1", false, false)
+                .set_cell("reference_ids", id_list(&[r1])),
+            counted_move(&f, a, "draft", "1", false, false),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        orm_ids(&mut tx, "stock.move", moves[1], "reference_ids").await,
+        vec![r1]
+    );
+    // an existing nonempty set is retained
+    let own = create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            counted_move(&f, a, "draft", "1", false, false)
+                .set_cell("reference_ids", id_list(&[r2])),
+        ],
+    )
+    .await
+    .unwrap()[0];
+    assert_eq!(
+        orm_ids(&mut tx, "stock.move", own, "reference_ids").await,
+        vec![r2]
+    );
+    // a move without references relinked to A takes A's set
+    let bare = create_moves(
+        &mut tx,
+        f.company,
+        vec![counted_move(&f, b, "draft", "1", false, false)],
+    )
+    .await
+    .unwrap()[0];
+    assert_eq!(
+        orm_ids(&mut tx, "stock.move", bare, "reference_ids").await,
+        Vec::<i64>::new()
+    );
+    write_moves(
+        &mut tx,
+        f.company,
+        &[bare],
+        RawVals::new().set_cell("picking_id", Cell::Id(a)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        orm_ids(&mut tx, "stock.move", bare, "reference_ids").await,
+        vec![r1, r2]
+    );
+    assert_projection(&mut tx, a, &[r1, r2], "after inheritance").await;
+    assert_projection(&mut tx, b, &[], "after inheritance").await;
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_reference_writers_retry_on_the_transfer() {
+    let f = fixture().await;
+    let mut setup = f.h.begin().await.unwrap();
+    let a = create_picking(
+        &mut setup,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "REFC/A"),
+    )
+    .await
+    .unwrap();
+    let moves = create_moves(
+        &mut setup,
+        f.company,
+        vec![
+            counted_move(&f, a, "draft", "1", false, false),
+            counted_move(&f, a, "draft", "1", false, false),
+        ],
+    )
+    .await
+    .unwrap();
+    let refs = create_references(&mut setup, &["SO/C1", "SO/C2"]).await;
+    setup.commit().await.unwrap();
+    drop(setup);
+    let mut first = f.h.begin().await.unwrap();
+    let mut second = f.h.begin().await.unwrap();
+    second.query("SELECT 1", &[]).await.unwrap();
+    write_moves(
+        &mut first,
+        f.company,
+        &moves[..1],
+        RawVals::new().set_cell("reference_ids", id_list(&refs[..1])),
+    )
+    .await
+    .unwrap();
+    first.commit().await.unwrap();
+    drop(first);
+    let error = write_moves(
+        &mut second,
+        f.company,
+        &moves[1..],
+        RawVals::new().set_cell("reference_ids", id_list(&refs[1..])),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Concurrency, "{error:?}");
+    assert_eq!(error.sqlstate(), Some("40001"), "{error:?}");
+    second.rollback().await.unwrap();
+    drop(second);
+    let mut retry = f.h.begin().await.unwrap();
+    write_moves(
+        &mut retry,
+        f.company,
+        &moves[1..],
+        RawVals::new().set_cell("reference_ids", id_list(&refs[1..])),
+    )
+    .await
+    .unwrap();
+    retry.commit().await.unwrap();
+    drop(retry);
+    let mut check = f.h.begin().await.unwrap();
+    assert_projection(&mut check, a, &refs, "after the retry").await;
+    check.rollback().await.unwrap();
+    drop(check);
+    f.h.cleanup().await.unwrap();
+}
+
+fn day(n: i64) -> Cell {
+    Cell::DateTime(DateTime::from_micros(
+        1_800_000_000_000_000 + n * 86_400_000_000,
+    ))
+}
+
+async fn deadline_of(tx: &mut Transaction, id: i64) -> (Option<DateTime>, Cell) {
+    let rows = tx
+        .query("SELECT date_deadline FROM stock_move WHERE id = $1", &[&id])
+        .await
+        .unwrap();
+    let cached = tx
+        .env()
+        .records("stock.move")
+        .unwrap()
+        .browse([id])
+        .unwrap()
+        .cell(tx, "date_deadline")
+        .await
+        .unwrap();
+    (rows[0].get(0), cached)
+}
+
+async fn assert_deadline(tx: &mut Transaction, id: i64, want: Cell, step: &str) {
+    let (stored, cached) = deadline_of(tx, id).await;
+    let stored = stored.map_or(Cell::Null, Cell::DateTime);
+    assert_eq!(stored, want, "{step}: stored deadline of {id}");
+    assert_eq!(cached, want, "{step}: cached deadline of {id}");
+}
+
+#[tokio::test]
+async fn a_deadline_shift_reaches_each_open_linked_move_once() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let mv = |state: &str, deadline: Cell| {
+        with_demand(move_vals(&f, f.company), "1")
+            .set_cell("state", text(state))
+            .set_cell("date_deadline", deadline)
+    };
+    let moves = create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            mv("confirmed", day(0)),
+            mv("confirmed", day(2)),
+            mv("done", day(1)),
+            mv("cancel", day(5)),
+            mv("waiting", day(9)),
+        ],
+    )
+    .await
+    .unwrap();
+    let (m1, m2, done, cancelled, behind) = (moves[0], moves[1], moves[2], moves[3], moves[4]);
+    // done -> M1 -> M2 -> M1 (a cycle), M2 -> cancelled -> behind
+    for (orig, dests) in [
+        (done, vec![m1]),
+        (m1, vec![m2]),
+        (m2, vec![m1, cancelled]),
+        (cancelled, vec![behind]),
+    ] {
+        write_moves(
+            &mut tx,
+            f.company,
+            &[orig],
+            RawVals::new().set_cell("move_dest_ids", id_list(&dests)),
+        )
+        .await
+        .unwrap();
+    }
+    write_moves(
+        &mut tx,
+        f.company,
+        &[m1],
+        RawVals::new().set_cell("date_deadline", day(1)),
+    )
+    .await
+    .unwrap();
+    assert_deadline(&mut tx, m1, day(1), "seed").await;
+    assert_deadline(&mut tx, m2, day(3), "shifted once").await;
+    assert_deadline(&mut tx, done, day(1), "done origin").await;
+    assert_deadline(&mut tx, cancelled, day(5), "cancelled successor").await;
+    assert_deadline(&mut tx, behind, day(9), "behind a terminal move").await;
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// (cycle 26 review): a deadline write locks the transfer of every linked move its shift
+/// reaches before writing, so a writer of the other transfer waits in the root order instead of
+/// crossing it.
+#[tokio::test]
+async fn a_deadline_shift_locks_the_transfers_it_reaches() {
+    let f = fixture().await;
+    let mut setup = f.h.begin().await.unwrap();
+    let p1 = create_picking(
+        &mut setup,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "DL/1"),
+    )
+    .await
+    .unwrap();
+    let p2 = create_picking(
+        &mut setup,
+        f.company,
+        picking_vals(&f, f.company, f.picking_type, "DL/2"),
+    )
+    .await
+    .unwrap();
+    let moves = create_moves(
+        &mut setup,
+        f.company,
+        vec![
+            counted_move(&f, p1, "confirmed", "1", false, false).set_cell("date_deadline", day(0)),
+            counted_move(&f, p2, "confirmed", "1", false, false).set_cell("date_deadline", day(2)),
+        ],
+    )
+    .await
+    .unwrap();
+    write_moves(
+        &mut setup,
+        f.company,
+        &moves[..1],
+        RawVals::new().set_cell("move_dest_ids", id_list(&moves[1..])),
+    )
+    .await
+    .unwrap();
+    setup.commit().await.unwrap();
+    drop(setup);
+    let mut a = f.h.begin().await.unwrap();
+    write_moves(
+        &mut a,
+        f.company,
+        &moves[..1],
+        RawVals::new().set_cell("date_deadline", day(1)),
+    )
+    .await
+    .unwrap();
+    assert_deadline(&mut a, moves[1], day(3), "shifted").await;
+    let mut b = f.h.begin().await.unwrap();
+    let error = b
+        .query(
+            "SELECT FROM stock_picking WHERE id = $1 FOR UPDATE NOWAIT",
+            &[&p2],
+        )
+        .await
+        .expect_err("the reached transfer was not locked");
+    assert_eq!(error.sqlstate(), Some("55P03"), "{error:?}");
+    b.rollback().await.unwrap();
+    drop(b);
+    a.rollback().await.unwrap();
+    drop(a);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn deadline_values_without_a_shift_and_the_chain_bound() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let mv = |deadline: Cell| {
+        with_demand(move_vals(&f, f.company), "1")
+            .set_cell("state", text("confirmed"))
+            .set_cell("date_deadline", deadline)
+    };
+    let moves = create_moves(
+        &mut tx,
+        f.company,
+        vec![mv(Cell::Null), mv(day(12)), mv(day(30)), mv(Cell::Null)],
+    )
+    .await
+    .unwrap();
+    for pair in moves.windows(2) {
+        write_moves(
+            &mut tx,
+            f.company,
+            &pair[..1],
+            RawVals::new().set_cell("move_dest_ids", id_list(&pair[1..])),
+        )
+        .await
+        .unwrap();
+    }
+    // the seed had no deadline: its neighbour takes the value, and the walk shifts from there
+    write_moves(
+        &mut tx,
+        f.company,
+        &moves[..1],
+        RawVals::new().set_cell("date_deadline", day(7)),
+    )
+    .await
+    .unwrap();
+    for (id, want) in moves.iter().zip([day(7), day(7), day(25), day(25)]) {
+        assert_deadline(&mut tx, *id, want, "no shift").await;
+    }
+    // four linked moves, a bound of three: refused by name, nothing changed
+    tx.env()
+        .records("ir.config_parameter")
+        .unwrap()
+        .call::<(String, Option<i64>), i64>(
+            &mut tx,
+            "set_int",
+            ("stock.move_chain_limit".to_owned(), Some(3)),
+        )
+        .await
+        .unwrap();
+    let error = write_moves(
+        &mut tx,
+        f.company,
+        &moves[..1],
+        RawVals::new().set_cell("date_deadline", day(8)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert_eq!(
+        error.message(),
+        erp_addon_stock::StockError::ChainLimit { limit: 3 }.to_string()
+    );
+    for (id, want) in moves.iter().zip([day(7), day(7), day(25), day(25)]) {
+        assert_deadline(&mut tx, *id, want, "refused").await;
+    }
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn delay_alert_ignores_terminal_origins() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let mv = |state: &str, date: Cell| {
+        with_demand(move_vals(&f, f.company), "1")
+            .set_cell("state", text(state))
+            .set_cell("date", date)
+    };
+    let moves = create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            mv("confirmed", day(0)),
+            mv("done", day(5)),
+            mv("cancel", day(6)),
+            mv("confirmed", day(3)),
+            mv("waiting", day(4)),
+        ],
+    )
+    .await
+    .unwrap();
+    let (target, done, cancelled, open3, open4) =
+        (moves[0], moves[1], moves[2], moves[3], moves[4]);
+    let alert = async |tx: &mut Transaction| {
+        let cached = tx
+            .env()
+            .records("stock.move")
+            .unwrap()
+            .browse([target])
+            .unwrap()
+            .cell(tx, "delay_alert_date")
+            .await
+            .unwrap();
+        tx.flush().await.unwrap();
+        let rows = tx
+            .query(
+                "SELECT delay_alert_date FROM stock_move WHERE id = $1",
+                &[&target],
+            )
+            .await
+            .unwrap();
+        let stored: Option<DateTime> = rows[0].get(0);
+        assert_eq!(
+            stored.map_or(Cell::Null, Cell::DateTime),
+            cached,
+            "stored and cached"
+        );
+        cached
+    };
+    let origins = |ids: &[i64]| RawVals::new().set_cell("move_orig_ids", id_list(ids));
+    write_moves(&mut tx, f.company, &[target], origins(&[done, cancelled]))
+        .await
+        .unwrap();
+    assert_eq!(
+        alert(&mut tx).await,
+        Cell::Null,
+        "only terminal origins are later"
+    );
+    write_moves(
+        &mut tx,
+        f.company,
+        &[target],
+        origins(&[done, cancelled, open3, open4]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(alert(&mut tx).await, day(4), "the latest unfinished origin");
+    write_moves(
+        &mut tx,
+        f.company,
+        &[open4],
+        RawVals::new().set_cell("date", day(-1)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(alert(&mut tx).await, day(3), "an origin's date change");
+    write_moves(
+        &mut tx,
+        f.company,
+        &[open3],
+        RawVals::new().set_cell("state", text("cancel")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(alert(&mut tx).await, Cell::Null, "an origin's state change");
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+// ---- the unit snapshot of a move (6) ----
+
+/// A unit of `factor` fixture units (the fixture's reference unit is its root).
+async fn derived_unit(tx: &mut Transaction, f: &Fixture, name: &str, factor: &str) -> i64 {
+    create(
+        tx,
+        "uom.uom",
+        RawVals::new()
+            .set_cell("name", text(name))
+            .set_cell("relative_factor", dec(factor))
+            .set_cell("relative_uom_id", Cell::Id(f.unit)),
+    )
+    .await
+}
+
+/// The product-unit quantity of `qty` in `unit` by the unit service's pure conversion, with the
+/// Product Unit digits configured now.
+async fn expected_product_qty(
+    tx: &mut Transaction,
+    unit: i64,
+    product_unit: i64,
+    qty: &str,
+) -> Cell {
+    let env = tx.env();
+    let line = erp_addon_uom::models::load_unit(&env, tx, unit)
+        .await
+        .unwrap();
+    let product = erp_addon_uom::models::load_unit(&env, tx, product_unit)
+        .await
+        .unwrap();
+    let digits = erp_addon_base::decimal_precision::precision_get(&env, tx, "Product Unit")
+        .await
+        .unwrap();
+    let preview = ProductUnitPreview::new(&line, &product, digits).unwrap();
+    Cell::Decimal(preview.product_quantity(qty.parse().unwrap()).unwrap())
+}
+
+async fn move_cells(tx: &mut Transaction, id: i64, fields: &[&str]) -> Vec<Cell> {
+    let records = tx
+        .env()
+        .records("stock.move")
+        .unwrap()
+        .browse([id])
+        .unwrap();
+    let mut out = Vec::new();
+    for field in fields {
+        out.push(records.cell(tx, field).await.unwrap());
+    }
+    out
+}
+
+/// The values of a move of the fixture's company without unit, demand or snapshot.
+fn bare_move(f: &Fixture) -> RawVals {
+    RawVals::new()
+        .set_cell("company_id", Cell::Id(f.company))
+        .set_cell("product_id", Cell::Id(f.product))
+        .set_cell("location_id", Cell::Id(f.location))
+        .set_cell("location_dest_id", Cell::Id(f.other_location))
+}
+
+#[tokio::test]
+async fn a_bare_move_takes_draft_zero_demand_and_the_product_unit() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let id = create_move(&mut tx, f.company, bare_move(&f))
+        .await
+        .unwrap();
+    let product_unit = tx
+        .env()
+        .records("product.product")
+        .unwrap()
+        .browse([f.product])
+        .unwrap()
+        .cell(&mut tx, "uom_id")
+        .await
+        .unwrap();
+    let cells = move_cells(
+        &mut tx,
+        id,
+        &[
+            "state",
+            "product_uom_qty",
+            "uom_id",
+            "product_qty",
+            "quantity_product_uom",
+        ],
+    )
+    .await;
+    assert_eq!(cells[0], text("draft"));
+    assert_eq!(cells[1], dec("0"));
+    assert_eq!(cells[2], product_unit, "the product's unit");
+    let zero = expected_product_qty(&mut tx, f.unit, f.unit, "0").await;
+    assert_eq!(cells[3], zero);
+    assert_eq!(cells[4], zero);
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn demand_and_quantity_convert_to_the_product_unit() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let pack = derived_unit(&mut tx, &f, "Pack of 6", "6").await;
+    let third = derived_unit(&mut tx, &f, "Third", "0.333333").await;
+    // demands within the product-unit precision (two digits); a third of a unit rounds on conversion
+    for (unit, qty) in [(pack, "2"), (third, "0.05"), (pack, "-1.5")] {
+        let id = create_move(
+            &mut tx,
+            f.company,
+            bare_move(&f)
+                .set_cell("uom_id", Cell::Id(unit))
+                .set_cell("product_uom_qty", dec(qty))
+                .set_cell("quantity", dec(qty)),
+        )
+        .await
+        .unwrap();
+        let want = expected_product_qty(&mut tx, unit, f.unit, qty).await;
+        let cells = move_cells(&mut tx, id, &["product_qty", "quantity_product_uom"]).await;
+        assert_eq!(cells, vec![want.clone(), want], "{qty} of unit {unit}");
+    }
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn writes_recompute_the_snapshot_and_keep_the_demand() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let pack = derived_unit(&mut tx, &f, "Pack of 6", "6").await;
+    let template = tx
+        .env()
+        .with_company(f.company)
+        .unwrap()
+        .records("product.template")
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![RawVals::new().set_cell("name", text("Gadget"))],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    let other: i64 = tx
+        .query(
+            "SELECT id FROM product_product WHERE product_tmpl_id = $1",
+            &[&template],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let moves = create_moves(
+        &mut tx,
+        f.company,
+        vec![
+            bare_move(&f)
+                .set_cell("uom_id", Cell::Id(pack))
+                .set_cell("product_uom_qty", dec("100")),
+            bare_move(&f).set_cell("product_uom_qty", dec("4")),
+        ],
+    )
+    .await
+    .unwrap();
+    // a product change keeps the demand and takes the new product's unit
+    write_moves(
+        &mut tx,
+        f.company,
+        &moves[..1],
+        RawVals::new().set_cell("product_id", Cell::Id(other)),
+    )
+    .await
+    .unwrap();
+    let cells = move_cells(
+        &mut tx,
+        moves[0],
+        &["product_uom_qty", "uom_id", "product_qty"],
+    )
+    .await;
+    assert_eq!(cells[0], dec("100"), "demand kept");
+    assert_eq!(cells[1], Cell::Id(f.unit), "the new product's unit");
+    assert_eq!(
+        cells[2],
+        expected_product_qty(&mut tx, f.unit, f.unit, "100").await
+    );
+    // one demand written on moves of two units: each converts with its own unit
+    write_moves(
+        &mut tx,
+        f.company,
+        &[moves[1]],
+        RawVals::new().set_cell("uom_id", Cell::Id(pack)),
+    )
+    .await
+    .unwrap();
+    write_moves(
+        &mut tx,
+        f.company,
+        &moves,
+        RawVals::new().set_cell("product_uom_qty", dec("3")),
+    )
+    .await
+    .unwrap();
+    tx.flush().await.unwrap();
+    for (id, unit) in [(moves[0], f.unit), (moves[1], pack)] {
+        let want = expected_product_qty(&mut tx, unit, f.unit, "3").await;
+        assert_eq!(
+            move_cells(&mut tx, id, &["product_qty"]).await,
+            vec![want],
+            "move {id}"
+        );
+    }
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_foreign_snapshot_value_is_refused_by_name() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let label = |tx: &Transaction, field: &str| {
+        tx.registry()
+            .model("stock.move")
+            .unwrap()
+            .field(field)
+            .unwrap()
+            .string
+            .to_string()
+    };
+    let error = create_move(
+        &mut tx,
+        f.company,
+        bare_move(&f).set_cell("uom_factor", dec("7")),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Programming, "{error:?}");
+    assert_eq!(
+        error.message(),
+        erp_addon_stock::StockError::UnitSnapshot {
+            field: label(&tx, "uom_factor")
+        }
+        .to_string()
+    );
+    let id = create_move(&mut tx, f.company, bare_move(&f))
+        .await
+        .unwrap();
+    let error = write_moves(
+        &mut tx,
+        f.company,
+        &[id],
+        RawVals::new().set_cell("product_qty", dec("5")),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.message(),
+        erp_addon_stock::StockError::UnitSnapshot {
+            field: label(&tx, "product_qty")
+        }
+        .to_string()
+    );
+    // the value the unit service gives is accepted
+    let same = expected_product_qty(&mut tx, f.unit, f.unit, "0").await;
+    write_moves(
+        &mut tx,
+        f.company,
+        &[id],
+        RawVals::new().set_cell("product_qty", same),
+    )
+    .await
+    .unwrap();
     tx.rollback().await.unwrap();
     drop(tx);
     f.h.cleanup().await.unwrap();

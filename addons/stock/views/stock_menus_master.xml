@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <menuitem id="menu_stock_products" name="Products" parent="menu_stock_root" sequence="30" groups="stock.group_stock_user,stock.group_stock_manager"/>
+  <menuitem id="menu_stock_product_templates" name="Products" parent="menu_stock_products" action="product.product_template_action" sequence="10"/>
+  <menuitem id="menu_stock_lot" name="Lots/Serial Numbers" parent="menu_stock_products" action="action_stock_lot" groups="stock.group_production_lot" sequence="20"/>
+
+  <menuitem id="menu_stock_reporting" name="Reporting" parent="menu_stock_root" sequence="50" groups="stock.group_stock_manager"/>
+  <menuitem id="menu_stock_quant" name="Stock" parent="menu_stock_reporting" action="action_stock_quant" sequence="10"/>
+
+  <menuitem id="menu_stock_warehouse" name="Warehouses" parent="menu_stock_config_settings" action="action_stock_warehouse" groups="stock.group_stock_multi_warehouses" sequence="20"/>
+  <menuitem id="menu_stock_picking_type_config" name="Operation Types" parent="menu_stock_config_settings" action="action_stock_picking_type_config" sequence="30"/>
+  <menuitem id="menu_stock_location" name="Locations" parent="menu_stock_config_settings" action="action_stock_location" groups="stock.group_stock_multi_locations" sequence="40"/>
+  <menuitem id="menu_stock_route" name="Routes" parent="menu_stock_config_settings" action="action_stock_route" groups="stock.group_adv_location" sequence="50"/>
+  <menuitem id="menu_stock_rule" name="Rules" parent="menu_stock_config_settings" action="action_stock_rule" groups="stock.group_adv_location" sequence="60"/>
+  <menuitem id="menu_stock_storage_category" name="Storage Categories" parent="menu_stock_config_settings" action="action_stock_storage_category" groups="stock.group_stock_multi_locations" sequence="70"/>
+  <menuitem id="menu_stock_putaway_rule" name="Putaway Rules" parent="menu_stock_config_settings" action="action_stock_putaway_rule" groups="stock.group_stock_multi_locations" sequence="80"/>
+  <menuitem id="menu_stock_package_type" name="Package Types" parent="menu_stock_config_settings" action="action_stock_package_type" groups="stock.group_tracking_lot" sequence="90"/>
+  <menuitem id="menu_stock_orderpoint" name="Replenishment" parent="menu_stock_config_settings" action="action_stock_orderpoint" sequence="95"/>
+</erp>

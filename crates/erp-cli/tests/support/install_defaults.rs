@@ -26,8 +26,18 @@ pub const ACCOUNT: &[(&str, &[&str])] = &[
             "menu_action_account_form",
             "menu_action_account_journal_form",
             "menu_action_account_journal_group_list",
+            "menu_action_account_moves_all",
+            "menu_action_move_in_invoice_type",
+            "menu_action_move_in_refund_type",
+            "menu_action_move_journal_line",
+            "menu_action_move_out_invoice_type",
+            "menu_action_move_out_refund_type",
+            "menu_board_journal_1",
             "menu_finance",
             "menu_finance_configuration",
+            "menu_finance_entries",
+            "menu_finance_payables",
+            "menu_finance_receivables",
             "menu_tax_groups",
             "menu_taxes",
         ],
@@ -38,6 +48,27 @@ pub const ACCOUNT: &[(&str, &[&str])] = &[
             "group_account_manager",
             "group_account_readonly",
             "group_account_user",
+        ],
+    ),
+    (
+        "SELECT d.name || '=' || a.res_model || '/' || a.domain || '/' || a.context FROM ir_model_data d \
+         JOIN ir_act_window a ON a.id = d.res_id WHERE d.module = 'account' \
+         AND d.model = 'ir.actions.act_window' AND d.name LIKE 'action\\_move\\_%\\_type' ORDER BY d.name",
+        &[
+            "action_move_in_invoice_type=account.move/[('move_type', '=', 'in_invoice')]/{'default_move_type': 'in_invoice'}",
+            "action_move_in_refund_type=account.move/[('move_type', '=', 'in_refund')]/{'default_move_type': 'in_refund'}",
+            "action_move_out_invoice_type=account.move/[('move_type', '=', 'out_invoice')]/{'default_move_type': 'out_invoice'}",
+            "action_move_out_refund_type=account.move/[('move_type', '=', 'out_refund')]/{'default_move_type': 'out_refund'}",
+        ],
+    ),
+    (
+        "SELECT d.name || '=' || v.model || '/' || v.type FROM ir_model_data d JOIN ir_ui_view v \
+         ON v.id = d.res_id WHERE d.module = 'account' AND d.model = 'ir.ui.view' \
+         AND d.name LIKE 'view\\_invoice\\_%' ORDER BY d.name",
+        &[
+            "view_invoice_form=account.move/form",
+            "view_invoice_list=account.move/list",
+            "view_invoice_search=account.move/search",
         ],
     ),
 ];

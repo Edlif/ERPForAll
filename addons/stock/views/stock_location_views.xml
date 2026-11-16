@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_stock_location_list" model="ir.ui.view">
+    <field name="name">stock.location.list</field>
+    <field name="model">stock.location</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="complete_name"/>
+        <field name="usage"/>
+        <field name="storage_category_id" groups="stock.group_adv_location"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_location_form" model="ir.ui.view">
+    <field name="name">stock.location.form</field>
+    <field name="model">stock.location</field>
+    <field name="arch" type="xml">
+      <form record_mode="record">
+        <sheet>
+          <div class="oe_title"><h1><field name="name"/></h1></div>
+          <group>
+            <group>
+              <field name="location_id"/>
+              <field name="usage"/>
+              <field name="company_id"/>
+              <field name="active"/>
+            </group>
+            <group>
+              <field name="barcode"/>
+              <field name="replenish_location"/>
+              <field name="storage_category_id" groups="stock.group_adv_location"/>
+              <field name="removal_strategy_id" groups="stock.group_adv_location"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Cyclic Inventory" name="cyclic">
+              <group>
+                <field name="cyclic_inventory_frequency"/>
+                <field name="last_inventory_date"/>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="view_stock_location_search" model="ir.ui.view">
+    <field name="name">stock.location.search</field>
+    <field name="model">stock.location</field>
+    <field name="arch" type="xml">
+      <search string="Locations">
+        <field name="complete_name"/>
+        <field name="barcode"/>
+        <filter name="internal" string="Internal" domain="[('usage', '=', 'internal')]"/>
+        <filter name="customer" string="Customer" domain="[('usage', '=', 'customer')]"/>
+        <filter name="supplier" string="Vendor" domain="[('usage', '=', 'supplier')]"/>
+        <separator/>
+        <filter name="inactive" string="Archived" domain="[('active', '=', False)]"/>
+        <group>
+          <filter name="groupby_usage" string="Location Type" context="{'group_by': 'usage'}"/>
+          <filter name="groupby_company" string="Company" context="{'group_by': 'company_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+  <record id="action_stock_location" model="ir.actions.act_window">
+    <field name="name">Locations</field>
+    <field name="res_model">stock.location</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_stock_location_list"/>
+    <field name="search_view_id" ref="view_stock_location_search"/>
+  </record>
+</erp>

@@ -159,7 +159,11 @@ fn quant_unit_policy_is_declared_as_bounded_system_parameters() {
         "the stock unit policy is not a Settings row"
     );
     let registry = parameters();
-    let declared: Vec<&ParameterDecl> = registry.iter().collect();
+    // the quant unit policy only: other stock parameters (stock.move_chain_limit) are not part of it
+    let declared: Vec<&ParameterDecl> = registry
+        .iter()
+        .filter(|d| d.key().starts_with("stock.quant_"))
+        .collect();
     assert_eq!(declared.len(), 8);
     for (suffix, default, floor, bound) in [
         ("lock_timeout_ms", 1000, 10, 10000),

@@ -214,6 +214,7 @@ test("the kanban is reached from the view switcher and reads one page of 40 card
   expect(query().get("view_type")).toBe("kanban");
   const read = of("web_search_read").at(-1)!.body;
   expect(read).toMatchObject({ domain: [], offset: 0, limit: 40 });
+  expect(read["context"]).toMatchObject({ bin_size: true }); // files come as sizes, a widget reads the one it draws
   expect(Object.keys(read["specification"] as object).sort()).toEqual(["email", "name", "secret", "state"]);
   expect(root.querySelector('.view-btn[aria-label="kanban view"]')!.getAttribute("aria-current")).toBe("page");
   expect(root.querySelector(".pager-count")!.textContent).toBe("1-40 / 45");

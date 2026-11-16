@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_stock_lot_list" model="ir.ui.view">
+    <field name="name">stock.lot.list</field>
+    <field name="model">stock.lot</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="ref"/>
+        <field name="product_id"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_lot_form" model="ir.ui.view">
+    <field name="name">stock.lot.form</field>
+    <field name="model">stock.lot</field>
+    <field name="arch" type="xml">
+      <form record_mode="record">
+        <sheet>
+          <div class="oe_title"><h1><field name="name"/></h1></div>
+          <group>
+            <group>
+              <field name="product_id"/>
+              <field name="ref"/>
+              <field name="company_id"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Description" name="description">
+              <field name="note"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="view_stock_lot_search" model="ir.ui.view">
+    <field name="name">stock.lot.search</field>
+    <field name="model">stock.lot</field>
+    <field name="arch" type="xml">
+      <search string="Lots/Serial Numbers">
+        <field name="name"/>
+        <field name="ref"/>
+        <field name="product_id"/>
+        <group>
+          <filter name="groupby_product" string="Product" context="{'group_by': 'product_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+  <record id="action_stock_lot" model="ir.actions.act_window">
+    <field name="name">Lots/Serial Numbers</field>
+    <field name="res_model">stock.lot</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_stock_lot_list"/>
+    <field name="search_view_id" ref="view_stock_lot_search"/>
+  </record>
+</erp>

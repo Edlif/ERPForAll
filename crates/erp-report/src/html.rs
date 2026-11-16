@@ -293,7 +293,7 @@ fn node(out: &mut String, nodes: &[Node], id: &NodeId) {
             match align {
                 crate::CrossAlignment::Center => out.push_str(";align-items:center"),
                 crate::CrossAlignment::End => out.push_str(";align-items:end"),
-                _ => {}
+                crate::CrossAlignment::Start => {}
             }
             out.push_str("\">");
             children(out, nodes, cells, "div");

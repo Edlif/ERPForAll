@@ -4,6 +4,7 @@ import { fieldShell } from "./field-shell.js";
 import { icon } from "./icons.js";
 import { attachmentRequestCap, humanBytes } from "./attachment-policy.js";
 import { binaryContent, isBinarySize } from "./binary-content.js";
+import { saveFile } from "./file-save.js";
 import { ClientError } from "./transport.js";
 import type { FieldControl, FieldControlOptions } from "./fields.js";
 
@@ -100,9 +101,16 @@ export function imageControl(options: FieldControlOptions): FieldControl {
   const preview = previewValue.content;
   // Size-only value of a saved record: the content is read on demand (`lazyFull` the field, `lazySmall` its preview).
   const recordId = options.values?.["id"], recordModel = options.model;
-  const lazy = !urlMode && sizeText !== undefined && recordModel !== undefined && typeof recordId === "number" && Number.isInteger(recordId) && recordId > 0;
+  const target = !urlMode && sizeText !== undefined && recordModel !== undefined && typeof recordId === "number" && Number.isInteger(recordId) && recordId > 0
+    ? { model: recordModel, id: recordId, size: sizeText } : undefined;
+  const lazy = target !== undefined;
   let lazyFull = "", lazySmall = "", fullRead: Promise<string> | undefined;
-  const contentOf = (name: string, size: string): Promise<string> => binaryContent(rpc, recordModel!, recordId as number, name, options.context, size);
+  // the widget's lifetime: a read nobody waits for any more is cancelled (`dispose`)
+  const life = new AbortController();
+  const contentOf = (name: string, size: string): Promise<string> => {
+    if (!target) return Promise.reject(new ClientError("validation", `${field.label} has no saved record to read from.`));
+    return binaryContent(rpc, target.model, target.id, name, options.context, size, life.signal);
+  };
   const sourceOf = (small: boolean): string | null => {
     if (urlMode) return current ? safeImageUrl(current, options.values?.["write_date"], config.reload === true) : null;
     const full = current || lazyFull, little = preview || lazySmall;
@@ -205,17 +213,19 @@ export function imageControl(options: FieldControlOptions): FieldControl {
 
   // The record keeps its value when a read fails, so the placeholder, Replace and Clear stay; the reason is shown.
   const loadFailed = (error: unknown) => {
-    if (dead) return;
+    // a read cancelled by disposal is not a failure
+    if (dead || (error instanceof DOMException && error.name === "AbortError")) return;
     root.removeAttribute("aria-busy");
     status.textContent = `${field.label} could not be loaded: ${error instanceof Error ? error.message : String(error)}`;
   };
   /** The field's own content, read once; `""` when the record no longer holds a picture. */
-  const readFull = (): Promise<string> => fullRead ??= contentOf(field.name, sizeText!).then(content => {
+  const readFull = (): Promise<string> => fullRead ??= contentOf(field.name, target?.size ?? "").then(content => {
     lazyFull = content;
     if (dead) return content;
     if (content) offerDownload(imageDataUrl(content), content); else download.hidden = true;
     return content;
   }, (error: unknown) => { fullRead = undefined; throw error; });
+  const goneText = `${field.label} is no longer stored on this record. Reload to see its current state.`;
   if (lazy) {
     const small = previewName !== undefined && previewValue.size !== undefined ? { name: previewName, size: previewValue.size } : undefined;
     root.setAttribute("aria-busy", "true");
@@ -225,17 +235,33 @@ export function imageControl(options: FieldControlOptions): FieldControl {
       const source = content ? sourceOf(true) : null;
       if (source) showImage(source);
       // the file was removed after the record was read: say so, the size shown is no longer true
-      else status.textContent = `${field.label} is no longer stored on this record. Reload to see its current state.`;
+      else status.textContent = goneText;
     }, loadFailed);
-    // Download reads the field itself on the first press, then saves it.
     download.hidden = false;
     if (!download.hasAttribute("href")) download.href = "#";
-    download.addEventListener("click", event => {
-      if (lazyFull) return;
-      event.preventDefault();
-      readFull().then(content => { if (content && !dead) download.click(); }, loadFailed);
-    });
   }
+  // Download saves through an object URL (a data: link of a large picture can exceed what a browser accepts).
+  // A size-only value reads the field itself on the first press; a press while that read runs is ignored.
+  let saving = false;
+  const saveContent = (content: string) => {
+    try {
+      const bytes = Uint8Array.from(atob(content), char => char.charCodeAt(0));
+      saveFile(new Blob([bytes], { type: `image/${MAGIC[content.charAt(0)] ?? "png"}` }), download.download);
+    } catch { status.textContent = `${field.label} could not be saved.`; }
+  };
+  if (!urlMode) download.addEventListener("click", event => {
+    event.preventDefault();
+    const content = current || lazyFull;
+    if (content) { saveContent(content); return; }
+    if (!lazy || saving) return;
+    saving = true;
+    root.setAttribute("aria-busy", "true"); status.textContent = `Reading ${field.label} to download…`;
+    readFull().then(read => {
+      if (dead) return;
+      root.removeAttribute("aria-busy"); status.textContent = "";
+      if (read) saveContent(read); else status.textContent = goneText;
+    }, loadFailed).finally(() => { saving = false; });
+  });
 
   input?.addEventListener("change", () => {
     const file = input.files?.[0]; input.value = "";
@@ -274,5 +300,5 @@ export function imageControl(options: FieldControlOptions): FieldControl {
 
   for (const node of [upload, clear, download]) if (node) actions.append(node);
   root.append(stage, ...(input ? [input] : []), actions, status);
-  return { node: shell.node, dispose: () => { dead = true; cancel(); hideZoom(); } };
+  return { node: shell.node, dispose: () => { dead = true; life.abort(); cancel(); hideZoom(); } };
 }

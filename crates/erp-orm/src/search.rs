@@ -1106,6 +1106,7 @@ fn fields_to_fetch(
     spec: &ModelSpec,
     names: Option<&[&str]>,
     graph: Option<&ModelGraph>,
+    bin_size: bool,
 ) -> Result<Vec<FieldId>> {
     let Some(names) = names else {
         return Ok(spec.prefetch_fields.clone());
@@ -1116,6 +1117,11 @@ fn fields_to_fetch(
         let field = spec.field(name).ok_or_else(|| {
             Error::programming(format!("Invalid field '{name}' on '{}'", spec.name))
         })?;
+        // `bin_size`: a stored file named here is sized by PostgreSQL when it is read
+        // (`binary_sizes`), so its content is not fetched
+        if bin_size && crate::read::sized_by_column(spec, field) {
+            continue;
+        }
         resolve_stored_dependencies(spec, field.id, graph, &mut visited, &mut out);
     }
     Ok(out)
@@ -1130,7 +1136,12 @@ pub(crate) fn checked_columns(
     let mut columns = match fetch {
         Fetch::Fields(names) => {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            fields_to_fetch(spec, Some(&names), Some(tx.shared.graph.model(spec.id)))?
+            fields_to_fetch(
+                spec,
+                Some(&names),
+                Some(tx.shared.graph.model(spec.id)),
+                env.context().bin_size(),
+            )?
         }
         Fetch::Ids | Fetch::Prefetchable => fetch_columns(spec, fetch)?,
     };
@@ -1157,10 +1168,10 @@ pub(crate) fn checked_columns(
 pub(crate) fn fetch_columns(spec: &ModelSpec, fetch: &Fetch) -> Result<Vec<FieldId>> {
     match fetch {
         Fetch::Ids => Ok(Vec::new()),
-        Fetch::Prefetchable => fields_to_fetch(spec, None, None),
+        Fetch::Prefetchable => fields_to_fetch(spec, None, None, false),
         Fetch::Fields(names) => {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            fields_to_fetch(spec, Some(&names), None)
+            fields_to_fetch(spec, Some(&names), None, false)
         }
     }
 }
@@ -2626,7 +2637,8 @@ impl Records {
             return Ok(None);
         }
         let graph = tx.shared.graph.model(model);
-        let mut wanted = fields_to_fetch(spec, fields, Some(graph))?;
+        let mut wanted =
+            fields_to_fetch(spec, fields, Some(graph), self.env().context().bin_size())?;
         let probe = wanted.first().copied();
         let env = self.env().clone();
         if !env.su() {

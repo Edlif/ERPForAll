@@ -27,6 +27,7 @@ struct SatelliteLine {
 async fn another_addon_cannot_store_a_field_on_journal_items() {
     let error = Harness::builder([
         &erp_addon_base::ADDON,
+        &erp_addon_web::ADDON,
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_analytic::ADDON,

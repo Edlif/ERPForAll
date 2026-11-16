@@ -1724,8 +1724,8 @@ fn stock_security_derived_assignments_refuse_context_defaults() {
             !rows[0].get::<_, bool>(0),
             "the context default reached the row"
         );
-        // A direct policy create with the same context default gets the typed refusal before the
-        // unique key (the location already has its row) can mask it.
+        // A direct policy create with the same context default reaches the unique key (the
+        // location already has its row).
         let error = tx
             .savepoint(async |tx| {
                 tx.env()
@@ -1744,8 +1744,7 @@ fn stock_security_derived_assignments_refuse_context_defaults() {
             (error.kind(), error.message().to_owned()),
             (
                 ErrorKind::Validation,
-                erp_addon_stock::StockError::ForbidNegativeUnavailable { location_id: root }
-                    .to_string()
+                "The database refused the change: A location has one stock policy.".to_owned()
             ),
             "policy forbid_negative: {error:?}"
         );
@@ -1930,8 +1929,7 @@ fn stock_security_stored_defaults_never_fill_derived_or_generated_fields() {
             created.map_err(refusal),
             Err((
                 ErrorKind::Validation,
-                erp_addon_stock::StockError::ForbidNegativeUnavailable { location_id: root }
-                    .to_string()
+                "The database refused the change: A location has one stock policy.".to_owned()
             )),
             "policy forbid_negative"
         );

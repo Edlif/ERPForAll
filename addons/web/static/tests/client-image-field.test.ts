@@ -1,4 +1,6 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createFieldControl } from "../src/client/fields.js";
 import { initializeAttachmentPolicy } from "../src/client/attachment-policy.js";
@@ -7,6 +9,7 @@ import { fileAccepted, imageDataUrl } from "../src/client/image-field.js";
 import type { Field } from "../src/client/metadata.js";
 import { ClientError, type RpcClient } from "../src/client/transport.js";
 
+const css = readFileSync(resolve(process.cwd(), "..", "addons/web/static/src/client/client.css"), "utf8");
 const PNG = "iVBORw0KGgo=";
 const JPEG = "/9j/4AAQ";
 
@@ -235,6 +238,17 @@ describe("image widget (IMG.WIDGET)", () => {
     const { handle } = mount(makeField("image", "binary"), JPEG);
     const link = handle.node.querySelector<HTMLAnchorElement>(".o_download_file_button")!;
     expect(link.download).toBe("logo.jpg"); expect(link.getAttribute("href")).toContain("data:image/jpeg;");
+  });
+
+  test("the title-block icon actions stay in the tab order: hidden by opacity only, shown on focus and where there is no hover", () => {
+    const actions = String.raw`\.form-title-block > \.field-label > \.field-image > \.field-image-actions`;
+    const rule = new RegExp(`${actions} \\{[^}]*\\}`).exec(css)?.[0] ?? "";
+    expect(rule).toMatch(/opacity: 0;/);
+    // display:none and visibility:hidden would drop the buttons from the tab order; the text span is clipped, never removed
+    expect(rule).not.toMatch(/display: none|visibility: hidden/);
+    expect(css).toMatch(/\.field-image:is\(:hover, :focus-within\) > \.field-image-actions \{ opacity: 1; \}/);
+    expect(css).toMatch(/@media \(hover: none\) \{[^}]*\.field-image-actions \{ opacity: 1; \} \}/);
+    expect(css).toMatch(/\.field-image-button > span \{ position: absolute;[^}]*clip-path: inset\(50%\)/);
   });
 
   test("each action holds an icon and its text, and keeps one accessible name", () => {

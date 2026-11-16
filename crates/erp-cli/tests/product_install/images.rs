@@ -714,3 +714,419 @@ fn product_image_reads_as_a_size_with_bin_size_over_json2() {
         db.cleanup().await.unwrap();
     });
 }
+
+/// Write one field on several records in one call, the way an RPC client does.
+async fn write_many(tx: &mut Transaction, model: &str, ids: &[i64], field: &str, value: Value) {
+    let records = tx
+        .env()
+        .records(model)
+        .unwrap()
+        .browse(ids.iter().copied())
+        .unwrap();
+    let vals = records
+        .vals_from_values(&BTreeMap::from([(field.to_owned(), value)]))
+        .unwrap();
+    records.write(tx, vals).await.unwrap();
+}
+
+/// A further active variant of `template`, whatever the number it already has.
+async fn another_variant(tx: &mut Transaction, template: i64) -> i64 {
+    tx.env()
+        .records("product.product")
+        .unwrap()
+        .create(
+            tx,
+            vec![RawVals::new().set_cell("product_tmpl_id", Cell::Id(template))],
+        )
+        .await
+        .unwrap()
+        .ids()[0]
+}
+
+/// The pictures of a write on two variants of one template, of a variant created with a picture,
+/// of a delete of two variants and of a delete that is refused after the picture moved. No spec
+/// case names these rules yet, so this test carries no case tag.
+#[test]
+fn product_image_moves_per_variant_and_a_refused_delete_moves_nothing() {
+    big_stack(async {
+        let db = TestDb::create().await.unwrap();
+        let (_system, orm) = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+
+        // one write on two variants of a template without a picture: the first fills the
+        // template, the second keeps the picture on its variant (the template is read again
+        // per variant)
+        let (product, first) = template(&mut tx, "Two in one write").await;
+        let second = second_variant(&mut tx, product).await;
+        let third = another_variant(&mut tx, product).await;
+        write_many(
+            &mut tx,
+            "product.product",
+            &[first, second],
+            "image_1920",
+            Value::from(PNG_400X200),
+        )
+        .await;
+        assert_sizes(&mut tx, "product.template", product, SIZES, WIDE).await;
+        assert_empty(&mut tx, "product.product", first, VARIANT_SIZES).await;
+        assert_shows_template(&mut tx, first, product).await;
+        assert_sizes(&mut tx, "product.product", second, VARIANT_SIZES, WIDE).await;
+        assert_empty(&mut tx, "product.product", third, VARIANT_SIZES).await;
+
+        // a variant created with a picture, on a template without one: the picture goes to the
+        // template
+        let (created_on, _) = template(&mut tx, "Created with a picture").await;
+        let vals = tx
+            .env()
+            .records("product.product")
+            .unwrap()
+            .vals_from_values(&BTreeMap::from([
+                ("product_tmpl_id".to_owned(), Value::Int(created_on)),
+                ("image_1920".to_owned(), Value::from(PNG_200X400)),
+            ]))
+            .unwrap();
+        let created = tx
+            .env()
+            .records("product.product")
+            .unwrap()
+            .create(&mut tx, vec![vals])
+            .await
+            .unwrap()
+            .ids()[0];
+        assert_sizes(&mut tx, "product.template", created_on, SIZES, TALL).await;
+        assert_empty(&mut tx, "product.product", created, VARIANT_SIZES).await;
+        assert_shows_template(&mut tx, created, created_on).await;
+
+        // two variants with pictures deleted in one call: the first fills the template
+        let (bare, kept) = template(&mut tx, "Two deleted").await;
+        let tall = second_variant(&mut tx, bare).await;
+        let wide = another_variant(&mut tx, bare).await;
+        for (id, picture) in [(tall, PNG_200X400), (wide, PNG_400X200)] {
+            write_value(
+                &mut tx,
+                "product.product",
+                id,
+                "image_variant_1920",
+                Value::from(picture),
+            )
+            .await
+            .unwrap();
+        }
+        tx.env()
+            .records("product.product")
+            .unwrap()
+            .browse([tall, wide])
+            .unwrap()
+            .unlink(&mut tx)
+            .await
+            .unwrap();
+        assert_eq!(variants(&mut tx, bare).await, vec![kept]);
+        assert_sizes(&mut tx, "product.template", bare, SIZES, TALL).await;
+
+        // a delete refused after the picture moved (a combo item holds the variant): the
+        // template stays without a picture and the variant keeps its own
+        let (refused, _) = template(&mut tx, "Refused delete").await;
+        let held = second_variant(&mut tx, refused).await;
+        write_value(
+            &mut tx,
+            "product.product",
+            held,
+            "image_variant_1920",
+            Value::from(PNG_200X400),
+        )
+        .await
+        .unwrap();
+        let combo = tx
+            .env()
+            .records("product.combo")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("name", Cell::Str("Picture combo".into()))],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        tx.env()
+            .records("product.combo.item")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("combo_id", Cell::Id(combo))
+                        .set_cell("product_id", Cell::Id(held)),
+                ],
+            )
+            .await
+            .unwrap();
+        let error = tx
+            .env()
+            .records("product.product")
+            .unwrap()
+            .browse([held])
+            .unwrap()
+            .unlink(&mut tx)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation, "{error}");
+        assert_eq!(variants(&mut tx, refused).await.len(), 2);
+        assert_empty(&mut tx, "product.template", refused, SIZES).await;
+        assert_sizes(&mut tx, "product.product", held, VARIANT_SIZES, TALL).await;
+
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(orm);
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// The variants of several templates read the templates' pictures in one statement, not one per
+/// template (semantic statement contract, ceiling: the reference reads them in one
+/// prefetch). No spec case names this yet, so this test carries no case tag.
+#[test]
+fn product_image_of_many_variants_reads_their_templates_once() {
+    big_stack(async {
+        let db = TestDb::create().await.unwrap();
+        let (_system, orm) = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let mut shown = Vec::new();
+        for name in ["Page one", "Page two", "Page three"] {
+            let (product, variant) = template(&mut tx, name).await;
+            write_value(
+                &mut tx,
+                "product.template",
+                product,
+                "image_1920",
+                Value::from(PNG_400X200),
+            )
+            .await
+            .unwrap();
+            shown.push(variant);
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let page = tx
+            .env()
+            .records("product.product")
+            .unwrap()
+            .browse(shown.iter().copied())
+            .unwrap();
+        tx.capture_statements(true);
+        let cells = page.cells(&mut tx, "image_128").await.unwrap();
+        let statements = tx.captured().to_vec();
+        tx.capture_statements(false);
+        assert!(
+            cells.iter().all(|cell| matches!(cell, Cell::Bytes(_))),
+            "{cells:?}"
+        );
+        let template_reads = statements
+            .iter()
+            .filter(|sql| sql.contains("product_template") && sql.contains("\"image_128\""))
+            .count();
+        assert_eq!(template_reads, 1, "{statements:#?}");
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(orm);
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// Pictures read and written by restricted users: an internal user of another company reads no
+/// picture of a variant of a company-bound template, sized or not; a user who may only read
+/// changes and deletes nothing, and the template keeps its picture; that user's sized read of a
+/// stored picture sends no statement that fetches the content. No spec case names these rules
+/// yet, so this test carries no case tag.
+#[test]
+fn product_image_access_holds_for_restricted_users() {
+    use erp_orm::image::human_size;
+
+    big_stack(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let (_system, installed) = install(&db).await;
+        let main = xid(&installed, "base", "main_company").await;
+        let system = xid(&installed, "base", "group_system").await;
+        let internal = xid(&installed, "base", "group_user").await;
+        let mut setup = installed.begin(SUPERUSER_ID).await.unwrap();
+        access::user(&mut setup, "picture-access-bootstrap", main, &[system]).await;
+        let companies = setup.env().records("res.company").unwrap();
+        let currency = companies
+            .browse([main])
+            .unwrap()
+            .cell(&mut setup, "currency_id")
+            .await
+            .unwrap();
+        let other = companies
+            .create(
+                &mut setup,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Picture company X".into()))
+                        .set_cell("currency_id", currency),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let outsider = access::user(&mut setup, "picture-outsider", other, &[internal]).await;
+        let reader = access::user(&mut setup, "picture-reader", main, &[internal]).await;
+        // a template of the main company with a picture and two variants, one with its own
+        let (product, plain) = template(&mut setup, "Company picture").await;
+        let own = second_variant(&mut setup, product).await;
+        setup
+            .env()
+            .records("product.template")
+            .unwrap()
+            .browse([product])
+            .unwrap()
+            .write(
+                &mut setup,
+                RawVals::new().set_cell("company_id", Cell::Id(main)),
+            )
+            .await
+            .unwrap();
+        write_value(
+            &mut setup,
+            "product.template",
+            product,
+            "image_1920",
+            Value::from(PNG_400X200),
+        )
+        .await
+        .unwrap();
+        write_value(
+            &mut setup,
+            "product.product",
+            own,
+            "image_variant_1920",
+            Value::from(PNG_200X400),
+        )
+        .await
+        .unwrap();
+        let full = bytes(&mut setup, "product.template", product, "image_1920").await;
+        let held = bytes(&mut setup, "product.product", own, "image_variant_1920").await;
+        setup.commit().await.unwrap();
+        drop(setup);
+        let orm = access::secure_orm(&db, &installed).await;
+
+        // another company: every picture of the variant is refused, sized or not
+        for field in ["image_128", "image_1920", "image_variant_1920"] {
+            for sized in [false, true] {
+                let mut tx = orm.begin(UserId::new(outsider).unwrap()).await.unwrap();
+                let variant = tx
+                    .env()
+                    .records("product.product")
+                    .unwrap()
+                    .browse([own])
+                    .unwrap()
+                    .with_context([("bin_size", Value::Bool(sized))]);
+                let error = variant.read(&mut tx, &[field]).await.unwrap_err();
+                assert_eq!(
+                    error.kind(),
+                    ErrorKind::Access,
+                    "{field} sized={sized}: {error}"
+                );
+                tx.rollback().await.unwrap();
+            }
+        }
+
+        // read only: the sized read answers the size from PostgreSQL, never the content
+        let mut tx = orm.begin(UserId::new(reader).unwrap()).await.unwrap();
+        let sized = |model: &str, id: i64, tx: &Transaction| {
+            tx.env()
+                .records(model)
+                .unwrap()
+                .browse([id])
+                .unwrap()
+                .with_context([("bin_size", Value::Bool(true))])
+        };
+        tx.capture_statements(true);
+        let template_rows = sized("product.template", product, &tx)
+            .read(&mut tx, &["image_1920"])
+            .await
+            .unwrap();
+        let variant_rows = sized("product.product", own, &tx)
+            .read(&mut tx, &["image_variant_1920"])
+            .await
+            .unwrap();
+        let statements = tx.captured().to_vec();
+        tx.capture_statements(false);
+        assert_eq!(
+            template_rows[0]["image_1920"],
+            Value::str(human_size(full.len()).as_str())
+        );
+        assert_eq!(
+            variant_rows[0]["image_variant_1920"],
+            Value::str(human_size(held.len()).as_str())
+        );
+        for column in ["\"image_1920\"", "\"image_variant_1920\""] {
+            let naming: Vec<&String> = statements
+                .iter()
+                .filter(|sql| sql.contains(column))
+                .collect();
+            assert!(
+                !naming.is_empty(),
+                "{column} is sized by a statement: {statements:#?}"
+            );
+            for sql in naming {
+                assert!(
+                    sql.contains(&format!("octet_length({column})")),
+                    "a sized read fetched {column}: {sql}"
+                );
+            }
+        }
+        tx.rollback().await.unwrap();
+        drop(tx);
+
+        // read only: a picture written on a variant is refused and the template keeps its own
+        let mut tx = orm.begin(UserId::new(reader).unwrap()).await.unwrap();
+        let error = write_value(
+            &mut tx,
+            "product.product",
+            plain,
+            "image_1920",
+            Value::from(PNG_200X400),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Access, "{error}");
+        tx.rollback().await.unwrap();
+        drop(tx);
+
+        // read only: the delete is refused for the delete itself, before any picture moves
+        let mut tx = orm.begin(UserId::new(reader).unwrap()).await.unwrap();
+        let error = tx
+            .env()
+            .records("product.product")
+            .unwrap()
+            .browse([own])
+            .unwrap()
+            .unlink(&mut tx)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Access, "{error}");
+        assert!(
+            error.message().contains("delete") && error.message().contains("(product.product)"),
+            "{error}"
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        assert_eq!(
+            bytes(&mut tx, "product.template", product, "image_1920").await,
+            full
+        );
+        assert_eq!(
+            bytes(&mut tx, "product.product", own, "image_variant_1920").await,
+            held
+        );
+        assert_eq!(variants(&mut tx, product).await, vec![plain, own]);
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(orm);
+        db.cleanup().await.unwrap();
+    });
+}

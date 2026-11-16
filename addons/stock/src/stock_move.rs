@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Stock moves (`stock.move`): table only. The
-//! move units (confirm, reserve, done), the reference compute, the counter maintenance of the
-//! transfer and the UoM reference registration of `uom_id` are's and
-//! later slices'; nothing here writes them.
+//! Stock moves (`stock.move`). Every insert,
+//! delete and counted change of a move keeps its transfer's counter vector and state in the same
+//! statement ([`crate::move_counters`]). Its references and chain links are kept by
+//! [`crate::move_relations`]. The move units (confirm, reserve, done), the reference compute and
+//! the UoM reference registration of `uom_id` are later slices';
+//! nothing here writes them.
 
 use erp_sdk::DefaultContext;
 use erp_sdk::prelude::*;
@@ -15,7 +17,9 @@ fn now(_ctx: &DefaultContext) -> Value {
 ///
 /// Product-unit quantities (6 with amendment C3): `product_qty` and
 /// `quantity_product_uom` are stored, readonly and required with no default, next to the inputs
-/// they were converted with (`uom_factor`, `product_uom_factor`, `product_unit_digits`). A generated
+/// they were converted with (`uom_factor`, `product_uom_factor`, `product_unit_digits`). The move
+/// overrides fill all five from the unit service on create and on a write of the product, unit,
+/// demand or quantity ([`crate::move_units`]); a move without a unit takes its product's. A generated
 /// column cannot be declared for them ('s generated expressions have no division and no
 /// `round`), so a table check binds each one to the unit service's SQL form of the conversion
 /// (`erp_addon_uom::stock::product_quantity_sql`: `qty * uom_factor / product_uom_factor`, HALF-UP at
@@ -141,9 +145,19 @@ pub struct StockMove {
         string = "Date Scheduled"
     )]
     pub date: Option<DateTime>,
-    /// Deadline.
+    /// Deadline. Writing it shifts the deadlines of the linked open moves
+    /// ([`crate::move_relations`]).
     #[field(datetime, readonly = true, copy = false, string = "Deadline")]
     pub date_deadline: Option<DateTime>,
+    /// The latest scheduled date of the unfinished moves before this one, when it is later than
+    /// this move's own date; empty for a done or cancelled move.
+    #[field(
+        datetime,
+        compute = "_compute_delay_alert_date",
+        store = true,
+        string = "Delay Alert Date"
+    )]
+    pub delay_alert_date: Option<DateTime>,
     /// Company.
     #[field(
         many2one,

@@ -15,6 +15,7 @@ use erp_testkit::Harness;
 async fn a_company_created_without_the_price_inclusion_gets_tax_excluded() {
     let h = Harness::builder([
         &erp_addon_base::ADDON,
+        &erp_addon_web::ADDON,
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_analytic::ADDON,

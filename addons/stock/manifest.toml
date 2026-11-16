@@ -3,7 +3,7 @@ summary = "Manage stock and logistics activities"
 category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.5.0"
+version = "1.7.0"
 depends = ["base", "product", "barcodes_gs1_nomenclature"]
 data = [
     "security/stock_security.xml",
@@ -13,6 +13,18 @@ data = [
     "data/stock_data.xml",
     "data/stock_sequence_data.xml",
     "views/settings_views.xml",
+    "views/stock_picking_type_kanban.xml",
+    "views/stock_picking_views.xml",
     "data/stock_link_defaults.xml",
+    "views/stock_warehouse_views.xml",
+    "views/stock_location_views.xml",
+    "views/stock_operation_type_views.xml",
+    "views/stock_route_views.xml",
+    "views/stock_lot_views.xml",
+    "views/stock_package_views.xml",
+    "views/stock_storage_views.xml",
+    "views/stock_orderpoint_views.xml",
+    "views/stock_quant_views.xml",
+    "views/stock_menus_master.xml",
 ]
 exact_only = true

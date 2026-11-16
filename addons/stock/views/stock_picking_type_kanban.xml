@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <!-- One card per operation type: what it is, where, and its counters as one overview card field. -->
+  <record id="stock_picking_type_kanban" model="ir.ui.view">
+    <field name="name">stock.picking.type.kanban</field>
+    <field name="model">stock.picking.type</field>
+    <field name="arch" type="xml">
+      <kanban string="Inventory Overview" create="0" can_open="0">
+        <templates>
+          <t t-name="card">
+            <main>
+              <field name="name"/>
+              <field name="warehouse_id"/>
+              <field name="code"/>
+              <field name="dashboard_card" widget="dashboard_card"/>
+            </main>
+          </t>
+        </templates>
+      </kanban>
+    </field>
+  </record>
+  <record id="stock_picking_type_action" model="ir.actions.act_window">
+    <field name="name">Inventory Overview</field>
+    <field name="res_model">stock.picking.type</field>
+    <field name="view_mode">kanban</field>
+    <field name="view_id" ref="stock_picking_type_kanban"/>
+  </record>
+  <!-- Lowest sequence under the root, so opening Inventory lands here. -->
+  <menuitem id="menu_stock_overview" name="Overview" parent="menu_stock_root" action="stock_picking_type_action" sequence="0"/>
+</erp>

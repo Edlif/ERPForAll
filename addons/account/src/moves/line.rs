@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! `account.move.line`: journal items of draft entries.
+//! `account.move.line`: journal items; the items of a posted or cancelled entry keep their
+//! accounting fields.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,11 +26,6 @@ use super::{
     company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
     owner_only_stored_fields = [],
     constraints = [
-        (
-            "_draft_until_posting",
-            "CHECK (parent_state = 'draft')",
-            "Journal items stay in draft until posting is delivered (a later release)."
-        ),
         (
             "_check_accountable_required_fields",
             "CHECK (display_type IN ('line_section', 'line_subsection', 'line_note') OR account_id IS NOT NULL)",
@@ -75,7 +71,7 @@ pub struct AccountMoveLine {
     /// The entry's accounting date.
     #[field(date, related = "move_id.date", store = true, string = "Date")]
     pub date: Option<Date>,
-    /// The entry's state.
+    /// The entry's state, written with it by the posting service.
     #[field(
         selection,
         related = "move_id.state",
@@ -124,11 +120,14 @@ pub struct AccountMoveLine {
     /// Order inside the entry.
     #[field(integer, default = 10)]
     pub sequence: i32,
-    /// What the line is: an accounting line (`product`) or a section, subsection or note.
+    /// What the line is: an accounting line (`product`), an invoice's tax or receivable/payable
+    /// line (`tax`, `payment_term`, kept by the invoice line sync), or a section, subsection or note.
     #[field(
         selection,
         selection = [
             ("product", "Product"),
+            ("tax", "Tax"),
+            ("payment_term", "Payment Term"),
             ("line_section", "Section"),
             ("line_subsection", "Subsection"),
             ("line_note", "Note"),
@@ -182,6 +181,73 @@ pub struct AccountMoveLine {
     /// Due date of the line.
     #[field(date, string = "Due Date")]
     pub date_maturity: Option<Date>,
+    /// The product of an invoice line.
+    #[field(
+        many2one,
+        comodel = "product.product",
+        ondelete = "restrict",
+        index = "btree_not_null",
+        string = "Product"
+    )]
+    pub product_id: Option<RecId>,
+    /// Unit of the quantity.
+    #[field(many2one, comodel = "uom.uom", ondelete = "restrict", string = "Unit")]
+    pub product_uom_id: Option<RecId>,
+    /// Quantity of an invoice line.
+    #[field(float, digits = "Product Unit", default = 1, string = "Quantity")]
+    pub quantity: Decimal,
+    /// Unit price, in the line currency.
+    #[field(float, digits = "Product Price", string = "Unit Price")]
+    pub price_unit: Decimal,
+    /// Discount in percent of the unit price.
+    #[field(float, digits = "Discount", default = 0, string = "Discount (%)")]
+    pub discount: Decimal,
+    /// Taxes applied to an invoice line.
+    #[field(
+        many2many,
+        comodel = "account.tax",
+        relation = "account_move_line_account_tax_rel",
+        column1 = "account_move_line_id",
+        column2 = "account_tax_id",
+        check_company = true,
+        string = "Taxes"
+    )]
+    pub tax_ids: Vec<RecId>,
+    /// The repartition line a tax line was made from.
+    #[field(
+        many2one,
+        comodel = "account.tax.repartition.line",
+        ondelete = "restrict",
+        index = "btree_not_null",
+        string = "Originator Tax Distribution Line"
+    )]
+    pub tax_repartition_line_id: Option<RecId>,
+    /// The tax of a tax line, from its repartition line.
+    #[field(
+        many2one,
+        comodel = "account.tax",
+        related = "tax_repartition_line_id.tax_id",
+        store = true,
+        index = false,
+        string = "Originator Tax"
+    )]
+    pub tax_line_id: Option<RecId>,
+    /// Line amount without taxes, in the line currency.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        readonly = true,
+        string = "Subtotal"
+    )]
+    pub price_subtotal: Decimal,
+    /// Line amount with taxes, in the line currency.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        readonly = true,
+        string = "Total"
+    )]
+    pub price_total: Decimal,
 }
 
 /// An amount cell as an exact decimal; empty is zero.
@@ -521,6 +587,7 @@ impl AccountMoveLine {
     ) -> Result<Records> {
         let env = this.env().clone();
         let skip = skip_balance_check(&env)?;
+        super::refuse_context_defaults(&env, &["move_id", "parent_state", "is_storno"])?;
         let mut move_ids = Vec::with_capacity(vals_list.len());
         for vals in &vals_list {
             refuse_line_inputs(vals)?;
@@ -530,6 +597,7 @@ impl AccountMoveLine {
         }
         move_ids.sort_unstable();
         move_ids.dedup();
+        super::post::hold_draft_entries(tx, &move_ids, "add items to").await?;
         let entries = move_entries(tx, &env, &move_ids).await?;
         let mut conversions = Vec::new();
         let mut targets = Vec::new();
@@ -575,7 +643,8 @@ impl AccountMoveLine {
         Ok(created)
     }
 
-    /// A line stays in its entry (/096); amounts are aligned per currency, an
+    /// A line stays in its entry (/096); on a posted or cancelled entry only
+    /// [`super::post::POSTED_LINE_WRITABLE`] may be written; amounts are aligned per currency, an
     /// amount in currency written alone on a foreign line re-derives its balance at the entry date,
     /// and the entries are checked for balance after the write.
     #[method(override)]
@@ -604,6 +673,11 @@ impl AccountMoveLine {
         }
         move_ids.sort_unstable();
         move_ids.dedup();
+        let closed = super::post::closed_fields(&vals, &super::post::POSTED_LINE_WRITABLE);
+        if !closed.is_empty() {
+            let what = format!("change {} on the items of", closed.join(", "));
+            super::post::hold_draft_entries(tx, &move_ids, &what).await?;
+        }
         let amounts = ["balance", "amount_currency", "currency_id"]
             .iter()
             .any(|f| vals.contains(f));
@@ -737,6 +811,7 @@ impl AccountMoveLine {
             .collect();
         move_ids.sort_unstable();
         move_ids.dedup();
+        super::post::hold_draft_entries(tx, &move_ids, "delete the items of").await?;
         sup.call(tx, this.as_records(), ()).await?;
         if !skip {
             check_balanced(tx, &move_ids).await?;

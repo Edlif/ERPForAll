@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <!-- Transfers: list with a Ready/Waiting strip, form, search. Validate and the other workflow
+       buttons come with the transfer behaviour; no header button names a method that does not exist. -->
+  <record id="view_picking_list" model="ir.ui.view">
+    <field name="name">stock.picking.list</field>
+    <field name="model">stock.picking</field>
+    <field name="arch" type="xml">
+      <list string="Transfers">
+        <dashboard>
+          <count name="ready" string="Ready" filter="available" color="success"/>
+          <count name="waiting" string="Waiting" filter="waiting" color="warning"/>
+        </dashboard>
+        <field name="name"/>
+        <field name="location_id"/>
+        <field name="location_dest_id"/>
+        <field name="partner_id"/>
+        <field name="scheduled_date"/>
+        <field name="origin"/>
+        <field name="state" widget="badge"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_picking_form" model="ir.ui.view">
+    <field name="name">stock.picking.form</field>
+    <field name="model">stock.picking</field>
+    <field name="arch" type="xml">
+      <form string="Transfer">
+        <header>
+          <field name="state" widget="statusbar"/>
+        </header>
+        <sheet>
+          <div class="oe_title"><h1><field name="name"/></h1></div>
+          <group>
+            <group>
+              <field name="partner_id"/>
+              <field name="picking_type_id"/>
+              <field name="location_id"/>
+              <field name="location_dest_id"/>
+            </group>
+            <group>
+              <field name="scheduled_date"/>
+              <field name="origin"/>
+            </group>
+          </group>
+          <notebook>
+            <!-- Lines are shown, not entered here yet: a move needs the transfer's defaults that the move behaviour
+                 supplies. They show with the line models' default lists below. -->
+            <page name="operations" string="Operations">
+              <field name="move_ids" readonly="1"/>
+            </page>
+            <page name="detailed_operations" string="Detailed Operations">
+              <field name="move_line_ids" readonly="1"/>
+            </page>
+            <page name="extra" string="Additional Info">
+              <group>
+                <group>
+                  <field name="user_id"/>
+                  <field name="move_type"/>
+                </group>
+                <group>
+                  <field name="company_id"/>
+                  <field name="date_deadline"/>
+                  <field name="date_done"/>
+                </group>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <!-- The default list and form of a move and of a move line: the transfer form shows its one2many lines with
+       them (the client uses a comodel's default views for a one2many). -->
+  <record id="view_stock_move_lines" model="ir.ui.view">
+    <field name="name">stock.move.lines</field>
+    <field name="model">stock.move</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="product_id"/>
+        <field name="product_uom_qty" string="Demand"/>
+        <field name="quantity"/>
+        <field name="uom_id" string="Unit"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_move_form" model="ir.ui.view">
+    <field name="name">stock.move.form</field>
+    <field name="model">stock.move</field>
+    <field name="arch" type="xml">
+      <form string="Stock Move">
+        <sheet>
+          <group>
+            <group>
+              <field name="product_id"/>
+              <field name="product_uom_qty" string="Demand"/>
+              <field name="quantity"/>
+              <field name="uom_id" string="Unit"/>
+            </group>
+            <group>
+              <field name="location_id"/>
+              <field name="location_dest_id"/>
+              <field name="state"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="view_stock_move_line_lines" model="ir.ui.view">
+    <field name="name">stock.move.line.lines</field>
+    <field name="model">stock.move.line</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="product_id"/>
+        <field name="location_id"/>
+        <field name="location_dest_id"/>
+        <field name="lot_id"/>
+        <field name="package_id"/>
+        <field name="result_package_id"/>
+        <field name="quantity"/>
+        <field name="uom_id" string="Unit"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_stock_move_line_form" model="ir.ui.view">
+    <field name="name">stock.move.line.form</field>
+    <field name="model">stock.move.line</field>
+    <field name="arch" type="xml">
+      <form string="Move Line">
+        <sheet>
+          <group>
+            <group>
+              <field name="product_id"/>
+              <field name="quantity"/>
+              <field name="uom_id" string="Unit"/>
+              <field name="lot_id"/>
+            </group>
+            <group>
+              <field name="location_id"/>
+              <field name="location_dest_id"/>
+              <field name="package_id"/>
+              <field name="result_package_id"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <!-- Late is not offered yet: view domains have no clock (erp-expr), so "before today" cannot be
+       written here. The overview card's Late link carries today's date from the server instead. -->
+  <record id="view_picking_search" model="ir.ui.view">
+    <field name="name">stock.picking.search</field>
+    <field name="model">stock.picking</field>
+    <field name="arch" type="xml">
+      <search string="Transfers">
+        <field name="name"/>
+        <field name="partner_id"/>
+        <field name="origin"/>
+        <field name="picking_type_id"/>
+        <filter name="draft" string="Draft" domain="[('state', '=', 'draft')]"/>
+        <filter name="waiting" string="Waiting" domain="[('state', 'in', ['confirmed', 'waiting'])]"/>
+        <filter name="available" string="Ready" domain="[('state', '=', 'assigned')]"/>
+        <filter name="done" string="Done" domain="[('state', '=', 'done')]"/>
+        <group>
+          <filter name="group_state" string="Status" context="{'group_by': 'state'}"/>
+          <filter name="group_picking_type" string="Operation Type" context="{'group_by': 'picking_type_id'}"/>
+          <filter name="group_scheduled_date" string="Scheduled Date" context="{'group_by': 'scheduled_date'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+  <record id="action_picking_tree_all" model="ir.actions.act_window">
+    <field name="name">Transfers</field>
+    <field name="res_model">stock.picking</field>
+    <field name="view_mode">list,form</field>
+    <field name="search_view_id" ref="view_picking_search"/>
+  </record>
+  <record id="action_picking_tree_incoming" model="ir.actions.act_window">
+    <field name="name">Receipts</field>
+    <field name="res_model">stock.picking</field>
+    <field name="view_mode">list,form</field>
+    <field name="domain">[('picking_type_id.code', '=', 'incoming')]</field>
+    <field name="search_view_id" ref="view_picking_search"/>
+  </record>
+  <record id="action_picking_tree_outgoing" model="ir.actions.act_window">
+    <field name="name">Deliveries</field>
+    <field name="res_model">stock.picking</field>
+    <field name="view_mode">list,form</field>
+    <field name="domain">[('picking_type_id.code', '=', 'outgoing')]</field>
+    <field name="search_view_id" ref="view_picking_search"/>
+  </record>
+  <record id="action_picking_tree_internal" model="ir.actions.act_window">
+    <field name="name">Internal Transfers</field>
+    <field name="res_model">stock.picking</field>
+    <field name="view_mode">list,form</field>
+    <field name="domain">[('picking_type_id.code', '=', 'internal')]</field>
+    <field name="search_view_id" ref="view_picking_search"/>
+  </record>
+  <menuitem id="menu_stock_operations" name="Operations" parent="menu_stock_root" sequence="10"/>
+  <menuitem id="menu_stock_receipts" name="Receipts" parent="menu_stock_operations" action="action_picking_tree_incoming" sequence="10"/>
+  <menuitem id="menu_stock_deliveries" name="Deliveries" parent="menu_stock_operations" action="action_picking_tree_outgoing" sequence="20"/>
+  <menuitem id="menu_stock_internal" name="Internal Transfers" parent="menu_stock_operations" action="action_picking_tree_internal" sequence="30"/>
+  <menuitem id="menu_stock_all_transfers" name="All Transfers" parent="menu_stock_operations" action="action_picking_tree_all" sequence="40"/>
+</erp>

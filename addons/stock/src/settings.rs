@@ -22,8 +22,9 @@ pub(super) const QUANT_KEYS: [&str; 8] = [
     "stock.quant_tcp_keepalives_count",
 ];
 
-/// The eight parameters. Floor and hard bound are the ones the Settings declarations had (
-/// §7: a moved key keeps its bounds; lead decision L3 states each floor in the slice report).
+/// The eight unit-policy parameters, with the floor and hard bound the Settings declarations had
+/// (a moved key keeps its bounds; lead decision L3 states each floor in the slice
+/// report), and the move-chain bound of deadline propagation.
 fn parameters() -> Result<Vec<ParameterDecl>> {
     // 4/D9: operational defaults, not milestone-end calibration measurements.
     [
@@ -65,6 +66,12 @@ fn parameters() -> Result<Vec<ParameterDecl>> {
             (1, 60),
         ),
         (QUANT_KEYS[7], "Stock TCP keepalive probes", 3, (1, 10)),
+        (
+            crate::move_relations::CHAIN_LIMIT_KEY,
+            "Linked moves a deadline change may reach",
+            10000,
+            (1, 1_000_000),
+        ),
     ]
     .into_iter()
     .map(|(key, label, default, bounds)| ParameterDecl::integer(key, label, default, bounds))
@@ -224,8 +231,11 @@ impl StockSettings {
             parameters.extend((entry.declarations)()?.iter().map(|d| d.key().to_owned()));
             parameter_groups.extend((entry.groups)()?.iter().map(|g| g.key().to_owned()));
         }
-        let expected_parameters: std::collections::BTreeSet<_> =
-            QUANT_KEYS.into_iter().map(str::to_owned).collect();
+        let expected_parameters: std::collections::BTreeSet<_> = QUANT_KEYS
+            .into_iter()
+            .chain([crate::move_relations::CHAIN_LIMIT_KEY])
+            .map(str::to_owned)
+            .collect();
         if keys != expected
             || group_keys != expected_groups
             || parameters != expected_parameters
