@@ -210,7 +210,7 @@ function staticModifier(value: unknown, label: string, inherited: boolean): bool
   }
   return node.value.value;
 }
-const kinds = new Set(["char", "text", "html", "boolean", "integer", "float", "monetary", "date", "datetime", "selection", "many2one", "one2many", "many2many"]);
+const kinds = new Set(["char", "text", "html", "boolean", "integer", "float", "monetary", "date", "datetime", "selection", "many2one", "one2many", "many2many", "binary"]);
 export function describeViews(raw: unknown, model: string, registryVersion: string): Description {
   const data = object(raw, "view description");
   let contextBytes=0, contextNodes=0, contextCount=0;

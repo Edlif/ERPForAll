@@ -161,13 +161,13 @@ textarea { min-height: 72px; resize: vertical; }
 input[type=checkbox] { min-height: 18px; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
 /* The one checkbox: forms, lists, menus and popovers share it (UI-PKG-D); the toggle switch keeps its own rules. */
 input[type=checkbox]:not(.boolean-toggle) { appearance: none; -webkit-appearance: none; display: inline-grid; place-content: center; border: 1.5px solid var(--input-line); border-radius: var(--radius-control); background: var(--surface); cursor: pointer; transition: background-color var(--motion-fast, .12s) ease, border-color var(--motion-fast, .12s) ease; }
-input[type=checkbox]:not(.boolean-toggle)::after { content: ""; width: 10px; height: 10px; background: var(--on-accent); clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0, 43% 62%); transform: scale(0); transition: transform var(--motion-fast, .12s) ease; }
+input[type=checkbox]:not(.boolean-toggle)::after { content: ""; width: 14px; height: 14px; background: var(--on-accent); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat; transform: scale(0); transition: transform var(--motion-fast, .12s) ease; }
 input[type=checkbox]:not(.boolean-toggle):hover:not(:disabled) { border-color: var(--accent); }
 input[type=checkbox]:not(.boolean-toggle):checked { background: var(--accent); border-color: var(--accent); }
 input[type=checkbox]:not(.boolean-toggle):checked::after { transform: scale(1); }
 /* Some but not all selected (a list header): a dash on the accent fill. */
 input[type=checkbox]:not(.boolean-toggle):indeterminate { background: var(--accent); border-color: var(--accent); }
-input[type=checkbox]:not(.boolean-toggle):indeterminate::after { height: 2px; clip-path: none; transform: scale(1); }
+input[type=checkbox]:not(.boolean-toggle):indeterminate::after { width: 10px; height: 2px; -webkit-mask: none; mask: none; transform: scale(1); }
 input[type=checkbox]:not(.boolean-toggle):disabled { opacity: .55; cursor: default; }
 @media (prefers-reduced-motion: reduce) { input[type=checkbox]:not(.boolean-toggle), input[type=checkbox]:not(.boolean-toggle)::after { transition: none; } }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
@@ -553,7 +553,7 @@ td button.link { border: 0; background: transparent; color: var(--accent); paddi
 .list-table .sort-button:hover { background: transparent; }
 .list-table .sort-button:focus-visible { outline-offset: -2px; }
 .list-table .list-record-selector { width: 40px; padding: 0; text-align: center; }
-.list-record-selector input[type=checkbox] { display: block; margin-inline: auto; cursor: pointer; }
+.list-record-selector input[type=checkbox] { display: grid; margin-inline: auto; cursor: pointer; } /* grid, not block: the check mark is a sized grid child */
 .list-table tbody tr { cursor: pointer; transition: background var(--motion-fast) ease-out; }
 .list-table tbody tr:hover { background: var(--hover); }
 .list-table tbody tr.row-selected { background: var(--selected); }
