@@ -52,3 +52,49 @@ fn page_margins_survive_the_worker_frame_side_by_side() {
     let html = erp_report::render_html(&back, &[]).unwrap();
     assert!(html.contains("padding:113pt 34pt 79pt 21pt"), "{html}");
 }
+
+/// A picture (the letterhead logo) crosses the worker frame byte for byte, as one CBOR byte string.
+#[test]
+fn a_picture_survives_the_worker_frame() {
+    const PNG: [u8; 67] = [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    let mut b = DocumentBuilder::new(Limits::default());
+    let body = b
+        .add(Node::Image {
+            data: PNG.to_vec().into(),
+            width: None,
+            height: Some(34.0),
+            alt: "Logo".into(),
+        })
+        .unwrap();
+    let page = PageSetup::new(595.0, 842.0, 40.0).unwrap();
+    let tree = b
+        .finish(body, DocumentOptions::new("p", "P", page))
+        .unwrap();
+    let wire = WireDocument::from_tree(&tree).unwrap();
+    let mut encoded = Vec::new();
+    ciborium::into_writer(&wire, &mut encoded).unwrap();
+    assert!(
+        encoded.windows(PNG.len()).any(|w| w == PNG),
+        "the bytes are one byte string"
+    );
+    let back = wire.into_tree(Limits::default()).unwrap();
+    let Node::Image {
+        data,
+        width,
+        height,
+        alt,
+    } = &back.nodes()[back.body().index()]
+    else {
+        panic!("the body is no longer a picture");
+    };
+    assert_eq!(
+        (&data[..], *width, *height, alt.as_str()),
+        (&PNG[..], None, Some(34.0), "Logo")
+    );
+}

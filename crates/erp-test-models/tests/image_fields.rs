@@ -583,3 +583,26 @@ async fn onchange_applies_the_stored_pixel_limit() {
     drop(tx);
     h.cleanup().await.unwrap();
 }
+
+/// image limits; the company form's logo is related to its partner's picture)
+#[tokio::test]
+async fn onchange_through_a_related_picture_loads_the_limits() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let model = tx.env().records(MODEL).unwrap();
+    for value in [b64(&png(2400, 600)), erp_sdk::Value::False] {
+        let mut form = erp_sdk::ValueMap::new();
+        form.insert("photo".into(), value);
+        model
+            .onchange(
+                &mut tx,
+                form,
+                vec!["photo".into()],
+                erp_orm::Spec::new().field("photo").field("image_128"),
+            )
+            .await
+            .unwrap();
+    }
+    drop(tx);
+    h.cleanup().await.unwrap();
+}

@@ -286,6 +286,37 @@ pub(crate) fn clip_warnings(warnings: &[String]) -> Vec<String> {
     sent
 }
 
+/// Raw bytes sent as one CBOR byte string (serde's default would send an array of integers).
+#[derive(Debug)]
+struct WireBytes<'a>(Cow<'a, [u8]>);
+
+impl Serialize for WireBytes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for WireBytes<'_> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Bytes;
+        impl serde::de::Visitor<'_> for Bytes {
+            type Value = Vec<u8>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a byte string")
+            }
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(v.to_vec())
+            }
+            fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Vec<u8>, E> {
+                Ok(v)
+            }
+        }
+        deserializer
+            .deserialize_byte_buf(Bytes)
+            .map(|v| WireBytes(Cow::Owned(v)))
+    }
+}
+
 /// A document as plain values. Short variant names: a document can hold 500,000 nodes.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WireDocument<'a> {
@@ -321,6 +352,9 @@ enum WireNode<'a> {
     PageCurrent,
     #[serde(rename = "o")]
     PageTotal,
+    /// Picture bytes (a CBOR byte string), width and height in points, alternative text.
+    #[serde(rename = "m")]
+    Image(WireBytes<'a>, Option<f64>, Option<f64>, Cow<'a, str>),
 }
 /// size, bold, italic, underline, colour, padding, alignment (0 start, 1 centre, 2 end), keep together,
 /// space above and below, fill, rules above and below, table look (0 lined, 1 bordered, 2 borderless)
@@ -473,6 +507,17 @@ impl<'a> WireDocument<'a> {
                 Node::PageBreak => WireNode::PageBreak,
                 Node::PageCounter(PageCounter::Current) => WireNode::PageCurrent,
                 Node::PageCounter(PageCounter::Total) => WireNode::PageTotal,
+                Node::Image {
+                    data,
+                    width,
+                    height,
+                    alt,
+                } => WireNode::Image(
+                    WireBytes(Cow::Borrowed(data)),
+                    *width,
+                    *height,
+                    Cow::Borrowed(alt),
+                ),
                 _ => return Err(later("document node over the render worker protocol")),
             });
         }
@@ -560,6 +605,13 @@ impl<'a> WireDocument<'a> {
                 WireNode::PageBreak => Node::PageBreak,
                 WireNode::PageCurrent => Node::PageCounter(PageCounter::Current),
                 WireNode::PageTotal => Node::PageCounter(PageCounter::Total),
+                // the builder probes the picture against the limits again: the worker trusts no frame
+                WireNode::Image(data, width, height, alt) => Node::Image {
+                    data: data.0.into_owned().into(),
+                    width,
+                    height,
+                    alt: alt.into_owned(),
+                },
             };
             ids.push(builder.add(node)?);
         }

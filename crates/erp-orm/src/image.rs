@@ -825,6 +825,18 @@ impl Transaction {
         {
             return Ok(());
         }
+        self.load_image_policy().await
+    }
+
+    /// Load the image limits of the database once per transaction attempt, whatever the model: a
+    /// related picture field has no bounds of its own but writes into one that has.
+    ///
+    /// # Errors
+    /// A database error, or a validation error naming a stored parameter outside its range.
+    pub(crate) async fn load_image_policy(&mut self) -> Result<()> {
+        if self.image_policy.is_some() {
+            return Ok(());
+        }
         let registry = std::sync::Arc::clone(self.registry());
         let Some(params) = registry.model_id("ir.config_parameter") else {
             self.image_policy = Some(ImagePolicy::default());

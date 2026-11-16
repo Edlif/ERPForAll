@@ -4566,7 +4566,9 @@ async fn an_abandoned_composer_file_is_collected() {
     let other = record_file(&w, DOC_A, w.doc_shared, "kept.txt", None).await;
     w.client
         .execute(
-            "UPDATE ir_attachment SET create_date = now() - interval '25 hours' WHERE id = ANY($1)",
+            // create_date is UTC wall time, as the cleaner reads it; a cluster in another zone must not shift it
+            "UPDATE ir_attachment SET create_date = (now() AT TIME ZONE 'UTC') - interval '25 hours' \
+             WHERE id = ANY($1)",
             &[&vec![old, other]],
         )
         .await
