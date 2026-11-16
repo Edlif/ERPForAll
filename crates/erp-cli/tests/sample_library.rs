@@ -482,10 +482,10 @@ async fn install_use_upgrade_uninstall() {
     }
     // views, actions, menus and access rows came from the data files
     for (model, expected) in [
-        // eight views plus the four report templates
-        ("ir.ui.view", 12),
+        // eight views plus the six report templates
+        ("ir.ui.view", 14),
         ("ir.actions.act_window", 4),
-        ("ir.actions.report", 2),
+        ("ir.actions.report", 4),
         ("ir.ui.menu", 5),
         ("ir.access", 4),
     ] {
@@ -1277,37 +1277,149 @@ fn sample_library_reports_are_listed_and_print_a_book() {
             .await
             .unwrap()
             .orm;
-        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
-        for (model, report, label) in [
+        // Printed as a user of company 1, whose letterhead the layout prints.
+        let mut tx = orm
+            .begin_with(SUPERUSER_ID, erp_orm::Context::new().with_company_id(1))
+            .await
+            .unwrap();
+        tx.env()
+            .records("res.company")
+            .unwrap()
+            .browse(vec![1])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new()
+                    .set_cell("street", Cell::Str("Jalan Merdeka 12".into()))
+                    .set_cell("street2", Cell::Str("Lantai 3".into()))
+                    .set_cell("website", Cell::Str("www.example.com".into()))
+                    .set_cell("vat", Cell::Str("01.234.567.8-901.000".into()))
+                    .set_cell("zip", Cell::Str("40111".into()))
+                    .set_cell("city", Cell::Str("Bandung".into()))
+                    .set_cell("phone", Cell::Str("+62 22 555 0100".into()))
+                    .set_cell("email", Cell::Str("hello@example.com".into())),
+            )
+            .await
+            .unwrap();
+        for (model, reports) in [
             (
                 "sample_library.book",
-                "sample_library.report_book_sheet",
-                "Book Sheet",
+                [
+                    ("sample_library.report_book_sheet", "Book Sheet"),
+                    ("sample_library.report_book_list", "Book List"),
+                ],
             ),
             (
                 "sample_library.loan",
-                "sample_library.report_loan_slip",
-                "Loan Slip",
+                [
+                    ("sample_library.report_loan_slip", "Loan Slip"),
+                    ("sample_library.report_loan_register", "Loan Register"),
+                ],
             ),
         ] {
             let listed = erp_addon_base::report_print::printable(&mut tx, model)
                 .await
                 .unwrap();
-            assert_eq!(
-                listed,
-                vec![(report.to_owned(), label.to_owned())],
-                "{model}"
-            );
+            let expected: Vec<(String, String)> = reports
+                .iter()
+                .map(|(report, label)| ((*report).to_owned(), (*label).to_owned()))
+                .collect();
+            assert_eq!(listed, expected, "{model}");
         }
-        let books = tx.env().records("sample_library.book").unwrap();
-        let book = books
+        let author = tx
+            .env()
+            .records("sample_library.author")
+            .unwrap()
             .create(
                 &mut tx,
-                vec![RawVals::new().set_cell("title", Cell::Str("The Printed Atlas".into()))],
+                vec![RawVals::new().set_cell("name", Cell::Str("Mira Hale".into()))],
             )
             .await
             .unwrap()
             .ids()[0];
+        let books = tx.env().records("sample_library.book").unwrap();
+        let book = books
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("title", Cell::Str("The Printed Atlas".into()))
+                        .set_cell("author_id", Cell::Id(author))
+                        .set_cell("isbn", Cell::Str("9780000000017".into()))
+                        .set_cell("pages", Cell::Int(312))
+                        .set_cell("publication_year", Cell::Int(2017))
+                        .set_cell("price", Cell::Float(24.5))
+                        .set_cell(
+                            "summary",
+                            Cell::Str("A cartographer maps a city that redraws itself.".into()),
+                        ),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let borrower = tx
+            .env()
+            .records("res.partner")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("name", Cell::Str("Ari Wibowo".into()))],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let date = |d| Cell::Date(erp_fields::Date::from_ymd(2026, 11, d).unwrap());
+        let loan = tx
+            .env()
+            .records("sample_library.loan")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("book_id", Cell::Id(book))
+                        .set_cell("borrower_id", Cell::Id(borrower))
+                        .set_cell("loan_date", date(2))
+                        .set_cell("due_date", date(16))
+                        .set_cell("state", Cell::Str("out".into())),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let slip = erp_addon_base::report_print::find(&mut tx, "sample_library.report_loan_slip")
+            .await
+            .unwrap();
+        let slip = erp_addon_base::report_print::prepare(&mut tx, &slip, &[loan])
+            .await
+            .unwrap();
+        let second = books
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("title", Cell::Str("Harbour Lights".into()))
+                        .set_cell("pages", Cell::Int(198))
+                        .set_cell("available", Cell::Bool(false)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let register =
+            erp_addon_base::report_print::find(&mut tx, "sample_library.report_loan_register")
+                .await
+                .unwrap();
+        let register = erp_addon_base::report_print::prepare(&mut tx, &register, &[loan])
+            .await
+            .unwrap();
+        let list = erp_addon_base::report_print::find(&mut tx, "sample_library.report_book_list")
+            .await
+            .unwrap();
+        let list = erp_addon_base::report_print::prepare(&mut tx, &list, &[book, second])
+            .await
+            .unwrap();
         let report =
             erp_addon_base::report_print::find(&mut tx, "sample_library.report_book_sheet")
                 .await
@@ -1352,5 +1464,47 @@ fn sample_library_reports_are_listed_and_print_a_book() {
             erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
         let pdf = engine.render(&document).unwrap();
         assert!(pdf.bytes().starts_with(b"%PDF-"));
+        let slip_pdf = engine.render(&slip).unwrap();
+        assert!(slip_pdf.bytes().starts_with(b"%PDF-"));
+        let slip_html = erp_report::render_html(&slip, &[]).unwrap();
+        assert!(slip_html.contains("Ari Wibowo"), "{slip_html}");
+        // The letterhead carries the company's address and the footer its contact line.
+        assert!(slip_html.contains("Bandung"), "{slip_html}");
+        assert!(slip_html.contains("hello@example.com"), "{slip_html}");
+        for line in [
+            "Lantai 3",
+            "www.example.com",
+            "Tax ID",
+            "01.234.567.8-901.000",
+        ] {
+            assert!(slip_html.contains(line), "{line}: {slip_html}");
+        }
+        // The loan register prints the loan in one table.
+        let register_html = erp_report::render_html(&register, &[]).unwrap();
+        assert!(
+            register_html.contains("Loan Register") && register_html.contains("Ari Wibowo"),
+            "{register_html}"
+        );
+        assert!(
+            engine
+                .render(&register)
+                .unwrap()
+                .bytes()
+                .starts_with(b"%PDF-")
+        );
+        // The book list prints both books in one table.
+        let list_html = erp_report::render_html(&list, &[]).unwrap();
+        assert!(
+            list_html.contains("The Printed Atlas") && list_html.contains("Harbour Lights"),
+            "{list_html}"
+        );
+        assert_eq!(list_html.matches("<table").count(), 1, "{list_html}");
+        let list_pdf = engine.render(&list).unwrap();
+        assert!(list_pdf.bytes().starts_with(b"%PDF-"));
+        // The two sample prints, kept in the test scratch folder for a look at the layout.
+        let out = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        fs::write(out.join("sample-book-sheet.pdf"), pdf.bytes()).unwrap();
+        fs::write(out.join("sample-loan-slip.pdf"), slip_pdf.bytes()).unwrap();
+        fs::write(out.join("sample-book-list.pdf"), list_pdf.bytes()).unwrap();
     });
 }

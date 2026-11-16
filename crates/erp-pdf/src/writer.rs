@@ -215,6 +215,8 @@ pub(crate) struct Importer<'d, 'b, 'a, 'c> {
     pub kept: usize,
     /// Annotations left out under [`AnnotationPolicy::KeepOrDrop`].
     pub dropped: usize,
+    /// Optional content groups the source catalog lists; any other group is refused.
+    pub groups: BTreeSet<ObjectId>,
 }
 impl<'d, 'b, 'a, 'c> Importer<'d, 'b, 'a, 'c> {
     pub fn new(
@@ -236,7 +238,12 @@ impl<'d, 'b, 'a, 'c> Importer<'d, 'b, 'a, 'c> {
             ordinal,
             kept: 0,
             dropped: 0,
+            groups: BTreeSet::new(),
         }
+    }
+    /// The output identifier of a source object that was written.
+    pub fn copied(&self, old: ObjectId) -> Option<ObjectId> {
+        self.map.get(&old).copied()
     }
     /// Give every page of this copy its output identifier before any is written, so a link can
     /// name a page that comes later.
@@ -389,9 +396,23 @@ impl<'d, 'b, 'a, 'c> Importer<'d, 'b, 'a, 'c> {
                 {
                     return Err(unsupported("cross-document page reference", owner::DEST));
                 }
+                // A group without a catalog that lists it is shown by viewers whatever the
+                // source configuration said, so it is never copied.
+                let group = crate::ocg::is_group(source);
+                if group && !self.groups.contains(old) {
+                    return Err(malformed(
+                        "PDF optional content group is not listed in the catalog",
+                    ));
+                }
                 let id = self.writer.id()?;
                 self.map.insert(*old, id);
-                let copied = self.copy(source, depth + 1)?;
+                let copied = match source {
+                    // A listed group: its own dictionary is the one place a group may stand.
+                    Object::Dictionary(d) if group => {
+                        Object::Dictionary(self.copy_dict(d, depth + 1)?)
+                    }
+                    _ => self.copy(source, depth + 1)?,
+                };
                 self.writer.object(id, &copied)?;
                 Object::Reference(id)
             }
@@ -400,6 +421,12 @@ impl<'d, 'b, 'a, 'c> Importer<'d, 'b, 'a, 'c> {
                     .map(|v| self.copy(v, depth + 1))
                     .collect::<Result<_>>()?,
             ),
+            // A group written in place has no identifier a catalog could list.
+            Object::Dictionary(_) if crate::ocg::is_group(o) => {
+                return Err(malformed(
+                    "PDF optional content groups must be indirect objects",
+                ));
+            }
             Object::Dictionary(d) => Object::Dictionary(self.copy_dict(d, depth)?),
             Object::Stream(s) => {
                 let mut copy = s.clone();

@@ -27,8 +27,7 @@ pub fn validate_dashboard(node: NodeRef<'_>, spec: &ModelSpec) -> ViewResult<()>
     let parent = node.parent();
     if parent.is_some_and(|p| p.tag() == "kanban" && p.parent().is_none()) {
         return Err(fail(
-            "A dashboard on a kanban view is not available yet (task \
-             a later release); place it directly under the list root.",
+            "A dashboard on a kanban view is not available yet (a later release); place it directly under the list root.",
         ));
     }
     if !parent.is_some_and(|p| p.tag() == "list" && p.parent().is_none()) {

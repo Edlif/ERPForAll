@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use erp_report::{
     Alignment, DocTree, ImageFormat, Limits, Node, NodeId, PageCounter, ReportError, Style,
-    probe_image,
+    TableLook, probe_image,
 };
 use typst::{
     foundations::{Array, Bytes, Dict, Smart, Value},
@@ -37,6 +37,33 @@ fn styled(dict: &mut Dict, style: &Style) -> Result<(), ReportError> {
     );
     dict.insert("padding".into(), Value::Float(style.padding()));
     dict.insert("keep".into(), Value::Bool(style.keep_together()));
+    let (above, below) = style.spacing();
+    dict.insert("above".into(), Value::Float(above));
+    dict.insert("below".into(), Value::Float(below));
+    dict.insert(
+        "fill".into(),
+        style.fill().map_or(Value::None, |rgb| {
+            array(rgb.into_iter().map(|v| Value::Int(i64::from(v))))
+        }),
+    );
+    let (rule_above, rule_below) = style.rules();
+    dict.insert("rule_above".into(), Value::Bool(rule_above));
+    dict.insert("rule_below".into(), Value::Bool(rule_below));
+    dict.insert("decorated".into(), Value::Bool(style.decorated()));
+    dict.insert(
+        "table".into(),
+        string(match style.table_look() {
+            TableLook::Bordered => "bordered",
+            TableLook::Borderless => "borderless",
+            TableLook::Lined => "lined",
+            _ => {
+                return Err(ReportError::Unsupported {
+                    feature: "table look",
+                    task: "a later release",
+                });
+            }
+        }),
+    );
     dict.insert(
         "align".into(),
         string(match style.alignment() {
@@ -52,6 +79,49 @@ fn styled(dict: &mut Dict, style: &Style) -> Result<(), ReportError> {
         }),
     );
     Ok(())
+}
+/// Characters a column may claim at most when the columns share the width: one long text does not
+/// squeeze the others to nothing.
+const COLUMN_CHARS_MAX: usize = 40;
+/// Characters a column claims at least: a short column keeps room for its header.
+const COLUMN_CHARS_MIN: usize = 3;
+/// Points of width one character stands for when an image or graphic claims a column share.
+const POINTS_PER_CHAR: f64 = 5.0;
+/// Text length of a subtree, for sharing a table's width; an image or graphic counts by its width and a
+/// nested table or grid as a full column. `depth` stops at the admitted document depth.
+fn text_len(doc: &DocTree, id: &NodeId, depth: usize) -> usize {
+    if depth > 64 {
+        return 0;
+    }
+    let sum = |ids: &[NodeId]| ids.iter().map(|id| text_len(doc, id, depth + 1)).sum();
+    match doc.nodes().get(id.index()) {
+        Some(Node::Text(text)) => text.chars().count(),
+        Some(
+            Node::Block { children, .. } | Node::Inline { children, .. } | Node::Flow { children },
+        ) => sum(children),
+        Some(Node::Cell { child, .. }) => text_len(doc, child, depth + 1),
+        Some(Node::List { items, .. }) => sum(items),
+        Some(Node::Image { width, .. } | Node::Vector { width, .. }) => {
+            width.map_or(COLUMN_CHARS_MAX, |w| (w / POINTS_PER_CHAR).ceil() as usize)
+        }
+        Some(Node::Table { .. } | Node::Grid { .. }) => COLUMN_CHARS_MAX,
+        _ => 0,
+    }
+}
+/// Column shares from the longest text in each column, header included, as a browser's automatic table
+/// layout gives them: a title column gets more room than a year column. A spanning cell counts toward the
+/// column it starts in.
+fn column_weights(doc: &DocTree, columns: usize, header: &[NodeId], cells: &[NodeId]) -> Vec<f64> {
+    let mut longest = vec![0; columns];
+    for (index, id) in header.iter().chain(cells).enumerate() {
+        if let Some(column) = longest.get_mut(index % columns.max(1)) {
+            *column = (*column).max(text_len(doc, id, 0));
+        }
+    }
+    longest
+        .into_iter()
+        .map(|chars: usize| chars.clamp(COLUMN_CHARS_MIN, COLUMN_CHARS_MAX) as f64)
+        .collect()
 }
 /// Typed renderer input and the warnings of nodes printed differently from what they ask for.
 /// Raster images are decoded here, before layout, so a corrupt image is an `Image` error and not a
@@ -98,6 +168,14 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                 cells,
             } => {
                 d.insert("columns".into(), Value::Int(*columns as i64));
+                d.insert(
+                    "weights".into(),
+                    array(
+                        column_weights(doc, *columns, header, cells)
+                            .into_iter()
+                            .map(Value::Float),
+                    ),
+                );
                 d.insert("header".into(), indices(header));
                 d.insert("children".into(), indices(cells));
                 "table"

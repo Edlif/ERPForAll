@@ -5,9 +5,12 @@
 //! byte/graph limits and caught panics do not replace operating-system memory/deadline enforcement.
 //! No operation opens files or network resources. Discard ALL emitted bytes on any failure.
 //! Merge/extract/split produce plain reading copies, not archival documents. Encryption,
-//! signatures, forms and optional content are outside the current profile. Page annotations
-//! follow an explicit [`AnnotationPolicy`] in reading copies ([`ReadingCopy`]) and stay as they
-//! are in rotate and stamp.
+//! signatures and forms are outside the current profile. Page annotations follow an explicit
+//! [`AnnotationPolicy`] in reading copies ([`ReadingCopy`]) and stay as they are in rotate and
+//! stamp. Optional content (layers) stays as it is in rotate and stamp; a reading copy gets the
+//! default configuration of its inputs rebuilt for the groups its pages use, so a layer hidden by
+//! default stays hidden. Alternate configurations are not carried, and an overlay with layers is
+//! refused.
 //! Embedded-file, metadata and e-invoice edits are incremental updates: the input bytes are the
 //! unchanged prefix of the output.
 //! Collect a plain reading copy inside an already-isolated worker.
@@ -33,6 +36,7 @@ mod error;
 mod graph;
 mod limits;
 mod meta;
+mod ocg;
 mod options;
 mod pages;
 mod stamp;

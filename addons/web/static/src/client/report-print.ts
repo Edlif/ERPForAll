@@ -1,5 +1,7 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 import { button, el, errorMessage } from "./dom.js";
+import { icon } from "./icons.js";
+import { attachMenuDropdown } from "./menu-dropdown.js";
 import type { DialogHandle, DialogService } from "./dialog-service.js";
 import { saveFile } from "./file-save.js";
 import { ClientError, type RpcClient } from "./transport.js";
@@ -132,15 +134,17 @@ export function printJobDialog(services: PrintServices, title: string, id: numbe
 }
 
 /**
- * Returns the `onOpen` hook of an Actions menu: the first opening loads the reports of `model` and adds one
- * "Print <report>" entry per report before `before`; `pick` prints with it. A failed load is reported and tried again
- * at the next opening.
+ * Returns the `onOpen` hook of a form's record menu: the first opening loads the reports of `model` and adds one
+ * entry per report, with the printer icon, before `before` (the reference client lists them at the top of the
+ * form's menu); `pick` prints with it and `loaded` runs after the entries are in (to refresh the menu's focus
+ * order and size). A failed load, or a failure while adding the entries, is reported and tried again at the next
+ * opening.
  */
-export function printMenuLoader(rpc: RpcClient, model: string, menu: HTMLElement, before: Node | null, pick: (report: PrintableReport) => void, report: (error: unknown) => void): () => void {
-  let loaded = false;
+export function printMenuLoader(rpc: RpcClient, model: string, menu: HTMLElement, before: Node | null, pick: (report: PrintableReport) => void, report: (error: unknown) => void, loaded: () => void = () => {}): () => void {
+  let started = false;
   return () => {
-    if (loaded) return;
-    loaded = true;
+    if (started) return;
+    started = true;
     void loadPrintReports(rpc, model).then(reports => {
       // A menu with nothing else to offer says so instead of opening empty.
       if (!reports.length && !menu.querySelector("button")) {
@@ -149,10 +153,58 @@ export function printMenuLoader(rpc: RpcClient, model: string, menu: HTMLElement
         menu.append(none);
       }
       for (const entry of reports) {
-        const item = button(`Print ${entry.name}`, () => pick(entry), "dropdown-item print-report-btn");
+        const item = button(`Print ${entry.name}`, () => pick(entry), "dropdown-item print-report-btn has-action-icon");
+        item.prepend(icon("printer"));
         item.setAttribute("role", "menuitem");
         menu.insertBefore(item, before);
       }
-    }, (error: unknown) => { loaded = false; report(error); });
+      loaded();
+    }).catch((error: unknown) => { started = false; report(error); });
   };
+}
+
+export interface PrintDropdown {
+  /** The Print button and its menu. */
+  readonly node: HTMLElement;
+  readonly dispose: () => void;
+}
+
+/**
+ * The Print button of a list, beside Actions as in the reference client: a printer icon and "Print", opening one
+ * entry per report of `model`. The reports load at the first opening (a list that is never printed asks nothing);
+ * a model without one says "No report available". `pick` prints with the chosen report. A failed load is reported
+ * and tried again at the next opening.
+ */
+export function printDropdown(rpc: RpcClient, model: string, pick: (report: PrintableReport) => void, report: (error: unknown) => void): PrintDropdown {
+  const node = el("div", undefined, "nav-dropdown print-dropdown");
+  const toggle = button("Print", () => {}, "print-toggle-btn has-action-icon");
+  toggle.prepend(icon("printer"));
+  toggle.setAttribute("aria-haspopup", "menu");
+  const menu = el("div", undefined, "nav-dropdown-menu print-menu");
+  menu.setAttribute("aria-label", "Print");
+  node.append(toggle, menu);
+  let live = true;
+  let state: "idle" | "loading" | "done" = "idle";
+  const load = (): void => {
+    if (state !== "idle") return;
+    state = "loading";
+    void loadPrintReports(rpc, model).then(reports => {
+      if (!live) return;
+      for (const entry of reports) {
+        const item = button(entry.name, () => { dropdown.close(true); pick(entry); }, "dropdown-item print-report-btn");
+        item.setAttribute("role", "menuitem");
+        item.setAttribute("aria-label", `Print ${entry.name}`);
+        menu.append(item);
+      }
+      if (!reports.length) {
+        const none = button("No report available", () => {}, "dropdown-item print-report-none");
+        none.disabled = true; none.setAttribute("role", "menuitem");
+        menu.append(none);
+      }
+      dropdown.refresh();
+      state = "done";
+    }).catch((error: unknown) => { state = "idle"; if (live) report(error); });
+  };
+  const dropdown = attachMenuDropdown({ trigger: toggle, menu, mode: "class-open", onOpen: load });
+  return { node, dispose: () => { live = false; dropdown.dispose(); } };
 }

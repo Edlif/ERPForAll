@@ -165,6 +165,9 @@ input[type=checkbox]:not(.boolean-toggle)::after { content: ""; width: 10px; hei
 input[type=checkbox]:not(.boolean-toggle):hover:not(:disabled) { border-color: var(--accent); }
 input[type=checkbox]:not(.boolean-toggle):checked { background: var(--accent); border-color: var(--accent); }
 input[type=checkbox]:not(.boolean-toggle):checked::after { transform: scale(1); }
+/* Some but not all selected (a list header): a dash on the accent fill. */
+input[type=checkbox]:not(.boolean-toggle):indeterminate { background: var(--accent); border-color: var(--accent); }
+input[type=checkbox]:not(.boolean-toggle):indeterminate::after { height: 2px; clip-path: none; transform: scale(1); }
 input[type=checkbox]:not(.boolean-toggle):disabled { opacity: .55; cursor: default; }
 @media (prefers-reduced-motion: reduce) { input[type=checkbox]:not(.boolean-toggle), input[type=checkbox]:not(.boolean-toggle)::after { transition: none; } }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
@@ -464,8 +467,8 @@ button.pager-count:focus-visible {
 .control-panel-list { grid-template-columns: auto minmax(240px, 1fr) minmax(160px, 540px) auto; }
 .breadcrumbs:has(> .selection-box) { flex-wrap: nowrap; }
 
-.action-dropdown > .action-toggle-btn { min-height: var(--list-action-control-size, 32px) !important; padding: 2px 8px !important; font-size: 12px !important; border-radius: var(--radius-control); background: var(--surface) !important; border: 1px solid var(--selected-line) !important; color: var(--selected-text) !important; } /* unchanged list rule, selector narrowed so the form Actions button is a plain control; ui-lint: allow important */
-.action-menu { top: calc(100% + 4px); min-width: 120px; }
+.action-dropdown > .action-toggle-btn, .print-dropdown > .print-toggle-btn { min-height: var(--list-action-control-size, 32px) !important; padding: 2px 8px !important; font-size: 12px !important; border-radius: var(--radius-control); background: var(--surface) !important; border: 1px solid var(--selected-line) !important; color: var(--selected-text) !important; } /* list selection controls (Actions and Print); the form Actions button stays a plain control; ui-lint: allow important */
+.action-menu, .print-menu { top: calc(100% + 4px); min-width: 120px; }
 
 /* Viewport and Sheet */
 .form-viewport { background: var(--canvas); min-height: calc(100vh - 90px); padding: 12px 16px 36px; }
@@ -1111,6 +1114,7 @@ input[type=checkbox].boolean-toggle:focus-visible { outline: 2px solid var(--acc
 .erp-icon { display: inline-block; width: 18px; height: 18px; flex: 0 0 auto; vertical-align: middle; pointer-events: none; }
 .has-action-icon > .erp-icon { margin-inline-end: 6px; }
 .action-toggle-btn > .erp-icon { margin-inline-start: 6px; margin-inline-end: 0; }
+.print-toggle-btn > .erp-icon, .print-report-btn > .erp-icon { width: 16px; height: 16px; }
 .app-icon > .erp-icon { width: 30px; height: 30px; color: var(--launcher-fg); }
 .user-button > .erp-icon { width: 14px; height: 14px; }
 

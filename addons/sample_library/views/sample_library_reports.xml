@@ -1,34 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
-<!-- Example reports of the sample library: one book sheet per book and one slip per loan. Each
+<!-- Example reports of the sample library: one book sheet per book and one slip per loan, and a book
+     list and a loan register that print every selected record in one table. Each
      report calls the shared layouts once around all its records (one page header and footer per
      document) and starts every record after the first on a new page. -->
 <erp>
     <template id="report_book_sheet_document">
         <div class="page">
-            <h2 t-field="doc.title"/>
-            <table class="table table-sm table-borderless mt-3">
-                <tbody>
-                    <tr><th class="w-25">Author</th><td t-field="doc.author_id.name"/></tr>
-                    <tr><th>ISBN</th><td t-field="doc.isbn"/></tr>
-                    <tr><th>Published On</th><td t-field="doc.published_on"/></tr>
-                    <tr><th>Publication Year</th><td t-field="doc.publication_year"/></tr>
-                    <tr><th>Pages</th><td t-field="doc.pages"/></tr>
-                    <tr><th>Price</th><td t-field="doc.price"/></tr>
-                    <tr>
-                        <th>Availability</th>
-                        <td>
-                            <span t-if="doc.available">Available</span>
-                            <span t-else="" class="text-muted">On loan</span>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-            <t t-if="doc.genre_ids">
-                <h5 class="mt-3">Genres</h5>
-                <ul>
-                    <li t-foreach="doc.genre_ids" t-as="genre"><span t-field="genre.name"/></li>
-                </ul>
+            <div class="row mb-3">
+                <div class="col-8">
+                    <h2 t-field="doc.title"/>
+                    <div class="text-muted" t-if="doc.author_id">by <span t-field="doc.author_id.name"/></div>
+                </div>
+                <div class="col-4 text-end">
+                    <strong t-if="doc.available" class="text-success">Available</strong>
+                    <strong t-else="" class="text-danger">On loan</strong>
+                </div>
+            </div>
+            <div class="p-3 mb-3" style="background-color: #f4f6f8">
+                <table class="table table-sm table-borderless">
+                    <tbody>
+                        <tr>
+                            <td class="small text-muted">ISBN</td>
+                            <td><span t-if="doc.isbn" t-field="doc.isbn"/><span t-else="" class="text-muted">&#8211;</span></td>
+                            <td class="small text-muted">Pages</td>
+                            <td t-field="doc.pages"/>
+                        </tr>
+                        <tr>
+                            <td class="small text-muted">Published On</td>
+                            <td><span t-if="doc.published_on" t-field="doc.published_on"/><span t-else="" class="text-muted">&#8211;</span></td>
+                            <td class="small text-muted">Publication Year</td>
+                            <td t-out="doc.publication_year"/>
+                        </tr>
+                        <tr>
+                            <td class="small text-muted">Price</td>
+                            <td t-field="doc.price" t-options="{'precision': 2}"/>
+                            <td class="small text-muted">Rating</td>
+                            <td t-field="doc.rating"/>
+                        </tr>
+                        <tr>
+                            <td class="small text-muted">Genres</td>
+                            <td>
+                                <t t-foreach="doc.genre_ids" t-as="genre"><span t-field="genre.name"/><t t-if="not genre_last">, </t></t>
+                                <span t-if="not doc.genre_ids" class="text-muted">&#8211;</span>
+                            </td>
+                            <td class="small text-muted">Format</td>
+                            <td t-field="doc.book_format"/>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <t t-if="doc.summary">
+                <h5 class="mt-3">Summary</h5>
+                <p t-field="doc.summary"/>
             </t>
         </div>
     </template>
@@ -47,26 +71,45 @@
 
     <template id="report_loan_slip_document">
         <div class="page">
-            <h2>Loan Slip</h2>
-            <p class="text-muted">Status: <span t-field="doc.state"/></p>
-            <table class="table table-sm table-bordered mt-3">
+            <div class="row mb-3">
+                <div class="col-8">
+                    <h2>Loan Slip</h2>
+                    <div class="text-muted">Keep this slip with the book until it is returned.</div>
+                </div>
+                <div class="col-4 text-end">
+                    <div class="small text-muted">Status</div>
+                    <strong t-field="doc.state"/>
+                </div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-6 p-3" style="background-color: #f4f6f8">
+                    <div class="small text-muted">Book</div>
+                    <strong t-field="doc.book_id.title"/>
+                    <div class="small" t-if="doc.book_id.author_id">by <span t-field="doc.book_id.author_id.name"/></div>
+                </div>
+                <div class="col-6 p-3" style="background-color: #f4f6f8">
+                    <div class="small text-muted">Borrower</div>
+                    <strong t-field="doc.borrower_id.name"/>
+                    <div class="small" t-if="doc.borrower_id.email" t-field="doc.borrower_id.email"/>
+                    <div class="small" t-if="doc.borrower_id.phone" t-field="doc.borrower_id.phone"/>
+                </div>
+            </div>
+            <table class="table table-sm mb-3">
                 <thead>
-                    <tr><th>Book</th><th>Borrower</th><th>Loan Date</th><th>Due Date</th><th>Return Date</th></tr>
+                    <tr><th>Loan Date</th><th>Due Date</th><th>Return Date</th></tr>
                 </thead>
                 <tbody>
                     <tr>
-                        <td t-field="doc.book_id.title"/>
-                        <td t-field="doc.borrower_id.name"/>
-                        <td t-field="doc.loan_date"/>
-                        <td t-field="doc.due_date"/>
-                        <td t-field="doc.return_date"/>
+                        <td><span t-if="doc.loan_date" t-field="doc.loan_date"/><span t-else="" class="text-muted">&#8211;</span></td>
+                        <td><strong t-if="doc.due_date" t-field="doc.due_date"/><span t-else="" class="text-muted">&#8211;</span></td>
+                        <td><span t-if="doc.return_date" t-field="doc.return_date"/><span t-else="" class="text-muted">&#8211;</span></td>
                     </tr>
                 </tbody>
             </table>
-            <p class="mt-3 small">Please return the book by the due date.</p>
-            <div class="row mt-3">
-                <div class="col">Librarian: ____________________</div>
-                <div class="col text-end">Borrower: ____________________</div>
+            <p class="small text-muted">Please return the book by the due date. A late return may delay your next loan.</p>
+            <div class="row" style="margin-top: 56pt">
+                <div class="col-6 border-top text-center small text-muted">Librarian</div>
+                <div class="col-6 border-top text-center small text-muted">Borrower</div>
             </div>
         </div>
     </template>
@@ -79,6 +122,64 @@
                         <t t-call="sample_library.report_loan_slip_document"/>
                     </div>
                 </t>
+            </t>
+        </t>
+    </template>
+
+    <!-- One table of every selected record, for printing a list rather than one page per record. -->
+    <template id="report_book_list">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <h3 class="mb-3">Book List</h3>
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>Title</th><th>Author</th><th>Format</th><th class="text-end">Year</th>
+                                <th class="text-end">Pages</th><th class="text-end">Price</th><th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr t-foreach="docs" t-as="doc">
+                                <td><strong t-field="doc.title"/></td>
+                                <td><span t-if="doc.author_id" t-field="doc.author_id.name"/></td>
+                                <td t-field="doc.book_format"/>
+                                <td class="text-end"><span t-if="doc.publication_year" t-out="doc.publication_year"/></td>
+                                <td class="text-end" t-field="doc.pages"/>
+                                <td class="text-end" t-field="doc.price" t-options="{'precision': 2}"/>
+                                <td>
+                                    <span t-if="doc.available" class="text-success">Available</span>
+                                    <span t-else="" class="text-danger">On loan</span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_loan_register">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <h3 class="mb-3">Loan Register</h3>
+                    <table class="table table-sm">
+                        <thead>
+                            <tr><th>Book</th><th>Borrower</th><th>Loan Date</th><th>Due Date</th><th>Returned</th><th>Status</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr t-foreach="docs" t-as="doc">
+                                <td><strong t-field="doc.book_id.title"/></td>
+                                <td t-field="doc.borrower_id.name"/>
+                                <td><span t-if="doc.loan_date" t-field="doc.loan_date"/></td>
+                                <td><span t-if="doc.due_date" t-field="doc.due_date"/></td>
+                                <td><span t-if="doc.return_date" t-field="doc.return_date"/></td>
+                                <td t-field="doc.state"/>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </t>
         </t>
     </template>
@@ -99,6 +200,24 @@
         <field name="report_type">qweb-pdf</field>
         <field name="report_name">sample_library.report_loan_slip</field>
         <field name="print_report_name">'Loan slip - ' + object.book_id.title</field>
+        <field name="binding_model_id" ref="sample_library.model_sample_library_loan"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_book_list" model="ir.actions.report">
+        <field name="name">Book List</field>
+        <field name="model">sample_library.book</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">sample_library.report_book_list</field>
+        <field name="binding_model_id" ref="sample_library.model_sample_library_book"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_loan_register" model="ir.actions.report">
+        <field name="name">Loan Register</field>
+        <field name="model">sample_library.loan</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">sample_library.report_loan_register</field>
         <field name="binding_model_id" ref="sample_library.model_sample_library_loan"/>
         <field name="binding_type">report</field>
     </record>

@@ -53,7 +53,6 @@ pub(crate) fn malformed(s: impl Into<String>) -> PdfError {
 }
 /// Tasks that own a refused feature (specification §4.4): an error names the one that adds it.
 pub(crate) mod owner {
-    pub const OCG: &str = "a later release";
     pub const FORMS: &str = "a later release";
     pub const SIGNED: &str = "a later release";
     pub const ENCRYPT: &str = "a later release";

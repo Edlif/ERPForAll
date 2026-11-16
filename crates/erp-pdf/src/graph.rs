@@ -200,9 +200,6 @@ pub(crate) fn pages(
     profile: PageProfile,
 ) -> Result<Vec<(ObjectId, Dictionary)>> {
     let root = catalog(doc, l)?;
-    if root.has(b"OCProperties") {
-        return Err(unsupported("optional content", owner::OCG));
-    }
     if root.has(b"AcroForm") {
         return Err(unsupported("AcroForm", owner::FORMS));
     }
@@ -468,6 +465,10 @@ pub(crate) fn import(
                     && matches!(kind.as_name(), Ok(b"Page" | b"Pages" | b"Catalog"))
                 {
                     return Err(unsupported("overlay document reference", owner::OVERLAY));
+                }
+                // The target catalog does not list an overlay's groups.
+                if crate::ocg::is_group(o) {
+                    return Err(unsupported("overlay optional content", owner::OVERLAY));
                 }
                 let mut out = Dictionary::new();
                 for (k, v) in d.iter() {

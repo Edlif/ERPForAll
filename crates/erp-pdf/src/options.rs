@@ -60,10 +60,11 @@ impl StampPlacement {
 }
 /// What a reading copy (merge, extract, split) does with page annotations.
 ///
-/// A reading copy has a fresh catalog: no form, no name trees, no optional-content
-/// configuration. An annotation is *self-contained* when it needs none of them: a link to a URI
-/// or to a page of the same copy, and the markup types (notes, highlights, shapes, ink, stamps,
-/// free text with its own appearance) with their popups and replies.
+/// A reading copy has a fresh catalog: no form and no name trees. An annotation is
+/// *self-contained* when it needs none of them: a link to a URI or to a page of the same copy,
+/// and the markup types (notes, highlights, shapes, ink, stamps, free text with its own
+/// appearance) with their popups and replies. An annotation that belongs to a layer is carried
+/// with its group, which the copy lists in its rebuilt optional-content configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum AnnotationPolicy {

@@ -11,7 +11,7 @@ use erp_expr::{EvalContext, ExprValue};
 use erp_report::{
     Alignment, AttachmentPolicy, DocTree, DocumentOptions, EvalOptions, FieldInfo, FieldValue,
     LangFormat, Language, LimitKind, Node, NodeId, PageCounter, PageSetup, ProfileKind,
-    RecordStore, ReportError, ReportLimits, ReportProgram, Style, TemplateSource,
+    RecordStore, ReportError, ReportLimits, ReportProgram, Style, TableLook, TemplateSource,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -1476,4 +1476,91 @@ fn an_evaluation_past_its_deadline_is_refused_by_name() {
             "{err:?}"
         );
     }
+}
+
+/// Block spacing, background, edge rules and the table look reach the document style; a table
+/// without a look class keeps the default lined look and needs no wrapping block.
+#[test]
+fn block_decoration_and_table_look_reach_the_style() {
+    let program = compile(
+        "<div><div class='mt-3 mb-2 border-bottom' style='background-color: #f4f6f8'>A</div>\
+         <table class='table table-bordered'><tr><td>x</td></tr></table>\
+         <table class='table'><thead><tr><th>H</th></tr></thead><tr><td>y</td></tr></table></div>",
+    );
+    let doc = evaluate(&program, &EvalContext::standard()).unwrap();
+    let styles: Vec<&Style> = doc
+        .nodes()
+        .iter()
+        .filter_map(|node| match node {
+            Node::Block { style, .. } => Some(style),
+            _ => None,
+        })
+        .collect();
+    let filled = styles
+        .iter()
+        .find(|style| style.fill().is_some())
+        .expect("the filled block");
+    assert_eq!(filled.fill(), Some([0xf4, 0xf6, 0xf8]));
+    assert_eq!(filled.spacing(), (10.0, 5.0));
+    assert_eq!(filled.rules(), (false, true));
+    assert!(filled.decorated());
+    let looks: Vec<TableLook> = styles
+        .iter()
+        .map(|style| style.table_look())
+        .filter(|look| *look != TableLook::Lined)
+        .collect();
+    assert_eq!(looks, vec![TableLook::Bordered]);
+}
+
+/// Borders that draw nothing and translucent fills have no effect; the `margin` shorthand gives the
+/// top and the bottom; an out-of-range spacing is refused naming its element.
+#[test]
+fn inline_border_fill_and_margin_values() {
+    let first_block = |arch: &str| -> Style {
+        let doc = evaluate(&compile(arch), &EvalContext::standard()).unwrap();
+        doc.nodes()
+            .iter()
+            .find_map(|node| match node {
+                Node::Block { style, .. } => Some(style.clone()),
+                _ => None,
+            })
+            .expect("a block")
+    };
+    let quiet = first_block(
+        "<div><div style='border-top: 0px solid black; border-bottom: 1px none #000; \
+         background-color: #0000; margin: 4pt 0 8pt'>A</div></div>",
+    );
+    assert_eq!(quiet.rules(), (false, false));
+    assert_eq!(quiet.fill(), None);
+    assert_eq!(quiet.spacing(), (4.0, 8.0));
+    let drawn = first_block(
+        "<div><div style='border-top: 1px solid #cccccc; border-bottom: 1px solid transparent'>A</div></div>",
+    );
+    assert_eq!(drawn.rules(), (true, false));
+    let error = evaluate(
+        &compile("<div><section style='margin-top: 600mm'>A</section></div>"),
+        &EvalContext::standard(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("<section>"), "{error}");
+}
+
+/// The HTML preview writes only the margin that is set, and a block holding a table is a `div`.
+#[test]
+fn preview_spacing_and_table_blocks() {
+    let doc = evaluate(
+        &compile(
+            "<div><div class='mt-3'>A</div>\
+             <div class='text-end'><table class='table'><tr><td>x</td></tr></table></div></div>",
+        ),
+        &EvalContext::standard(),
+    )
+    .unwrap();
+    let html = erp_report::render_html(&doc, &[]).unwrap();
+    assert!(html.contains("margin-top:"), "{html}");
+    assert!(!html.contains("margin-bottom:0pt"), "{html}");
+    assert!(
+        !html.contains("<p style=\"font-size:10pt;text-align:end\"><table"),
+        "{html}"
+    );
 }

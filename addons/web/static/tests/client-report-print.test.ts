@@ -1,7 +1,7 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { DialogService } from "../src/client/dialog-service.js";
-import { loadPrintReports, printMenuLoader, printRecords } from "../src/client/report-print.js";
+import { loadPrintReports, printDropdown, printMenuLoader, printRecords } from "../src/client/report-print.js";
 import { RpcClient } from "../src/client/transport.js";
 
 let dialogs: DialogService;
@@ -104,4 +104,48 @@ test("an otherwise empty menu says no report is available", async () => {
 test("a report list that is not a list is refused", async () => {
   const { rpc } = fakeRpc(() => ({}));
   await expect(loadPrintReports(rpc, "sale.order")).rejects.toThrow("did not answer the report list with a list");
+});
+
+test("the Print button shows a printer icon and loads one entry per report at its first opening", async () => {
+  const { rpc, calls } = fakeRpc(() => [order, { report: "sale.order.quote", name: "Quotation" }]);
+  const pick = vi.fn();
+  const print = printDropdown(rpc, "sale.order", pick, () => {});
+  document.body.append(print.node);
+  const toggle = print.node.querySelector<HTMLButtonElement>(".print-toggle-btn")!;
+  expect(toggle.textContent).toBe("Print");
+  expect(toggle.querySelector("svg")?.getAttribute("data-icon")).toBe("printer");
+  expect(calls).toHaveLength(0); // a list that is never printed asks nothing
+  toggle.click();
+  await vi.waitFor(() => expect([...print.node.querySelectorAll(".print-report-btn")].map(item => item.textContent)).toEqual(["Order", "Quotation"]));
+  expect(print.node.querySelector(".print-report-btn")!.getAttribute("aria-label")).toBe("Print Order");
+  expect(calls).toEqual([{ model: "report.job", method: "erp_print_reports", args: { res_model: "sale.order" } }]);
+  print.node.querySelector<HTMLButtonElement>(".print-report-btn")!.click();
+  expect(pick).toHaveBeenCalledWith(order);
+  print.dispose();
+});
+
+test("a model without a report says so, and a failed load is reported and tried again at the next opening", async () => {
+  let fail = true;
+  const { rpc, calls } = fakeRpc(() => { if (fail) throw new Error("offline"); return []; });
+  const errors: unknown[] = [];
+  const print = printDropdown(rpc, "res.partner", () => {}, error => errors.push(error));
+  document.body.append(print.node);
+  const toggle = print.node.querySelector<HTMLButtonElement>(".print-toggle-btn")!;
+  toggle.click();
+  await vi.waitFor(() => expect(errors).toHaveLength(1));
+  toggle.click(); // closes
+  fail = false;
+  toggle.click();
+  await vi.waitFor(() => expect(print.node.querySelector(".print-report-none")?.textContent).toBe("No report available"));
+  expect(calls).toHaveLength(2);
+  print.dispose();
+});
+
+test("the form menu loader tells its caller when the entries are in", async () => {
+  const { rpc } = fakeRpc(() => [order]);
+  const menu = document.createElement("div");
+  const loaded = vi.fn();
+  printMenuLoader(rpc, "sale.order", menu, null, () => {}, () => {}, loaded)();
+  await vi.waitFor(() => expect(loaded).toHaveBeenCalledTimes(1));
+  expect(menu.querySelector(".print-report-btn")!.textContent).toBe("Print Order");
 });

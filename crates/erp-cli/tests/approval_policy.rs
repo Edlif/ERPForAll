@@ -908,8 +908,7 @@ async fn only_administrators_write_and_revisions_are_immutable_body() {
             policy("agent allow", "write", "allow")
                 .set_cell("principal_kind", Cell::Str("agent".into())),
             "agent allow",
-            "an Allow exception for agent and service principals is not supported until ADR \
-             0169 accepts it (D2, a later release)."
+            "an Allow exception for agent and service principals is not supported until accepts it (D2, a later release)."
                 .to_owned(),
         ),
         (
@@ -1153,8 +1152,7 @@ async fn eligible_approvers_exclude_the_requester_and_follow_current_membership_
         &refused(
             id,
             "partners",
-            "no eligible approver other than the requester is configured for this call (ADR \
-             0169 D2).",
+            "no eligible approver other than the requester is configured for this call.",
         ),
     );
     let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
@@ -1611,8 +1609,7 @@ async fn a_widened_approval_needs_an_approver_of_every_allowed_company_body() {
         &refused(
             id,
             "partners",
-            "no eligible approver other than the requester is configured for this call (ADR \
-             0169 D2).",
+            "no eligible approver other than the requester is configured for this call.",
         ),
     );
     f.db.cleanup().await.unwrap();

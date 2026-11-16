@@ -21,6 +21,8 @@ step cargo fmt --all --check
 step cargo clippy --locked --workspace --all-targets -- -D warnings
 step cargo check --locked --workspace --all-targets
 if [ "$run_tests" = 1 ]; then
+  # unoptimized test builds put the module install chain on deep frames: the default 2 MiB test thread overflows
+  export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
   step cargo nextest run --locked --workspace --no-fail-fast
   step cargo test --locked --workspace --doc
 fi

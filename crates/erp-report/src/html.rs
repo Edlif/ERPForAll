@@ -2,7 +2,9 @@
 //! The `qweb-html` converter: the same validated [`DocTree`] the PDF engine lays out, written as one
 //! self-contained HTML page with a fixed stylesheet. Text is escaped data; styles come only from the
 //! validated [`Style`] values; the page loads nothing (its content security policy forbids it).
-use crate::{Alignment, DocTree, Node, NodeId, PageCounter, ReportError, Style, error::invalid};
+use crate::{
+    Alignment, DocTree, Node, NodeId, PageCounter, ReportError, Style, TableLook, error::invalid,
+};
 use std::fmt::Write;
 
 /// The fixed preview stylesheet. Screen-only presentation of the paper document: a page-sized sheet,
@@ -13,8 +15,11 @@ body{margin:0;background:#e8e8e8}\
 .erp-report-warnings ul{margin:4pt 0 0;padding-left:16pt}\
 .erp-document{margin:12pt auto;background:#fff;box-sizing:border-box;box-shadow:0 1pt 4pt rgba(0,0,0,.25);color:#000;font-size:10pt}\
 .erp-document p{margin:0 0 6pt}\
-.erp-document table{border-collapse:collapse}\
-.erp-document td,.erp-document th{border:1pt solid #000;padding:5pt;text-align:start;font-weight:inherit;vertical-align:top}\
+.erp-document table{border-collapse:collapse;width:100%}\
+.erp-document td,.erp-document th{border:0;border-bottom:.5pt solid #dee2e6;padding:5pt 6pt;text-align:start;font-weight:inherit;vertical-align:top}\
+.erp-document thead td,.erp-document thead th{background:#f1f3f5}\
+.erp-t-bordered td,.erp-t-bordered th{border:.5pt solid #adb5bd}\
+.erp-t-borderless td,.erp-t-borderless th{border:0}\
 .erp-document hr{border:0;border-top:1pt solid #000}\
 .erp-page-break{break-after:page;border-top:1pt dashed #999;margin:12pt 0}\
 .erp-grid{display:grid}\
@@ -133,6 +138,23 @@ fn style(out: &mut String, style: &Style, block: bool) {
             Alignment::Center => out.push_str(";text-align:center"),
             Alignment::End => out.push_str(";text-align:end"),
         }
+        let (above, below) = style.spacing();
+        if above > 0.0 {
+            let _ = write!(out, ";margin-top:{above}pt");
+        }
+        if below > 0.0 {
+            let _ = write!(out, ";margin-bottom:{below}pt");
+        }
+        if let Some([r, g, b]) = style.fill() {
+            let _ = write!(out, ";background:rgb({r},{g},{b});border-radius:3pt");
+        }
+        let (rule_above, rule_below) = style.rules();
+        if rule_above {
+            out.push_str(";border-top:.5pt solid #ced4da;padding-top:4pt");
+        }
+        if rule_below {
+            out.push_str(";border-bottom:.5pt solid #ced4da;padding-bottom:4pt");
+        }
     }
 }
 
@@ -217,15 +239,31 @@ fn node(out: &mut String, nodes: &[Node], id: &NodeId) {
             children: c,
             style: s,
         } => {
-            out.push_str(if s.keep_together() {
-                "<div class=\"erp-keep\" style=\""
-            } else {
-                "<p style=\""
-            });
+            // A block holding a table or a decoration is a `div`: a `p` cannot hold a table.
+            let div = s.keep_together()
+                || s.decorated()
+                || c.iter().any(|id| {
+                    matches!(
+                        nodes.get(id.index()),
+                        Some(Node::Table { .. } | Node::Grid { .. } | Node::List { .. })
+                    )
+                });
+            let look = match s.table_look() {
+                TableLook::Bordered => " erp-t-bordered",
+                TableLook::Borderless => " erp-t-borderless",
+                TableLook::Lined => "",
+            };
+            let keep = if s.keep_together() { " erp-keep" } else { "" };
+            let class = format!("{keep}{look}");
+            out.push_str(if div { "<div" } else { "<p" });
+            if !class.is_empty() {
+                let _ = write!(out, " class=\"{}\"", class.trim_start());
+            }
+            out.push_str(" style=\"");
             style(out, s, true);
             out.push_str("\">");
             c.iter().for_each(|id| node(out, nodes, id));
-            out.push_str(if s.keep_together() { "</div>" } else { "</p>" });
+            out.push_str(if div { "</div>" } else { "</p>" });
         }
         Node::Inline {
             children: c,

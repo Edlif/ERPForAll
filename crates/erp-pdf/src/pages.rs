@@ -4,9 +4,10 @@ use crate::limits::Context;
 use crate::{AnnotationPolicy, Emitter, Limit, PageSelection, PdfLimits, Rotation};
 use crate::{
     graph::{self, PageProfile},
+    ocg::{Layers, Source},
     writer::{Importer, Writer, save},
 };
-use lopdf::{Document, Object, dictionary};
+use lopdf::{Dictionary, Document, Object, ObjectId, dictionary};
 
 /// Options of a reading copy: a plain PDF with a fresh catalog and page tree.
 ///
@@ -63,6 +64,9 @@ impl ReadingCopy {
     /// All emitted bytes must be discarded on error. No files, clocks or global state are used.
     /// Source catalog metadata, embedded files and archival claims are deliberately not carried over.
     /// A link is carried when it points to a URI or to a page of its own input document.
+    /// Optional content keeps its default visibility: the copy lists the groups its pages and
+    /// carried annotations use with an explicit default state, order, automatic states, radio
+    /// groups and locks; alternate configurations are not carried.
     /// Untrusted inputs must be processed in a caller-managed isolated worker.
     pub fn merge<I, B>(
         &self,
@@ -81,6 +85,7 @@ impl ReadingCopy {
             let root = w.id()?;
             let catalog = w.id()?;
             let mut kids = Vec::new();
+            let mut layers = Layers::default();
             let mut count = 0;
             let mut summary = ReadingCopySummary::default();
             for input in inputs {
@@ -89,8 +94,10 @@ impl ReadingCopy {
                 let doc = graph::load(input.as_ref(), limits, count)?;
                 let pages = graph::pages(&doc, limits, PageProfile::ReadingCopy(self.annotations))?;
                 limits.check(Limit::Pages, kids.len() + pages.len())?;
+                let source = Source::read(&doc, limits)?;
                 let mut importer =
                     Importer::new(&doc, &mut w, limits, true, self.annotations, count);
+                importer.groups.clone_from(&source.listed);
                 importer.reserve(pages.iter().map(|(id, _)| *id))?;
                 for (index, (id, page)) in pages.into_iter().enumerate() {
                     kids.push(Object::Reference(importer.page(
@@ -100,6 +107,7 @@ impl ReadingCopy {
                         root,
                     )?));
                 }
+                source.carry(&doc, &|id| importer.copied(id), &mut layers, limits)?;
                 summary.add(importer.kept, importer.dropped);
             }
             if count == 0 {
@@ -111,10 +119,7 @@ impl ReadingCopy {
                     dictionary! {"Type"=>"Pages","Count"=>kids.len() as i64,"Kids"=>kids},
                 ),
             )?;
-            w.object(
-                catalog,
-                &Object::Dictionary(dictionary! {"Type"=>"Catalog","Pages"=>root}),
-            )?;
+            w.object(catalog, &Object::Dictionary(plain_catalog(root, layers)))?;
             w.finish(dictionary! {"Root"=>catalog})?;
             Ok(summary)
         })
@@ -122,6 +127,8 @@ impl ReadingCopy {
     /// Extract selected pages into a plain reading copy in selection order.
     /// Discard all emitted bytes on error. This drops catalog-level archival metadata/attachments.
     /// A link to a page outside the selection is not self-contained.
+    /// Optional content is treated as in [`ReadingCopy::merge`]; only groups the selected pages
+    /// use are listed.
     pub fn extract(
         &self,
         input: &[u8],
@@ -205,6 +212,7 @@ impl ReadingCopy {
 /// [`ReadingCopy::merge`] takes the annotation policy.
 /// All emitted bytes must be discarded on error. No files, clocks or global state are used.
 /// Source catalog metadata, embedded files and archival claims are deliberately not carried over.
+/// Optional content is treated as in [`ReadingCopy::merge`].
 /// Untrusted inputs must be processed in a caller-managed isolated worker.
 pub fn merge<I, B>(inputs: I, limits: &PdfLimits, emit: &mut Emitter<'_>) -> Result<()>
 where
@@ -212,6 +220,15 @@ where
     B: AsRef<[u8]>,
 {
     ReadingCopy::new().merge(inputs, limits, emit).map(|_| ())
+}
+/// The catalog of a reading copy: its page tree and, when its pages use optional content groups,
+/// the configuration rebuilt for them.
+fn plain_catalog(root: ObjectId, layers: Layers) -> Dictionary {
+    let mut catalog = dictionary! {"Type"=>"Catalog","Pages"=>root};
+    if let Some(properties) = layers.properties() {
+        catalog.set("OCProperties", properties);
+    }
+    catalog
 }
 pub(crate) fn selected<'a>(
     pages: &'a [(lopdf::ObjectId, lopdf::Dictionary)],
@@ -246,7 +263,10 @@ fn extract_doc(
     let root = w.id()?;
     let cat = w.id()?;
     let mut kids = Vec::new();
+    let mut layers = Layers::default();
+    let source = Source::read(doc, l)?;
     let mut importer = Importer::new(doc, &mut w, l, true, policy, 1);
+    importer.groups.clone_from(&source.listed);
     importer.reserve(selected.iter().map(|page| page.0))?;
     for (number, (old, page)) in selection.0.iter().zip(selected) {
         kids.push(Object::Reference(importer.page(
@@ -256,20 +276,19 @@ fn extract_doc(
             root,
         )?));
     }
+    source.carry(doc, &|id| importer.copied(id), &mut layers, l)?;
     summary.add(importer.kept, importer.dropped);
     w.object(
         root,
         &Object::Dictionary(dictionary! {"Type"=>"Pages","Count"=>kids.len() as i64,"Kids"=>kids}),
     )?;
-    w.object(
-        cat,
-        &Object::Dictionary(dictionary! {"Type"=>"Catalog","Pages"=>root}),
-    )?;
+    w.object(cat, &Object::Dictionary(plain_catalog(root, layers)))?;
     w.finish(dictionary! {"Root"=>cat})
 }
 /// Extract selected pages into a plain reading copy that refuses page annotations;
 /// [`ReadingCopy::extract`] takes the annotation policy.
 /// Discard all emitted bytes on error. This drops catalog-level archival metadata/attachments.
+/// Optional content is treated as in [`merge`]; only groups the selected pages use are listed.
 pub fn extract(
     input: &[u8],
     selection: &PageSelection,
@@ -294,6 +313,7 @@ pub fn split(
 }
 /// Rotate selected pages, preserving other document objects.
 /// Page annotations stay as they are: their rectangles are in page coordinates and turn with it.
+/// Optional content stays as it is: the catalog configuration is written again unchanged.
 /// Archival metadata and signed documents require their dedicated integration and are refused.
 pub fn rotate(
     input: &[u8],

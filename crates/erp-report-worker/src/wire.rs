@@ -3,7 +3,7 @@
 //! again by the worker through `DocumentBuilder`: the worker trusts no frame.
 use erp_report::{
     Alignment, DocTree, DocumentBuilder, DocumentOptions, LayoutFailure, LimitKind, Limits, Node,
-    NodeId, PageCounter, PageSetup, PdfStandard, RenderDate, ReportError, Style,
+    NodeId, PageCounter, PageSetup, PdfStandard, RenderDate, ReportError, Style, TableLook,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -322,9 +322,23 @@ enum WireNode<'a> {
     #[serde(rename = "o")]
     PageTotal,
 }
-/// size, bold, italic, underline, colour, padding, alignment (0 start, 1 centre, 2 end), keep together
+/// size, bold, italic, underline, colour, padding, alignment (0 start, 1 centre, 2 end), keep together,
+/// space above and below, fill, rules above and below, table look (0 lined, 1 bordered, 2 borderless)
 #[derive(Debug, Serialize, Deserialize)]
-struct WireStyle(f64, bool, bool, bool, [u8; 3], f64, u8, bool);
+struct WireStyle(
+    f64,
+    bool,
+    bool,
+    bool,
+    [u8; 3],
+    f64,
+    u8,
+    bool,
+    (f64, f64),
+    Option<[u8; 3]>,
+    (bool, bool),
+    u8,
+);
 #[derive(Debug, Serialize, Deserialize)]
 struct WireOptions<'a> {
     id: Cow<'a, str>,
@@ -370,10 +384,32 @@ fn wire_style(style: &Style) -> Result<WireStyle, ReportError> {
             _ => return Err(later("text alignment over the render worker protocol")),
         },
         style.keep_together(),
+        style.spacing(),
+        style.fill(),
+        style.rules(),
+        match style.table_look() {
+            TableLook::Lined => 0,
+            TableLook::Bordered => 1,
+            TableLook::Borderless => 2,
+            _ => return Err(later("table look over the render worker protocol")),
+        },
     ))
 }
 fn style(wire: WireStyle) -> Result<Style, ReportError> {
-    let WireStyle(size, bold, italic, underline, color, padding, alignment, keep) = wire;
+    let WireStyle(
+        size,
+        bold,
+        italic,
+        underline,
+        color,
+        padding,
+        alignment,
+        keep,
+        (above, below),
+        fill,
+        (rule_above, rule_below),
+        table,
+    ) = wire;
     Ok(Style::default()
         .with_size(size)?
         .with_padding(padding)?
@@ -391,7 +427,20 @@ fn style(wire: WireStyle) -> Result<Style, ReportError> {
                 });
             }
         })
-        .with_keep_together(keep))
+        .with_keep_together(keep)
+        .with_spacing(above, below)?
+        .with_fill(fill)
+        .with_rules(rule_above, rule_below)
+        .with_table_look(match table {
+            0 => TableLook::Lined,
+            1 => TableLook::Bordered,
+            2 => TableLook::Borderless,
+            _ => {
+                return Err(ReportError::InvalidDocument {
+                    reason: "unknown table look in a document frame",
+                });
+            }
+        }))
 }
 
 impl<'a> WireDocument<'a> {

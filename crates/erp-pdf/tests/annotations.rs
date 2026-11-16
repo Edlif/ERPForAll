@@ -255,7 +255,6 @@ fn self_contained_annotations_are_carried_with_their_pages_remapped() {
 
 #[test]
 fn dependent_annotations_are_named_or_dropped_never_carried() {
-    let layer = dictionary! {"Type"=>"OCG","Name"=>text("layer")};
     // Each case: the annotation, the reason in the message, and the task that will carry it
     // (none when a reading copy leaves it out by design).
     let cases = [
@@ -268,11 +267,6 @@ fn dependent_annotations_are_named_or_dropped_never_carried() {
             annotation("FileAttachment", dictionary! {}),
             "a type outside the reading-copy profile",
             None,
-        ),
-        (
-            annotation("Link", dictionary! {"A"=>uri_action(),"OC"=>layer}),
-            "optional-content membership",
-            Some("a later release"),
         ),
         (
             annotation(
@@ -371,7 +365,6 @@ fn dependent_annotations_are_named_or_dropped_never_carried() {
         for gone in [
             "Widget",
             "FileAttachment",
-            "OCG",
             "JavaScript",
             "FreeText",
             "chapter1",

@@ -9,6 +9,9 @@ use lopdf::{Dictionary, Object, Stream, dictionary};
 /// Placement uses target default page coordinates; source crop coordinates are retained.
 /// Non-zero source rotation is refused; rotate its content in the generating renderer instead.
 /// Original graphics state must balance. Discard all output on any error.
+/// Optional content of the target stays as it is. Marked-content sections of the target page must
+/// be closed, so the overlay never lands inside a hidden layer. An overlay with optional content
+/// is refused: the target catalog does not list its groups.
 pub fn stamp(
     input: &[u8],
     overlay: &[u8],
@@ -25,6 +28,9 @@ pub fn stamp(
         let original_pages = graph::pages(&doc, l, graph::PageProfile::WholeDocument)?;
         let chosen = pages::selected(&original_pages, selection, l)?;
         let source = graph::load(overlay, l, 2)?;
+        if graph::catalog(&source, l)?.has(b"OCProperties") {
+            return Err(unsupported("overlay optional content", owner::OVERLAY));
+        }
         let source_pages = graph::pages(&source, l, graph::PageProfile::Overlay)?;
         if source_pages.len() != 1 {
             return Err(invalid("PDF stamp requires exactly one overlay page"));
@@ -122,6 +128,7 @@ fn balanced(bytes: &[u8], l: &crate::limits::Context<'_>) -> Result<()> {
     let content = lopdf::content::Content::decode(bytes)
         .map_err(|e| malformed("PDF malformed drawing operations").source(e))?;
     let mut depth = 0usize;
+    let mut marked = 0usize;
     let mut text = false;
     for operation in content.operations {
         l.step()?;
@@ -139,9 +146,23 @@ fn balanced(bytes: &[u8], l: &crate::limits::Context<'_>) -> Result<()> {
                     .checked_sub(1)
                     .ok_or_else(|| malformed("PDF unbalanced graphics state"))?;
             }
+            // An open section may belong to a hidden layer and would swallow what follows.
+            "BMC" | "BDC" => {
+                marked = marked
+                    .checked_add(1)
+                    .ok_or_else(|| malformed("PDF marked-content depth overflow"))?;
+            }
+            "EMC" => {
+                marked = marked
+                    .checked_sub(1)
+                    .ok_or_else(|| malformed("PDF unbalanced marked content"))?;
+            }
             _ => {} // Other drawing operators do not alter these enclosing state scopes.
         }
-        l.check(crate::Limit::Depth, depth.max(1))?;
+        l.check(crate::Limit::Depth, depth.max(marked).max(1))?;
+    }
+    if marked != 0 {
+        return Err(malformed("PDF unbalanced marked content"));
     }
     if text {
         return Err(malformed("PDF unbalanced text state"));

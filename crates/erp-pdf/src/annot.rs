@@ -3,8 +3,8 @@
 //!
 //! A reading copy has a fresh catalog with a page tree and nothing else. An annotation is carried
 //! only when everything it means lives in the annotation and in pages of the same copy; one that
-//! needs a form, a name tree, an optional-content configuration or a script is named, never
-//! carried with a dangling dependency.
+//! needs a form, a name tree or a script is named, never carried with a dangling dependency.
+//! Optional-content membership is carried: the copy lists the group in its rebuilt configuration.
 use crate::error::{Result, malformed, owner};
 use crate::graph;
 use crate::limits::Context;
@@ -103,9 +103,6 @@ fn dependency(
     }
     if !CARRIED.contains(&subtype) {
         return Ok(never("a type outside the reading-copy profile"));
-    }
-    if d.has(b"OC") {
-        return Ok(until(owner::OCG, "optional-content membership"));
     }
     // `PA` is an earlier action kept for reference; neither is the action a reading copy checks.
     if d.has(b"AA") || d.has(b"PA") {

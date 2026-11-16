@@ -1685,8 +1685,7 @@ async fn blocked_message(tx: &mut Transaction, product: i64, count: i64) -> Stri
     };
     format!(
         "Tracking of {name} cannot be changed while it has stock or open operations with lots or \
-         serial numbers ({count} found). Converting existing stock is not available yet (task \
-         a later release)."
+         serial numbers ({count} found). Converting existing stock is not available yet (a later release)."
     )
 }
 

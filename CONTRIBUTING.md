@@ -34,7 +34,7 @@ tests, and for the web client the Node and pnpm versions pinned by `scripts/web-
 cargo build --workspace                          # build everything
 cargo fmt --all --check                          # formatting
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo nextest run --locked --workspace           # tests (needs DATABASE_URL for database tests)
+RUST_MIN_STACK=16777216 cargo nextest run --locked --workspace  # tests (deep tests need the larger stack; DATABASE_URL for database tests)
 cargo deny --locked check                        # licences and advisories
 scripts/web-toolchain.sh install                 # once: pinned Node and pnpm
 eval "$(scripts/web-toolchain.sh env)"

@@ -29,6 +29,16 @@ pub enum Alignment {
     Center,
     End,
 }
+/// How the tables inside a block draw their lines: `Lined` (the default) rules between rows under a
+/// shaded header, `Bordered` a line around every cell, `Borderless` none.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TableLook {
+    #[default]
+    Lined,
+    Bordered,
+    Borderless,
+}
 /// Normalized document-owned styling. All dimensions are points.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -41,6 +51,12 @@ pub struct Style {
     padding: f64,
     alignment: Alignment,
     keep: bool,
+    fill: Option<[u8; 3]>,
+    above: f64,
+    below: f64,
+    rule_above: bool,
+    rule_below: bool,
+    table: TableLook,
 }
 impl Default for Style {
     fn default() -> Self {
@@ -53,10 +69,74 @@ impl Default for Style {
             padding: 0.0,
             alignment: Alignment::Start,
             keep: false,
+            fill: None,
+            above: 0.0,
+            below: 0.0,
+            rule_above: false,
+            rule_below: false,
+            table: TableLook::Lined,
         }
     }
 }
 impl Style {
+    /// Space before and after a block, in points.
+    pub fn with_spacing(mut self, above: f64, below: f64) -> Result<Self, ReportError> {
+        if ![above, below]
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1440.0).contains(v))
+        {
+            return Err(invalid(
+                "block spacing must be finite and in [0, 1440] points",
+            ));
+        }
+        self.above = above;
+        self.below = below;
+        Ok(self)
+    }
+    /// Background colour of a block.
+    pub fn with_fill(mut self, value: Option<[u8; 3]>) -> Self {
+        self.fill = value;
+        self
+    }
+    /// A thin line on the top or bottom edge of a block.
+    pub fn with_rules(mut self, above: bool, below: bool) -> Self {
+        self.rule_above = above;
+        self.rule_below = below;
+        self
+    }
+    /// How the tables inside this block draw their lines.
+    pub fn with_table_look(mut self, value: TableLook) -> Self {
+        self.table = value;
+        self
+    }
+    /// Background colour, if any.
+    pub fn fill(&self) -> Option<[u8; 3]> {
+        self.fill
+    }
+    /// Space before and after the block, in points.
+    pub fn spacing(&self) -> (f64, f64) {
+        (self.above, self.below)
+    }
+    /// Whether a thin line is drawn on the top and on the bottom edge.
+    pub fn rules(&self) -> (bool, bool) {
+        (self.rule_above, self.rule_below)
+    }
+    /// How the tables inside this block draw their lines.
+    pub fn table_look(&self) -> TableLook {
+        self.table
+    }
+    /// Whether the block draws or spaces anything beyond its text: then it cannot be a bare paragraph.
+    /// Whether the block draws or spaces anything beyond text: spacing, a fill, an edge rule or a table
+    /// look other than the default. A decorated block is never folded into the surrounding text.
+    pub fn decorated(&self) -> bool {
+        decorates(
+            self.above,
+            self.below,
+            self.fill,
+            (self.rule_above, self.rule_below),
+            self.table,
+        )
+    }
     pub fn with_size(mut self, points: f64) -> Result<Self, ReportError> {
         if !points.is_finite() || points <= 0.0 || points > 1440.0 {
             return Err(invalid("font size must be finite and in (0, 1440] points"));
@@ -749,4 +829,19 @@ impl DocTree {
         limits.check(LimitKind::Depth, self.cost.depth)?;
         limits.check(LimitKind::Pages, self.cost.breaks.saturating_add(1))
     }
+}
+
+/// The one decoration rule shared by the evaluator and [`Style::decorated`].
+pub(crate) fn decorates(
+    above: f64,
+    below: f64,
+    fill: Option<[u8; 3]>,
+    rules: (bool, bool),
+    table: TableLook,
+) -> bool {
+    above > 0.0
+        || below > 0.0
+        || fill.is_some()
+        || rules != (false, false)
+        || table != TableLook::Lined
 }

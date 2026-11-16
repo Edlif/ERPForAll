@@ -11,7 +11,7 @@ use crate::{
     PageCounter, ReportError, ReportProgram, Style,
     format::LangFormat,
     limits::millis,
-    look::{Look, Role, Tint},
+    look::{Look, Role, Size, Tint},
     program::{Argument, At, Attr, Code, Content, Element, Op, Part},
     records::RecordStore,
     validate::validate_attribute,
@@ -100,6 +100,11 @@ struct Own {
     inherit: Inherit,
     padding: f64,
     keep: bool,
+    above: f64,
+    below: f64,
+    fill: Option<[u8; 3]>,
+    rules: (bool, bool),
+    table: crate::TableLook,
     text_changed: bool,
     box_changed: bool,
 }
@@ -784,11 +789,17 @@ impl<'p> Run<'p> {
         let padding = look
             .padding
             .map_or(0.0, |padding| padding.points(text.size, self.base));
+        let space = |size: Option<Size>| size.map_or(0.0, |s| s.points(text.size, self.base));
+        let (above, below) = (space(look.above), space(look.below));
+        let rules = (look.rule_above, look.rule_below);
+        let table = look.table.unwrap_or_default();
+        let decorated = crate::document::decorates(above, below, look.fill, rules, table);
         let text_changed = text != inherit.text;
-        let box_changed = align != inherit.align || padding > 0.0 || look.keep;
+        let box_changed = align != inherit.align || padding > 0.0 || look.keep || decorated;
         let plain_block = is_block(tag)
             && padding == 0.0
             && !look.keep
+            && !decorated
             && look.role == Role::Plain
             && !matches!(
                 tag,
@@ -804,6 +815,11 @@ impl<'p> Run<'p> {
             },
             padding,
             keep: look.keep,
+            above,
+            below,
+            fill: look.fill,
+            rules,
+            table,
             text_changed,
             box_changed,
         }
@@ -826,7 +842,11 @@ impl<'p> Run<'p> {
                 2 => Alignment::End,
                 _ => Alignment::Start,
             })
-            .with_keep_together(own.keep))
+            .with_keep_together(own.keep)
+            .with_spacing(own.above, own.below)?
+            .with_fill(own.fill)
+            .with_rules(own.rules.0, own.rules.1)
+            .with_table_look(own.table))
     }
     fn node(&mut self, node: Node, block: bool, out: &mut Vec<Item>) -> Result<(), ReportError> {
         let id = self.builder.add(node)?;
@@ -957,6 +977,14 @@ impl<'p> Run<'p> {
             });
         }
         let own = self.own(tag, look, inherit);
+        if ![own.above, own.below]
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1440.0).contains(v))
+        {
+            return Err(at.evaluate(format!(
+                "the spacing of <{tag}> must be in [0, 1440] points (margin or m-/mt-/mb-/my- class)"
+            )));
+        }
         let mut kids = Vec::new();
         if !self.content(element, scope, &own.inherit, &mut kids)? {
             return Ok(());

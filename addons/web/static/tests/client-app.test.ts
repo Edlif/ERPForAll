@@ -746,6 +746,19 @@ test("list view header and row selection with count and delete action", async ()
   headerCheckbox.checked = true;
   headerCheckbox.dispatchEvent(new Event("change"));
   expect(root.querySelector(".selection-count")?.textContent).toBe("2 selected");
+  // Every row box shows the selection the header made; unticking one leaves the header partly selected.
+  expect([...rowCheckboxes].map(box => box.checked)).toEqual([true, true]);
+  rowCheckboxes[1]!.click();
+  expect(rowCheckboxes[1]!.checked).toBe(false);
+  expect(headerCheckbox.checked).toBe(false);
+  expect(headerCheckbox.indeterminate).toBe(true);
+  expect(root.querySelector(".selection-count")?.textContent).toBe("1 selected");
+  headerCheckbox.checked = false;
+  headerCheckbox.dispatchEvent(new Event("change"));
+  expect([...rowCheckboxes].map(box => box.checked)).toEqual([false, false]);
+  headerCheckbox.checked = true;
+  headerCheckbox.dispatchEvent(new Event("change"));
+  expect([...rowCheckboxes].map(box => box.checked)).toEqual([true, true]);
 
   // Open action dropdown and click Delete
   const actionToggle = root.querySelector<HTMLButtonElement>(".action-toggle-btn")!;

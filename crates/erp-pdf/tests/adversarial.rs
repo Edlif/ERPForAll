@@ -185,16 +185,27 @@ fn malformed_corpus_never_escapes_as_panic() {
     }
 }
 #[test]
-fn optional_content_is_explicitly_refused() {
+fn overlay_optional_content_is_explicitly_refused() {
     let mut d = document();
     let root = d.trailer.get(b"Root").unwrap().as_reference().unwrap();
-    d.get_dictionary_mut(root)
-        .unwrap()
-        .set("OCProperties", dictionary! {"OCGs"=>Vec::<Object>::new()});
-    rejected(
-        bytes(d),
+    d.get_dictionary_mut(root).unwrap().set(
+        "OCProperties",
+        dictionary! {"OCGs"=>Vec::<Object>::new(),"D"=>dictionary!{}},
+    );
+    let l = PdfLimits::default();
+    let e = stamp(
+        &fixture(&["TARGET"]),
+        &bytes(d),
+        &PageSelection::new(vec![1], &l).unwrap(),
+        &StampPlacement::new([1., 0., 0., 1., 0., 0.]).unwrap(),
+        &l,
+        &mut |_| Ok(()),
+    )
+    .unwrap_err();
+    error(
+        e,
         PdfErrorKind::Unsupported,
-        "PDF feature optional content is unsupported (a later release)",
+        "PDF feature overlay optional content is unsupported (a later release)",
     );
 }
 #[test]

@@ -43,7 +43,7 @@ pub use corpus::{CorpusError, CorpusReport, scan_corpus};
 pub use doc_limits::{LimitKind, Limits};
 pub use document::{
     Alignment, DocTree, DocumentBuilder, DocumentOptions, Node, NodeId, PageCounter, PageSetup,
-    PdfStandard, RenderDate, Style,
+    PdfStandard, RenderDate, Style, TableLook,
 };
 pub use engine::{LayoutEngine, RenderIdentity, RenderResult};
 pub use error::{Diagnostic, LayoutFailure, ProfileKind, ReportError, WorkerCrash};

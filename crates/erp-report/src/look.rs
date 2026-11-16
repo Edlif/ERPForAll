@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! What an element's tag, classes and inline style mean for layout (design §5.1). The profile
 //! validated every token before this runs; a token the document contract cannot express yet
-//! (margins, one-sided padding, borders, backgrounds, widths) is accepted and has no effect here.
-use crate::Alignment;
+//! (horizontal margins, one-sided padding, side borders, widths) is accepted and has no effect here.
+use crate::{Alignment, TableLook};
 
 /// A length that may depend on the font size around it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -64,6 +64,14 @@ pub(crate) struct Look {
     /// A `colspan` or `rowspan` above one.
     pub(crate) spans: bool,
     pub(crate) icon: bool,
+    /// Space before and after a block.
+    pub(crate) above: Option<Size>,
+    pub(crate) below: Option<Size>,
+    pub(crate) fill: Option<[u8; 3]>,
+    pub(crate) rule_above: bool,
+    pub(crate) rule_below: bool,
+    /// `table-bordered` / `table-borderless` on a `table`.
+    pub(crate) table: Option<TableLook>,
 }
 /// Bootstrap's spacer scale, in `rem`.
 const SPACERS: [f64; 6] = [0.0, 0.25, 0.5, 1.0, 1.5, 3.0];
@@ -165,6 +173,10 @@ impl Look {
             "topage" if tag == "span" => self.role = Role::PageTotal,
             "col" | "col-auto" => self.column = Some(0),
             "avoid-page-break-inside" => self.keep = true,
+            "table-bordered" if tag == "table" => self.table = Some(TableLook::Bordered),
+            "table-borderless" if tag == "table" => self.table = Some(TableLook::Borderless),
+            "border-top" => self.rule_above = true,
+            "border-bottom" => self.rule_below = true,
             "page-break-before" => self.break_before = true,
             _ => {
                 let spacer = |n: &str| n.parse::<usize>().ok().and_then(|n| SPACERS.get(n));
@@ -177,6 +189,16 @@ impl Look {
                     self.padding = Some(Size::Rem(*v));
                 } else if let Some(v) = token.strip_prefix("gap-").and_then(spacer) {
                     self.gap = Some(Size::Rem(*v));
+                } else if let Some((side, v)) = token
+                    .split_once('-')
+                    .and_then(|(side, n)| spacer(n).map(|v| (side, Size::Rem(*v))))
+                {
+                    match side {
+                        "mt" => self.above = Some(v),
+                        "mb" => self.below = Some(v),
+                        "my" | "m" => (self.above, self.below) = (Some(v), Some(v)),
+                        _ => {} // Horizontal margins have no place in the document contract.
+                    }
                 }
             }
         }
@@ -204,11 +226,40 @@ impl Look {
                     self.padding = length(first, false).or(self.padding);
                 }
             }
+            // A colour with transparency has no place yet: accepted, no effect (never an opaque fill).
+            "background-color" if !translucent(value) => self.fill = color(value).or(self.fill),
+            "margin-top" => self.above = length(value, false).or(self.above),
+            "margin-bottom" => self.below = length(value, false).or(self.below),
+            "margin" => {
+                // CSS order: top, right, bottom, left; one or two values give the bottom the top's.
+                let sides: Vec<&str> = value.split_whitespace().collect();
+                let top = sides.first().and_then(|v| length(v, false));
+                let bottom = sides.get(2).map_or(top, |v| length(v, false));
+                (self.above, self.below) = (top.or(self.above), bottom.or(self.below));
+            }
+            "border-top" => self.rule_above = draws(value),
+            "border-bottom" => self.rule_below = draws(value),
             "page-break-before" => self.break_before = breaks(value),
             "page-break-after" => self.break_after = breaks(value),
             "page-break-inside" => self.keep = value == "avoid",
             _ => {} // Declared properties without a place in the document contract yet.
         }
+    }
+}
+/// Whether a `border` shorthand draws a line: not when its width is 0, its style `none` or `hidden`,
+/// or its colour `transparent`.
+fn draws(value: &str) -> bool {
+    !value.split_whitespace().any(|part| {
+        matches!(part, "none" | "hidden" | "transparent")
+            || length(part, false).is_some_and(|size| size == Size::Points(0.0))
+    })
+}
+/// A `#rgba` or `#rrggbbaa` colour that is not fully opaque, or `transparent`.
+fn translucent(value: &str) -> bool {
+    match value.strip_prefix('#') {
+        Some(hex) if hex.len() == 4 => !hex[3..].eq_ignore_ascii_case("f"),
+        Some(hex) if hex.len() == 8 => !hex[6..].eq_ignore_ascii_case("ff"),
+        _ => value == "transparent",
     }
 }
 /// A CSS length as points or as a share of a font size; a percentage only where it means one.
