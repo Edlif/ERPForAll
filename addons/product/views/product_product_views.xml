@@ -5,6 +5,7 @@
     <field name="model">product.product</field>
     <field name="arch" type="xml">
       <list>
+        <field name="image_128" widget="image" string="Picture" options="{'size': [0, 32]}" alt="Product picture"/>
         <field name="default_code"/>
         <field name="name"/>
         <field name="product_template_attribute_value_ids" widget="many2many_tags" context="{'display_attribute_name': False}"/>
@@ -22,6 +23,7 @@
     <field name="arch" type="xml">
       <form record_mode="record">
         <sheet>
+          <field name="image_1920" widget="image" options="{'preview_image': 'image_128', 'size': [0, 128]}" alt="Product picture"/>
           <div class="oe_title">
             <h1><field name="name"/></h1>
           </div>

@@ -5,6 +5,7 @@ import { effectiveNodes, occurrenceFields } from "./field-modifiers.js";
 import { constantRelationContext } from "./field-relations.js";
 import { passwordModels } from "./password-flow.js";
 import { ClientError, RpcClient } from "./transport.js";
+import { BIN_SIZE_CONTEXT, forgetBinaryContent, isBinarySize } from "./binary-content.js";
 
 export function specification(fields: readonly Field[]): Record<string, unknown> {
   return Object.fromEntries(fields.map(field => [field.name, fieldSpecification(field)]));
@@ -74,6 +75,8 @@ function lineVals(subview: Subview, line: Line, changed: readonly string[] | nul
     if (field.required && !field.readonly && !field.invisible && field.kind !== "boolean" && (line[field.name] === false || line[field.name] === null || line[field.name] === undefined || line[field.name] === "" || Array.isArray(line[field.name]) && (line[field.name] as unknown[]).length === 0)) throw new ClientError("validation", `${field.label} is required.`);
     if (field.name === "id" || field.readonly && !field.forceSave || field.kind === "one2many" || !Object.hasOwn(line, field.name)) continue;
     if (changed && !changed.includes(field.name)) continue;
+    // a size read with `bin_size` is not content: the stored file stays as it is
+    if (field.kind === "binary" && isBinarySize(line[field.name])) continue;
     vals[field.name] = writableValue(field, line[field.name]);
   }
   return vals;
@@ -189,6 +192,8 @@ export class RecordState {
   /** A sent save requires authoritative readback before another write. */
   get writeUncertain(): boolean { return this.unknownWrite; }
   private args(extra: Record<string, unknown>): Record<string, unknown> { return { ...extra, context: this.context }; }
+  /** Arguments of a call whose answer is the record as the form shows it: binary fields answer their size (`bin_size`). */
+  private readArgs(extra: Record<string, unknown>): Record<string, unknown> { return { ...extra, context: { ...this.context, ...BIN_SIZE_CONTEXT } }; }
   async load(id?: number): Promise<void> {
     if (this.pending) throw new ClientError("validation", "Wait for the current operation to complete.");
     const previous = {
@@ -234,7 +239,10 @@ export class RecordState {
         }
         await this.applyOnchange("");
       } else {
-        const records = array(await this.rpc.call(this.model, "web_read", this.args({ ids: [id], specification: specification(this.fields) })), "records");
+        forgetBinaryContent(this.rpc);
+        const records = array(await this.rpc.call(this.model, "web_read", this.readArgs({ ids: [id], specification: specification(this.fields) })), "records");
+        // again on arrival: a widget still on screen may have read the old file while this read travelled
+        forgetBinaryContent(this.rpc);
         if (records.length !== 1 || object(records[0])["id"] !== id) throw new ClientError("server", "The record is unavailable or the response did not match it.");
         this.id = id;
         this.values = object(records[0]);
@@ -276,7 +284,9 @@ export class RecordState {
   change(name: string, value: unknown): void { this.changeMany({ [name]: value }); }
   discard(): void { this.draftVersion += 1; this.resetIdentity = {}; this.values = structuredClone(this.initial); this.changes.clear(); this.warning = ""; this.warningDetails = undefined; this.editorOwner?.reset(); }
   private vals(all: boolean, withReadonly = false, refs = false): Record<string, unknown> {
-    return Object.fromEntries(this.effectiveFields.filter(field => field.name !== "id" && (withReadonly || !field.readonly || field.forceSave) && (all || this.changes.has(field.name)) && Object.hasOwn(this.values, field.name)).map(field => [field.name, writableValue(field, this.values[field.name], this.initial[field.name], refs)]));
+    // A binary value read with `bin_size` is a size, not content: the record still holds what the server holds, so it is
+    // never sent back (the server keeps the stored value of a field a snapshot or a write does not name).
+    return Object.fromEntries(this.effectiveFields.filter(field => field.name !== "id" && (withReadonly || !field.readonly || field.forceSave) && (all || this.changes.has(field.name)) && Object.hasOwn(this.values, field.name) && !(field.kind === "binary" && isBinarySize(this.values[field.name]))).map(field => [field.name, writableValue(field, this.values[field.name], this.initial[field.name], refs)]));
   }
   private async applyOnchange(name: string | readonly string[]): Promise<void> {
     const identity = this.resetIdentity;
@@ -353,8 +363,10 @@ export class RecordState {
     let received = false;
     try {
       owner?.setSaving(true);
-      const response = await this.rpc.call(this.model, "web_save", this.args({ ids: this.id === undefined ? [] : [this.id], vals: this.vals(this.id === undefined), specification: specification(this.fields) }), { write: true });
+      forgetBinaryContent(this.rpc);
+      const response = await this.rpc.call(this.model, "web_save", this.readArgs({ ids: this.id === undefined ? [] : [this.id], vals: this.vals(this.id === undefined), specification: specification(this.fields) }), { write: true });
       received = true;
+      forgetBinaryContent(this.rpc);
       const rows = array(response, "saved records");
       if (rows.length !== 1) { this.unknownWrite = true; throw new ClientError("ambiguous", "Unexpected save response. Check whether the record was saved before continuing."); }
       const saved = object(rows[0]), id = integer(saved["id"], "saved record id");

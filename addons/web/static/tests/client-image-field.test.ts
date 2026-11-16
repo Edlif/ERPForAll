@@ -237,6 +237,20 @@ describe("image widget (IMG.WIDGET)", () => {
     expect(link.download).toBe("logo.jpg"); expect(link.getAttribute("href")).toContain("data:image/jpeg;");
   });
 
+  test("each action holds an icon and its text, and keeps one accessible name", () => {
+    const { handle } = mount(makeField("image", "binary"), PNG);
+    for (const [selector, text, glyph] of [[".o_select_file_button", "Replace", "camera"], [".o_clear_file_button", "Clear", "trash"], [".o_download_file_button", "Download", "save"]] as const) {
+      const action = handle.node.querySelector<HTMLElement>(selector)!;
+      expect(action.querySelector("svg")!.getAttribute("data-icon")).toBe(glyph);
+      expect(action.querySelector("svg")!.getAttribute("aria-hidden")).toBe("true");
+      expect(action.querySelector("span")!.textContent).toBe(text);
+      expect(action.getAttribute("aria-label")).toBe(`${text} Logo`); expect(action.title).toBe(`${text} Logo`);
+    }
+    document.body.replaceChildren();
+    const empty = mount(makeField("image", "binary"), false);
+    expect(empty.handle.node.querySelector(".o_select_file_button span")!.textContent).toBe("Upload");
+  });
+
   test("readonly and list contexts offer no upload or clear", () => {
     for (const [field, viewContext] of [[makeField("image", "binary", {}, { readonly: true }), undefined], [makeField("image", "binary"), "list" as const]] as const) {
       const { handle } = mount(field, PNG, viewContext ? { viewContext } : {});

@@ -1374,6 +1374,7 @@ impl<'p> Run<'p> {
                     columns: weights(&widths),
                     gutter,
                     cells,
+                    align: look.cross.unwrap_or_default(),
                 })?;
                 return self.wrapped(grid, own, look, out);
             }

@@ -843,6 +843,10 @@ async fn create_records_inner(
             {
                 let target_spec = spec.field_by_id(target);
                 crate::database_generated::check_assignment(spec, target_spec)?;
+                // a plain binary field related to a picture loads no limits of its own
+                if matches!(cell, Cell::Bytes(_)) && target_spec.ty.image_bounds().is_some() {
+                    tx.ensure_image_policy(spec).await?;
+                }
                 // the target keeps its own HTML policy: a weaker policy on the related field
                 // never stores past it (review r1 M2)
                 let cell = tx.admit_html_cell(spec, target_spec, cell)?;
@@ -1925,6 +1929,10 @@ pub(crate) async fn write_records(
             if (matches!(target_spec.ty, FieldType::Html) && !target_spec.translate)
                 || target_spec.ty.image_bounds().is_some()
             {
+                // a plain binary field related to a picture loads no limits of its own
+                if matches!(cell, Cell::Bytes(_)) && target_spec.ty.image_bounds().is_some() {
+                    tx.ensure_image_policy(spec).await?;
+                }
                 cell = tx.admit_html_cell(spec, target_spec, cell)?;
             }
             items.push((target, cell.clone(), false));

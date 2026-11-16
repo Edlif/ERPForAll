@@ -3,6 +3,7 @@ import { PanelCompatibilityError, PanelRecoverySafety, attemptPanelRecovery } fr
 import { unavailablePanelMessage } from "./panel-metadata.js";
 import { loginReturnUrl } from "./login-return.js";
 import { initializeAttachmentPolicy } from "./attachment-policy.js";
+import { BIN_SIZE_CONTEXT, forgetBinaryContent } from "./binary-content.js";
 import { createHotkeyController, type HotkeyBinding } from "@erpforall/elang";
 import { reportHotkeyError } from "../../../../../web/src/runtime/hotkeys.js";
 import { dropAbsentDashboardFilters, mountDashboard } from "./dashboard.js";
@@ -2553,7 +2554,9 @@ export class HumanApp {
     pager.append(count, previous, next);
 
     const fetchRows = async (from: number): Promise<{ records: Record<string, unknown>[]; length: number }> => {
-      const answer = object(await this.rpc.call(description.model, "web_search_read", { domain: searchModel.getDomain(), specification: specification(view.fields), offset: from, limit: pageSize, context }));
+      forgetBinaryContent(this.rpc);
+      const answer = object(await this.rpc.call(description.model, "web_search_read", { domain: searchModel.getDomain(), specification: specification(view.fields), offset: from, limit: pageSize, context: { ...context, ...BIN_SIZE_CONTEXT } }));
+      forgetBinaryContent(this.rpc);
       return { records: array(answer["records"], "records").map(row => object(row)), length: integer(answer["length"], "record count") };
     };
     const open = hasForm && root.canOpen ? (id: number): void => this.run(async () => {
@@ -2596,7 +2599,7 @@ export class HumanApp {
       cards = renderKanbanCards({ layout, records: page.records, open, renderField: (field, record) => {
         const adapter = resolveFieldWidget(field.widget ?? field.kind, "card");
         return adapter.render({
-          field: { ...field, readonly: true }, value: record[field.name], values: record, fields: readonlyFields, viewContext: "list",
+          field: { ...field, readonly: true }, value: record[field.name], values: record, model: description.model, fields: readonlyFields, viewContext: "list",
           rpc: this.rpc, context, currencies, numericLocale: this.numericLocale, editorLocale: this.editorLocale,
           messages: this.messages, run: this.run, report: error => this.reportError(error), signal: this.lifetime.signal,
           openRecord: (model, related) => this.openRelatedRecord(model, related), change: () => { throw new ClientError("validation", "Kanban card fields cannot be edited here."); },
@@ -3016,14 +3019,18 @@ export class HumanApp {
     }
 
     const fetchRows = async (from: number, base = searchModel.getDomain()): Promise<Record<string, unknown>> => {
-      return object(await this.rpc.call(description.model, "web_search_read", {
+      forgetBinaryContent(this.rpc);
+      const answer = object(await this.rpc.call(description.model, "web_search_read", {
         domain: tabs ? tabs.rowDomain(base) : base,
         specification: specification(view.fields),
         offset: from,
         limit: pageSize,
         order,
-        context: context
+        context: { ...context, ...BIN_SIZE_CONTEXT }
       }));
+      // again on arrival: a cell still on screen may have read an old file while this read travelled
+      forgetBinaryContent(this.rpc);
+      return answer;
     };
     const activeAggregates = () => searchModel.getGroupAggregates().filter(a => view.fields.some(field => field.name === a.field && !field.invisible));
     const fetchGroups = async (from: number, base: unknown[], specs = searchModel.getGroupBy()): Promise<Record<string, unknown>> => object(await this.rpc.call(description.model, "web_read_group", {
@@ -3240,7 +3247,7 @@ export class HumanApp {
           const cell = el("td");
           const adapter = resolveFieldWidget(field.widget ?? field.kind, "list");
           const handle = adapter.render({
-            field: { ...field, readonly: true }, value: record[field.name], values: record, fields: view.fields.map(field => ({ ...field, readonly: true })), viewContext: "list",
+            field: { ...field, readonly: true }, value: record[field.name], values: record, model: description.model, fields: view.fields.map(field => ({ ...field, readonly: true })), viewContext: "list",
             rpc: this.rpc, context, currencies, numericLocale: this.numericLocale, editorLocale: this.editorLocale,
             messages: this.messages, run: this.run, report: error => this.reportError(error), signal: this.lifetime.signal,
             openRecord: (model, related) => this.openRelatedRecord(model, related), change: () => { throw new ClientError("validation", "List display fields cannot be edited."); },

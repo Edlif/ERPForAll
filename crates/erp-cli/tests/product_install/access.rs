@@ -3,7 +3,7 @@
 
 use super::*;
 
-async fn secure_orm(db: &TestDb, installed: &Orm) -> Orm {
+pub(super) async fn secure_orm(db: &TestDb, installed: &Orm) -> Orm {
     let source = PolicySource::build(Arc::clone(installed.registry()), db.pool().clone())
         .await
         .unwrap();
@@ -19,7 +19,12 @@ async fn secure_orm(db: &TestDb, installed: &Orm) -> Orm {
         .unwrap()
 }
 
-async fn user(tx: &mut erp_orm::Transaction, login: &str, company: i64, groups: &[i64]) -> i64 {
+pub(super) async fn user(
+    tx: &mut erp_orm::Transaction,
+    login: &str,
+    company: i64,
+    groups: &[i64],
+) -> i64 {
     tx.env()
         .records("res.users")
         .unwrap()
@@ -1311,7 +1316,7 @@ fn settings_administrator_keeps_product_management_across_install_order() {
     });
 }
 
-async fn authenticated(orm: &Orm, login: &str) -> erp_orm::Principal {
+pub(super) async fn authenticated(orm: &Orm, login: &str) -> erp_orm::Principal {
     let auth = Auth::new(
         orm.clone(),
         erp_security::auth::AuthConfig::DEFAULT,

@@ -3,6 +3,7 @@
 
 use crate::defaults::{company_currency_id, default_unit_id, env_company_id};
 use crate::product::ProductProductMethods;
+use erp_addon_base::ImageMixin;
 use erp_sdk::prelude::*;
 use erp_sdk::{Operation, ValueMap};
 
@@ -10,9 +11,13 @@ use erp_sdk::{Operation, ValueMap};
 type Mirrored = (Option<Arc<str>>, Option<Arc<str>>, Decimal);
 
 /// `product.template`: Abstract catalog entity defining common product properties.
+///
+/// The product picture is the image family of `image.mixin`: `image_1920` and its stored sizes
+/// `image_1024`, `image_512`, `image_256` and `image_128`.
 #[model(
     name = "product.template",
     description = "Product",
+    inherit = [ImageMixin],
     order = "name, id",
     rec_name = "name",
     rec_names_search = ["name", "default_code", "barcode"],

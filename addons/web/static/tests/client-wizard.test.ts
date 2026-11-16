@@ -578,7 +578,9 @@ test("current-list result saves once, carries literal scope through pages/forms/
   const scope = {lang:"en_US",tz:"UTC",allowed_company_ids:[1],active_model:"test.book",active_id:5,active_ids:[5],default_name:"Visible"};
   const requests = () => calls.filter(call=>call.path.includes("test.loan/web_search_read"));
   expect(requests()[0]!.body["domain"]).toEqual(related.domain);
-  expect(requests()[0]!.body["context"]).toEqual(scope);
+  // record reads carry the scope and ask for sizes in place of file content
+  const reads = {...scope,bin_size:true};
+  expect(requests()[0]!.body["context"]).toEqual(reads);
   expect(calls.find(call=>call.path.includes("test.loan/get_views"))!.body["context"]).toEqual(scope);
   root.querySelector<HTMLButtonElement>('.pager-next')!.click();
   await vi.waitFor(()=>expect(requests().some(call=>call.body["offset"]===40)).toBe(true));
@@ -586,7 +588,7 @@ test("current-list result saves once, carries literal scope through pages/forms/
   root.querySelector<HTMLButtonElement>('.list-table tbody button.link')!.click();
   await vi.waitFor(()=>expect(root.querySelector('input[name="name"]')).not.toBeNull());
   expect(new URL(location.href).searchParams.get("method_action")).toBe(actionId);
-  expect(calls.find(call=>call.path.includes("test.loan/web_read"))!.body["context"]).toEqual(scope);
+  expect(calls.find(call=>call.path.includes("test.loan/web_read"))!.body["context"]).toEqual(reads);
   history.back();
   await vi.waitFor(()=>expect(root.querySelector(".list-table")).not.toBeNull());
   expect(new URL(location.href).searchParams.get("method_action")).toBe(actionId);

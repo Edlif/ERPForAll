@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 use erp_report::{
-    Alignment, DocTree, DocumentBuilder, DocumentOptions, LayoutEngine, LimitKind, Limits, Node,
-    PageCounter, PageSetup, PdfStandard, RenderDate, ReportError, Style,
+    Alignment, CrossAlignment, DocTree, DocumentBuilder, DocumentOptions, LayoutEngine, LimitKind,
+    Limits, Node, PageCounter, PageSetup, PdfStandard, RenderDate, ReportError, Style,
 };
 use erp_report_typst::{RENDERER, TypstEngine};
 use sha2::{Digest, Sha256};
@@ -287,6 +287,7 @@ fn depth_32_and_mixed_containers_render() {
                         columns: vec![1.0],
                         gutter: 0.0,
                         cells: vec![child],
+                        align: erp_report::CrossAlignment::Start,
                     }
                 } else {
                     Node::Block {
@@ -645,6 +646,7 @@ fn admitted_nodes_and_styles_reach_output() {
             columns: vec![1.0, 2.0],
             gutter: 4.0,
             cells: vec![bold, list],
+            align: erp_report::CrossAlignment::Start,
         })
         .unwrap();
     let dot = b.add(Node::Text("bullet".into())).unwrap();
@@ -714,6 +716,7 @@ fn nested_mix(
                     columns: vec![1.0],
                     gutter: 0.0,
                     cells: vec![child],
+                    align: erp_report::CrossAlignment::Start,
                 },
                 _ => Node::List {
                     ordered: other == "enum",
@@ -807,4 +810,173 @@ fn uncovered_text_is_reported_not_hidden() {
         error.to_string(),
         "report PDF export failed for fixture: exporter diagnostics are in the error's reason field"
     );
+}
+
+/// Each text run of the first page with the height of its origin on the page, in points from the
+/// page's bottom edge: the text matrix under the transformation in force where the run is shown
+/// (`q`/`Q`/`cm` for the graphics state, `BT`/`Tm`/`Td` for the text position).
+fn text_heights(bytes: &[u8]) -> Vec<(String, f32)> {
+    type Matrix = [f32; 6];
+    fn times(m: Matrix, n: Matrix) -> Matrix {
+        [
+            m[0] * n[0] + m[1] * n[2],
+            m[0] * n[1] + m[1] * n[3],
+            m[2] * n[0] + m[3] * n[2],
+            m[2] * n[1] + m[3] * n[3],
+            m[4] * n[0] + m[5] * n[2] + n[4],
+            m[4] * n[1] + m[5] * n[3] + n[5],
+        ]
+    }
+    const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let pdf = lopdf::Document::load_mem(bytes).unwrap();
+    let page = *pdf.get_pages().values().next().unwrap();
+    let fonts = pdf.get_page_fonts(page).unwrap();
+    type GlyphMap = Vec<(u16, String)>;
+    let maps: Vec<(Vec<u8>, GlyphMap)> = fonts
+        .iter()
+        .map(|(name, font)| (name.clone(), glyph_text(&pdf, font)))
+        .collect();
+    let content = pdf.get_and_decode_page_content(page).unwrap();
+    let numbers = |operands: &[lopdf::Object]| -> Vec<f32> {
+        operands.iter().map(|o| o.as_float().unwrap()).collect()
+    };
+    let matrix = |operands: &[lopdf::Object]| -> Matrix {
+        let n = numbers(operands);
+        [n[0], n[1], n[2], n[3], n[4], n[5]]
+    };
+    let (mut ctm, mut saved, mut text) = (IDENTITY, Vec::new(), IDENTITY);
+    let mut font: Option<Vec<u8>> = None;
+    let mut runs = Vec::new();
+    for operation in &content.operations {
+        let operands = &operation.operands;
+        match operation.operator.as_str() {
+            "q" => saved.push(ctm),
+            "Q" => ctm = saved.pop().unwrap(),
+            "cm" => ctm = times(matrix(operands), ctm),
+            "BT" => text = IDENTITY,
+            "Tm" => text = matrix(operands),
+            "Td" | "TD" => {
+                let n = numbers(operands);
+                text = times([1.0, 0.0, 0.0, 1.0, n[0], n[1]], text);
+            }
+            "Tf" => font = Some(operands[0].as_name().unwrap().to_vec()),
+            "Tj" | "TJ" => {
+                let name = font.as_ref().unwrap();
+                let (_, map) = maps.iter().find(|(n, _)| n == name).unwrap();
+                let mut run = String::new();
+                for operand in operands {
+                    let items = match operand {
+                        lopdf::Object::Array(items) => items.as_slice(),
+                        single => std::slice::from_ref(single),
+                    };
+                    for item in items {
+                        let lopdf::Object::String(bytes, _) = item else {
+                            continue; // a kerning adjustment between glyphs
+                        };
+                        for code in bytes.chunks(2).map(|c| u16::from_be_bytes([c[0], c[1]])) {
+                            let entry = map.iter().find(|(glyph, _)| *glyph == code);
+                            run.push_str(&entry.unwrap().1);
+                        }
+                    }
+                }
+                runs.push((run, times(text, ctm)[5]));
+            }
+            _ => {} // other operators neither move nor show text
+        }
+    }
+    runs
+}
+
+/// The heights of the first line, the last line and the short cell of a two-cell grid row: a tall
+/// cell of `lines` lines beside the one-line text "short", in the body or as the page header.
+fn row_heights(align: CrossAlignment, lines: &[&str], header: bool) -> (f32, f32, f32) {
+    let mut b = DocumentBuilder::new(Limits::default());
+    let mut children = Vec::new();
+    for (index, word) in lines.iter().enumerate() {
+        if index > 0 {
+            children.push(b.add(Node::LineBreak).unwrap());
+        }
+        children.push(b.add(Node::Text((*word).into())).unwrap());
+    }
+    let tall = b
+        .add(Node::Block {
+            children,
+            style: Style::default(),
+        })
+        .unwrap();
+    let short = b.add(Node::Text("short".into())).unwrap();
+    let grid = b
+        .add(Node::Grid {
+            columns: vec![1.0, 1.0],
+            gutter: 10.0,
+            cells: vec![tall, short],
+            align,
+        })
+        .unwrap();
+    let body = if header {
+        b.set_header(grid).unwrap();
+        b.add(Node::Text("body".into())).unwrap()
+    } else {
+        grid
+    };
+    let output = engine()
+        .render(&b.finish(body, options()).unwrap())
+        .unwrap();
+    let runs = text_heights(output.bytes());
+    let height = |word: &str| {
+        let found: Vec<f32> = runs
+            .iter()
+            .filter(|(text, _)| text == word)
+            .map(|(_, height)| *height)
+            .collect();
+        assert_eq!(found.len(), 1, "{word} in {runs:?}");
+        found[0]
+    };
+    (
+        height(lines[0]),
+        height(lines[lines.len() - 1]),
+        height("short"),
+    )
+}
+
+/// A grid row whose cells differ in height places the short cell at the top of the row, in its
+/// middle or at its bottom, as the grid says (`align-items-*` in a report template): the same short
+/// text sits lower on the page for the middle than for the top, and lower again for the bottom,
+/// and the tall cell does not move. The same holds in the page header, which is itself placed at
+/// the bottom of its margin: a letterhead row is at its top unless it says otherwise (it printed
+/// the company name at the bottom of the row, below the logo's line).
+#[test]
+fn a_grid_places_its_cells_in_the_row_as_it_says() {
+    let close = |a: f32, b: f32| (a - b).abs() < 0.05;
+    for (lines, header) in [
+        (&["one", "two", "three", "four", "five"][..], false),
+        (&["one", "five"][..], true),
+    ] {
+        let (top_one, top_five, top_short) = row_heights(CrossAlignment::Start, lines, header);
+        let (middle_one, middle_five, middle_short) =
+            row_heights(CrossAlignment::Center, lines, header);
+        let (bottom_one, bottom_five, bottom_short) =
+            row_heights(CrossAlignment::End, lines, header);
+        // the tall cell fills the row: it stays where it is
+        for (one, five) in [(middle_one, middle_five), (bottom_one, bottom_five)] {
+            assert!(
+                close(one, top_one) && close(five, top_five),
+                "header {header}: {one} {five}"
+            );
+        }
+        assert!(top_one > top_five, "the page's bottom edge is height zero");
+        // top: on the first line; bottom: on the last line; middle: half way between the two
+        assert!(
+            close(top_short, top_one),
+            "header {header}: {top_short} {top_one}"
+        );
+        assert!(
+            close(bottom_short, top_five),
+            "header {header}: {bottom_short} {top_five}"
+        );
+        assert!(
+            close(middle_short, f32::midpoint(top_one, top_five)),
+            "header {header}: {middle_short} between {top_one} and {top_five}"
+        );
+    }
 }

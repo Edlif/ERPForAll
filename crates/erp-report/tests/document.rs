@@ -204,6 +204,7 @@ fn retained_capacities_are_charged() {
             columns,
             gutter: 0.0,
             cells: vec![child.clone()],
+            align: erp_report::CrossAlignment::Start,
         })
         .unwrap_err(),
     );
@@ -359,6 +360,7 @@ fn tracks_without_cells_are_refused() {
                 columns: vec![weight],
                 gutter: 0.0,
                 cells: vec![cell.clone()],
+                align: erp_report::CrossAlignment::Start,
             })
             .unwrap_err();
         assert!(matches!(e, ReportError::InvalidDocument { .. }));
@@ -371,6 +373,7 @@ fn tracks_without_cells_are_refused() {
         columns: vec![1_000_000.0],
         gutter: 1440.0,
         cells: vec![cell],
+        align: erp_report::CrossAlignment::Start,
     })
     .unwrap();
 }

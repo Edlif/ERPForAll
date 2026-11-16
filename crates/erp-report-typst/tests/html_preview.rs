@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 use erp_report::{
-    Alignment, DocTree, DocumentBuilder, DocumentOptions, LayoutEngine, Limits, Node, PageCounter,
-    PageSetup, ReportError, Style, Vector, render_html,
+    Alignment, CrossAlignment, DocTree, DocumentBuilder, DocumentOptions, LayoutEngine, Limits,
+    Node, PageCounter, PageSetup, ReportError, Style, Vector, render_html,
 };
 use erp_report_typst::TypstEngine;
 use std::path::Path;
@@ -51,6 +51,7 @@ fn order(options: DocumentOptions) -> DocTree {
             columns: vec![1.0, 1.0],
             gutter: 12.0,
             cells: vec![ship, bill],
+            align: erp_report::CrossAlignment::Start,
         })
         .unwrap();
     let mut header_cells = Vec::new();
@@ -246,5 +247,42 @@ fn spans_and_vectors_in_the_preview() {
     assert!(
         html.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""),
         "{html}"
+    );
+}
+
+/// The preview places a grid's cells in their row as the PDF does: the middle and the bottom are
+/// written, the top is the grid's default.
+#[test]
+fn the_preview_writes_the_row_alignment_of_a_grid() {
+    let preview = |align: CrossAlignment| {
+        let mut b = DocumentBuilder::new(Limits::default());
+        let left = b.add(Node::Text("logo".into())).unwrap();
+        let right = b.add(Node::Text("name".into())).unwrap();
+        let grid = b
+            .add(Node::Grid {
+                columns: vec![4.0, 8.0],
+                gutter: 15.0,
+                cells: vec![left, right],
+                align,
+            })
+            .unwrap();
+        render_html(&b.finish(grid, options()).unwrap(), &[]).unwrap()
+    };
+    let grid_style = |html: &str| {
+        let start = html.find("class=\"erp-grid\" style=\"").unwrap();
+        let style = &html[start + "class=\"erp-grid\" style=\"".len()..];
+        style[..style.find('"').unwrap()].to_owned()
+    };
+    assert_eq!(
+        grid_style(&preview(CrossAlignment::Start)),
+        "grid-template-columns:4fr 8fr;gap:15pt"
+    );
+    assert_eq!(
+        grid_style(&preview(CrossAlignment::Center)),
+        "grid-template-columns:4fr 8fr;gap:15pt;align-items:center"
+    );
+    assert_eq!(
+        grid_style(&preview(CrossAlignment::End)),
+        "grid-template-columns:4fr 8fr;gap:15pt;align-items:end"
     );
 }

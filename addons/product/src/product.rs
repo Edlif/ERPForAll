@@ -123,6 +123,88 @@ pub struct ProductProduct {
         string = "Attribute Values"
     )]
     pub product_template_attribute_value_ids: Vec<RecId>,
+
+    /// The variant's own picture, at most 1920 x 1920 pixels. Empty for a variant that shows the
+    /// picture of its template.
+    #[field(image, max_width = 1920, max_height = 1920, string = "Variant Image")]
+    pub image_variant_1920: Option<Blob>,
+
+    /// The variant's own picture at most 1024 x 1024 pixels, stored.
+    #[field(
+        image,
+        max_width = 1024,
+        max_height = 1024,
+        related = "image_variant_1920",
+        store = true,
+        string = "Variant Image 1024"
+    )]
+    pub image_variant_1024: Option<Blob>,
+
+    /// The variant's own picture at most 512 x 512 pixels, stored.
+    #[field(
+        image,
+        max_width = 512,
+        max_height = 512,
+        related = "image_variant_1920",
+        store = true,
+        string = "Variant Image 512"
+    )]
+    pub image_variant_512: Option<Blob>,
+
+    /// The variant's own picture at most 256 x 256 pixels, stored.
+    #[field(
+        image,
+        max_width = 256,
+        max_height = 256,
+        related = "image_variant_1920",
+        store = true,
+        string = "Variant Image 256"
+    )]
+    pub image_variant_256: Option<Blob>,
+
+    /// The variant's own picture at most 128 x 128 pixels, stored.
+    #[field(
+        image,
+        max_width = 128,
+        max_height = 128,
+        related = "image_variant_1920",
+        store = true,
+        string = "Variant Image 128"
+    )]
+    pub image_variant_128: Option<Blob>,
+
+    /// The picture shown for the variant: its own picture, otherwise the picture of its template.
+    /// This own field replaces the delegated template field of the same
+    /// name. It is not stored, so it carries no bounds: its sources are already scaled. A write
+    /// goes to the template or to the variant's own picture, see `_set_image_1920`.
+    #[field(
+        image,
+        compute = "_compute_image_1920",
+        inverse = "_set_image_1920",
+        readonly = false,
+        string = "Image"
+    )]
+    pub image_1920: Option<Blob>,
+
+    /// The shown picture at most 1024 x 1024 pixels: the variant's own stored size, otherwise
+    /// the template's.
+    #[field(image, compute = "_compute_image_1024", string = "Image 1024")]
+    pub image_1024: Option<Blob>,
+
+    /// The shown picture at most 512 x 512 pixels: the variant's own stored size, otherwise
+    /// the template's.
+    #[field(image, compute = "_compute_image_512", string = "Image 512")]
+    pub image_512: Option<Blob>,
+
+    /// The shown picture at most 256 x 256 pixels: the variant's own stored size, otherwise
+    /// the template's.
+    #[field(image, compute = "_compute_image_256", string = "Image 256")]
+    pub image_256: Option<Blob>,
+
+    /// The shown picture at most 128 x 128 pixels: the variant's own stored size, otherwise
+    /// the template's.
+    #[field(image, compute = "_compute_image_128", string = "Image 128")]
+    pub image_128: Option<Blob>,
 }
 
 #[methods(ProductProduct, addon = "product")]
@@ -361,6 +443,152 @@ impl ProductProduct {
         Ok(())
     }
 
+    /// `image_1920`: the variant's own picture of that size, otherwise the template's.
+    #[compute(depends = ["image_variant_1920", "product_tmpl_id.image_1920"])]
+    async fn _compute_image_1920(
+        this: &RecordSet<ProductProduct>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, ProductProduct>,
+    ) -> Result<()> {
+        let own = this.mapped(tx, ProductProduct::IMAGE_VARIANT_1920).await?;
+        let shown = shown_pictures(this, tx, own, "image_1920").await?;
+        for (index, picture) in shown.into_iter().enumerate() {
+            out.set(index, ProductProduct::IMAGE_1920, picture)?;
+        }
+        Ok(())
+    }
+
+    /// `image_1024`: the variant's own picture of that size, otherwise the template's.
+    #[compute(depends = ["image_variant_1024", "product_tmpl_id.image_1024"])]
+    async fn _compute_image_1024(
+        this: &RecordSet<ProductProduct>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, ProductProduct>,
+    ) -> Result<()> {
+        let own = this.mapped(tx, ProductProduct::IMAGE_VARIANT_1024).await?;
+        let shown = shown_pictures(this, tx, own, "image_1024").await?;
+        for (index, picture) in shown.into_iter().enumerate() {
+            out.set(index, ProductProduct::IMAGE_1024, picture)?;
+        }
+        Ok(())
+    }
+
+    /// `image_512`: the variant's own picture of that size, otherwise the template's.
+    #[compute(depends = ["image_variant_512", "product_tmpl_id.image_512"])]
+    async fn _compute_image_512(
+        this: &RecordSet<ProductProduct>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, ProductProduct>,
+    ) -> Result<()> {
+        let own = this.mapped(tx, ProductProduct::IMAGE_VARIANT_512).await?;
+        let shown = shown_pictures(this, tx, own, "image_512").await?;
+        for (index, picture) in shown.into_iter().enumerate() {
+            out.set(index, ProductProduct::IMAGE_512, picture)?;
+        }
+        Ok(())
+    }
+
+    /// `image_256`: the variant's own picture of that size, otherwise the template's.
+    #[compute(depends = ["image_variant_256", "product_tmpl_id.image_256"])]
+    async fn _compute_image_256(
+        this: &RecordSet<ProductProduct>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, ProductProduct>,
+    ) -> Result<()> {
+        let own = this.mapped(tx, ProductProduct::IMAGE_VARIANT_256).await?;
+        let shown = shown_pictures(this, tx, own, "image_256").await?;
+        for (index, picture) in shown.into_iter().enumerate() {
+            out.set(index, ProductProduct::IMAGE_256, picture)?;
+        }
+        Ok(())
+    }
+
+    /// `image_128`: the variant's own picture of that size, otherwise the template's.
+    #[compute(depends = ["image_variant_128", "product_tmpl_id.image_128"])]
+    async fn _compute_image_128(
+        this: &RecordSet<ProductProduct>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, ProductProduct>,
+    ) -> Result<()> {
+        let own = this.mapped(tx, ProductProduct::IMAGE_VARIANT_128).await?;
+        let shown = shown_pictures(this, tx, own, "image_128").await?;
+        for (index, picture) in shown.into_iter().enumerate() {
+            out.set(index, ProductProduct::IMAGE_128, picture)?;
+        }
+        Ok(())
+    }
+
+    /// Inverse of `image_1920`: where a picture written on a variant is kept. Behaviour observed
+    /// and `:287-288`.
+    ///
+    /// For each variant the value goes to the template's `image_1920`, and the variant's own
+    /// picture is cleared, when
+    /// - the value is empty and the variant has no own picture, or
+    /// - the value is a picture and the template has none, or
+    /// - the template has at most one active variant.
+    ///
+    /// Otherwise the value becomes the variant's own picture (`image_variant_1920`), and an empty
+    /// value clears it so the variant shows the template's picture again. The written
+    /// content is checked on this field before the inverse runs, so a refusal names
+    /// `product.product.image_1920`.
+    #[method]
+    async fn _set_image_1920(this: &RecordSet<ProductProduct>, tx: &mut Transaction) -> Result<()> {
+        // every written value is read before the first write: a write on a template drops the
+        // values held for its variants
+        let values = this.mapped(tx, ProductProduct::IMAGE_1920).await?;
+        let templates = this.mapped(tx, ProductProduct::PRODUCT_TMPL_ID).await?;
+        let template_model = this.env().records("product.template")?;
+        for (index, (value, template)) in values.into_iter().zip(templates).enumerate() {
+            let variant = this.at(index as isize)?;
+            let template_id = template
+                .ok_or_else(|| Error::validation("Product variant missing template link"))?;
+            let template = template_model.browse_ids([template_id]);
+            // read per variant, after the writes of the variants before it: two variants of one
+            // template without a picture give the first picture to the template and keep the
+            // second on its variant
+            let own = variant
+                .mapped(tx, ProductProduct::IMAGE_VARIANT_1920)
+                .await?
+                .into_iter()
+                .next()
+                .flatten();
+            let clears_nothing = value.is_none() && own.is_none();
+            let fills_template =
+                value.is_some() && picture(&template, tx, "image_1920").await?.is_none();
+            let to_template = clears_nothing || fills_template || {
+                let active = Domain::condition("product_tmpl_id", Operator::Eq, template_id.get())?
+                    & Domain::condition("active", Operator::Eq, true)?;
+                this.search_count(tx, &active, None).await? <= 1
+            };
+            let cell = value.map_or(Cell::Null, Cell::Bytes);
+            if to_template {
+                if own.is_some() {
+                    variant
+                        .as_records()
+                        .write(
+                            tx,
+                            RawVals::new().set_cell("image_variant_1920", Cell::Null),
+                        )
+                        .await?;
+                }
+                template
+                    .write(tx, RawVals::new().set_cell("image_1920", cell))
+                    .await?;
+            } else {
+                variant
+                    .as_records()
+                    .write(tx, RawVals::new().set_cell("image_variant_1920", cell))
+                    .await?;
+            }
+        }
+        // the written value is held for the shown picture while the inverse runs; drop it, so the
+        // next read in this transaction returns what was stored (scaled and encoded again), from
+        // the variant or from the template
+        tx.invalidate_records(this.as_records(), Some(&["image_1920"]))
+            .await?;
+        Ok(())
+    }
+
     /// Compute price_extra as sum of PTAV extra prices.
     #[compute(depends = ["product_template_attribute_value_ids"])]
     async fn _compute_price_extra(
@@ -465,7 +693,9 @@ impl ProductProduct {
         .await
     }
 
-    /// Release or reclassify claims even when deleting the last mirrored variant.
+    /// Release or reclassify claims even when deleting the last mirrored variant. A variant's own
+    /// picture moves to a template that has none before the variant goes
+    /// (`keep_pictures_on_templates`).
     #[method(override)]
     async fn unlink(
         this: &RecordSet<ProductProduct>,
@@ -473,16 +703,27 @@ impl ProductProduct {
         sup: Super,
     ) -> Result<()> {
         crate::barcode::refuse_bypass(this.env())?;
-        let ids: Vec<i64> = this
-            .as_records()
-            .rec_ids()
-            .iter()
-            .map(|id| id.get())
-            .collect();
-        let families = crate::barcode::variant_families(tx, &ids).await?;
-        let keys = crate::barcode::prepare(tx, this.env(), &families, &[], &[]).await?;
-        sup.call(tx, this.as_records(), ()).await?;
-        crate::barcode::reconcile(tx, this.env(), &families, &[], keys).await
+        // one savepoint: a delete that is refused after the picture moved leaves the template as
+        // it was, also for a caller that handles the error and goes on
+        tx.savepoint(async |tx| {
+            let ids: Vec<i64> = this
+                .as_records()
+                .rec_ids()
+                .iter()
+                .map(|id| id.get())
+                .collect();
+            let families = crate::barcode::variant_families(tx, &ids).await?;
+            let keys = crate::barcode::prepare(tx, this.env(), &families, &[], &[]).await?;
+            // the right to delete is settled first: the move below reads the variants, and a
+            // caller who may not delete them is refused for the delete, not for a read
+            this.as_records()
+                .check_access(tx, erp_sdk::Operation::Unlink)
+                .await?;
+            keep_pictures_on_templates(this, tx).await?;
+            sup.call(tx, this.as_records(), ()).await?;
+            crate::barcode::reconcile(tx, this.env(), &families, &[], keys).await
+        })
+        .await
     }
 
     #[method(override)]
@@ -547,6 +788,79 @@ impl ProductProduct {
         })
         .await
     }
+}
+
+/// The picture a record holds in `field`, read by name: `None` when the field is empty.
+async fn picture(record: &Records, tx: &mut Transaction, field: &str) -> Result<Option<Blob>> {
+    match record.cell(tx, field).await? {
+        Cell::Bytes(content) => Ok(Some(content)),
+        Cell::Null => Ok(None),
+        other => Err(Error::programming(format!(
+            "{}.{field} returned {other:?}, expected picture content",
+            record.model_name()
+        ))),
+    }
+}
+
+/// The picture each variant shows in one size: its own (`own`, one entry per record of `this`),
+/// otherwise the template's `template_field`. A variant that has no template yet (a draft) shows
+/// its own picture only. One entry per record, in the order of the set.
+async fn shown_pictures(
+    this: &RecordSet<ProductProduct>,
+    tx: &mut Transaction,
+    own: Vec<Option<Blob>>,
+    template_field: &str,
+) -> Result<Vec<Option<Blob>>> {
+    let templates = this.mapped(tx, ProductProduct::PRODUCT_TMPL_ID).await?;
+    let template_model = this.env().records("product.template")?;
+    // variants of one template share its picture: read it once per template
+    let mut by_template: HashMap<RecId, Option<Blob>> = HashMap::new();
+    let mut shown = Vec::with_capacity(own.len());
+    for (own, template) in own.into_iter().zip(templates) {
+        let picture = match (own, template) {
+            (Some(own), _) => Some(own),
+            (None, None) => None,
+            (None, Some(template)) => match by_template.get(&template) {
+                Some(held) => held.clone(),
+                None => {
+                    let read =
+                        picture(&template_model.browse_ids([template]), tx, template_field).await?;
+                    by_template.insert(template, read.clone());
+                    read
+                }
+            },
+        };
+        shown.push(picture);
+    }
+    Ok(shown)
+}
+
+/// Before variants are deleted: a variant's own picture moves to its template when the template
+/// has none, so the picture is not lost with the variant (behaviour observed in
+/// ). Records already deleted are skipped.
+async fn keep_pictures_on_templates(
+    this: &RecordSet<ProductProduct>,
+    tx: &mut Transaction,
+) -> Result<()> {
+    let existing = this.exists(tx).await?;
+    let pictures = existing
+        .mapped(tx, ProductProduct::IMAGE_VARIANT_1920)
+        .await?;
+    let templates = existing.mapped(tx, ProductProduct::PRODUCT_TMPL_ID).await?;
+    let template_model = this.env().records("product.template")?;
+    for (own, template) in pictures.into_iter().zip(templates) {
+        let (Some(own), Some(template)) = (own, template) else {
+            continue;
+        };
+        let template = template_model.browse_ids([template]);
+        // read per variant: the first variant with a picture fills the template
+        if picture(&template, tx, "image_1920").await?.is_none() {
+            template
+                .write(tx, RawVals::new().set_cell("image_1920", Cell::Bytes(own)))
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Order of a value inside a variant name: attribute (sequence, id), then value (sequence, id).

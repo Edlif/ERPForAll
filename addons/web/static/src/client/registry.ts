@@ -36,6 +36,8 @@ export interface WidgetEnvironment extends FieldWidgetProps {
   numericLocale?: NumericLocale;
   currencies?: CurrencyDisplayCache;
   values?: Readonly<Record<string, unknown>>;
+  /** The model of the record `values` belongs to. */
+  model?: string;
   /** The record holds an unsaved change of this field. */
   changed?: boolean;
   fields?: readonly Field[];

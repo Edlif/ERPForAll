@@ -134,7 +134,7 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
         // The comodel's list widgets (color swatch, priority stars, badge, tags, percentage, favorite), read-only, the
         // same adapters the main list uses, so a line reads the same in both places.
         const handle = resolveFieldWidget(column.widget ?? column.kind, "list").render({
-          field: { ...column, readonly: true }, value: line[column.name], values: line, fields: readonlyColumns, viewContext: "list",
+          field: { ...column, readonly: true }, value: line[column.name], values: line, ...(field.relation === null ? {} : { model: field.relation }), fields: readonlyColumns, viewContext: "list",
           rpc: environment.rpc, context: environment.context, currencies: lineCurrencies, numericLocale: environment.numericLocale,
           editorLocale: environment.editorLocale, messages: environment.messages, run, report: environment.report, signal: environment.signal,
           ...(environment.openRecord ? { openRecord: environment.openRecord } : {}),
@@ -294,7 +294,7 @@ async function openLine(environment: WidgetEnvironment, items: readonly Line[], 
       if (node.field.name === field.relationField) return;
       const handle = resolveFieldWidget(node.widget, "form").render({
         field: { ...node.field, label: node.label, readonly: readonly || node.field.readonly || node.field.kind === "one2many" },
-        value: values[node.field.name], values, fields: policy.map(candidate => ({ ...candidate, readonly: readonly || candidate.readonly })), numericLocale: environment.numericLocale, currencies,
+        value: values[node.field.name], values, ...(field.relation === null ? {} : { model: field.relation }), fields: policy.map(candidate => ({ ...candidate, readonly: readonly || candidate.readonly })), numericLocale: environment.numericLocale, currencies,
         changeValues: changes => {
           for (const name of Object.keys(changes)) if (!policy.some(field => field.name === name && !field.readonly) || readonly) throw new ClientError("validation", "Readonly line fields cannot be changed.");
           values = { ...values, ...changes }; for (const name of Object.keys(changes)) changed.add(name); render();

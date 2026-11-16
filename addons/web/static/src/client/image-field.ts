@@ -3,6 +3,7 @@ import { button, el } from "./dom.js";
 import { fieldShell } from "./field-shell.js";
 import { icon } from "./icons.js";
 import { attachmentRequestCap, humanBytes } from "./attachment-policy.js";
+import { binaryContent, isBinarySize } from "./binary-content.js";
 import { ClientError } from "./transport.js";
 import type { FieldControl, FieldControlOptions } from "./fields.js";
 
@@ -11,8 +12,6 @@ const MAGIC: Readonly<Record<string, string>> = { "/": "jpeg", R: "gif", i: "png
 /** Types the browser re-encodes to webp; animated and already-webp content is kept as uploaded. */
 const KEEP_FORMAT = ["image/gif", "image/webp"];
 const DEFAULT_ACCEPT = "image/*";
-/** The `bin_size` read: the server's size text in place of the content (`erp_orm::image::human_size`). */
-const BIN_SIZE = /^\d+\.\d{2} (bytes|Kb|Mb|Gb|Tb)$/;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 /** Room left in the write request for the record's other changed values. */
 const REQUEST_MARGIN = 4096;
@@ -42,7 +41,7 @@ export function fileAccepted(file: { name: string; type: string }, accept: strin
 /** A record value of a binary field: empty, base64 content or the `bin_size` text; anything else is refused. */
 function binaryValue(field: string, value: unknown): { content: string; size?: string } {
   if (value === false || value === null || value === undefined || value === "") return { content: "" };
-  if (typeof value === "string" && BIN_SIZE.test(value)) return { content: "", size: value };
+  if (isBinarySize(value)) return { content: "", size: value };
   if (typeof value === "string" && value.length % 4 === 0 && BASE64.test(value)) return { content: value };
   throw new ClientError("server", `Field ${field} holds a value that is neither picture content nor a size.`);
 }
@@ -70,7 +69,9 @@ async function toWebp(base64: string, file: File): Promise<string> {
  * `bin_size` text or false. Options: alt, img_class, size [w,h], zoom, zoom_delay, reload, preview_image,
  * accepted_file_extensions, convert_to_webp. Editing adds upload, replace, clear; every state also offers
  * download. The widget never shows a value the record does not hold: a staged change appears when the form
- * renders it again.
+ * renders it again. A value read with `bin_size` is a size only: the widget then reads the picture of its saved
+ * record itself (`binary-content.ts`), the smaller `preview_image` field for display and the field's own content
+ * when the user enlarges or downloads it; without a saved record it shows the size.
  */
 export function imageControl(options: FieldControlOptions): FieldControl {
   const { field, rpc, change } = options, config = field.options ?? {};
@@ -95,20 +96,31 @@ export function imageControl(options: FieldControlOptions): FieldControl {
 
   // The preview is the record's smaller copy of the saved picture; an unsaved change shows itself.
   const previewName = config.preview_image?.name;
-  const preview = previewName === undefined || options.changed ? "" : binaryValue(previewName, options.values?.[previewName]).content;
+  const previewValue = previewName === undefined || options.changed ? { content: "" } : binaryValue(previewName, options.values?.[previewName]);
+  const preview = previewValue.content;
+  // Size-only value of a saved record: the content is read on demand (`lazyFull` the field, `lazySmall` its preview).
+  const recordId = options.values?.["id"], recordModel = options.model;
+  const lazy = !urlMode && sizeText !== undefined && recordModel !== undefined && typeof recordId === "number" && Number.isInteger(recordId) && recordId > 0;
+  let lazyFull = "", lazySmall = "", fullRead: Promise<string> | undefined;
+  const contentOf = (name: string, size: string): Promise<string> => binaryContent(rpc, recordModel!, recordId as number, name, options.context, size);
   const sourceOf = (small: boolean): string | null => {
-    if (!current) return null;
-    if (urlMode) return safeImageUrl(current, options.values?.["write_date"], config.reload === true);
-    return imageDataUrl(small && preview ? preview : current);
+    if (urlMode) return current ? safeImageUrl(current, options.values?.["write_date"], config.reload === true) : null;
+    const full = current || lazyFull, little = preview || lazySmall;
+    if (!full && !(lazy && small && little)) return null;
+    return imageDataUrl(small && little ? little : full);
   };
 
   let zoomTimer: ReturnType<typeof setTimeout> | undefined;
   let zoomNode: HTMLElement | undefined;
-  const hideZoom = () => { clearTimeout(zoomTimer); zoomNode?.remove(); zoomNode = undefined; };
+  let zoomWanted = false;
+  const hideZoom = () => { zoomWanted = false; clearTimeout(zoomTimer); zoomNode?.remove(); zoomNode = undefined; };
   const showZoom = () => {
+    zoomWanted = true;
     clearTimeout(zoomTimer);
     zoomTimer = setTimeout(() => {
       const src = sourceOf(false);
+      // size-only value: read the picture, then enlarge it if the pointer or the focus is still here
+      if (!src && lazy && !zoomNode) { readFull().then(content => { if (content && zoomWanted && !dead) showZoom(); }, loadFailed); return; }
       if (!src || zoomNode) return;
       zoomNode = el("div", undefined, "field-image-zoom");
       const big = el("img"); big.src = src; big.alt = "";
@@ -140,9 +152,11 @@ export function imageControl(options: FieldControlOptions): FieldControl {
   const clear = editable ? button("Clear", () => { cancel(); setPending(false); shell.clear(); status.textContent = ""; change(false); }, "field-image-button o_clear_file_button") : null;
   const download = el("a", undefined, "field-image-button o_download_file_button");
   const verb = current || sizeText ? "Replace" : "Upload";
-  for (const [node, text] of [[upload, verb], [clear, "Clear"], [download, "Download"]] as const) {
+  // Each action holds its icon and its text: a roomy place shows the text, a picture in a form's title block
+  // or a list cell shows the icon (client.css); the accessible name is the same in both.
+  for (const [node, text, glyph] of [[upload, verb, "camera"], [clear, "Clear", "trash"], [download, "Download", "save"]] as const) {
     if (!node) continue;
-    node.textContent = text; node.setAttribute("aria-label", `${text} ${field.label}`); node.title = `${text} ${field.label}`;
+    node.replaceChildren(icon(glyph), el("span", text)); node.setAttribute("aria-label", `${text} ${field.label}`); node.title = `${text} ${field.label}`;
   }
   const setPending = (pending: boolean) => {
     if (upload) upload.disabled = pending;
@@ -165,9 +179,8 @@ export function imageControl(options: FieldControlOptions): FieldControl {
     stage.onmouseenter = stage.onmouseleave = stage.onfocus = stage.onblur = null; stage.onkeydown = null;
   };
   const alt = config.alt ?? field.label;
-  const full = sourceOf(true);
-  if (full) {
-    const image = el("img", undefined, `field-image-img${config.img_class ? ` ${config.img_class}` : ""}`); image.src = full; image.alt = alt; image.loading = "lazy";
+  const showImage = (source: string) => {
+    const image = el("img", undefined, `field-image-img${config.img_class ? ` ${config.img_class}` : ""}`); image.src = source; image.alt = alt; image.loading = "lazy";
     if (width) image.width = width; if (height) image.height = height;
     // a broken source degrades to the placeholder and says so; the record keeps its value, so Clear stays
     image.addEventListener("error", () => { showPlaceholder(); download.hidden = true; status.textContent = `${field.label} could not be loaded.`; }, { once: true });
@@ -177,11 +190,52 @@ export function imageControl(options: FieldControlOptions): FieldControl {
       stage.onmouseenter = showZoom; stage.onmouseleave = hideZoom; stage.onfocus = showZoom; stage.onblur = hideZoom;
       stage.onkeydown = event => { if (event.key === "Escape" && zoomNode) { event.stopPropagation(); hideZoom(); } };
     }
-  } else showPlaceholder();
+  };
+  const full = sourceOf(true);
+  if (full) showImage(full); else showPlaceholder();
   if (clear) clear.hidden = !current && !sizeText;
+  const offerDownload = (href: string, content: string) => {
+    download.hidden = false; download.href = href;
+    download.download = urlMode ? "" : `${field.name}.${(MAGIC[content.charAt(0)] ?? "png").replace("svg+xml", "svg").replace("jpeg", "jpg")}`;
+    if (urlMode) { download.target = "_blank"; download.rel = "noopener noreferrer"; }
+  };
   const href = sourceOf(false);
   download.hidden = !href;
-  if (href) { download.href = href; download.download = urlMode ? "" : `${field.name}.${(MAGIC[current.charAt(0)] ?? "png").replace("svg+xml", "svg").replace("jpeg", "jpg")}`; if (urlMode) { download.target = "_blank"; download.rel = "noopener noreferrer"; } }
+  if (href) offerDownload(href, current);
+
+  // The record keeps its value when a read fails, so the placeholder, Replace and Clear stay; the reason is shown.
+  const loadFailed = (error: unknown) => {
+    if (dead) return;
+    root.removeAttribute("aria-busy");
+    status.textContent = `${field.label} could not be loaded: ${error instanceof Error ? error.message : String(error)}`;
+  };
+  /** The field's own content, read once; `""` when the record no longer holds a picture. */
+  const readFull = (): Promise<string> => fullRead ??= contentOf(field.name, sizeText!).then(content => {
+    lazyFull = content;
+    if (dead) return content;
+    if (content) offerDownload(imageDataUrl(content), content); else download.hidden = true;
+    return content;
+  }, (error: unknown) => { fullRead = undefined; throw error; });
+  if (lazy) {
+    const small = previewName !== undefined && previewValue.size !== undefined ? { name: previewName, size: previewValue.size } : undefined;
+    root.setAttribute("aria-busy", "true");
+    (small ? contentOf(small.name, small.size).then(content => { lazySmall = content; return content; }) : readFull()).then(content => {
+      if (dead) return;
+      root.removeAttribute("aria-busy");
+      const source = content ? sourceOf(true) : null;
+      if (source) showImage(source);
+      // the file was removed after the record was read: say so, the size shown is no longer true
+      else status.textContent = `${field.label} is no longer stored on this record. Reload to see its current state.`;
+    }, loadFailed);
+    // Download reads the field itself on the first press, then saves it.
+    download.hidden = false;
+    if (!download.hasAttribute("href")) download.href = "#";
+    download.addEventListener("click", event => {
+      if (lazyFull) return;
+      event.preventDefault();
+      readFull().then(content => { if (content && !dead) download.click(); }, loadFailed);
+    });
+  }
 
   input?.addEventListener("change", () => {
     const file = input.files?.[0]; input.value = "";

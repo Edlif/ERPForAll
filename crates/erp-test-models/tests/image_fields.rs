@@ -606,3 +606,239 @@ async fn onchange_through_a_related_picture_loads_the_limits() {
     drop(tx);
     h.cleanup().await.unwrap();
 }
+
+/// One onchange on `record`: `changed` are the form's changed values, the specification names the
+/// record's pictures.
+async fn picture_onchange(
+    tx: &mut Transaction,
+    record: &Records,
+    changed: &[(&str, Value)],
+) -> erp_sdk::Result<Value> {
+    let mut form = erp_sdk::ValueMap::new();
+    for (name, value) in changed {
+        form.insert((*name).into(), value.clone());
+    }
+    record
+        .onchange(
+            tx,
+            form,
+            changed.iter().map(|(name, _)| (*name).into()).collect(),
+            erp_orm::Spec::new()
+                .field("name")
+                .field("photo")
+                .field("image_1920")
+                .field("image_128"),
+        )
+        .await
+}
+
+/// pictures are not admitted again, a replacement is admitted under the database's limits, and the
+/// picture is replaced, cleared and saved; the company form with a logo did not open an onchange)
+#[tokio::test]
+async fn onchange_on_a_record_with_a_picture_replaces_and_clears_it() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let record = create(&mut tx, "pic").await;
+    record
+        .set_value(&mut tx, "photo", b64(&png(1200, 1000)))
+        .await
+        .unwrap();
+    let ids = record.ids();
+    // from here the stored picture is above the limit: saved pictures stay, new ones are refused
+    set_max_pixels(&mut tx, "1000000").await;
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    // a new transaction per step: no earlier call of it loaded the image limits
+    for changed in [
+        vec![("name", Value::str("renamed"))],
+        vec![("photo", b64(&png(600, 300)))],
+        vec![("photo", Value::False)],
+        vec![("name", Value::str("both")), ("photo", b64(&png(64, 64)))],
+    ] {
+        let mut tx = h.begin().await.unwrap();
+        let record = tx
+            .env()
+            .records(MODEL)
+            .unwrap()
+            .browse(ids.clone())
+            .unwrap();
+        let result = picture_onchange(&mut tx, &record, &changed).await;
+        assert!(result.is_ok(), "{changed:?}: {result:?}");
+        drop(tx);
+    }
+
+    // the replacement is checked against the stored limit, not the declared default
+    let mut tx = h.begin().await.unwrap();
+    let record = tx
+        .env()
+        .records(MODEL)
+        .unwrap()
+        .browse(ids.clone())
+        .unwrap();
+    let error = picture_onchange(&mut tx, &record, &[("photo", b64(&png(1200, 1000)))])
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "Invalid image for test_image.picture.photo: 1200 x 1000 pixels is above the limit of \
+         1000000 pixels (base.image_max_pixels)"
+    );
+    drop(tx);
+
+    // the save after the onchange: replace, then clear
+    let mut tx = h.begin().await.unwrap();
+    let record = tx
+        .env()
+        .records(MODEL)
+        .unwrap()
+        .browse(ids.clone())
+        .unwrap();
+    assert_eq!(
+        size(&mut tx, &record, "image_1920").await,
+        Some((1200, 1000)),
+        "the onchange calls saved nothing"
+    );
+    picture_onchange(&mut tx, &record, &[("photo", b64(&png(600, 300)))])
+        .await
+        .unwrap();
+    record
+        .set_value(&mut tx, "photo", b64(&png(600, 300)))
+        .await
+        .unwrap();
+    assert_eq!(size(&mut tx, &record, "image_1920").await, Some((600, 300)));
+    assert_eq!(size(&mut tx, &record, "image_128").await, Some((128, 64)));
+    picture_onchange(&mut tx, &record, &[("photo", Value::False)])
+        .await
+        .unwrap();
+    record
+        .set_value(&mut tx, "photo", Value::False)
+        .await
+        .unwrap();
+    assert_eq!(content(&mut tx, &record, "image_1920").await, None);
+    assert_eq!(content(&mut tx, &record, "image_128").await, None);
+    drop(tx);
+    h.cleanup().await.unwrap();
+}
+
+/// The value of `key` in the one row a web read returned.
+fn row_value(rows: &[Value], key: &str) -> Value {
+    assert_eq!(rows.len(), 1, "one row");
+    rows[0].dict().expect("a row").get(key).unwrap()
+}
+
+/// view uses, `web_read`, `web_search_read` and `search_read`, for a file, a picture, its stored
+/// size and a related picture; without it the same reads carry the content)
+#[tokio::test]
+async fn bin_size_answers_sizes_on_the_web_reads() {
+    use erp_orm::image::human_size;
+    use erp_orm::{SearchOptions, Spec, WebSearchRead};
+    use erp_sdk::{Domain, Operator};
+
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let record = create(&mut tx, "sized").await;
+    let file: Vec<u8> = (0..=255u8).cycle().take(5_000).collect();
+    record
+        .set_value(&mut tx, "document", b64(&file))
+        .await
+        .unwrap();
+    record
+        .set_value(&mut tx, "image_1920", b64(&png(300, 200)))
+        .await
+        .unwrap();
+    let id = record.ids()[0];
+    // what each field holds, from a read of the content
+    let fields = ["document", "image_1920", "image_128", "photo"];
+    let mut expected = Vec::new();
+    for field in fields {
+        let stored = content(&mut tx, &record, field).await.unwrap();
+        expected.push((field, human_size(stored.len())));
+    }
+    assert_eq!(expected[0].1, human_size(file.len()));
+    tx.commit().await.unwrap();
+
+    let spec = || {
+        fields
+            .iter()
+            .fold(Spec::new(), |spec, field| spec.field(*field))
+            .field("original")
+    };
+    let domain = Domain::condition("id", Operator::Eq, id).unwrap();
+
+    // values this transaction has not read, then the same reads again on loaded values
+    let mut tx = h.begin().await.unwrap();
+    let sized = tx
+        .env()
+        .records(MODEL)
+        .unwrap()
+        .browse([id])
+        .unwrap()
+        .with_context([("bin_size", Value::Bool(true))]);
+    for pass in ["cold", "loaded"] {
+        let rows = sized.web_read(&mut tx, spec()).await.unwrap();
+        for (field, size) in &expected {
+            assert_eq!(
+                row_value(&rows, field),
+                Value::str(size.as_str()),
+                "web_read {field} ({pass})"
+            );
+        }
+        assert_eq!(row_value(&rows, "original"), Value::False, "{pass}");
+
+        let found = sized
+            .web_search_read(&mut tx, WebSearchRead::new(domain.clone(), spec()))
+            .await
+            .unwrap();
+        let found = found.dict().expect("web_search_read answers a dictionary");
+        assert_eq!(found.get("length").unwrap(), Value::Int(1));
+        let records = found.get("records").unwrap();
+        let cell = |field: &str| -> Value {
+            match &records {
+                Value::Rows(rows) => rows.get(0).unwrap().get(field).unwrap(),
+                Value::List(items) => items[0].dict().expect("a row").get(field).unwrap(),
+                other => panic!("records read as {other:?}"),
+            }
+        };
+        for (field, size) in &expected {
+            assert_eq!(
+                cell(field),
+                Value::str(size.as_str()),
+                "web_search_read {field} ({pass})"
+            );
+        }
+        assert_eq!(cell("original"), Value::False, "{pass}");
+
+        let rows = sized
+            .search_read(&mut tx, &domain, &fields, &SearchOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        for (field, size) in &expected {
+            assert_eq!(
+                rows[0].get(*field),
+                Some(&Value::str(size.as_str())),
+                "search_read {field} ({pass})"
+            );
+        }
+        // load the content, so the second pass sizes values the transaction holds
+        let plain = tx.env().records(MODEL).unwrap().browse([id]).unwrap();
+        for field in fields {
+            assert!(content(&mut tx, &plain, field).await.is_some());
+        }
+    }
+
+    // without `bin_size` the web read carries the content itself
+    let plain = tx.env().records(MODEL).unwrap().browse([id]).unwrap();
+    let rows = plain
+        .web_read(&mut tx, Spec::new().field("document"))
+        .await
+        .unwrap();
+    match row_value(&rows, "document") {
+        Value::Bytes(bytes) => assert_eq!(bytes.to_vec(), file),
+        other => panic!("document read as {other:?}"),
+    }
+    drop(tx);
+    h.cleanup().await.unwrap();
+}

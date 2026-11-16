@@ -612,12 +612,33 @@ async fn installed() {
         assert!(form_json.contains(token), "form view lacks {token}");
     }
     let list_json = views[0].to_string();
-    for field in ["name", "parent_id", "email", "phone", "currency_id"] {
+    for field in [
+        "logo_web",
+        "name",
+        "parent_id",
+        "email",
+        "phone",
+        "currency_id",
+    ] {
         assert!(
             list_json.contains(&format!("\"{field}\"")),
             "list view lacks {field}"
         );
     }
+    let title_children =
+        title_block_children(&views[1]).expect("the company form has a title block");
+    assert!(
+        title_children
+            .iter()
+            .any(|child| child.contains("\"logo\"") && child.contains("\"image\"")),
+        "the title block lacks the logo picture: {title_children:?}"
+    );
+    assert!(
+        title_children
+            .iter()
+            .any(|child| child.contains("\"heading\"")),
+        "the title block lacks the name heading: {title_children:?}"
+    );
 
     // Subjects: a bootstrap administrator keeps the last-administrator invariant, then one
     // administrator and one ordinary internal user.
@@ -770,4 +791,26 @@ async fn installed() {
         text("+62 21 999")
     );
     admin_tx.rollback().await.unwrap();
+}
+
+/// The children of the first title block of a described view, each as its JSON text: the node
+/// arena is the array that holds the `title` node, and its `children` index that array.
+fn title_block_children(view: &serde_json::Value) -> Option<Vec<String>> {
+    match view {
+        serde_json::Value::Array(items) => {
+            if let Some(title) = items.iter().find(|item| item["kind"] == "title") {
+                let children = title["children"].as_array()?;
+                return children
+                    .iter()
+                    .map(|index| {
+                        let index = usize::try_from(index.as_u64()?).ok()?;
+                        items.get(index).map(ToString::to_string)
+                    })
+                    .collect();
+            }
+            items.iter().find_map(title_block_children)
+        }
+        serde_json::Value::Object(members) => members.values().find_map(title_block_children),
+        _ => None,
+    }
 }

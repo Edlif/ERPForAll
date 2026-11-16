@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 //! The style of a block crosses the worker frame field for field.
-use erp_report::{DocumentBuilder, DocumentOptions, Limits, Node, PageSetup, Style, TableLook};
+use erp_report::{
+    CrossAlignment, DocumentBuilder, DocumentOptions, Limits, Node, PageSetup, Style, TableLook,
+};
 use erp_report_worker::WireDocument;
 
 #[test]
@@ -97,4 +99,45 @@ fn a_picture_survives_the_worker_frame() {
         (&data[..], *width, *height, alt.as_str()),
         (&PNG[..], None, Some(34.0), "Logo")
     );
+}
+
+/// The row alignment of a grid crosses the worker frame (protocol 5): a letterhead whose name is
+/// centred on the logo prints the same on a worker host as in the server process.
+#[test]
+fn the_row_alignment_of_a_grid_survives_the_worker_frame() {
+    for align in [
+        CrossAlignment::Start,
+        CrossAlignment::Center,
+        CrossAlignment::End,
+    ] {
+        let mut b = DocumentBuilder::new(Limits::default());
+        let left = b.add(Node::Text("logo".into())).unwrap();
+        let right = b.add(Node::Text("name".into())).unwrap();
+        let grid = b
+            .add(Node::Grid {
+                columns: vec![4.0, 8.0],
+                gutter: 15.0,
+                cells: vec![left, right],
+                align,
+            })
+            .unwrap();
+        let options = DocumentOptions::new("g", "G", PageSetup::new(595.0, 842.0, 40.0).unwrap());
+        let tree = b.finish(grid, options).unwrap();
+        let back = WireDocument::from_tree(&tree)
+            .unwrap()
+            .into_tree(Limits::default())
+            .unwrap();
+        let Some(Node::Grid {
+            columns,
+            gutter,
+            align: got,
+            ..
+        }) = back.nodes().get(back.body().index())
+        else {
+            panic!("the body is the grid");
+        };
+        assert_eq!((columns.as_slice(), *gutter), (&[4.0, 8.0][..], 15.0));
+        assert_eq!(*got, align);
+    }
+    assert_eq!(erp_report_worker::PROTOCOL_VERSION, 5);
 }

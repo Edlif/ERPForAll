@@ -4,7 +4,8 @@
 The two layouts a printed report calls. Both take the caller's
      body as `0`. `html_container` adds nothing around it; `external_layout` adds a letterhead (the
      printing user's company: name, address, phone, email, website, tax id) at the top of every page
-     and a footer with the company's contact line and the page counter at the bottom. A report calls a
+     and a footer with the company's contact line and the page counter at the bottom. The logo and
+     the block with the company's name sit on one centre line. A report calls a
      layout once around all its records, because a document has one page header and one footer. 
 -->
 <erp>
@@ -16,7 +17,7 @@ The two layouts a printed report calls. Both take the caller's
         <div class="header">
             <div class="row border-bottom pb-2">
                 <div class="col-6">
-                    <div class="row">
+                    <div class="row align-items-center">
                         <div class="col-4" t-if="company.logo">
                             <img t-att-src="image_data_uri(company.logo)" style="max-height: 45px" alt="Logo"/>
                         </div>

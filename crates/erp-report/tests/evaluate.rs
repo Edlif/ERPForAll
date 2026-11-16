@@ -99,9 +99,16 @@ fn dump_node(doc: &DocTree, id: &NodeId, out: &mut String) {
             columns,
             gutter,
             cells,
+            align,
         } => {
             let columns: Vec<String> = columns.iter().map(f64::to_string).collect();
-            out.push_str(&format!("grid[{}|{gutter}](", columns.join(",")));
+            // the top of the row (the default) is not written
+            let align = match align {
+                erp_report::CrossAlignment::Center => "|center",
+                erp_report::CrossAlignment::End => "|end",
+                _ => "",
+            };
+            out.push_str(&format!("grid[{}|{gutter}{align}](", columns.join(",")));
             list(cells, out);
             out.push(')');
         }
@@ -1070,6 +1077,31 @@ fn elements_map_to_document_nodes() {
             &[]
         ),
         r#"flow(grid[6,6|10]("left" inline[b]("right")))"#
+    );
+    // `align-items-*` on a row or a flex container places the cells in their row; the top is the
+    // default and `align-items-start` says it.
+    assert_eq!(
+        render(
+            "<div class='row align-items-center'><div class='col-4'>logo</div><div \
+             class='col-8'>name</div></div>",
+            &[]
+        ),
+        r#"flow(grid[4,8|15|center](block[]("logo") block[]("name")))"#
+    );
+    assert_eq!(
+        render(
+            "<div class='d-flex align-items-end'><span>left</span><strong>right</strong></div>",
+            &[]
+        ),
+        r#"flow(grid[6,6|0|end]("left" inline[b]("right")))"#
+    );
+    assert_eq!(
+        render(
+            "<div class='row align-items-start'><div class='col'>a</div><div \
+             class='col'>b</div></div>",
+            &[]
+        ),
+        r#"flow(grid[6,6|15](block[]("a") block[]("b")))"#
     );
     // Lists, rules, line breaks, headings and inline styles.
     assert_eq!(

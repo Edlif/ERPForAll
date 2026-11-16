@@ -552,6 +552,30 @@ impl Transaction {
         self.apply_mirror_patches(patches)
     }
 
+    /// [`Transaction::set_new_cells`] for the values an edited record holds in the database: a
+    /// stored picture was admitted when it was saved and is not admitted again. It needs no image
+    /// limits (an onchange that changes no picture loads none), is not decoded on every onchange,
+    /// and a picture stored under an earlier, wider limit does not make its form refuse every
+    /// change. Pictures the form sends are admitted in [`update_cache`].
+    fn set_origin_cells(&mut self, record: &Records, cells: Vec<(FieldId, Cell)>) -> Result<()> {
+        let spec = record.spec();
+        let (stored, other): (Vec<_>, Vec<_>) = cells.into_iter().partition(|(fid, cell)| {
+            matches!(cell, Cell::Bytes(_)) && spec.field_by_id(*fid).ty.image_bounds().is_some()
+        });
+        self.set_new_cells(record, other)?;
+        let env = record.env().clone();
+        for (field, cell) in stored {
+            let slot = self.slot(&env, record.model_id(), field)?;
+            self.slot_set(
+                &slot,
+                record.model_id(),
+                field,
+                record.rec_ids().iter().map(|id| (*id, cell.clone())),
+            )?;
+        }
+        Ok(())
+    }
+
     /// [`Transaction::set_new_cells`] for one of many records set together: the mirror patches are
     /// collected in `patches` instead of applied, so that the caller applies the patches of all
     /// records once ([`Transaction::apply_mirror_patches`]). Many records listing one line (a tag on
@@ -2510,7 +2534,7 @@ async fn build_record(
             cells.push((field.id, cell));
         }
     }
-    tx.set_new_cells(&record, cells)?;
+    tx.set_origin_cells(&record, cells)?;
     ensure_parents(tx, &record).await?;
     // the delegated values of the edited record start on its in-memory parents
     for (name, cell) in delegated {
@@ -2521,7 +2545,7 @@ async fn build_record(
         if owner.spec().inherits.iter().any(|(_, d)| *d == field) {
             continue;
         }
-        tx.set_new_cells(&owner, vec![(field, cell)])?;
+        tx.set_origin_cells(&owner, vec![(field, cell)])?;
     }
     update_cache(tx, &record, &plan.initial, spec, applying, 0).await?;
     // initial values are the form's state, not changes: the parents they reach are not marked

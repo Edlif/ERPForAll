@@ -2,8 +2,9 @@
 //! The messages of the frame protocol. A document crosses the pipe as plain values and is admitted
 //! again by the worker through `DocumentBuilder`: the worker trusts no frame.
 use erp_report::{
-    Alignment, DocTree, DocumentBuilder, DocumentOptions, LayoutFailure, LimitKind, Limits, Node,
-    NodeId, PageCounter, PageSetup, PdfStandard, RenderDate, ReportError, Style, TableLook,
+    Alignment, CrossAlignment, DocTree, DocumentBuilder, DocumentOptions, LayoutFailure, LimitKind,
+    Limits, Node, NodeId, PageCounter, PageSetup, PdfStandard, RenderDate, ReportError, Style,
+    TableLook,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -337,7 +338,7 @@ enum WireNode<'a> {
     #[serde(rename = "i")]
     Inline(Vec<u32>, WireStyle),
     #[serde(rename = "g")]
-    Grid(Vec<f64>, f64, Vec<u32>),
+    Grid(Vec<f64>, f64, Vec<u32>, u8),
     #[serde(rename = "a")]
     Table(u64, Vec<u32>, Vec<u32>),
     #[serde(rename = "l")]
@@ -495,7 +496,18 @@ impl<'a> WireDocument<'a> {
                     columns,
                     gutter,
                     cells,
-                } => WireNode::Grid(columns.clone(), *gutter, indices(cells)?),
+                    align,
+                } => WireNode::Grid(
+                    columns.clone(),
+                    *gutter,
+                    indices(cells)?,
+                    match align {
+                        CrossAlignment::Start => 0,
+                        CrossAlignment::Center => 1,
+                        CrossAlignment::End => 2,
+                        _ => return Err(later("row alignment over the render worker protocol")),
+                    },
+                ),
                 Node::Table {
                     columns,
                     header,
@@ -582,10 +594,20 @@ impl<'a> WireDocument<'a> {
                     children: resolve(&ids, &children)?,
                     style: style(wire)?,
                 },
-                WireNode::Grid(columns, gutter, cells) => Node::Grid {
+                WireNode::Grid(columns, gutter, cells, align) => Node::Grid {
                     columns,
                     gutter,
                     cells: resolve(&ids, &cells)?,
+                    align: match align {
+                        0 => CrossAlignment::Start,
+                        1 => CrossAlignment::Center,
+                        2 => CrossAlignment::End,
+                        _ => {
+                            return Err(ReportError::InvalidDocument {
+                                reason: "unknown row alignment in a document frame",
+                            });
+                        }
+                    },
                 },
                 WireNode::Table(columns, header, cells) => Node::Table {
                     columns: usize::try_from(columns).map_err(|_| {

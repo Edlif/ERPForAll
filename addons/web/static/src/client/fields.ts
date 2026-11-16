@@ -65,6 +65,8 @@ export interface FieldControlOptions {
   numericLocale?: NumericLocale;
   currencies?: CurrencyDisplayCache;
   values?: Readonly<Record<string, unknown>>;
+  /** The model of the record `values` belongs to; a widget that reads more of the record (a picture read with `bin_size`) needs it. */
+  model?: string;
   /** The record holds an unsaved change of this field (a widget may then skip a preview of the saved value). */
   changed?: boolean;
 }
@@ -366,7 +368,7 @@ for (const kind of ["char", "text", "boolean", "integer", "float", "monetary", "
 }
 
 for (const [widget, kinds] of Object.entries({ password: ["char", "text"], email: ["char"], phone: ["char"], url: ["char"], percentage: ["integer", "float"], boolean_checkbox: ["boolean"], boolean_toggle: ["boolean"], boolean_favorite: ["boolean"], boolean_icon: ["boolean"], badge: ["selection", "char", "many2one"], label_selection: ["selection"], badges_selection: ["selection"], filterable_selection: ["selection"], radio: ["selection", "many2one"], priority: ["selection"], color: ["char"], color_picker: ["integer"], image: ["binary"], image_url: ["char"], CopyClipboardChar: ["char"], CopyClipboardText: ["text"], CopyClipboardURL: ["char"], many2many_tags: ["many2many"], many2many_tags_avatar: ["many2many"], many2many_tags_color_dot: ["many2many"] } as const)) {
-  registerFieldWidget(widget, { kinds, render: environment => createFieldControl({ viewContext: environment.viewContext, field: { ...environment.field, widget }, value: environment.value, rpc: environment.rpc, context: environment.context, numericLocale: environment.numericLocale, currencies: environment.currencies, values: environment.values, fields: environment.fields, changeValues: environment.changeValues, change: environment.change, run: environment.run, openRecord: environment.openRecord, changed: environment.changed, ...(environment.messages ? { editor: { messages: environment.messages, report: environment.report, signal: environment.signal } } : {}) }) });
+  registerFieldWidget(widget, { kinds, render: environment => createFieldControl({ viewContext: environment.viewContext, field: { ...environment.field, widget }, value: environment.value, rpc: environment.rpc, context: environment.context, numericLocale: environment.numericLocale, currencies: environment.currencies, values: environment.values, ...(environment.model === undefined ? {} : { model: environment.model }), fields: environment.fields, changeValues: environment.changeValues, change: environment.change, run: environment.run, openRecord: environment.openRecord, changed: environment.changed, ...(environment.messages ? { editor: { messages: environment.messages, report: environment.report, signal: environment.signal } } : {}) }) });
 }
 
 registerFieldWidget("list.one2many", { kinds: ["one2many"], render: environment => {

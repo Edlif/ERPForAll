@@ -5,7 +5,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::io::{Cursor, Read, Write};
 
 /// Version both sides name in `hello` and `ready`. A worker of another version is not used.
-pub const PROTOCOL_VERSION: u32 = 4; // 2: block styling in the style frame; 3: page margins per side; 4: picture nodes
+pub const PROTOCOL_VERSION: u32 = 5; // 2: block styling in the style frame; 3: page margins per side; 4: picture nodes; 5: row alignment of a grid
 /// Cap of the `hello` frame, the only frame read before the limits are known.
 pub const HELLO_FRAME_BYTES: usize = 64 * 1024;
 /// Cap of a reply message frame (not of the PDF frame, which the `pdf_bytes` limit bounds).

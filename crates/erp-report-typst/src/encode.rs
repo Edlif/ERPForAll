@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use erp_report::{
-    Alignment, DocTree, ImageFormat, Limits, Node, NodeId, PageCounter, ReportError, Style,
-    TableLook, probe_image,
+    Alignment, CrossAlignment, DocTree, ImageFormat, Limits, Node, NodeId, PageCounter,
+    ReportError, Style, TableLook, probe_image,
 };
 use typst::{
     foundations::{Array, Bytes, Dict, Smart, Value},
@@ -192,12 +192,21 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                 columns,
                 gutter,
                 cells,
+                align,
             } => {
                 d.insert(
                     "columns".into(),
                     array(columns.iter().copied().map(Value::Float)),
                 );
                 d.insert("gutter".into(), Value::Float(*gutter));
+                d.insert(
+                    "align".into(),
+                    string(match align {
+                        CrossAlignment::Center => "center",
+                        CrossAlignment::End => "end",
+                        _ => "start",
+                    }),
+                );
                 d.insert("children".into(), indices(cells));
                 "grid"
             }

@@ -29,6 +29,16 @@ pub enum Alignment {
     Center,
     End,
 }
+/// Where the cells of a grid sit in their row when one cell is taller than the others (Bootstrap's
+/// `align-items-*` on a `row` or a flex container). `Start` is the top of the row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CrossAlignment {
+    #[default]
+    Start,
+    Center,
+    End,
+}
 /// How the tables inside a block draw their lines: `Lined` (the default) rules between rows under a
 /// shaded header, `Bordered` a line around every cell, `Borderless` none.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -221,6 +231,8 @@ pub enum Node {
         columns: Vec<f64>,
         gutter: f64,
         cells: Vec<NodeId>,
+        /// Where the cells sit in a row whose cells differ in height.
+        align: CrossAlignment,
     },
     Table {
         columns: usize,
@@ -574,6 +586,7 @@ impl DocumentBuilder {
                 columns,
                 gutter,
                 cells,
+                ..
             } if columns.is_empty()
                 || columns.len() > cells.len().max(1)
                 || columns

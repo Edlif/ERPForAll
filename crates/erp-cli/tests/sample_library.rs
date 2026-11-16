@@ -1512,6 +1512,25 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         assert!(logo_html.contains("Bandung"), "{logo_html}");
         let logo_pdf = engine.render(&slip_logo).unwrap();
         assert_eq!(pdf_images(logo_pdf.bytes()), vec![(96, 48)]);
+        // The same two slips through `erp report-worker` processes, as the server prints them
+        // (`report_print.rs`): the document crosses the frame protocol, so the logo reaches the
+        // worker as a picture node and its PDF carries the raster. A print in this process
+        // (above) never showed a picture the protocol could not carry.
+        let pool = erp_report_worker::WorkerPool::new(
+            erp_report_worker::PoolSettings::new(
+                erp_report_worker::WorkerCommand::new(env!("CARGO_BIN_EXE_erp"), ["report-worker"]),
+                fonts.clone(),
+            )
+            .with(erp_report_worker::Setting::Workers, 1)
+            .unwrap(),
+        )
+        .unwrap();
+        let worker_logo_pdf = pool.render(&slip_logo).unwrap();
+        assert!(worker_logo_pdf.bytes().starts_with(b"%PDF-"));
+        assert_eq!(pdf_images(worker_logo_pdf.bytes()), vec![(96, 48)]);
+        let worker_slip_pdf = pool.render(&slip).unwrap();
+        assert!(pdf_images(worker_slip_pdf.bytes()).is_empty());
+        drop(pool);
         // The loan register prints the loan in one table.
         let register_html = erp_report::render_html(&register, &[]).unwrap();
         assert!(
@@ -1541,6 +1560,11 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         fs::write(out.join("sample-book-sheet.pdf"), pdf.bytes()).unwrap();
         fs::write(out.join("sample-loan-slip.pdf"), slip_pdf.bytes()).unwrap();
         fs::write(out.join("sample-loan-slip-logo.pdf"), logo_pdf.bytes()).unwrap();
+        fs::write(
+            out.join("sample-loan-slip-logo-worker.pdf"),
+            worker_logo_pdf.bytes(),
+        )
+        .unwrap();
         fs::write(out.join("sample-book-list.pdf"), list_pdf.bytes()).unwrap();
     });
 }

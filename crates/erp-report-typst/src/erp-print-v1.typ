@@ -37,7 +37,10 @@
       }
     } else { body }
   }
-  else if n.kind == "grid" { grid(columns: n.columns.map(x => x * 1fr), gutter: n.gutter * 1pt, ..children) }
+  // A row's cells sit at its top unless the row asks for its middle or its bottom (align-items-*). The top is
+  // written out: a page header is placed at the bottom of its margin, and a grid left to inherit that put its
+  // cells at the bottom of the row, unlike the body and the preview.
+  else if n.kind == "grid" { grid(columns: n.columns.map(x => x * 1fr), gutter: n.gutter * 1pt, align: if n.align == "center" { horizon } else if n.align == "end" { bottom } else { top }, ..children) }
   else if n.kind == "table" {
     // A table without header rows has no header: an empty one would print an empty first row.
     let hrows = calc.ceil(n.header.len() / n.columns)

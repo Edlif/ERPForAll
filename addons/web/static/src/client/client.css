@@ -3470,3 +3470,25 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .field-image-zoom { position: absolute; z-index: 20; top: 0; inset-inline-start: 100%; margin-inline-start: .5rem; padding: .25rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-panel); box-shadow: var(--shadow-menu); pointer-events: none; }
 .field-image-zoom img { display: block; max-width: min(24rem, 60vw); max-height: 24rem; }
 .field-image-list .field-image-stage:not(.has-height) .field-image-img, .field-image-card .field-image-stage:not(.has-height) .field-image-img { max-height: 3rem; }
+/* The actions carry an icon and their text; the text shows where there is room for it. */
+.field-image-button > svg { display: none; width: 16px; height: 16px; }
+/* A list cell shows the picture alone: the row opens the record, where the actions are; an empty cell stays empty. */
+.field-image-list .field-image-stage { min-width: 0; min-height: 0; }
+.field-image-list .field-image-actions, .field-image-list .field-image-placeholder:not(:has(.field-image-size)) { display: none; }
+/* A picture in a form's title block (the company logo): a fixed box left of the name, the picture contained in it, no caption
+   (the title rule above hides it for sight only). The actions are icon buttons over the lower edge of the box, shown on hover and
+   on keyboard focus, and always where there is no hover. */
+.record-form .form-title-block:has(> .field-label > .field-image) { align-items: center; gap: 16px; }
+.record-form .form-title-block > .field-label:has(> .field-image) { display: block; height: auto; }
+.form-title-block > .field-label > .field-image { display: grid; justify-items: center; gap: 4px; }
+.form-title-block > .field-label > .field-image > .field-image-stage { grid-area: 1 / 1; width: var(--image-w, 100px); height: var(--image-h, 100px); min-width: 0; min-height: 0; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.form-title-block > .field-label > .field-image .field-image-img { width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; border-radius: 0; }
+.form-title-block > .field-label > .field-image .field-image-placeholder { width: 100%; height: 100%; border: 0; border-radius: 0; }
+.form-title-block > .field-label > .field-image > .field-image-actions { grid-area: 1 / 1; align-self: end; z-index: 1; gap: 2px; margin-bottom: 4px; padding: 2px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-control); opacity: 0; transition: opacity var(--motion-fast, .12s) ease; }
+.form-title-block > .field-label > .field-image:is(:hover, :focus-within) > .field-image-actions { opacity: 1; }
+@media (hover: none) { .form-title-block > .field-label > .field-image > .field-image-actions { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .form-title-block > .field-label > .field-image > .field-image-actions { transition: none; } }
+.form-title-block > .field-label > .field-image .field-image-button { width: 28px; min-height: 28px; padding: 0; border-color: transparent; }
+.form-title-block > .field-label > .field-image .field-image-button > svg { display: block; }
+.form-title-block > .field-label > .field-image .field-image-button > span { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.form-title-block > .field-label > .field-image > .field-image-status { grid-area: 2 / 1; max-width: 14rem; text-align: center; }

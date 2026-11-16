@@ -5,6 +5,7 @@
     <field name="model">product.template</field>
     <field name="arch" type="xml">
       <list>
+        <field name="image_128" widget="image" string="Picture" options="{'size': [0, 32]}" alt="Product picture"/>
         <field name="name"/>
         <field name="default_code"/>
         <field name="barcode"/>
@@ -33,6 +34,7 @@
               <field name="product_variant_count" widget="statinfo" string="Variants"/>
             </button>
           </div>
+          <field name="image_1920" widget="image" options="{'preview_image': 'image_128', 'size': [0, 128]}" alt="Product picture"/>
           <div class="oe_title">
             <h1><field name="name" placeholder="e.g. Cheese Burger"/></h1>
           </div>

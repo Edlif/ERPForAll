@@ -282,12 +282,20 @@ fn node(out: &mut String, nodes: &[Node], id: &NodeId) {
             columns,
             gutter,
             cells,
+            align,
         } => {
             out.push_str("<div class=\"erp-grid\" style=\"grid-template-columns:");
             for (i, weight) in columns.iter().enumerate() {
                 let _ = write!(out, "{}{weight}fr", if i > 0 { " " } else { "" });
             }
-            let _ = write!(out, ";gap:{gutter}pt\">");
+            let _ = write!(out, ";gap:{gutter}pt");
+            // the top of the row is the grid's own default and is not written
+            match align {
+                crate::CrossAlignment::Center => out.push_str(";align-items:center"),
+                crate::CrossAlignment::End => out.push_str(";align-items:end"),
+                _ => {}
+            }
+            out.push_str("\">");
             children(out, nodes, cells, "div");
             out.push_str("</div>");
         }

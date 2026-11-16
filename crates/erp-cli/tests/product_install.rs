@@ -1446,6 +1446,9 @@ mod access;
 #[path = "product_install/upgrade_from_main.rs"]
 mod upgrade_from_main;
 
+#[path = "product_install/images.rs"]
+mod images;
+
 #[test]
 fn installed_product_labels_respect_supplier_acl_on_rpc_and_relations() {
     big_stack(async {

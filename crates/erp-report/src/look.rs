@@ -72,6 +72,8 @@ pub(crate) struct Look {
     pub(crate) rule_below: bool,
     /// `table-bordered` / `table-borderless` on a `table`.
     pub(crate) table: Option<TableLook>,
+    /// `align-items-*` on a `row` or a flex container: where its cells sit in the row.
+    pub(crate) cross: Option<crate::CrossAlignment>,
 }
 /// Bootstrap's spacer scale, in `rem`.
 const SPACERS: [f64; 6] = [0.0, 0.25, 0.5, 1.0, 1.5, 3.0];
@@ -167,6 +169,9 @@ impl Look {
             "text-white" => self.color = rgb(255, 255, 255),
             "text-black" => self.color = rgb(0, 0, 0),
             "row" => self.role = Role::Row,
+            "align-items-start" => self.cross = Some(crate::CrossAlignment::Start),
+            "align-items-center" => self.cross = Some(crate::CrossAlignment::Center),
+            "align-items-end" => self.cross = Some(crate::CrossAlignment::End),
             "header" if tag == "div" => self.role = Role::Header,
             "footer" if tag == "div" => self.role = Role::Footer,
             "page" if tag == "span" => self.role = Role::PageNumber,
