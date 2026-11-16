@@ -52,9 +52,14 @@ fn page_geometry_is_validated() {
     }
     let page = PageSetup::new(41.0, 3.0, 1.0).unwrap();
     assert_eq!(
-        (page.width(), page.height(), page.margin()),
-        (41.0, 3.0, 1.0)
+        (page.width(), page.height(), page.margins()),
+        (41.0, 3.0, [1.0; 4])
     );
+    // per side: a body of 1 point each way is the least admitted
+    let page = PageSetup::with_margins(100.0, 50.0, [20.0, 5.0, 29.0, 94.0]).unwrap();
+    assert_eq!(page.margins(), [20.0, 5.0, 29.0, 94.0]);
+    assert!(PageSetup::with_margins(100.0, 50.0, [20.0, 6.0, 29.0, 94.0]).is_err());
+    assert!(PageSetup::with_margins(100.0, 50.0, [-1.0, 0.0, 0.0, 0.0]).is_err());
 }
 
 #[test]

@@ -215,10 +215,7 @@ pub async fn printable(tx: &mut Transaction, model: &str) -> Result<Vec<(String,
         .collect()
 }
 
-/// The page of the report for the caller's company, from its paper format.
-// shortcut: a document has one symmetric margin, so the paper format's four margins become the
-// larger side margin, at least the smaller of the top and bottom ones; upgrade when PageSetup
-// takes per-side margins.
+/// The page of the report for the caller's company, from its paper format, each margin as set.
 async fn page_of(
     tx: &mut Transaction,
     report: &PrintReport,
@@ -258,12 +255,10 @@ async fn page_of(
         };
     }
     let [width, height, left, right, top, bottom] = values;
-    let sides = left.max(right);
-    let ends = top.min(bottom);
-    PageSetup::new(
+    PageSetup::with_margins(
         width * POINTS_PER_MM,
         height * POINTS_PER_MM,
-        sides.max(ends) * POINTS_PER_MM,
+        [top, right, bottom, left].map(|mm| mm * POINTS_PER_MM),
     )
     .map_err(|e| report_error(report, &e))
 }

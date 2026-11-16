@@ -85,6 +85,14 @@ fn styled(dict: &mut Dict, style: &Style) -> Result<(), ReportError> {
 const COLUMN_CHARS_MAX: usize = 40;
 /// Characters a column claims at least: a short column keeps room for its header.
 const COLUMN_CHARS_MIN: usize = 3;
+/// A column whose longest text has at most this many characters is sized to its content (a year, a
+/// format, a status), so a word never runs into the next column; longer columns share what is left.
+const COLUMN_FIT_CHARS: usize = 16;
+/// Points of cell padding a content-sized column adds to its text (the house table's inset, both sides).
+const COLUMN_PADDING_POINTS: f64 = 12.0;
+/// Share of the body width content-sized columns may take while a longer column needs the rest; above it
+/// every column shares the width by its text, so many short columns never squeeze a long one to nothing.
+const COLUMN_FIT_SHARE: f64 = 0.6;
 /// Points of width one character stands for when an image or graphic claims a column share.
 const POINTS_PER_CHAR: f64 = 5.0;
 /// Text length of a subtree, for sharing a table's width; an image or graphic counts by its width and a
@@ -118,10 +126,41 @@ fn column_weights(doc: &DocTree, columns: usize, header: &[NodeId], cells: &[Nod
             *column = (*column).max(text_len(doc, id, 0));
         }
     }
-    longest
-        .into_iter()
-        .map(|chars: usize| chars.clamp(COLUMN_CHARS_MIN, COLUMN_CHARS_MAX) as f64)
-        .collect()
+    let page = doc.options().page();
+    let [_, right, _, left] = page.margins();
+    shares(&longest, page.width() - left - right)
+}
+/// Column shares from the longest text per column; `0.0` asks the template for a column sized to its
+/// content. Without a long column the longest one takes the rest of the width, so the table still spans
+/// the page. When the content-sized columns would take more than their part of `body` points (estimated
+/// from their text), every column shares the width by its text instead.
+fn shares(longest: &[usize], body: f64) -> Vec<f64> {
+    let shared = |chars: usize| chars.clamp(COLUMN_CHARS_MIN, COLUMN_CHARS_MAX) as f64;
+    let fitted: f64 = longest
+        .iter()
+        .filter(|&&chars| chars <= COLUMN_FIT_CHARS)
+        .map(|&chars| chars as f64 * POINTS_PER_CHAR + COLUMN_PADDING_POINTS)
+        .sum();
+    let has_long = longest.iter().any(|&chars| chars > COLUMN_FIT_CHARS);
+    if fitted > body * if has_long { COLUMN_FIT_SHARE } else { 1.0 } {
+        return longest.iter().map(|&chars| shared(chars)).collect();
+    }
+    let mut out: Vec<f64> = longest
+        .iter()
+        .map(|&chars| {
+            if chars <= COLUMN_FIT_CHARS {
+                0.0
+            } else {
+                chars.min(COLUMN_CHARS_MAX) as f64
+            }
+        })
+        .collect();
+    if out.iter().all(|&w| w == 0.0)
+        && let Some(widest) = (0..longest.len()).max_by_key(|&i| longest[i])
+    {
+        out[widest] = longest[widest].max(COLUMN_CHARS_MIN) as f64;
+    }
+    out
 }
 /// Typed renderer input and the warnings of nodes printed differently from what they ask for.
 /// Raster images are decoded here, before layout, so a corrupt image is an `Image` error and not a
@@ -295,6 +334,38 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
     input.insert("fonts".into(), array(o.fonts().iter().map(|s| string(s))));
     input.insert("width".into(), Value::Float(o.page().width()));
     input.insert("height".into(), Value::Float(o.page().height()));
-    input.insert("margin".into(), Value::Float(o.page().margin()));
+    let [top, right, bottom, left] = o.page().margins();
+    input.insert(
+        "margins".into(),
+        array([top, right, bottom, left].map(Value::Float)),
+    );
     Ok((input, warnings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shares;
+
+    /// Short columns fit their content and long ones share the rest of the width.
+    #[test]
+    fn short_columns_fit_and_long_columns_share() {
+        // A4 body with 12 mm sides
+        let body = 527.0;
+        // Title, Author, Format, Year, Status of the sample Book List
+        assert_eq!(
+            shares(&[25, 22, 9, 4, 9], body),
+            vec![25.0, 22.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(shares(&[90, 17], body), vec![40.0, 17.0]);
+        // only short columns: the widest takes the rest of the page
+        assert_eq!(shares(&[4, 9, 2], body), vec![0.0, 9.0, 0.0]);
+        assert_eq!(shares(&[], body), Vec::<f64>::new());
+        // seven 12-character amounts beside a partner name would leave the name almost no room: shared
+        assert_eq!(
+            shares(&[30, 12, 12, 12, 12, 12, 12, 12], body),
+            vec![30.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0]
+        );
+        // six 16-character columns alone overflow the body: shared, never wider than the page
+        assert_eq!(shares(&[16; 6], body), vec![16.0; 6]);
+    }
 }

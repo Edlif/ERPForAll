@@ -42,7 +42,7 @@
     // A table without header rows has no header: an empty one would print an empty first row.
     let hrows = calc.ceil(n.header.len() / n.columns)
     let head = if hrows > 0 { (table.header(repeat: true, ..n.header.map(i => built.at(i))),) } else { () }
-    table(columns: n.weights.map(w => w * 1fr), fill: (x, y) => if y < hrows { rgb("#f1f3f5") }, ..head, ..children)
+    table(columns: n.weights.map(w => if w == 0 { auto } else { w * 1fr }), fill: (x, y) => if y < hrows { rgb("#f1f3f5") }, ..head, ..children)
   }
   else if n.kind == "list" { if n.ordered { enum(..children) } else { list(..children) } }
   else if n.kind == "image" { image(n.data, format: n.format, width: if n.width == auto { auto } else { n.width * 1pt }, height: if n.height == auto { auto } else { n.height * 1pt }, alt: n.alt) }
@@ -57,7 +57,8 @@
   else { panic("unsupported admitted node") }
   built.push(content)
 }
-#set page(width: d.width * 1pt, height: d.height * 1pt, margin: d.margin * 1pt,
+#set page(width: d.width * 1pt, height: d.height * 1pt,
+  margin: (top: d.margins.at(0) * 1pt, right: d.margins.at(1) * 1pt, bottom: d.margins.at(2) * 1pt, left: d.margins.at(3) * 1pt),
   header: if d.header == none { none } else { built.at(d.header) },
   footer: if d.footer == none { none } else { built.at(d.footer) })
 #built.at(d.body)

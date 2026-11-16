@@ -286,27 +286,33 @@ fn size(points: Option<f64>) -> Result<(), ReportError> {
         _ => Ok(()),
     }
 }
-/// Validated page dimensions and symmetric margins, all in points.
+/// Validated page dimensions and margins, all in points.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct PageSetup {
     width: f64,
     height: f64,
-    margin: f64,
+    /// top, right, bottom, left
+    margins: [f64; 4],
 }
 impl PageSetup {
+    /// A page with the same margin on every side.
     pub fn new(width: f64, height: f64, margin: f64) -> Result<Self, ReportError> {
+        Self::with_margins(width, height, [margin; 4])
+    }
+    /// A page with its own margin per side: `[top, right, bottom, left]`, as a paper format gives them.
+    pub fn with_margins(width: f64, height: f64, margins: [f64; 4]) -> Result<Self, ReportError> {
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
             return Err(invalid("page dimensions must be finite and positive"));
         }
         if width > 14400.0 || height > 14400.0 {
             return Err(invalid("page dimensions exceed 14400 points"));
         }
+        let [top, right, bottom, left] = margins;
         // A body thinner than a point would make a page of every line: unbounded work from valid input.
-        if !margin.is_finite()
-            || margin < 0.0
-            || width - 2.0 * margin < 1.0
-            || height - 2.0 * margin < 1.0
+        if margins.iter().any(|m| !m.is_finite() || *m < 0.0)
+            || width - left - right < 1.0
+            || height - top - bottom < 1.0
         {
             return Err(invalid(
                 "page margins must be finite, nonnegative and leave a body of at least 1 point each way",
@@ -315,7 +321,7 @@ impl PageSetup {
         Ok(Self {
             width,
             height,
-            margin,
+            margins,
         })
     }
     pub fn width(&self) -> f64 {
@@ -324,8 +330,9 @@ impl PageSetup {
     pub fn height(&self) -> f64 {
         self.height
     }
-    pub fn margin(&self) -> f64 {
-        self.margin
+    /// Margins in points: `[top, right, bottom, left]`.
+    pub fn margins(&self) -> [f64; 4] {
+        self.margins
     }
 }
 /// Export profile; e-invoice metadata and attachments belong to the post-processing slice.

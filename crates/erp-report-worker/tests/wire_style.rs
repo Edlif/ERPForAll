@@ -34,3 +34,21 @@ fn block_decoration_survives_the_worker_frame() {
     assert_eq!(got.rules(), (true, false));
     assert_eq!(got.table_look(), TableLook::Borderless);
 }
+
+/// Each page margin crosses the worker frame on its own side.
+#[test]
+fn page_margins_survive_the_worker_frame_side_by_side() {
+    let mut b = DocumentBuilder::new(Limits::default());
+    let body = b.add(Node::Text("page".into())).unwrap();
+    let page = PageSetup::with_margins(595.0, 842.0, [113.0, 34.0, 79.0, 21.0]).unwrap();
+    let tree = b
+        .finish(body, DocumentOptions::new("m", "M", page))
+        .unwrap();
+    let back = WireDocument::from_tree(&tree)
+        .unwrap()
+        .into_tree(Limits::default())
+        .unwrap();
+    assert_eq!(back.options().page().margins(), [113.0, 34.0, 79.0, 21.0]);
+    let html = erp_report::render_html(&back, &[]).unwrap();
+    assert!(html.contains("padding:113pt 34pt 79pt 21pt"), "{html}");
+}

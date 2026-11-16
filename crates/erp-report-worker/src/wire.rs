@@ -343,8 +343,8 @@ struct WireStyle(
 struct WireOptions<'a> {
     id: Cow<'a, str>,
     title: Cow<'a, str>,
-    /// width, height, margin
-    page: (f64, f64, f64),
+    /// width, height, margins (top, right, bottom, left)
+    page: (f64, f64, [f64; 4]),
     language: Cow<'a, str>,
     fonts: Vec<Cow<'a, str>>,
     /// year, month, day
@@ -489,7 +489,7 @@ impl<'a> WireDocument<'a> {
                 page: (
                     options.page().width(),
                     options.page().height(),
-                    options.page().margin(),
+                    options.page().margins(),
                 ),
                 language: Cow::Borrowed(options.language()),
                 fonts: options
@@ -570,12 +570,12 @@ impl<'a> WireDocument<'a> {
             builder.set_footer(one(&ids, footer)?)?;
         }
         let wire = self.options;
-        let (width, height, margin) = wire.page;
+        let (width, height, margins) = wire.page;
         let (year, month, day) = wire.date;
         let options = DocumentOptions::new(
             wire.id.into_owned(),
             wire.title.into_owned(),
-            PageSetup::new(width, height, margin)?,
+            PageSetup::with_margins(width, height, margins)?,
         )
         .with_language(&wire.language)?
         .with_fonts(wire.fonts.into_iter().map(Cow::into_owned).collect())?

@@ -1495,7 +1495,9 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         // The book list prints both books in one table.
         let list_html = erp_report::render_html(&list, &[]).unwrap();
         assert!(
-            list_html.contains("The Printed Atlas") && list_html.contains("Harbour Lights"),
+            list_html.contains("The Printed Atlas")
+                && list_html.contains("Harbour Lights")
+                && list_html.contains("2 books"),
             "{list_html}"
         );
         assert_eq!(list_html.matches("<table").count(), 1, "{list_html}");

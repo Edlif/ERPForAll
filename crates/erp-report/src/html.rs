@@ -77,10 +77,13 @@ pub fn render_html(document: &DocTree, warnings: &[String]) -> Result<String, Re
     }
     let _ = write!(
         out,
-        "<div class=\"erp-document\" style=\"width:{}pt;min-height:{}pt;padding:{}pt;font-family:{fonts}\">",
+        "<div class=\"erp-document\" style=\"width:{}pt;min-height:{}pt;padding:{}pt {}pt {}pt {}pt;font-family:{fonts}\">",
         page.width(),
         page.height(),
-        page.margin()
+        page.margins()[0],
+        page.margins()[1],
+        page.margins()[2],
+        page.margins()[3]
     );
     let nodes = document.nodes();
     if let Some(header) = document.header() {

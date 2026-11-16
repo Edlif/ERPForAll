@@ -131,12 +131,14 @@
         <t t-call="web.html_container">
             <t t-call="web.external_layout">
                 <div class="page">
-                    <h3 class="mb-3">Book List</h3>
+                    <div class="mb-3">
+                        <h4 class="mb-2">Book List</h4>
+                        <div class="small text-muted"><t t-foreach="docs" t-as="counted"><t t-if="counted_last"><t t-out="counted_size"/> <t t-if="counted_size == 1">book</t><t t-else="">books</t></t></t></div>
+                    </div>
                     <table class="table table-sm">
                         <thead>
                             <tr>
-                                <th>Title</th><th>Author</th><th>Format</th><th class="text-end">Year</th>
-                                <th class="text-end">Pages</th><th class="text-end">Price</th><th>Status</th>
+                                <th>Title</th><th>Author</th><th>Format</th><th class="text-end">Year</th><th>Status</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -145,8 +147,6 @@
                                 <td><span t-if="doc.author_id" t-field="doc.author_id.name"/></td>
                                 <td t-field="doc.book_format"/>
                                 <td class="text-end"><span t-if="doc.publication_year" t-out="doc.publication_year"/></td>
-                                <td class="text-end" t-field="doc.pages"/>
-                                <td class="text-end" t-field="doc.price" t-options="{'precision': 2}"/>
                                 <td>
                                     <span t-if="doc.available" class="text-success">Available</span>
                                     <span t-else="" class="text-danger">On loan</span>
@@ -163,7 +163,10 @@
         <t t-call="web.html_container">
             <t t-call="web.external_layout">
                 <div class="page">
-                    <h3 class="mb-3">Loan Register</h3>
+                    <div class="mb-3">
+                        <h4 class="mb-2">Loan Register</h4>
+                        <div class="small text-muted"><t t-foreach="docs" t-as="counted"><t t-if="counted_last"><t t-out="counted_size"/> <t t-if="counted_size == 1">loan</t><t t-else="">loans</t></t></t></div>
+                    </div>
                     <table class="table table-sm">
                         <thead>
                             <tr><th>Book</th><th>Borrower</th><th>Loan Date</th><th>Due Date</th><th>Returned</th><th>Status</th></tr>
