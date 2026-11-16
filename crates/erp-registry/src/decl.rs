@@ -515,6 +515,11 @@ pub enum KindDecl {
     Datetime,
     /// `Json`.
     Json,
+    /// `Binary`, or `Image(max_width=..., max_height=...)` when `image` is given.
+    Binary {
+        /// `Some((max_width, max_height))` for an image field; `0` leaves an edge unbounded.
+        image: Option<(u32, u32)>,
+    },
     /// `Many2one(comodel, ondelete=...)`.
     Many2one {
         /// Target model.
@@ -998,6 +1003,20 @@ impl FieldDecl {
     /// `Json`.
     pub const fn json(name: &'static str) -> Self {
         Self::new(name, KindDecl::Json)
+    }
+    /// `Binary`: file content in a `bytea` column.
+    pub const fn binary(name: &'static str) -> Self {
+        Self::new(name, KindDecl::Binary { image: None })
+    }
+    /// `Image`: a picture stored scaled down to `max_width` x `max_height` (`0` leaves an edge
+    /// unbounded; both `0` stores the uploaded bytes after the type and pixel checks).
+    pub const fn image(name: &'static str, max_width: u32, max_height: u32) -> Self {
+        Self::new(
+            name,
+            KindDecl::Binary {
+                image: Some((max_width, max_height)),
+            },
+        )
     }
     /// `date_range` with `bounds`.
     pub const fn date_range(name: &'static str, bounds: RangeBounds) -> Self {

@@ -1483,6 +1483,7 @@ pub(crate) fn field_kind<'a>(model: &str, field: &'a FieldSpec) -> Result<FieldW
         FieldType::Char { .. } | FieldType::Uuid => (wire::FieldKind::Char, None, None, None),
         FieldType::Text | FieldType::Json => (wire::FieldKind::Text, None, None, None),
         FieldType::Html => (wire::FieldKind::Html, None, None, None),
+        FieldType::Binary { .. } => (wire::FieldKind::Binary, None, None, None),
         FieldType::Boolean => (wire::FieldKind::Boolean, None, None, None),
         // The record identity renders as a plain integer; it stays readonly and never enters writes.
         FieldType::Id | FieldType::Integer => (wire::FieldKind::Integer, None, None, None),

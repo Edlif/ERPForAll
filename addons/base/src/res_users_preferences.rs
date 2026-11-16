@@ -47,6 +47,7 @@ fn cell_kind(cell: &Cell) -> &'static str {
         Cell::Xid8(_) => "a transaction id",
         Cell::TimestampTz(_) => "a timezone-aware date and time",
         Cell::Json(_) => "a JSON document",
+        Cell::Bytes(_) => "file content",
         Cell::Ids(_) => "a list of record ids",
         Cell::DateRange(_) | Cell::DatetimeRange(_) => "a range",
     }

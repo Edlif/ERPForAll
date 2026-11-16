@@ -95,6 +95,20 @@ async fn base_default_get(
         } else {
             (Default::default(), false)
         };
+    // a picture default is admitted under the database's image limits: load them when a requested
+    // image field has a default of any kind
+    let spec = records.spec();
+    let context = records.env().context();
+    if names.iter().any(|name| {
+        spec.field(name).is_some_and(|field| {
+            field.ty.image_bounds().is_some()
+                && (field.default.is_some()
+                    || model_defaults.contains_key(name.as_str())
+                    || context.get(&format!("default_{name}")).is_some())
+        })
+    }) {
+        tx.ensure_image_policy(spec).await?;
+    }
     let (mut out, parents) = resolve_own(tx, &empty, names, &model_defaults, company_fallbacks)?;
     // step 6: each parent model's own `default_get`, overrides included
     for (parent, list) in parents {
@@ -459,6 +473,15 @@ pub async fn add_missing_defaults_batch(
         let defaults = records.default_get(tx, &candidate_names).await?;
         if defaults.is_empty() {
             return Ok(());
+        }
+        // a picture default is admitted under the database's image limits
+        if defaults.iter().any(|(name, value)| {
+            !matches!(value, Value::False)
+                && spec
+                    .field(name)
+                    .is_some_and(|field| field.ty.image_bounds().is_some())
+        }) {
+            tx.ensure_image_policy(spec).await?;
         }
 
         let mut cached_defaults = Vec::with_capacity(defaults.len());

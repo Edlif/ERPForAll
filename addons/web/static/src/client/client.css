@@ -3449,3 +3449,24 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   .kanban-view { padding-inline: 12px; }
   .kanban-grid { grid-template-columns: 1fr; gap: 8px; }
 }
+
+/* Image widget (IMG.WIDGET): image and image_url */
+.field-image { display: inline-flex; flex-direction: column; align-items: flex-start; gap: .5rem; max-width: 100%; }
+.field-image-stage { position: relative; display: inline-flex; align-items: center; justify-content: center; min-width: 4rem; min-height: 4rem; max-width: 100%; border-radius: var(--radius-control); }
+.field-image-img { display: block; max-width: var(--image-w, 100%); max-height: var(--image-h, 16rem); object-fit: contain; border-radius: var(--radius-control); }
+.field-image-stage.has-height:not(.has-width) .field-image-img { width: auto; height: auto; }
+.field-image-placeholder { display: inline-flex; flex-direction: column; gap: .25rem; align-items: center; justify-content: center; width: 6rem; height: 6rem; color: var(--muted); background: var(--surface-subtle); border: 1px dashed var(--input-line); border-radius: var(--radius-control); }
+.field-image-placeholder svg { width: 2rem; height: 2rem; }
+.field-image-actions { display: inline-flex; gap: .5rem; }
+.field-image-button { display: inline-flex; align-items: center; justify-content: center; min-height: 2rem; padding: 0 .5rem; font-size: .85rem; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-control); cursor: pointer; text-decoration: none; }
+.field-image-button:hover:not(:disabled) { background: var(--hover); border-color: var(--input-line); }
+.field-image-button:active:not(:disabled) { background: var(--selected-hover); }
+.field-image-button:disabled { cursor: default; }
+.field-image-actions .field-image-button[hidden] { display: none; }
+.field-image-status:empty { display: none; }
+.field-image-status { color: var(--danger); font-size: .8rem; }
+.field-image-status.is-pending { color: var(--muted); }
+.field-image-size { font-size: .75rem; }
+.field-image-zoom { position: absolute; z-index: 20; top: 0; inset-inline-start: 100%; margin-inline-start: .5rem; padding: .25rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-panel); box-shadow: var(--shadow-menu); pointer-events: none; }
+.field-image-zoom img { display: block; max-width: min(24rem, 60vw); max-height: 24rem; }
+.field-image-list .field-image-stage:not(.has-height) .field-image-img, .field-image-card .field-image-stage:not(.has-height) .field-image-img { max-height: 3rem; }

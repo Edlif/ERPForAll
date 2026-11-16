@@ -78,6 +78,7 @@ pub(crate) fn comodel_of(ty: &FieldType) -> Option<&str> {
         | FieldType::DateRange { .. }
         | FieldType::DatetimeRange { .. }
         | FieldType::Json
+        | FieldType::Binary { .. }
         | FieldType::Reference { .. }
         | FieldType::Many2oneReference { .. } => None,
     }

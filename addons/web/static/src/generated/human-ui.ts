@@ -267,6 +267,12 @@ autocomplete?: string | null,
 icon?: string | null,
 /** Wire member `icon_class`. */
 icon_class?: string | null,
+/** Wire member `alt`. */
+alt?: string | null,
+/** Wire member `img_class`. */
+img_class?: string | null,
+/** Wire member `accepted_file_extensions`. */
+accepted_file_extensions?: string | null,
 /** Wire member `min_date`. */
 min_date?: string | null,
 /** Wire member `max_date`. */
@@ -315,6 +321,12 @@ create?: boolean | null,
 can_open?: boolean | null,
 /** Wire member `horizontal`. */
 horizontal?: boolean | null,
+/** Wire member `zoom`. */
+zoom?: boolean | null,
+/** Wire member `reload`. */
+reload?: boolean | null,
+/** Wire member `convert_to_webp`. */
+convert_to_webp?: boolean | null,
 /** Wire member `rows`. */
 rows?: number | null,
 /** Wire member `max_length`. */
@@ -327,6 +339,8 @@ tag_limit?: number | null,
 search_threshold?: number | null,
 /** Wire member `rounding`. */
 rounding?: number | null,
+/** Wire member `zoom_delay`. */
+zoom_delay?: number | null,
 /** Wire member `placeholder_field`. */
 placeholder_field?: FieldRef | null,
 /** Wire member `currency_field`. */
@@ -339,12 +353,16 @@ end_date_field?: FieldRef | null,
 whitelist_fname?: FieldRef | null,
 /** Wire member `color_field`. */
 color_field?: FieldRef | null,
+/** Wire member `preview_image`. */
+preview_image?: FieldRef | null,
 /** Wire member `whitelisted_values`. */
 whitelisted_values?: Array<string> | null,
 /** Wire member `blacklisted_values`. */
 blacklisted_values?: Array<string> | null,
 /** Wire member `digits`. */
 digits?: number[] | null,
+/** Wire member `size`. */
+size?: number[] | null,
 /** Wire member `domain`. */
 domain?: WireDocument | null,
 /** Wire member `context`. */

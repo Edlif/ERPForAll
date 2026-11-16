@@ -362,6 +362,7 @@ fn cell_fits(ty: &FieldType, cell: &Cell) -> bool {
         FieldType::TimestampTz => matches!(cell, Cell::TimestampTz(_)),
 
         FieldType::Json => matches!(cell, Cell::Json(_)),
+        FieldType::Binary { .. } => matches!(cell, Cell::Bytes(_)),
         FieldType::DateRange { .. } => matches!(cell, Cell::DateRange(_)),
         FieldType::DatetimeRange { .. } => matches!(cell, Cell::DatetimeRange(_)),
     }
@@ -1192,6 +1193,7 @@ impl<'a> Key<'a> {
             Cell::Null
             | Cell::Bool(_)
             | Cell::Json(_)
+            | Cell::Bytes(_)
             | Cell::Ids(_)
             | Cell::DateRange(_)
             | Cell::DatetimeRange(_) => return None,
@@ -1256,7 +1258,12 @@ fn like_text(cell: &Cell) -> Option<std::borrow::Cow<'_, str>> {
     use std::borrow::Cow;
     Some(match cell {
         // `like` on a range field is refused when the condition is prepared
-        Cell::Null | Cell::Json(_) | Cell::Ids(_) | Cell::DateRange(_) | Cell::DatetimeRange(_) => {
+        Cell::Null
+        | Cell::Json(_)
+        | Cell::Bytes(_)
+        | Cell::Ids(_)
+        | Cell::DateRange(_)
+        | Cell::DatetimeRange(_) => {
             return None;
         }
         Cell::Uuid(_) | Cell::Xid8(_) | Cell::TimestampTz(_) => return None,

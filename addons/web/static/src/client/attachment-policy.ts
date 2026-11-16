@@ -36,11 +36,14 @@ export function checkAttachmentRequest(rpc: RpcClient, args: Record<string, unkn
   }
 }
 
-function humanBytes(bytes: number): string {
-  if (bytes >= 1048576 && bytes % 1048576 === 0) return `${bytes / 1048576} MiB`;
-  if (bytes >= 1024 && bytes % 1024 === 0) return `${bytes / 1024} KiB`;
+/** A size in user words: whole units when exact, one decimal otherwise. */
+export function humanBytes(bytes: number): string {
+  for (const [unit, name] of [[1048576, "MiB"], [1024, "KiB"]] as const) if (bytes >= unit) return `${Number((bytes / unit).toFixed(1))} ${name}`;
   return `${bytes} bytes`;
 }
+
+/** The node's request body limit from bootstrap, when this transport has one. */
+export function attachmentRequestCap(rpc: RpcClient): number | undefined { return requestCaps.get(rpc); }
 
 /** The limit in user words, from the boot snapshot; selecting a file still checks the current limit before upload. */
 export function attachmentLimitHint(rpc: RpcClient): string | undefined {

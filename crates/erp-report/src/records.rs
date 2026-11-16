@@ -115,12 +115,14 @@ impl FieldValue {
     }
     /// A binary field: the stored bytes, not their base64 text. No bytes is the unset value. The
     /// data stage checks an image against the image limits before it is kept.
+    ///
+    /// An expression never sees the bytes: in the store the value is an image value (true in a
+    /// test, printed by `<img t-att-src="image_data_uri(record.field)"/>` and by the `image`
+    /// widget), so an image is shared with the document and is not bound by the size limit of an
+    /// expression value.
     pub fn binary(bytes: &[u8]) -> Self {
-        let value = match bytes {
-            [] => ExprValue::Bool(false),
-            bytes => ExprValue::Bytes(bytes.to_vec()),
-        };
-        Self::of(Kind::Binary(bytes.into()), value)
+        // The store replaces the placeholder of set bytes with the image value when it takes them.
+        Self::of(Kind::Binary(bytes.into()), ExprValue::Bool(false))
     }
     /// The target model and ids of a relational value, `None` for any other kind.
     pub(crate) fn relation(&self) -> Option<(&str, &[i64])> {
@@ -154,6 +156,29 @@ pub(crate) struct Record {
 #[derive(Debug, Default)]
 pub struct RecordStore {
     records: BTreeMap<(String, i64), Record>,
+    /// The bytes of every set binary field, in the order the records were added.
+    images: Vec<Arc<[u8]>>,
+}
+/// The type name of the value a set binary field has in an expression.
+pub(crate) const IMAGE: &str = "report.image";
+/// What an expression sees of a set binary field: its place in the store's images. It is true,
+/// has no attribute and prints as its description; only an `<img>` source and the `image`
+/// widget read the bytes.
+#[derive(Debug)]
+struct ImageValue {
+    index: usize,
+    bytes: usize,
+}
+impl ExprObject for ImageValue {
+    fn type_name(&self) -> &str {
+        IMAGE
+    }
+    fn repr(&self) -> String {
+        format!("<image of {} bytes>", self.bytes)
+    }
+    fn as_int(&self) -> ExprResult<i64> {
+        Ok(i64::try_from(self.index).unwrap_or(-1))
+    }
 }
 impl RecordStore {
     pub fn new() -> Self {
@@ -181,13 +206,26 @@ impl RecordStore {
         if model.is_empty() {
             return Err(invalid("record model is empty"));
         }
+        if self.records.contains_key(&(model.to_owned(), id)) {
+            return Err(invalid("record was added to the store twice"));
+        }
+        let mut fields = fields;
+        for field in fields.values_mut() {
+            if let Kind::Binary(bytes) = &field.kind
+                && !bytes.is_empty()
+            {
+                field.value = ExprValue::Object(Arc::new(ImageValue {
+                    index: self.images.len(),
+                    bytes: bytes.len(),
+                }));
+                self.images.push(bytes.clone());
+            }
+        }
         let record = Record {
             display_name,
             fields,
         };
-        if self.records.insert((model.into(), id), record).is_some() {
-            return Err(invalid("record was added to the store twice"));
-        }
+        self.records.insert((model.into(), id), record);
         Ok(())
     }
     /// How many records the store holds.
@@ -204,6 +242,17 @@ impl RecordStore {
     }
     pub(crate) fn get(&self, model: &str, id: i64) -> Option<&Record> {
         self.records.get(&(model.to_owned(), id))
+    }
+    /// The bytes of an image value of this store; `None` for any other value.
+    pub(crate) fn image(&self, value: &ExprValue) -> Option<Arc<[u8]>> {
+        let ExprValue::Object(object) = value else {
+            return None;
+        };
+        if object.type_name() != IMAGE {
+            return None;
+        }
+        let index = usize::try_from(object.as_int().ok()?).ok()?;
+        self.images.get(index).cloned()
     }
     /// The kind of a field, read from any loaded record of the model.
     fn kind(&self, model: &str, field: &str) -> Option<&Kind> {

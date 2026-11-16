@@ -7,6 +7,7 @@ pub mod test_convert;
 pub mod test_convert_ui;
 pub mod test_defaults;
 pub mod test_exact_numeric;
+pub mod test_image;
 pub mod test_impex;
 pub mod test_partition;
 pub mod test_partition_large;

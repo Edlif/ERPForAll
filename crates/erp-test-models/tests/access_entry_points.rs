@@ -131,6 +131,7 @@ const DISPATCH: &str =
 const RAW_SQL: &str = "raw SQL on the transaction's connection (the reference ERP env.cr.execute): core, migrations and tests; no record rule applies by design";
 const TX_CONTROL: &str = "transaction control (commit, rollback, savepoints, flush of writes already checked when they were made, cache invalidation): no record is read or written for the caller";
 const NOTICE_CHANNEL: &str = "transaction notice channel (in-memory warnings and notices emitted during execution): no record is read or written";
+const IMAGE_LIMITS: &str = "the image limits of the transaction: reads only the ir.config_parameter rows of the four declared, non-secret `base.image_*` keys as the ORM's own policy load (or takes them from a host or test), returns nothing to the caller and writes nothing";
 const SIGNAL: &str = "SIGNAL generations and notifications: no record";
 const ROLE_GRANT: &str = "role privileges on core tables: REVOKE/GRANT is DDL, not a record operation; refused by the function itself to every principal but System with full elevation (test: system_only_entry_points.rs, the_role_grants_refuse_a_user_transaction), and the grantee is checked (no PUBLIC, NONE or pg_* role, no superuser, no member of the table owner): no record of a model is read or written";
 const SCHEMA: &str = "schema and reflection DDL of the install path (System); no record of a model is read for a caller";
@@ -574,6 +575,8 @@ const ENTRY_POINTS: &[(&str, Class)] = &[
     ("Transaction::after_commit", Unchecked(TX_CONTROL)),
     ("Transaction::capture_statements", Unchecked(TX_CONTROL)),
     ("Transaction::clear_notices", Unchecked(NOTICE_CHANNEL)),
+    ("Transaction::ensure_image_policy", Unchecked(IMAGE_LIMITS)),
+    ("Transaction::set_image_policy", Unchecked(IMAGE_LIMITS)),
     ("Transaction::post_notice", Unchecked(NOTICE_CHANNEL)),
     ("Transaction::take_notices", Unchecked(NOTICE_CHANNEL)),
     (

@@ -539,6 +539,7 @@ mod tests {
             ColumnType::TimestampTz => Type::TIMESTAMPTZ,
 
             ColumnType::Jsonb => Type::JSONB,
+            ColumnType::Bytea => Type::BYTEA,
             ColumnType::DateRange(_) => Type::DATE_RANGE,
             ColumnType::TsRange(_) => Type::TS_RANGE,
         }
@@ -565,6 +566,7 @@ mod tests {
             ColumnType::Xid8,
             ColumnType::TimestampTz,
             ColumnType::Jsonb,
+            ColumnType::Bytea,
             ColumnType::DateRange(RangeBounds::HalfOpen),
             ColumnType::DateRange(RangeBounds::Closed),
             ColumnType::TsRange(RangeBounds::HalfOpen),

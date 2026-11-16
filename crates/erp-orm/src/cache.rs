@@ -40,6 +40,8 @@ enum Data {
     TimestampTz(Vec<erp_fields::TimestampTz>),
 
     Json(Vec<Option<Arc<erp_fields::serde_json::Value>>>),
+    /// Binary and Image content (`bytea`).
+    Bytes(Vec<Option<erp_fields::Blob>>),
     /// x2many values: the ordered ids of every linked record, archived ones included (REL §4.10).
     Ids(Vec<Option<Arc<[RecId]>>>),
     /// `date_range` values.
@@ -64,6 +66,7 @@ impl Data {
             Storage::Xid8 => Self::Xid8(Vec::new()),
             Storage::TimestampTz => Self::TimestampTz(Vec::new()),
             Storage::Json => Self::Json(Vec::new()),
+            Storage::Bytes => Self::Bytes(Vec::new()),
             Storage::Ids => Self::Ids(Vec::new()),
             Storage::DateRange(_) => Self::DateRange(Vec::new()),
             Storage::DatetimeRange(_) => Self::DatetimeRange(Vec::new()),
@@ -85,6 +88,7 @@ impl Data {
             Self::Xid8(_) => "xid8",
             Self::TimestampTz(_) => "timestamptz",
             Self::Json(_) => "json",
+            Self::Bytes(_) => "binary",
             Self::Ids(_) => "ids",
             Self::DateRange(_) => "date range",
             Self::DatetimeRange(_) => "datetime range",
@@ -112,6 +116,7 @@ impl Data {
             Self::Xid8(v) => grow(v, slot, erp_fields::Xid8::from_u64(0)),
             Self::TimestampTz(v) => grow(v, slot, erp_fields::TimestampTz::UNIX_EPOCH),
             Self::Json(v) => grow(v, slot, None),
+            Self::Bytes(v) => grow(v, slot, None),
             Self::Ids(v) => grow(v, slot, None),
             Self::DateRange(v) => grow(v, slot, None),
             Self::DatetimeRange(v) => grow(v, slot, None),
@@ -135,6 +140,7 @@ impl Data {
             Self::Xid8(v) => room(v, slots),
             Self::TimestampTz(v) => room(v, slots),
             Self::Json(v) => room(v, slots),
+            Self::Bytes(v) => room(v, slots),
             Self::Ids(v) => room(v, slots),
             Self::DateRange(v) => room(v, slots),
             Self::DatetimeRange(v) => room(v, slots),
@@ -155,6 +161,7 @@ impl Data {
             Self::Xid8(v) => v.capacity(),
             Self::TimestampTz(v) => v.capacity(),
             Self::Json(v) => v.capacity(),
+            Self::Bytes(v) => v.capacity(),
             Self::Ids(v) => v.capacity(),
             Self::DateRange(v) => v.capacity(),
             Self::DatetimeRange(v) => v.capacity(),
@@ -175,6 +182,7 @@ impl Data {
             Self::Xid8(v) => v.truncate(slots),
             Self::TimestampTz(v) => v.truncate(slots),
             Self::Json(v) => v.truncate(slots),
+            Self::Bytes(v) => v.truncate(slots),
             Self::Ids(v) => v.truncate(slots),
             Self::DateRange(v) => v.truncate(slots),
             Self::DatetimeRange(v) => v.truncate(slots),
@@ -187,6 +195,7 @@ impl Data {
             self,
             Self::Str(_)
                 | Self::Json(_)
+                | Self::Bytes(_)
                 | Self::Ids(_)
                 | Self::DateRange(_)
                 | Self::DatetimeRange(_)
@@ -254,6 +263,7 @@ impl Column {
             Data::Xid8(v) => Cell::Xid8(*v.get(slot)?),
             Data::TimestampTz(v) => Cell::TimestampTz(*v.get(slot)?),
             Data::Json(v) => v.get(slot)?.clone().map_or(Cell::Null, Cell::Json),
+            Data::Bytes(v) => v.get(slot)?.clone().map_or(Cell::Null, Cell::Bytes),
             Data::Ids(v) => v.get(slot)?.clone().map_or(Cell::Null, Cell::Ids),
             Data::DateRange(v) => v.get(slot)?.map_or(Cell::Null, Cell::DateRange),
             Data::DatetimeRange(v) => v.get(slot)?.map_or(Cell::Null, Cell::DatetimeRange),
@@ -267,6 +277,7 @@ impl Column {
         match (&mut self.data, cell) {
             (Data::Str(v), Cell::Null) => v[slot] = None,
             (Data::Json(v), Cell::Null) => v[slot] = None,
+            (Data::Bytes(v), Cell::Null) => v[slot] = None,
             (Data::Ids(v), Cell::Null) => v[slot] = None,
             (Data::DateRange(v), Cell::Null) => v[slot] = None,
             (Data::DatetimeRange(v), Cell::Null) => v[slot] = None,
@@ -284,6 +295,7 @@ impl Column {
             (Data::Xid8(v), Cell::Xid8(x)) => v[slot] = x,
             (Data::TimestampTz(v), Cell::TimestampTz(x)) => v[slot] = x,
             (Data::Json(v), Cell::Json(x)) => v[slot] = Some(x),
+            (Data::Bytes(v), Cell::Bytes(x)) => v[slot] = Some(x),
             (Data::Ids(v), Cell::Ids(x)) => v[slot] = Some(x),
             (Data::DateRange(v), Cell::DateRange(x)) => v[slot] = Some(x),
             (Data::DatetimeRange(v), Cell::DatetimeRange(x)) => v[slot] = Some(x),
@@ -329,6 +341,7 @@ impl Column {
         match &mut self.data {
             Data::Str(v) if slot < v.len() => v[slot] = None,
             Data::Json(v) if slot < v.len() => v[slot] = None,
+            Data::Bytes(v) if slot < v.len() => v[slot] = None,
             Data::Ids(v) if slot < v.len() => v[slot] = None,
             _ => {}
         }

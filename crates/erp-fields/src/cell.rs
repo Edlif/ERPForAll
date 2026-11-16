@@ -164,6 +164,57 @@ impl fmt::Display for RecId {
     }
 }
 
+/// File content of a Binary or Image field: shared, immutable bytes. `Debug` prints the length
+/// only, so content never reaches an error message or a log (security point 10).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct Blob(Arc<[u8]>);
+
+impl Blob {
+    /// The bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+    /// The shared buffer.
+    pub fn as_arc(&self) -> &Arc<[u8]> {
+        &self.0
+    }
+    /// Consume into the shared buffer.
+    pub fn into_arc(self) -> Arc<[u8]> {
+        self.0
+    }
+}
+
+impl fmt::Debug for Blob {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Blob({} bytes)", self.0.len())
+    }
+}
+
+impl std::ops::Deref for Blob {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Arc<[u8]>> for Blob {
+    fn from(bytes: Arc<[u8]>) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<Vec<u8>> for Blob {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(Arc::from(bytes))
+    }
+}
+
+impl From<&[u8]> for Blob {
+    fn from(bytes: &[u8]) -> Self {
+        Self(Arc::from(bytes))
+    }
+}
+
 /// One value in storage form. `Null` is SQL NULL.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cell {
@@ -194,6 +245,8 @@ pub enum Cell {
     TimestampTz(crate::TimestampTz),
     /// `jsonb`.
     Json(Arc<serde_json::Value>),
+    /// `bytea`: the content of a Binary or Image field. Never empty: empty content is `Null`.
+    Bytes(Blob),
     /// Ordered record ids: the value of an x2many field (no column; cache and read format).
     Ids(Arc<[RecId]>),
     /// `daterange`: a range of dates, with the bounds of its field.
@@ -226,6 +279,7 @@ impl Cell {
                 | (Self::Xid8(_), Storage::Xid8)
                 | (Self::TimestampTz(_), Storage::TimestampTz)
                 | (Self::Json(_), Storage::Json)
+                | (Self::Bytes(_), Storage::Bytes)
                 | (Self::Ids(_), Storage::Ids)
                 | (Self::DateRange(_), Storage::DateRange(_))
                 | (Self::DatetimeRange(_), Storage::DatetimeRange(_))
@@ -432,6 +486,30 @@ impl FieldValue for Option<crate::TimestampTz> {
     }
     fn into_cell(self) -> Cell {
         self.map_or(Cell::Null, Cell::TimestampTz)
+    }
+}
+
+impl FieldValue for Option<Blob> {
+    fn from_cell(cell: &Cell) -> Result<Self> {
+        match cell {
+            Cell::Null => Ok(None),
+            Cell::Bytes(value) => Ok(Some(value.clone())),
+            other => Err(type_error("binary", other)),
+        }
+    }
+    fn into_cell(self) -> Cell {
+        // empty content is "no value", as a read reports it (the reference stores NULL)
+        self.filter(|b| !b.is_empty())
+            .map_or(Cell::Null, Cell::Bytes)
+    }
+}
+
+impl FieldValue for Option<Vec<u8>> {
+    fn from_cell(cell: &Cell) -> Result<Self> {
+        Ok(Option::<Blob>::from_cell(cell)?.map(|b| b.to_vec()))
+    }
+    fn into_cell(self) -> Cell {
+        self.map(Blob::from).into_cell()
     }
 }
 
@@ -654,6 +732,8 @@ pub mod kinds {
     pub enum TimestampTz {}
     /// `Json`.
     pub enum Json {}
+    /// `Binary`, `Image`.
+    pub enum Binary {}
     /// `Many2one` (the raw id; records through `Records::related`).
     pub enum Many2one {}
     /// `One2many`, `Many2many` (ordered ids; writes take commands).
@@ -682,6 +762,8 @@ impl ValueFor<kinds::Uuid> for Option<crate::Uuid> {}
 impl ValueFor<kinds::Xid8> for Option<crate::Xid8> {}
 impl ValueFor<kinds::TimestampTz> for Option<crate::TimestampTz> {}
 impl ValueFor<kinds::Json> for Option<serde_json::Value> {}
+impl ValueFor<kinds::Binary> for Option<Blob> {}
+impl ValueFor<kinds::Binary> for Option<Vec<u8>> {}
 impl ValueFor<kinds::Many2one> for Option<RecId> {}
 impl ValueFor<kinds::X2many> for Vec<RecId> {}
 impl ValueFor<kinds::Many2oneReference> for i64 {}
@@ -722,6 +804,8 @@ ref_type! {
     Option<Date> => ["date"],
     Option<DateTime> => ["datetime"],
     Option<serde_json::Value> => ["json"],
+    Option<Blob> => ["binary"],
+    Option<Vec<u8>> => ["binary"],
     Option<RecId> => ["many2one"],
     Vec<RecId> => ["one2many", "many2many"],
     i64 => ["many2one_reference"],
@@ -757,6 +841,18 @@ impl IntoFieldValue<Option<Arc<str>>> for String {
 impl IntoFieldValue<Option<String>> for &str {
     fn into_field_value(self) -> Option<String> {
         Some(self.to_owned())
+    }
+}
+
+impl IntoFieldValue<Option<Blob>> for Vec<u8> {
+    fn into_field_value(self) -> Option<Blob> {
+        Some(Blob::from(self))
+    }
+}
+
+impl IntoFieldValue<Option<Blob>> for &[u8] {
+    fn into_field_value(self) -> Option<Blob> {
+        Some(Blob::from(self))
     }
 }
 

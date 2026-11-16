@@ -341,3 +341,5 @@ pub use field_check::base_check_write_fields;
 
 /// HTML field admission and typed operation reports.
 pub mod html;
+/// Image field admission: type and pixel checks, resizing, the database's image limits.
+pub mod image;

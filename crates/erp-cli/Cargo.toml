@@ -68,6 +68,8 @@ erp-addon-sample_library_wasm = { path = "../../examples/wasm/sample_library_was
 erp-testkit = { workspace = true }
 # a minimal component for the package tests
 wat.workspace = true
+# counts the images of the PDF a letterhead prints
+lopdf = { version = "=0.45.0", default-features = false }
 # opens the .xlsx the pivot download answers (human_pivot_export)
 zip = { workspace = true }
 erp-test-models = { path = "../erp-test-models" }

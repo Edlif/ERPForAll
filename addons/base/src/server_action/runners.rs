@@ -275,6 +275,7 @@ fn convert(action: &ServerAction, model: &str, field: &str, ty: &FieldType) -> R
             .into());
         }
         FieldType::Json
+        | FieldType::Binary { .. }
         | FieldType::Many2oneReference { .. }
         | FieldType::DateRange { .. }
         | FieldType::DatetimeRange { .. } => {

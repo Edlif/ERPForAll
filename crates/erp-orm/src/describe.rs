@@ -64,13 +64,17 @@ fn describe(
     );
     put(
         "sortable",
-        Value::Bool(has_column || matches!(field.ty, FieldType::Id)),
+        Value::Bool(
+            (has_column && !matches!(field.ty, FieldType::Binary { .. }))
+                || matches!(field.ty, FieldType::Id),
+        ),
     );
     // a range has no group value
     let ungroupable = matches!(
         field.ty,
         FieldType::BigInt
             | FieldType::Json
+            | FieldType::Binary { .. }
             | FieldType::DateRange { .. }
             | FieldType::DatetimeRange { .. }
     );

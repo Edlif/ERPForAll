@@ -1041,6 +1041,7 @@ pub(crate) async fn search_panel_select_multi_range(
             FieldType::One2many { .. }
                 | FieldType::Many2many { .. }
                 | FieldType::Json
+                | FieldType::Binary { .. }
                 | FieldType::DateRange { .. }
                 | FieldType::DatetimeRange { .. }
         ) {

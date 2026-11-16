@@ -681,7 +681,7 @@ fn plan_paths_and_loaded_records_are_bounded() {
     );
 }
 
-/// error naming model, record and field; decoding and the image node are)
+/// error naming model, record and field; the image node is tested in `evaluate.rs`)
 #[test]
 fn a_template_image_over_a_limit_is_an_image_error_naming_the_field() {
     let program = compile("<div><t t-foreach='docs' t-as='o'><p t-if='o.logo'>logo</p></t></div>");

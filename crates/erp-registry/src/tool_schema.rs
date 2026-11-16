@@ -788,6 +788,7 @@ fn field_schema(field: &FieldSpec) -> Result<ToolSchema, Excluded> {
         ty @ (FieldType::Xid8
         | FieldType::TimestampTz
         | FieldType::Json
+        | FieldType::Binary { .. }
         | FieldType::Reference { .. }
         | FieldType::Many2oneReference { .. }
         | FieldType::DateRange { .. }

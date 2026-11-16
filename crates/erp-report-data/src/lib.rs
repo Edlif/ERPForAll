@@ -138,6 +138,8 @@ enum Kind<'a> {
     /// The currency field of the same record.
     Monetary(&'a str),
     Boolean,
+    /// A binary or image field: the stored bytes.
+    Binary,
     /// The declared `(key, label)` pairs.
     Selection(&'a [(String, String)]),
     Date,
@@ -311,6 +313,7 @@ fn fixed_kind<'a>(model: &str, field: &'a FieldSpec) -> Result<Option<Kind<'a>>,
             })?)
         }
         FieldType::Boolean => Kind::Boolean,
+        FieldType::Binary { .. } => Kind::Binary,
         FieldType::Selection {
             values: Some(values),
             ..
@@ -424,6 +427,11 @@ fn convert(
             Value::Bool(flag) => FieldValue::boolean(*flag),
             Value::False => FieldValue::boolean(false),
             other => return Err(mismatch(model, field, "a boolean", other)),
+        },
+        Kind::Binary => match value {
+            Value::False => FieldValue::binary(&[]),
+            Value::Bytes(bytes) => FieldValue::binary(bytes),
+            other => return Err(mismatch(model, field, "bytes", other)),
         },
         Kind::Selection(values) => match value {
             Value::False => FieldValue::selection("", ""),

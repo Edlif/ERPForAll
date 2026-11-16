@@ -279,7 +279,7 @@ export class RecordForm {
       let handle = this.retained.get(source);
       if (handle) handle.draft!.update(state.values[node.field.name], { ...node.field, widget: node.widget, label: node.label });
       else handle = widget.render({
-        field: { ...node.field, widget: node.widget, label: node.label }, value: state.values[node.field.name], values: state.values, fields: state.currentFields, changeValues: this.env.changeValues ? changes => this.env.changeValues!(changes, this.focus()) : undefined, numericLocale: this.env.numericLocale, currencies: this.currencies, viewContext: "form",
+        field: { ...node.field, widget: node.widget, label: node.label }, value: state.values[node.field.name], values: state.values, changed: state.isChanged(node.field.name), fields: state.currentFields, changeValues: this.env.changeValues ? changes => this.env.changeValues!(changes, this.focus()) : undefined, numericLocale: this.env.numericLocale, currencies: this.currencies, viewContext: "form",
         rpc: this.env.rpc, context: this.env.context, ...(this.env.messages ? { messages: this.env.messages } : {}), editorLocale: this.env.editorLocale, signal: this.env.signal, run: this.env.run, report: this.env.report,
         openRecord: this.env.openRecord,
         draft: {

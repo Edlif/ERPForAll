@@ -53,6 +53,7 @@ impl Null {
             | FieldType::Xid8
             | FieldType::TimestampTz
             | FieldType::Json
+            | FieldType::Binary { .. }
             | FieldType::Many2one { .. }
             | FieldType::Reference { .. }
             | FieldType::RowVersion
@@ -172,6 +173,7 @@ impl Sink {
             FieldType::Xid8 => ColumnData::Xid8(Vec::with_capacity(capacity)),
             FieldType::TimestampTz => ColumnData::TimestampTz(Vec::with_capacity(capacity)),
             FieldType::Json => ColumnData::Json(Vec::with_capacity(capacity)),
+            FieldType::Binary { .. } => ColumnData::Bytes(Vec::with_capacity(capacity)),
             FieldType::DateRange { .. } | FieldType::DatetimeRange { .. } => {
                 ColumnData::Range(Vec::with_capacity(capacity))
             }
@@ -293,6 +295,10 @@ impl Sink {
             }
             (ColumnData::Uuid(v), Cell::Uuid(x)) => {
                 v.push(x);
+                None
+            }
+            (ColumnData::Bytes(v), Cell::Bytes(x)) => {
+                v.push(Some(x.into_arc()));
                 None
             }
             (ColumnData::BigInt(v), Cell::BigInt(x)) => {

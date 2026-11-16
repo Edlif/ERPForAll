@@ -940,6 +940,15 @@ fn update_cache<'a>(
     Box::pin(async move {
         let registry = Arc::clone(record.env().registry());
         let model = registry.model_by_id(record.model_id());
+        // a form's picture is admitted under the database's image limits
+        if values.iter().any(|(name, value)| {
+            !matches!(value, Value::False)
+                && model
+                    .field(name)
+                    .is_some_and(|field| field.ty.image_bounds().is_some())
+        }) {
+            tx.ensure_image_policy(model).await?;
+        }
         // Convert and normalize the whole scalar input before publishing any value. In
         // particular, an inherited currency supplied with an own amount belongs to
         // this same staging row. Delegated amounts normalize once at their owner in

@@ -87,6 +87,54 @@ fn jpeg(d: &[u8]) -> Option<(u32, u32)> {
             .checked_add(usize::try_from(be16(d, at + 2)?).ok()?)?;
     }
 }
+/// Skip GIF data sub-blocks starting at `at`; the position after the zero-length terminator.
+fn gif_skip_sub_blocks(d: &[u8], mut at: usize) -> Option<usize> {
+    loop {
+        let len = usize::from(*d.get(at)?);
+        at += 1;
+        if len == 0 {
+            return Some(at);
+        }
+        at += len;
+    }
+}
+/// The logical screen of a GIF after walking its blocks to every image descriptor, without
+/// decoding. `Some(Err(..))` when a frame is empty or lies outside the screen (the decoder would
+/// allocate the frame's own size, which the pixel cap never saw); `None` when the structure is
+/// truncated, malformed or holds no frame. The same walk as the ORM's image-field probe
+/// (`erp_orm::image`); the two crates share no dependency to keep one copy in.
+fn gif(d: &[u8]) -> Option<Result<(u32, u32), ReportError>> {
+    let (width, height) = (le16(d, 6)?, le16(d, 8)?);
+    let colour_table = |packed: u8| {
+        if packed & 0x80 == 0 {
+            0
+        } else {
+            3usize << ((packed & 0x07) + 1)
+        }
+    };
+    let mut at = 13 + colour_table(*d.get(10)?);
+    let mut frames = 0usize;
+    loop {
+        match *d.get(at)? {
+            0x3B => break,
+            0x21 => at = gif_skip_sub_blocks(d, at + 2)?,
+            0x2C => {
+                let (left, top) = (le16(d, at + 1)?, le16(d, at + 3)?);
+                let (w, h) = (le16(d, at + 5)?, le16(d, at + 7)?);
+                if w == 0 || h == 0 || left + w > width || top + h > height {
+                    return Some(Err(image(
+                        "a GIF frame is empty or lies outside its logical screen",
+                    )));
+                }
+                at += 10 + colour_table(*d.get(at + 9)?) + 1;
+                at = gif_skip_sub_blocks(d, at)?;
+                frames += 1;
+            }
+            _ => return None,
+        }
+    }
+    (frames > 0).then_some(Ok((width, height)))
+}
 fn webp(d: &[u8]) -> Option<(u32, u32)> {
     match d.get(12..16)? {
         b"VP8X" => Some((le24(d, 24)? + 1, le24(d, 27)? + 1)),
@@ -116,7 +164,7 @@ pub fn probe_image(data: &[u8], limits: &Limits) -> Result<ImageInfo, ReportErro
     } else if data.starts_with(&[0xFF, 0xD8]) {
         (ImageFormat::Jpeg, jpeg(data))
     } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
-        (ImageFormat::Gif, le16(data, 6).zip(le16(data, 8)))
+        (ImageFormat::Gif, gif(data).transpose()?)
     } else if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
         (ImageFormat::WebP, webp(data))
     } else if looks_like_svg(data) {
@@ -146,6 +194,57 @@ pub fn probe_image(data: &[u8], limits: &Limits) -> Result<ImageInfo, ReportErro
         width,
         height,
     })
+}
+/// The value of one base64 character of the standard alphabet.
+fn sextet(c: u8) -> Option<u32> {
+    Some(u32::from(match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => return None,
+    }))
+}
+/// Strict standard base64: the alphabet only, padded to a multiple of four, no white space.
+fn base64(text: &[u8]) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(4) {
+        return None;
+    }
+    let padding = text.iter().rev().take_while(|c| **c == b'=').count();
+    if padding > 2 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    // The length is a multiple of four, so the remainder is empty.
+    for (index, group) in text.as_chunks::<4>().0.iter().enumerate() {
+        let last = (index + 1) * 4 == text.len();
+        let kept = if last { 4 - padding } else { 4 };
+        let mut bits: u32 = 0;
+        for c in &group[..kept] {
+            bits = (bits << 6) | sextet(*c)?;
+        }
+        let bytes = (bits << (6 * (4 - kept))).to_be_bytes();
+        // Bits the padding drops must be zero, so one image has one spelling.
+        if bytes[kept..].iter().any(|byte| *byte != 0) {
+            return None;
+        }
+        out.extend_from_slice(&bytes[1..kept]);
+    }
+    Some(out)
+}
+/// The bytes of an embedded image (`data:image/<type>;base64,<data>`). The declared type is not
+/// read: the format comes from the bytes when they are admitted. The size is checked against
+/// `limits` before anything is decoded.
+pub(crate) fn embedded_bytes(value: &str, limits: &Limits) -> Result<Vec<u8>, ReportError> {
+    let malformed = || image("an embedded image must be `data:image/<type>;base64,<data>`");
+    let (header, data) = value.split_once(',').ok_or_else(malformed)?;
+    let encoding = header.rsplit(';').next().unwrap_or_default();
+    if !crate::validate::embedded_image(value) || !encoding.eq_ignore_ascii_case("base64") {
+        return Err(malformed());
+    }
+    limits.check(LimitKind::ImageBytes, data.len() / 4 * 3)?;
+    base64(data.as_bytes()).ok_or_else(|| image("the data of an embedded image is not base64"))
 }
 /// A vector graphic whose SVG markup ERPForAll writes itself from numbers, so the in-process engine
 /// may parse it. There is no constructor from SVG text: caller bytes go through `Node::Image`.

@@ -3,7 +3,8 @@
 //! `ir_config_parameter.rs` (authentication and sessions, `attachments.*`, partition upkeep) and
 //! base's other `base.*` parameters. Their read parsers and write-time checks (with their
 //! messages) stay where they were; these declarations add the kind, default, floor and hard bound,
-//! the default rows and the prefix rule.
+//! the default rows and the prefix rule. The image limits (`base.image_*`) come from
+//! `image_settings.rs`; their read parser is the ORM's image policy.
 use erp_sdk::auth::{
     COOLDOWN_AFTER_FALLBACK, COOLDOWN_DURATION_FALLBACK, MAX_INACTIVITY_DEFAULT,
     MAX_LIFETIME_DEFAULT, hash_limits, keys,
@@ -173,6 +174,8 @@ pub(crate) fn declarations() -> Result<Vec<ParameterDecl>> {
             (1, i64::from(u32::MAX)),
         )?,
     ];
+    // image limits of the `image` field kind (B9 rows S2 and S7)
+    out.extend(crate::image_settings::declarations()?);
     for (key, label, default, floor, bound) in crate::report_job::PARAMETERS {
         out.push(ParameterDecl::integer(key, label, default, (floor, bound))?);
     }
@@ -217,7 +220,8 @@ mod tests {
         let declared = declarations().unwrap();
         assert_eq!(
             declared.len(),
-            16 + crate::attachments::settings::PARAMETERS.len()
+            16 + crate::image_settings::declarations().unwrap().len()
+                + crate::attachments::settings::PARAMETERS.len()
                 + crate::report_job::PARAMETERS.len()
         );
         for decl in &declared {

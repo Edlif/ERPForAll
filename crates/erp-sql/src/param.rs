@@ -114,8 +114,10 @@ impl ScalarKind {
             FieldType::Xid8 => Self::Xid8,
             FieldType::TimestampTz => Self::TimestampTz,
             // ranges are compared by `overlaps`/`contains`, not by value
+            // file content is only tested for presence
             FieldType::Boolean
             | FieldType::Json
+            | FieldType::Binary { .. }
             | FieldType::DateRange { .. }
             | FieldType::DatetimeRange { .. } => return None,
         })

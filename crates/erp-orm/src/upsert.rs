@@ -751,6 +751,7 @@ fn key_part(spec: &ModelSpec, field: &FieldSpec, cell: &Cell) -> Result<KeyPart>
         // the registry refuses these kinds as key fields
         Cell::Float(_)
         | Cell::Json(_)
+        | Cell::Bytes(_)
         | Cell::Ids(_)
         | Cell::DateRange(_)
         | Cell::DatetimeRange(_) => {
@@ -845,7 +846,8 @@ fn prepare(
             cells[field.id.index()] = Some(if matches!(field.ty, FieldType::Html) {
                 tx.admit_html_cell(spec, field, cell.clone())?
             } else {
-                validate_cell(fref(spec, field), &field.ty, cell.clone())?
+                let cell = validate_cell(fref(spec, field), &field.ty, cell.clone())?;
+                tx.admit_image_cell(spec, field, cell)?
             });
         }
         let mut parts = Vec::with_capacity(plan.key.fields.len());
@@ -2271,6 +2273,17 @@ async fn upsert_chunks(
     let spec = records.spec();
     tx.check_model(&env, model, Operation::Create)?;
     tx.check_model(&env, model, Operation::Write)?;
+    // `prepare` admits pictures under the database's image limits
+    if rows.iter().any(|vals| {
+        vals.iter().any(|(name, cell)| {
+            !matches!(cell, Cell::Null)
+                && spec
+                    .field(name)
+                    .is_some_and(|field| field.ty.image_bounds().is_some())
+        })
+    }) {
+        tx.ensure_image_policy(spec).await?;
+    }
     let batch = prepare(tx, records, plan, &rows)?;
     // Upsert is both create and write: input keys/values and conflict targets obey the
     // same field mask as ordinary assignments (/023).

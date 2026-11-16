@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use erp_sdk::prelude::*;
 use erp_sdk::{Context, FieldType, ValueMap};
 
+use crate::image_mixin::ImageMixin;
 use crate::partner_hierarchy::{acquire_hierarchy_fence, validate_partner_hierarchy};
 
 // Native create/write derive this hint from their actual inputs and overwrite caller context.
@@ -473,6 +474,7 @@ async fn check_category_depth(tx: &mut Transaction, parents: &[i64], moved: &[i6
     name = "res.partner",
     company_access = direct(field = "company_id", branch = "ancestor", empty = "allow", escape = "partner_share"),
     description = "Contact",
+    inherit = [ImageMixin],
     order = "complete_name, id desc",
     rec_names_search = ["complete_name", "email", "ref", "vat"],
     constraints = [(

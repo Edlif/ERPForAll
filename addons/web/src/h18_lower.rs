@@ -325,6 +325,7 @@ fn field_type_name(field: &FieldSpec) -> ViewResult<&'static str> {
         | FieldType::Datetime
         | FieldType::Many2one { .. }
         | FieldType::One2many { .. }
+        | FieldType::Binary { .. }
         | FieldType::Many2many { .. } => Ok(field.ty.type_name()),
         FieldType::Selection {
             values: Some(_), ..
@@ -796,6 +797,7 @@ fn classify<'a, N: Node<'a>>(
                     "placeholder",
                     "help",
                     "autocomplete",
+                    "alt",
                     "password",
                     "domain",
                     "context",
@@ -2246,7 +2248,7 @@ fn set_field_options<'a, N: Node<'a>>(
             let Expr::Literal(Literal::Str(key)) = key else { return Err(invalid("Field option keys must be literal text.")); };
             object.set(key, |value| field_option_value(spec, field(spec, node)?, widget, key, expr, value))?;
         }
-        for key in ["help", "placeholder", "autocomplete"] {
+        for key in ["help", "placeholder", "autocomplete", "alt"] {
             let value = if key == "help" { node.attr(key).or(if widget == "statusbar" { None } else { field(spec, node)?.help }) } else { node.attr(key) };
             if let Some(value) = value {
                 if erp_sdk::views::wire::field_option_kind(widget, key).is_none() {
@@ -2336,6 +2338,9 @@ fn field_option_value(
             if key == "placeholder_field" && !matches!(field.ty.type_name(), "char" | "text") {
                 return Err(wrong());
             }
+            if key == "preview_image" && field.ty.type_name() != "binary" {
+                return Err(wrong());
+            }
             if key == "currency_field"
                 && !matches!(&field.ty, FieldType::Many2one { comodel, .. } if comodel == "res.currency")
             {
@@ -2357,6 +2362,14 @@ fn field_option_value(
         (K::Digits, Expr::List(values) | Expr::Tuple(values)) if values.len() == 2 => {
             output.array(2, |index, output| match &values[index] {
                 Expr::Literal(Literal::Int(value)) if (0..=20).contains(value) => {
+                    output.integer(*value)
+                }
+                _ => Err(wrong()),
+            })
+        }
+        (K::Size, Expr::List(values) | Expr::Tuple(values)) if values.len() == 2 => {
+            output.array(2, |index, output| match &values[index] {
+                Expr::Literal(Literal::Int(value)) if (0..=4096).contains(value) => {
                     output.integer(*value)
                 }
                 _ => Err(wrong()),
@@ -3221,6 +3234,38 @@ mod tests {
                 );
             }
             other => panic!("Unexpected error kind: {other:?}"),
+        }
+    }
+
+    /// IMG.WIDGET: the image_url widget admits its display options on a char field; options that
+    /// belong to the Binary `image` widget are refused on it.
+    #[test]
+    fn image_url_widget_options() {
+        let value = fixture(
+            r#"<form><field name="name" widget="image_url" alt="Logo" options="{'zoom': True, 'zoom_delay': 200, 'size': [0, 90], 'reload': False, 'img_class': 'rounded'}"/></form>"#,
+            "form",
+        )
+        .unwrap();
+        let options = &value["nodes"][1]["options"];
+        assert_eq!(options["zoom"], true);
+        assert_eq!(options["zoom_delay"], 200);
+        assert_eq!(options["size"], serde_json::json!([0, 90]));
+        assert_eq!(options["alt"], "Logo");
+        for option in [
+            "'convert_to_webp': True",
+            "'accepted_file_extensions': '.png'",
+        ] {
+            let error = fixture(
+                &format!(
+                    r#"<form><field name="name" widget="image_url" options="{{{option}}}"/></form>"#
+                ),
+                "form",
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, ViewError::InvalidDescription(_)),
+                "{option}"
+            );
         }
     }
 

@@ -110,6 +110,44 @@ fn image_bounds_precede_parsing() {
     }
 }
 
+/// A GIF of a `width` x `height` screen with one frame of `fw` x `fh` at the origin and a bare
+/// LZW stream (clear, end) as its data.
+fn gif_with_frame(width: u16, height: u16, fw: u16, fh: u16) -> Vec<u8> {
+    let mut out = b"GIF89a".to_vec();
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    out.extend_from_slice(&[0, 0, 0]);
+    out.extend_from_slice(&[0x2C, 0, 0, 0, 0]);
+    out.extend_from_slice(&fw.to_le_bytes());
+    out.extend_from_slice(&fh.to_le_bytes());
+    out.extend_from_slice(&[0, 2, 1, 0x44, 0, 0x3B]);
+    out
+}
+
+/// decoder runs, so the pixel cap holds for every frame)
+#[test]
+fn a_gif_frame_outside_its_screen_is_refused() {
+    for (gif, message) in [
+        (
+            gif_with_frame(1, 1, 12_000, 12_000),
+            "report image: a GIF frame is empty or lies outside its logical screen",
+        ),
+        (
+            gif_with_frame(10, 10, 0, 5),
+            "report image: a GIF frame is empty or lies outside its logical screen",
+        ),
+        (
+            // a screen and no frame
+            b"GIF89a\x20\x00\x10\x00\x00\x00\x00\x3B".to_vec(),
+            "report image: image header is malformed or truncated",
+        ),
+    ] {
+        let e = probe_image(&gif, &Limits::default()).unwrap_err();
+        assert!(matches!(e, ReportError::Image { .. }));
+        assert_eq!(e.to_string(), message);
+    }
+}
+
 #[test]
 fn formats_are_detected_from_content() {
     // SOI, an APP0 segment of 16 bytes, then SOF0 with height 300 and width 400.
@@ -121,8 +159,7 @@ fn formats_are_detected_from_content() {
         (info.format(), info.width(), info.height()),
         (ImageFormat::Jpeg, 400, 300)
     );
-    let gif = b"GIF89a\x20\x00\x10\x00".to_vec();
-    let info = probe_image(&gif, &Limits::default()).unwrap();
+    let info = probe_image(&gif_with_frame(32, 16, 32, 16), &Limits::default()).unwrap();
     assert_eq!(
         (info.format(), info.width(), info.height()),
         (ImageFormat::Gif, 32, 16)

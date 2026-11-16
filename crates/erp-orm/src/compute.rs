@@ -361,11 +361,30 @@ impl Outputs {
             .unwrap_or_default()
     }
 
+    /// Whether a stored image output holds a picture, so its admission needs the image limits.
+    pub(crate) fn has_picture(&self) -> bool {
+        let registry = Arc::clone(self.env.registry());
+        let spec = registry.model_by_id(self.model);
+        spec.fields.iter().any(|field| {
+            field.store
+                && field.ty.image_bounds().is_some()
+                && self.values[field.id.index()]
+                    .as_ref()
+                    .is_some_and(|column| {
+                        column.iter().flatten().any(|c| matches!(c, Cell::Bytes(_)))
+                    })
+        })
+    }
+
     pub(crate) fn admit_html(&mut self, tx: &mut Transaction) -> Result<()> {
         let registry = Arc::clone(self.env.registry());
         let spec = registry.model_by_id(self.model);
         for field in &spec.fields {
-            if !matches!(field.ty, FieldType::Html) {
+            // an image output (a stored size related to a larger picture) is checked and scaled
+            // to its own bounds by the same step
+            // (a stored one only: a related image that is not stored reads its target as it is)
+            let stored_image = field.store && field.ty.image_bounds().is_some();
+            if !matches!(field.ty, FieldType::Html) && !stored_image {
                 continue;
             }
             if let Some(column) = &mut self.values[field.id.index()] {

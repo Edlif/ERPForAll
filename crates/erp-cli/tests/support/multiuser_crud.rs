@@ -294,6 +294,7 @@ const fn company_via_parent(
 pub const ABSTRACT: &[(&str, &str)] = &[
     ("base", "the abstract root every model inherits from"),
     ("ir.actions.base", "abstract base of the action models"),
+    ("image.mixin", "abstract picture mixin with resized copies"),
     ("mail.activity.mixin", "abstract activity mixin"),
     ("mail.store", "abstract store-fetch service, no table"),
     ("mail.thread", "abstract chatter mixin"),

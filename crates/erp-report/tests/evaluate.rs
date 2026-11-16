@@ -10,8 +10,9 @@
 use erp_expr::{EvalContext, ExprValue};
 use erp_report::{
     Alignment, AttachmentPolicy, DocTree, DocumentOptions, EvalOptions, FieldInfo, FieldValue,
-    LangFormat, Language, LimitKind, Node, NodeId, PageCounter, PageSetup, ProfileKind,
+    LangFormat, Language, LimitKind, Limits, Node, NodeId, PageCounter, PageSetup, ProfileKind,
     RecordStore, ReportError, ReportLimits, ReportProgram, Style, TableLook, TemplateSource,
+    probe_image, render_html,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -120,6 +121,15 @@ fn dump_node(doc: &DocTree, id: &NodeId, out: &mut String) {
             list(items, out);
             out.push(')');
         }
+        Node::Image {
+            data,
+            width,
+            height,
+            alt,
+        } => out.push_str(&format!(
+            "image[{width:?} {height:?} {alt:?} {} bytes]",
+            data.len()
+        )),
         Node::Rule => out.push_str("hr"),
         Node::LineBreak => out.push_str("br"),
         Node::PageBreak => out.push_str("pagebreak"),
@@ -160,6 +170,56 @@ fn render(arch: &str, values: &[(&str, ExprValue)]) -> String {
 }
 fn strs(values: &[&str]) -> ExprValue {
     ExprValue::list(values.iter().map(|v| ExprValue::str(*v)).collect())
+}
+/// The header of a PNG of `width` by `height` pixels: what image admission reads.
+fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+    bytes.extend(width.to_be_bytes());
+    bytes.extend(height.to_be_bytes());
+    bytes.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    bytes
+}
+/// Standard padded base64, written here so the decoder under test meets another encoder.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let bits = chunk
+            .iter()
+            .fold(0u32, |bits, byte| (bits << 8) | u32::from(*byte))
+            << (8 * (3 - chunk.len()));
+        for index in 0..4 {
+            if index <= chunk.len() {
+                let sextet = (bits >> (18 - 6 * index)) & 63;
+                out.push(char::from(ALPHABET[sextet as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+/// Width, height, alt text and bytes of one image.
+type ImageParts = (Option<f64>, Option<f64>, String, Vec<u8>);
+/// Every image of a document, in document order.
+fn images(doc: &DocTree) -> Vec<ImageParts> {
+    doc.nodes()
+        .iter()
+        .filter_map(|node| match node {
+            Node::Image {
+                data,
+                width,
+                height,
+                alt,
+            } => Some((*width, *height, alt.clone(), data.to_vec())),
+            _ => None,
+        })
+        .collect()
+}
+fn order_doc(arch: &str, options: &EvalOptions) -> Result<DocTree, ReportError> {
+    let store = store();
+    let context = EvalContext::standard().with_var("doc", store.recordset("sale.order", &[1]));
+    compile(arch).evaluate(&context, &store, options, self::options())
 }
 /// One sale order with its currency, partner and two lines.
 fn store() -> Arc<RecordStore> {
@@ -239,6 +299,8 @@ fn store() -> Arc<RecordStore> {
                 ("carrier_id", FieldValue::many2one("res.partner", None)),
                 ("line_ids", FieldValue::many("sale.order.line", &[31, 32])),
                 ("active", FieldValue::boolean(true)),
+                ("logo", FieldValue::binary(&png(200, 100))),
+                ("no_logo", FieldValue::binary(&[])),
             ],
         )
         .unwrap();
@@ -823,7 +885,7 @@ fn what_later_slices_add_is_refused_by_task() {
         ),
         (
             "<p><span t-field='doc.name' t-options=\"{'widget': 'barcode'}\"/></p>",
-            "report image and barcode widgets requires a later release",
+            "report image_url and barcode widgets requires a later release",
         ),
         (
             "<p><span t-field='doc.partner_id' t-options=\"{'widget': 'contact'}\"/></p>",
@@ -835,7 +897,11 @@ fn what_later_slices_add_is_refused_by_task() {
         ),
         (
             "<p><img src='/web/image/1'/></p>",
-            "report images and icons requires a later release",
+            "report images read by their path while printing requires a later release",
+        ),
+        (
+            "<p><i class='oi' data-icon='phone'/></p>",
+            "report icons requires a later release",
         ),
         (
             "<table><tr><td colspan='2'>x</td></tr></table>",
@@ -1563,4 +1629,211 @@ fn preview_spacing_and_table_blocks() {
         !html.contains("<p style=\"font-size:10pt;text-align:end\"><table"),
         "{html}"
     );
+}
+
+/// `image_data_uri` and through the `image` widget, sized by its attributes, its style and the
+/// widget's `max_width`/`max_height`; naming the field of corrupted bytes is the data stage's)
+#[test]
+fn an_image_field_prints_as_an_image_node_at_the_size_asked() {
+    let logo = png(200, 100);
+    // 200 by 100 pixels are 150 by 75 points.
+    for (arch, width, height, alt) in [
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' alt='Logo'/></p>",
+            150.0,
+            75.0,
+            "Logo",
+        ),
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' style='max-height: 45px'/></p>",
+            67.5,
+            33.75,
+            "",
+        ),
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' style='max-height: 200px'/></p>",
+            150.0,
+            75.0,
+            "",
+        ),
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' width='100'/></p>",
+            75.0,
+            37.5,
+            "",
+        ),
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' width='100' style='height: 12pt; width: 30pt'/></p>",
+            30.0,
+            12.0,
+            "",
+        ),
+        (
+            "<p><img t-att=\"{'src': image_data_uri(doc.logo), 'alt': doc.name}\"/></p>",
+            150.0,
+            75.0,
+            "S00001",
+        ),
+        ("<p><span t-field='doc.logo'/></p>", 150.0, 75.0, ""),
+        (
+            "<p><span t-field='doc.logo' t-options=\"{'widget': 'image', 'max_width': 100, 'max_height': 100}\"/></p>",
+            75.0,
+            37.5,
+            "",
+        ),
+        (
+            "<p><span t-out='doc.logo' t-options=\"{'widget': 'image', 'max_height': 20}\"/></p>",
+            30.0,
+            15.0,
+            "",
+        ),
+    ] {
+        let doc = order_doc(arch, &EvalOptions::default()).unwrap();
+        assert_eq!(
+            images(&doc),
+            [(Some(width), Some(height), alt.to_owned(), logo.clone())],
+            "{arch}"
+        );
+    }
+}
+
+#[test]
+fn an_embedded_image_is_decoded_and_an_img_without_a_source_prints_nothing() {
+    for size in [(4, 2), (5, 2), (6, 2)] {
+        // Three lengths, so the data ends with no, one and two padding characters.
+        let mut picture = png(size.0, size.1);
+        picture.extend(std::iter::repeat_n(0, size.0 as usize - 4));
+        let arch = format!(
+            "<p><img src='data:image/png;base64,{}' alt='Seal'/></p>",
+            base64(&picture)
+        );
+        let doc = order_doc(&arch, &EvalOptions::default()).unwrap();
+        assert_eq!(
+            images(&doc),
+            [(
+                Some(f64::from(size.0) * 0.75),
+                Some(1.5),
+                "Seal".to_owned(),
+                picture
+            )]
+        );
+    }
+    for arch in [
+        "<p>a<img t-att-src='doc.no_logo and image_data_uri(doc.no_logo)'/>b</p>",
+        "<p>a<img t-if='doc.no_logo' t-att-src='image_data_uri(doc.no_logo)'/>b</p>",
+        "<p>a<img alt='nothing'/>b</p>",
+        "<p>a<img t-att-src='image_data_uri(doc.logo)' class='d-none'/>b</p>",
+    ] {
+        let doc = order_doc(arch, &EvalOptions::default()).unwrap();
+        assert_eq!(images(&doc), [], "{arch}");
+        assert_eq!(dump(&doc), "flow(block[](\"ab\"))", "{arch}");
+    }
+    // A set image is true and an unset one false, and neither prints its bytes as text.
+    assert_eq!(
+        order("<p><t t-if='doc.logo'>set</t><t t-if='not doc.no_logo'> unset</t></p>"),
+        "flow(block[](\"set unset\"))"
+    );
+}
+
+#[test]
+fn the_html_preview_shows_the_box_of_an_image() {
+    let doc = order_doc(
+        "<p><img t-att-src='image_data_uri(doc.logo)' style='max-height: 45px' alt='Logo'/></p>",
+        &EvalOptions::default(),
+    )
+    .unwrap();
+    let page = render_html(&doc, &[]).unwrap();
+    let expected = "<span class=\"erp-image\" role=\"img\" aria-label=\"Logo\" \
+                    style=\"width:67.5pt;height:33.75pt;\">Logo</span>";
+    assert!(page.contains(expected), "{page}");
+}
+
+#[test]
+fn an_image_that_cannot_be_printed_is_an_error_naming_why() {
+    for (arch, message) in [
+        (
+            "<p><img t-att-src='image_data_uri(doc.name)'/></p>",
+            "test.report:1: expression `image_data_uri(doc.name)`: TypeError: image_data_uri() \
+             takes the value of an image field that is set, got 'str'",
+        ),
+        (
+            "<p><img t-att-src='image_data_uri(doc.no_logo)'/></p>",
+            "test.report:1: expression `image_data_uri(doc.no_logo)`: TypeError: image_data_uri() \
+             takes the value of an image field that is set, got 'bool'",
+        ),
+        (
+            "<p><img t-att-src='image_data_uri()'/></p>",
+            "test.report:1: expression `image_data_uri()`: TypeError: image_data_uri() takes one \
+             argument, the value of an image field",
+        ),
+        (
+            "<p><img src='data:image/png;base64,A'/></p>",
+            "report image: the data of an embedded image is not base64",
+        ),
+        (
+            "<p><img src='data:image/png;base64,AA=A'/></p>",
+            "report image: the data of an embedded image is not base64",
+        ),
+        (
+            "<p><img src='data:image/png;base64,AB=='/></p>",
+            "report image: the data of an embedded image is not base64",
+        ),
+        (
+            "<p><img src='data:image/png,AAAA'/></p>",
+            "report image: an embedded image must be `data:image/<type>;base64,<data>`",
+        ),
+        (
+            "<p><img src='data:image/png;base64,AAAA'/></p>",
+            "report image: image bytes are not PNG, JPEG, GIF, WebP or SVG",
+        ),
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' width='0'/></p>",
+            "test.report:1: the width and height of an image must be in (0, 14400] points",
+        ),
+        (
+            "<p><span t-field='doc.name' t-options=\"{'widget': 'image'}\"/></p>",
+            "test.report:1: the image widget needs the value of an image field, got a value of \
+             type str",
+        ),
+        (
+            "<p><span t-field='doc.logo' t-options=\"{'max_width': 0}\"/></p>",
+            "test.report:1: widget option `max_width` must be a number of pixels in 1..=19200",
+        ),
+    ] {
+        let err = order_doc(arch, &EvalOptions::default()).unwrap_err();
+        assert_eq!(err.to_string(), message, "{arch}");
+    }
+    let err = order_doc(
+        "<p><img t-att-src='image_data_uri(doc.name)'/></p>",
+        &EvalOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, ReportError::Expression { .. }), "{err:?}");
+    let err = order_doc(
+        "<p><img src='data:image/png;base64,AAAA'/></p>",
+        &EvalOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, ReportError::Image { .. }), "{err:?}");
+    // The image limits of the document hold for a field and for an embedded image alike.
+    let limits = Limits::default()
+        .lowered(LimitKind::ImagePixels, 19_999)
+        .unwrap();
+    let message = probe_image(&png(200, 100), &limits)
+        .unwrap_err()
+        .to_string();
+    let embedded = format!(
+        "<p><img src='data:image/png;base64,{}'/></p>",
+        base64(&png(200, 100))
+    );
+    for arch in [
+        "<p><img t-att-src='image_data_uri(doc.logo)'/></p>",
+        "<p><span t-field='doc.logo'/></p>",
+        embedded.as_str(),
+    ] {
+        let options = EvalOptions::default().with_document_limits(limits);
+        let err = order_doc(arch, &options).unwrap_err();
+        assert!(matches!(err, ReportError::DocumentLimit { .. }), "{err:?}");
+        assert_eq!(err.to_string(), message, "{arch}");
+    }
 }

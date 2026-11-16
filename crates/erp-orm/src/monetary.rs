@@ -1043,6 +1043,9 @@ impl Inputs<'_> {
                     out = out.for_cache();
                     crate::compute::run_candidate(chain, tx, &records, &mut out, scope).await?;
                     out.validate_virtual(tx, &ids)?;
+                    if out.has_picture() {
+                        Box::pin(tx.ensure_image_policy(self.spec)).await?;
+                    }
                     out.admit_html(tx)?;
                     let column = out.column(field);
                     if let Some(stage) = tx.candidate_stage.as_mut() {
@@ -1069,6 +1072,9 @@ impl Inputs<'_> {
                     .with_related(related);
                 crate::compute::run_sync(chain, 0, &mut data)?;
                 data.out.validate_virtual(tx, &ids)?;
+                if data.out.has_picture() {
+                    Box::pin(tx.ensure_image_policy(self.spec)).await?;
+                }
                 data.out.admit_html(tx)?;
                 data.out.take(field)
             };

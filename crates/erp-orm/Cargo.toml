@@ -59,10 +59,14 @@ rustc-hash = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 linkme = { workspace = true }
-tokio = { workspace = true, features = ["time", "sync", "macros", "rt"] }
+# `rt-multi-thread`: an image decode waits with `block_in_place` (B6)
+tokio = { workspace = true, features = ["time", "sync", "macros", "rt", "rt-multi-thread"] }
 # Node digests: SHA-256 of configuration, build and addons, HMAC of shared secrets.
 sha2 = { workspace = true }
 hmac = { workspace = true }
+# Image fields (B6): decode, scale down and encode PNG and JPEG, and decode a GIF or WebP
+# larger than a field's bounds (stored as PNG). SVG is refused, so no other decoder is compiled in.
+image = { workspace = true, features = ["gif", "webp"] }
 # The membership clock counts suspend (design §6.4).
 rustix = { workspace = true, features = ["time"] }
 

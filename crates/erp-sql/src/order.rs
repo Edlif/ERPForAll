@@ -502,6 +502,13 @@ impl<'a> OrderCompiler<'a> {
                     model.name, field.name
                 )));
             }
+            // file content has no order (the reference reports binary fields as not sortable)
+            (FieldType::Binary { .. }, _) => {
+                return Err(Error::validation(format!(
+                    "Cannot order by the binary field {}.{}",
+                    model.name, field.name
+                )));
+            }
             (FieldType::Boolean, None) if can_be_null(field) => {
                 read(self);
                 format!("COALESCE({col}, FALSE)")

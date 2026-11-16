@@ -181,6 +181,12 @@ impl Context {
         self.prefetch_fields.unwrap_or(true)
     }
 
+    /// `bin_size` (default false): a read returns the size of a binary value as text instead of
+    /// its content.
+    pub fn bin_size(&self) -> bool {
+        self.extra.get("bin_size").is_some_and(Value::is_truthy)
+    }
+
     /// `prefetch_langs` (default false).
     pub fn prefetch_langs(&self) -> bool {
         self.prefetch_langs.unwrap_or(false)

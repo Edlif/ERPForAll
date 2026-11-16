@@ -232,7 +232,8 @@ impl Transaction {
         cell: Cell,
     ) -> Result<Cell> {
         if !matches!(field.ty, FieldType::Html) {
-            return Ok(cell);
+            // the same step admits the value of an image field (type, pixels, resizing)
+            return self.admit_image_cell(spec, field, cell);
         }
         if field.translate
             && let Cell::Json(value) = &cell

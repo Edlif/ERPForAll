@@ -418,6 +418,9 @@ object!(/// Closed optional presentation members; widget identity admission rest
         #[serde(default, skip_serializing_if="Option::is_none")] autocomplete: Option<String>,
         #[serde(default, skip_serializing_if="Option::is_none")] icon: Option<String>,
         #[serde(default, skip_serializing_if="Option::is_none")] icon_class: Option<String>,
+        #[serde(default, skip_serializing_if="Option::is_none")] alt: Option<String>,
+        #[serde(default, skip_serializing_if="Option::is_none")] img_class: Option<String>,
+        #[serde(default, skip_serializing_if="Option::is_none")] accepted_file_extensions: Option<String>,
         #[serde(default, skip_serializing_if="Option::is_none")] min_date: Option<String>,
         #[serde(default, skip_serializing_if="Option::is_none")] max_date: Option<String>,
         #[serde(default, skip_serializing_if="Option::is_none")] min_precision: Option<String>,
@@ -442,21 +445,27 @@ object!(/// Closed optional presentation members; widget identity admission rest
         #[serde(default, skip_serializing_if="Option::is_none")] create: Option<bool>,
         #[serde(default, skip_serializing_if="Option::is_none")] can_open: Option<bool>,
         #[serde(default, skip_serializing_if="Option::is_none")] horizontal: Option<bool>,
+        #[serde(default, skip_serializing_if="Option::is_none")] zoom: Option<bool>,
+        #[serde(default, skip_serializing_if="Option::is_none")] reload: Option<bool>,
+        #[serde(default, skip_serializing_if="Option::is_none")] convert_to_webp: Option<bool>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number | null"))] rows: Option<i64>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number | null"))] max_length: Option<i64>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number | null"))] badge_limit: Option<i64>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number | null"))] tag_limit: Option<i64>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number | null"))] search_threshold: Option<i64>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number | null"))] rounding: Option<i64>,
+        #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number | null"))] zoom_delay: Option<i64>,
         #[serde(default, skip_serializing_if="Option::is_none")] placeholder_field: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] currency_field: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] start_date_field: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] end_date_field: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] whitelist_fname: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] color_field: Option<FieldRef>,
+        #[serde(default, skip_serializing_if="Option::is_none")] preview_image: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] whitelisted_values: Option<Vec<String>>,
         #[serde(default, skip_serializing_if="Option::is_none")] blacklisted_values: Option<Vec<String>>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number[] | null"))] digits: Option<Vec<i64>>,
+        #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number[] | null"))] size: Option<Vec<i64>>,
         #[serde(default, skip_serializing_if="Option::is_none")] domain: Option<WireDocument>,
         #[serde(default, skip_serializing_if="Option::is_none")] context: Option<WireDocument> });
 impl FieldPresentationOptions {
@@ -468,6 +477,9 @@ impl FieldPresentationOptions {
             autocomplete: None,
             icon: None,
             icon_class: None,
+            alt: None,
+            img_class: None,
+            accepted_file_extensions: None,
             min_date: None,
             max_date: None,
             min_precision: None,
@@ -492,21 +504,27 @@ impl FieldPresentationOptions {
             create: None,
             can_open: None,
             horizontal: None,
+            zoom: None,
+            reload: None,
+            convert_to_webp: None,
             rows: None,
             max_length: None,
             badge_limit: None,
             tag_limit: None,
             search_threshold: None,
             rounding: None,
+            zoom_delay: None,
             placeholder_field: None,
             currency_field: None,
             start_date_field: None,
             end_date_field: None,
             whitelist_fname: None,
             color_field: None,
+            preview_image: None,
             whitelisted_values: None,
             blacklisted_values: None,
             digits: None,
+            size: None,
             domain: None,
             context: None,
         }
@@ -1780,6 +1798,8 @@ pub enum FieldOptionKind {
     Strings,
     /// Precision and scale.
     Digits,
+    /// Width and height in pixels.
+    Size,
     /// Existing expression document.
     Expression,
 }
@@ -1793,6 +1813,7 @@ pub fn field_option_kind(widget: &str, key: &str) -> Option<FieldOptionKind> {
     let numeric = matches!(widget, "integer" | "float" | "monetary");
     let percentage = widget == "percentage";
     let date = matches!(widget, "date" | "datetime" | "daterange");
+    let image = matches!(widget, "image" | "image_url");
     let relation = matches!(
         widget,
         "many2one"
@@ -1834,6 +1855,8 @@ pub fn field_option_kind(widget: &str, key: &str) -> Option<FieldOptionKind> {
             widget == "filterable_selection"
         }
         "text" => widget == "url",
+        "alt" | "img_class" | "zoom" | "zoom_delay" | "size" | "reload" => image,
+        "accepted_file_extensions" | "convert_to_webp" | "preview_image" => widget == "image",
         _ => false,
     };
     if !admitted {
@@ -1884,6 +1907,11 @@ pub fn field_option_kind(widget: &str, key: &str) -> Option<FieldOptionKind> {
         "whitelisted_values" => FieldOptionKind::Strings,
         "blacklisted_values" => FieldOptionKind::Strings,
         "digits" => FieldOptionKind::Digits,
+        "size" => FieldOptionKind::Size,
+        "alt" | "img_class" | "accepted_file_extensions" => FieldOptionKind::Text,
+        "zoom" | "reload" | "convert_to_webp" => FieldOptionKind::Bool,
+        "zoom_delay" => FieldOptionKind::Integer,
+        "preview_image" => FieldOptionKind::Field,
         "domain" | "context" => FieldOptionKind::Expression,
         _ => return None,
     })

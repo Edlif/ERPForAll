@@ -21,6 +21,7 @@ import { fieldShell } from "./field-shell.js";
 import { scalarControl } from "./field-scalars.js";
 import { radioControl } from "./field-radio.js";
 import { priorityControl } from "./priority.js";
+import { imageControl } from "./image-field.js";
 import { colorControl, colorPickerControl } from "./color.js";
 import { copyClipboardControl } from "./copy-clipboard.js";
 import type { NumericLocale } from "./numeric-values.js";
@@ -64,6 +65,8 @@ export interface FieldControlOptions {
   numericLocale?: NumericLocale;
   currencies?: CurrencyDisplayCache;
   values?: Readonly<Record<string, unknown>>;
+  /** The record holds an unsaved change of this field (a widget may then skip a preview of the saved value). */
+  changed?: boolean;
 }
 
 /** Node-only date/time callers bind cleanup to their owner signal; use createFieldControl
@@ -85,6 +88,7 @@ export function createFieldControl(options: FieldControlOptions): FieldControl {
   if (field.widget === "badge" && field.kind === "many2one") return scalarControl({ ...options, field: { ...field, kind: "char", readonly: true }, value: displayValue(field, value, "en-US") });
   if (field.widget === "radio") return radioControl(options);
   if (field.widget === "priority") return priorityControl(options);
+  if (field.widget === "image" || field.widget === "image_url") return imageControl(options);
   if (field.widget === "color") return colorControl(options);
   if (field.widget === "color_picker") return colorPickerControl(options);
   if (field.widget === "CopyClipboardChar" || field.widget === "CopyClipboardText" || field.widget === "CopyClipboardURL") return copyClipboardControl(options);
@@ -361,8 +365,8 @@ for (const kind of ["char", "text", "boolean", "integer", "float", "monetary", "
     }), environment) });
 }
 
-for (const [widget, kinds] of Object.entries({ password: ["char", "text"], email: ["char"], phone: ["char"], url: ["char"], percentage: ["integer", "float"], boolean_checkbox: ["boolean"], boolean_toggle: ["boolean"], boolean_favorite: ["boolean"], boolean_icon: ["boolean"], badge: ["selection", "char", "many2one"], label_selection: ["selection"], badges_selection: ["selection"], filterable_selection: ["selection"], radio: ["selection", "many2one"], priority: ["selection"], color: ["char"], color_picker: ["integer"], CopyClipboardChar: ["char"], CopyClipboardText: ["text"], CopyClipboardURL: ["char"], many2many_tags: ["many2many"], many2many_tags_avatar: ["many2many"], many2many_tags_color_dot: ["many2many"] } as const)) {
-  registerFieldWidget(widget, { kinds, render: environment => createFieldControl({ viewContext: environment.viewContext, field: { ...environment.field, widget }, value: environment.value, rpc: environment.rpc, context: environment.context, numericLocale: environment.numericLocale, currencies: environment.currencies, values: environment.values, fields: environment.fields, changeValues: environment.changeValues, change: environment.change, run: environment.run, openRecord: environment.openRecord, ...(environment.messages ? { editor: { messages: environment.messages, report: environment.report, signal: environment.signal } } : {}) }) });
+for (const [widget, kinds] of Object.entries({ password: ["char", "text"], email: ["char"], phone: ["char"], url: ["char"], percentage: ["integer", "float"], boolean_checkbox: ["boolean"], boolean_toggle: ["boolean"], boolean_favorite: ["boolean"], boolean_icon: ["boolean"], badge: ["selection", "char", "many2one"], label_selection: ["selection"], badges_selection: ["selection"], filterable_selection: ["selection"], radio: ["selection", "many2one"], priority: ["selection"], color: ["char"], color_picker: ["integer"], image: ["binary"], image_url: ["char"], CopyClipboardChar: ["char"], CopyClipboardText: ["text"], CopyClipboardURL: ["char"], many2many_tags: ["many2many"], many2many_tags_avatar: ["many2many"], many2many_tags_color_dot: ["many2many"] } as const)) {
+  registerFieldWidget(widget, { kinds, render: environment => createFieldControl({ viewContext: environment.viewContext, field: { ...environment.field, widget }, value: environment.value, rpc: environment.rpc, context: environment.context, numericLocale: environment.numericLocale, currencies: environment.currencies, values: environment.values, fields: environment.fields, changeValues: environment.changeValues, change: environment.change, run: environment.run, openRecord: environment.openRecord, changed: environment.changed, ...(environment.messages ? { editor: { messages: environment.messages, report: environment.report, signal: environment.signal } } : {}) }) });
 }
 
 registerFieldWidget("list.one2many", { kinds: ["one2many"], render: environment => {

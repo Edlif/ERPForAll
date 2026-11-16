@@ -879,6 +879,13 @@ impl<'r> Builder<'r> {
                     let column = self.field_sql(model, &alias, field)?;
                     term.expr = format!("COALESCE({column}, FALSE)");
                 }
+                // file content has no group value
+                FieldType::Binary { .. } => {
+                    return Err(bad(
+                        external,
+                        format!("Cannot group by the binary field '{full_spec}'"),
+                    ));
+                }
                 // a range has no group value: group by its ends' fields instead
                 FieldType::DateRange { .. } | FieldType::DatetimeRange { .. } => {
                     return Err(bad(

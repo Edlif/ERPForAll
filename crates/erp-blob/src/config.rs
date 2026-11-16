@@ -54,6 +54,10 @@ pub struct AttachmentLimits {
     /// deployment's capacity is nodes × this value; a call beyond it fails at once with
     /// [`BlobError::Busy`] instead of queueing.
     pub stream_permits_per_node: u32,
+    /// Picture decodes of image fields one node runs at once (S4): a **per-node**
+    /// bound. The composition root hands it to the ORM's decode pool
+    /// (`erp_orm::image::DecodePool::set_permits`), which applies the same range.
+    pub image_decode_permits: u32,
 }
 
 impl Default for AttachmentLimits {
@@ -71,6 +75,7 @@ impl Default for AttachmentLimits {
             upload_receive_timeout_secs: 600,
             fingerprint_recheck_secs: 300,
             stream_permits_per_node: 32,
+            image_decode_permits: 2,
         }
     }
 }
@@ -83,6 +88,8 @@ impl AttachmentLimits {
     pub const GC_GRACE_RANGE: (u64, u64) = (3_600, 30 * 86_400);
     /// The smallest and largest `stream_permits_per_node`.
     pub const STREAM_PERMITS_RANGE: (u32, u32) = (1, 1024);
+    /// The smallest and largest `image_decode_permits`.
+    pub const IMAGE_DECODE_PERMITS_RANGE: (u32, u32) = (1, 64);
 
     /// A copy with another per-node stream bound, bypassing the configuration bounds (tests).
     #[cfg(feature = "testing")]
@@ -176,6 +183,7 @@ struct RawAttachments {
     upload_receive_timeout_secs: Option<u64>,
     fingerprint_recheck_secs: Option<u64>,
     stream_permits_per_node: Option<u32>,
+    image_decode_permits: Option<u32>,
     encryption: Option<String>,
     scan: Option<RawScan>,
 }
@@ -380,6 +388,10 @@ impl AttachmentConfig {
         if let Some(v) = raw.stream_permits_per_node {
             let (low, high) = AttachmentLimits::STREAM_PERMITS_RANGE;
             limits.stream_permits_per_node = bounded("stream_permits_per_node", v, low, high)?;
+        }
+        if let Some(v) = raw.image_decode_permits {
+            let (low, high) = AttachmentLimits::IMAGE_DECODE_PERMITS_RANGE;
+            limits.image_decode_permits = bounded("image_decode_permits", v, low, high)?;
         }
         Ok(Self {
             write_store,

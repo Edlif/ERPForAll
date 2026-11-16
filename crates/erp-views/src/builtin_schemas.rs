@@ -108,6 +108,15 @@ static FIELD_OPTIONS: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::optional("whitelisted_values", &SHORTS),
     SchemaProperty::optional("blacklisted_values", &SHORTS),
     SchemaProperty::optional("digits", &DIGITS),
+    SchemaProperty::optional("size", &DIGITS),
+    SchemaProperty::optional("alt", &LABEL),
+    SchemaProperty::optional("img_class", &LABEL),
+    SchemaProperty::optional("accepted_file_extensions", &LABEL),
+    SchemaProperty::optional("zoom", &BOOL),
+    SchemaProperty::optional("reload", &BOOL),
+    SchemaProperty::optional("convert_to_webp", &BOOL),
+    SchemaProperty::optional("zoom_delay", &INT),
+    SchemaProperty::optional("preview_image", &FIELD_REF),
     // Relation criterion LHS paths are authorized against the occurrence comodel by H18.
     // This visitor still derives every root-record RHS expression dependency.
     SchemaProperty::optional("domain", &VALUE_EXPR),

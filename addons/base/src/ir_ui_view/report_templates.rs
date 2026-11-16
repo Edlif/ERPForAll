@@ -33,8 +33,8 @@ use std::collections::BTreeSet;
 use erp_sdk::load_state::INSTALL_MODE;
 use erp_sdk::prelude::*;
 use erp_sdk::report::{
-    AttachmentPolicy, FieldInfo, ReportError, ReportLimits, TemplateSource, check_attachment,
-    validate_arch,
+    AttachmentPolicy, FieldInfo, HelperDependencies, ReportError, ReportLimits, TemplateSource,
+    check_attachment, validate_arch,
 };
 use erp_sdk::views::{LimitKind, NodeRef, ViewCatalogue, ViewError, ViewLimits};
 use erp_sdk::{Context, Registry};
@@ -354,10 +354,13 @@ async fn check_report(tx: &mut Transaction, report: &Report, stage: Stage) -> Re
         };
     }
     if report.attachment {
+        // the letterhead prints the company logo with this helper; it reads no other field
+        let helpers = [HelperDependencies::new("image_data_uri", &[])];
         let registry = Arc::clone(tx.env().registry());
         let policy = AttachmentPolicy::new(&report.name, &report.model)
             .with_attachment(true)
-            .with_acknowledgement(report.acknowledged);
+            .with_acknowledgement(report.acknowledged)
+            .with_helpers(&helpers);
         let templates: Vec<TemplateSource<'_>> = sources
             .iter()
             .map(|(key, arch)| TemplateSource::new(key, arch))

@@ -237,6 +237,94 @@ impl std::fmt::Display for ParseSelectionOnDeleteError {
 
 impl std::error::Error for ParseSelectionOnDeleteError {}
 
+/// The largest picture an `Image` field stores (B6, S6). `0` on an edge means that edge
+/// is not bounded, as in the reference (`max_width=0`). A picture larger than a bound is scaled
+/// down keeping its aspect ratio; a smaller one is never enlarged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ImageBounds {
+    /// Largest stored width in pixels, `0` for none.
+    pub max_width: u32,
+    /// Largest stored height in pixels, `0` for none.
+    pub max_height: u32,
+}
+
+impl ImageBounds {
+    /// Smallest bound a declaration may give on an edge (S6).
+    pub const MIN_EDGE: u32 = 16;
+    /// Largest bound a declaration may give on an edge (S6).
+    pub const MAX_EDGE: u32 = 4096;
+
+    /// Bounds for a declaration: each edge is `0` (unbounded) or within
+    /// [`Self::MIN_EDGE`]..=[`Self::MAX_EDGE`].
+    ///
+    /// # Errors
+    /// A programming error naming the edge and the allowed range.
+    pub fn new(max_width: u32, max_height: u32) -> crate::Result<Self> {
+        for (edge, value) in [("max_width", max_width), ("max_height", max_height)] {
+            if value != 0 && !(Self::MIN_EDGE..=Self::MAX_EDGE).contains(&value) {
+                return Err(crate::Error::programming(format!(
+                    "image {edge} {value} is outside {}..={} (0 means unbounded)",
+                    Self::MIN_EDGE,
+                    Self::MAX_EDGE
+                )));
+            }
+        }
+        Ok(Self {
+            max_width,
+            max_height,
+        })
+    }
+
+    /// True when neither edge is bounded: the field stores the uploaded bytes unchanged.
+    pub fn is_unbounded(self) -> bool {
+        self.max_width == 0 && self.max_height == 0
+    }
+
+    /// The size a `width` x `height` picture is stored at: scaled down to fit both bounds with
+    /// its aspect ratio kept, never enlarged, never below one pixel on an edge.
+    ///
+    /// ```
+    /// use erp_fields::ImageBounds;
+    /// let b = ImageBounds { max_width: 128, max_height: 128 };
+    /// assert_eq!(b.fit(1920, 960), (128, 64));
+    /// assert_eq!(b.fit(100, 50), (100, 50));
+    /// ```
+    pub fn fit(self, width: u32, height: u32) -> (u32, u32) {
+        if width == 0 || height == 0 {
+            return (width, height);
+        }
+        let max_w = if self.max_width == 0 {
+            width
+        } else {
+            self.max_width
+        };
+        let max_h = if self.max_height == 0 {
+            height
+        } else {
+            self.max_height
+        };
+        if width <= max_w && height <= max_h {
+            return (width, height);
+        }
+        // compare max_w/width with max_h/height without floats: the smaller ratio wins
+        let (w, h, mw, mh) = (
+            u64::from(width),
+            u64::from(height),
+            u64::from(max_w),
+            u64::from(max_h),
+        );
+        // the scaled edge is at most its own bound (that ratio lost the comparison above), so the
+        // conversions cannot fail; the bound is the value they would stand for
+        if mw * h <= mh * w {
+            let scaled = (h * mw + w / 2) / w;
+            (max_w, u32::try_from(scaled.max(1)).unwrap_or(max_h))
+        } else {
+            let scaled = (w * mh + h / 2) / h;
+            (u32::try_from(scaled.max(1)).unwrap_or(max_w), max_h)
+        }
+    }
+}
+
 /// A field's type with its type-specific parameters, as resolved at registry build.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldType {
@@ -285,6 +373,14 @@ pub enum FieldType {
     TimestampTz,
     /// `Json` (`jsonb`).
     Json,
+    /// `Binary` (column-backed mode): file content in a `bytea` column. With `image`
+    /// bounds it is an `Image` field: content must be a raster picture of an allowed type, and a
+    /// bounded field stores the picture scaled down to its bounds. Both forms report the type name
+    /// `binary`, as in the reference. Never sortable, groupable, translatable or indexable.
+    Binary {
+        /// `Some` for an `Image` field; the bounds may be unbounded on either edge.
+        image: Option<ImageBounds>,
+    },
     /// `Many2one`, stored as an `int8` record id.
     Many2one {
         /// Target model name.
@@ -368,6 +464,7 @@ impl FieldType {
             Self::Xid8 => "xid8",
             Self::TimestampTz => "timestamptz",
             Self::Json => "json",
+            Self::Binary { .. } => "binary",
             Self::Many2one { .. } => "many2one",
             Self::One2many { .. } => "one2many",
             Self::Many2many { .. } => "many2many",
@@ -375,6 +472,14 @@ impl FieldType {
             Self::Many2oneReference { .. } => "many2one_reference",
             Self::DateRange { .. } => "date_range",
             Self::DatetimeRange { .. } => "datetime_range",
+        }
+    }
+
+    /// The image bounds of an `Image` field; `None` for every other type, a plain `Binary` included.
+    pub fn image_bounds(&self) -> Option<ImageBounds> {
+        match self {
+            Self::Binary { image } => *image,
+            _ => None,
         }
     }
 
@@ -446,6 +551,7 @@ impl FieldType {
             Self::Xid8 => ColumnType::Xid8,
             Self::TimestampTz => ColumnType::TimestampTz,
             Self::Json => ColumnType::Jsonb,
+            Self::Binary { .. } => ColumnType::Bytea,
             Self::Many2one { .. } | Self::Many2oneReference { .. } | Self::RowVersion => {
                 ColumnType::Int8
             }
@@ -477,6 +583,7 @@ impl FieldType {
             Self::Xid8 => Storage::Xid8,
             Self::TimestampTz => Storage::TimestampTz,
             Self::Json => Storage::Json,
+            Self::Binary { .. } => Storage::Bytes,
             Self::DateRange { bounds } => Storage::DateRange(*bounds),
             Self::DatetimeRange { bounds } => Storage::DatetimeRange(*bounds),
         }
@@ -517,6 +624,8 @@ pub enum Storage {
     TimestampTz,
     /// JSON document.
     Json,
+    /// File content (`bytea`).
+    Bytes,
     /// Ordered record ids (x2many values).
     Ids,
     /// [`crate::DateRange`], sent and read with the field's bounds.
@@ -562,6 +671,8 @@ pub enum ColumnType {
     TimestampTz,
     /// `jsonb`.
     Jsonb,
+    /// `bytea` (Binary and Image fields).
+    Bytea,
     /// `daterange`; the field's bounds decide how values are sent and read.
     DateRange(RangeBounds),
     /// `tsrange`; the field's bounds decide how values are sent and read.
@@ -585,6 +696,7 @@ impl ColumnType {
             Self::Xid8 => "xid8",
             Self::TimestampTz => "timestamptz",
             Self::Jsonb => "jsonb",
+            Self::Bytea => "bytea",
             Self::DateRange(_) => "daterange",
             Self::TsRange(_) => "tsrange",
         }
@@ -604,7 +716,9 @@ impl ColumnType {
             Self::Varchar(_) | Self::Uuid => 1,
             Self::Date => 2,
             Self::Jsonb | Self::DateRange(_) | Self::TsRange(_) => 3,
-            Self::Text => 4,
+            // variable-length and usually the widest value of a row: last among the varlena
+            // columns (no rank in the reference, whose default binary storage has no column)
+            Self::Text | Self::Bytea => 4,
             Self::Numeric => 5,
             Self::Bool => 6,
             Self::Timestamp | Self::TimestampTz => 7,

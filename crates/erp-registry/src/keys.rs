@@ -182,6 +182,7 @@ fn key_kind_refusal(ty: &FieldType) -> Option<&'static str> {
              bare database error; give the key a char field with a size",
         ),
         FieldType::Json => Some("JSON documents have no exact key equality"),
+        FieldType::Binary { .. } => Some("file content is not a key"),
         FieldType::One2many { .. } | FieldType::Many2many { .. } => {
             Some("x2many fields have no column")
         }

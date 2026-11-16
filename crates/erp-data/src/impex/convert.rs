@@ -570,9 +570,11 @@ impl Converter<'_> {
             FieldType::BigInt | FieldType::Uuid | FieldType::Xid8 | FieldType::TimestampTz => {
                 scalar(Value::str(text.ok_or_else(not_text)?), Vec::new())
             }
+            // a binary cell of a file holds base64, as an export writes it; the field decodes it
             FieldType::Char { .. }
             | FieldType::Text
             | FieldType::Html
+            | FieldType::Binary { .. }
             | FieldType::Reference { .. } => {
                 scalar(Value::str(text.ok_or_else(not_text)?), Vec::new())
             }

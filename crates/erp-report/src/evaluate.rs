@@ -9,19 +9,27 @@
 use crate::{
     Alignment, Diagnostic, DocTree, DocumentBuilder, DocumentOptions, Limits, Node, NodeId,
     PageCounter, ReportError, ReportProgram, Style,
+    asset::embedded_bytes,
     format::LangFormat,
     limits::millis,
-    look::{Look, Role, Size, Tint},
+    look::{self, Look, Role, Size, Tint},
+    probe_image,
     program::{Argument, At, Attr, Code, Content, Element, Op, Part},
-    records::RecordStore,
-    validate::validate_attribute,
+    records::{IMAGE, RecordStore},
+    validate::{embedded_image, validate_attribute},
     widget::{self, Piece},
 };
-use erp_expr::{EvalContext, ExprObject, ExprResult, ExprValue, Map, Seq, eval_ast};
+use erp_expr::{EvalContext, ExprError, ExprObject, ExprResult, ExprValue, Map, Seq, eval_ast};
 use std::{rc::Rc, sync::Arc, time::Instant};
 
 const FRAGMENT: &str = "report.fragment";
 const VECTORS_TASK: &str = "a later release";
+/// The helper a template gives an image field to for an `<img>` source, as in the reference.
+const IMAGE_HELPER: &str = "image_data_uri";
+/// Points of one CSS pixel: the natural size of an image is its pixel size at 96 per inch.
+const POINTS_PER_PIXEL: f64 = 0.75;
+/// The largest side of an image, in points (the document's own bound).
+const IMAGE_POINTS_MAX: f64 = 14400.0;
 
 /// What an evaluation needs besides the program, the context and the records.
 #[derive(Debug, Clone)]
@@ -132,6 +140,40 @@ impl Item {
         !matches!(self, Self::Text(_) | Self::Node { block: false, .. })
     }
 }
+/// The attributes of one element after evaluation.
+#[derive(Default)]
+struct Attrs {
+    text: Vec<(String, String)>,
+    /// The image value given as the `src` of an `<img>`.
+    image: Option<Arc<[u8]>>,
+}
+impl Attrs {
+    fn put(&mut self, name: &str, value: Option<String>) {
+        self.text.retain(|(known, _)| known != name);
+        if name == "src" {
+            self.image = None;
+        }
+        if let Some(value) = value {
+            self.text.push((name.into(), value));
+        }
+    }
+    fn get(&self, name: &str) -> Option<&str> {
+        let found = self.text.iter().find(|(known, _)| known == name);
+        found.map(|(_, value)| value.as_str())
+    }
+    /// The value of one property of the `style` attribute, the last one written.
+    fn style(&self, property: &str) -> Option<&str> {
+        self.get("style")?
+            .split(';')
+            .filter_map(|item| item.split_once(':'))
+            .filter(|(name, _)| name.trim() == property)
+            .map(|(_, value)| value.trim())
+            .next_back()
+    }
+    fn look(&self, tag: &str) -> Look {
+        Look::of(tag, self.text.iter().map(|(n, v)| (n.as_str(), v.as_str())))
+    }
+}
 /// Template operations with the names they were written under.
 struct Closure<'p> {
     ops: &'p [Op],
@@ -222,8 +264,24 @@ impl ReportProgram {
             head: false,
             pending: false,
         };
+        // `image_data_uri(record.image_field)` is part of the profile, whatever the caller bound.
+        let mut context = context.clone();
+        context.set_function(IMAGE_HELPER, |args, kwargs, _| match args {
+            [image @ ExprValue::Object(object)]
+                if kwargs.is_empty() && object.type_name() == IMAGE =>
+            {
+                Ok(image.clone())
+            }
+            [other] if kwargs.is_empty() => Err(ExprError::type_error(format!(
+                "{IMAGE_HELPER}() takes the value of an image field that is set, got '{}'",
+                other.type_name()
+            ))),
+            _ => Err(ExprError::type_error(format!(
+                "{IMAGE_HELPER}() takes one argument, the value of an image field"
+            ))),
+        });
         let mut scope = Scope {
-            context: context.clone(),
+            context,
             slot: None,
         };
         let mut items = Vec::new();
@@ -717,26 +775,44 @@ impl<'p> Run<'p> {
             Err(other) => Err(other),
         }
     }
-    /// The element's attributes after evaluation, as its appearance.
-    fn resolve(&mut self, element: &'p Element, scope: &Scope<'p>) -> Result<Look, ReportError> {
-        fn put(attrs: &mut Vec<(String, String)>, name: &str, value: Option<String>) {
-            attrs.retain(|(known, _)| known != name);
-            if let Some(value) = value {
-                attrs.push((name.into(), value));
-            }
+    /// One evaluated attribute. An image value is the `src` of an `<img>` and of nothing else:
+    /// it is kept beside the text attributes, which go through the profile.
+    fn evaluated(
+        &self,
+        element: &Element,
+        attrs: &mut Attrs,
+        name: &str,
+        value: ExprValue,
+    ) -> Result<(), ReportError> {
+        if element.tag == "img"
+            && name == "src"
+            && let Some(image) = self.records.image(&value)
+        {
+            attrs.put(name, None);
+            attrs.image = Some(image);
+            return Ok(());
         }
+        attrs.put(name, self.checked(element, name, value)?);
+        Ok(())
+    }
+    /// The element's attributes after evaluation, a later one replacing an earlier one of its name.
+    fn attributes(
+        &mut self,
+        element: &'p Element,
+        scope: &Scope<'p>,
+    ) -> Result<Attrs, ReportError> {
         let at = &element.at;
-        let mut attrs: Vec<(String, String)> = Vec::new();
+        let mut attrs = Attrs::default();
         for attr in &element.attrs {
             match attr {
-                Attr::Static { name, value } => put(&mut attrs, name, Some(value.clone())),
+                Attr::Static { name, value } => attrs.put(name, Some(value.clone())),
                 Attr::Value { name, code } => {
                     let value = self.eval(code, scope, at)?;
-                    put(&mut attrs, name, self.checked(element, name, value)?);
+                    self.evaluated(element, &mut attrs, name, value)?;
                 }
                 Attr::Format { name, parts } => {
                     let value = ExprValue::str(self.format(parts, scope, at)?);
-                    put(&mut attrs, name, self.checked(element, name, value)?);
+                    self.evaluated(element, &mut attrs, name, value)?;
                 }
                 Attr::Mapping(code) => match self.eval(code, scope, at)? {
                     ExprValue::None | ExprValue::Bool(false) => {}
@@ -745,11 +821,7 @@ impl<'p> Run<'p> {
                             let ExprValue::Str(name) = name else {
                                 return Err(at.evaluate("t-att names must be strings"));
                             };
-                            put(
-                                &mut attrs,
-                                name,
-                                self.checked(element, name, value.clone())?,
-                            );
+                            self.evaluated(element, &mut attrs, name, value.clone())?;
                         }
                     }
                     other => {
@@ -761,10 +833,119 @@ impl<'p> Run<'p> {
                 },
             }
         }
-        Ok(Look::of(
-            &element.tag,
-            attrs.iter().map(|(n, v)| (n.as_str(), v.as_str())),
-        ))
+        Ok(attrs)
+    }
+    /// The element's attributes after evaluation, as its appearance.
+    fn resolve(&mut self, element: &'p Element, scope: &Scope<'p>) -> Result<Look, ReportError> {
+        Ok(self.attributes(element, scope)?.look(&element.tag))
+    }
+    /// `<img>`: the image of an embedded `src` or of an image field, at the size its attributes
+    /// and style give. Without a source it prints nothing, as the reference leaves it empty.
+    fn image(
+        &mut self,
+        element: &'p Element,
+        scope: &Scope<'p>,
+        inherit: &Inherit,
+        out: &mut Vec<Item>,
+    ) -> Result<(), ReportError> {
+        let at = &element.at;
+        let attrs = self.attributes(element, scope)?;
+        if attrs.look("img").hidden {
+            return Ok(());
+        }
+        let data: Arc<[u8]> = match (&attrs.image, attrs.get("src")) {
+            (Some(image), _) => image.clone(),
+            (None, Some(source)) if embedded_image(source) => {
+                let bytes = embedded_bytes(source, &self.options.limits)?;
+                self.charge(bytes.len())?;
+                bytes.into()
+            }
+            // The data stage does not read an image by its path yet.
+            (None, Some(_)) => {
+                return Err(ReportError::Unsupported {
+                    feature: "images read by their path while printing",
+                    task: "a later release",
+                });
+            }
+            (None, None) => return Ok(()),
+        };
+        let (current, base) = (inherit.text.size, self.base);
+        // The style wins over the `width` and `height` attributes; a bare number is pixels.
+        let sides = |name: &str| {
+            let styled = attrs.style(name).filter(|value| *value != "auto");
+            let written = styled.or_else(|| attrs.get(name).filter(|_| !name.starts_with("max")));
+            written
+                .and_then(|value| match value.parse::<u32>() {
+                    Ok(pixels) => Some(Size::Points(f64::from(pixels) * POINTS_PER_PIXEL)),
+                    Err(_) => look::length(value, false),
+                })
+                .map(|size| size.points(current, base))
+        };
+        let wanted = [
+            sides("width"),
+            sides("height"),
+            sides("max-width"),
+            sides("max-height"),
+        ];
+        let alt = attrs.get("alt").unwrap_or_default().to_owned();
+        self.picture(data, wanted, alt, at, out)
+    }
+    /// An image node of `data`: `[width, height, max-width, max-height]` in points size it, the
+    /// side that is not given follows the image's proportions, and nothing given is its natural
+    /// size (a pixel is 0.75 points). A user SVG has no pixel size: it takes what is given.
+    fn picture(
+        &mut self,
+        data: Arc<[u8]>,
+        [width, height, max_width, max_height]: [Option<f64>; 4],
+        alt: String,
+        at: &At,
+        out: &mut Vec<Item>,
+    ) -> Result<(), ReportError> {
+        let info = probe_image(&data, &self.options.limits)?;
+        let natural = (info.width() > 0 && info.height() > 0).then(|| {
+            (
+                f64::from(info.width()) * POINTS_PER_PIXEL,
+                f64::from(info.height()) * POINTS_PER_PIXEL,
+            )
+        });
+        let (width, height) = match natural {
+            Some((wide, high)) => {
+                let (mut w, mut h) = match (width, height) {
+                    (Some(w), Some(h)) => (w, h),
+                    (Some(w), None) => (w, w * high / wide),
+                    (None, Some(h)) => (h * wide / high, h),
+                    (None, None) => (wide, high),
+                };
+                // A maximum shrinks both sides alike, as `height: auto` does beside it.
+                let scale = [max_width.map(|max| max / w), max_height.map(|max| max / h)]
+                    .into_iter()
+                    .flatten()
+                    .fold(1.0, f64::min);
+                w *= scale;
+                h *= scale;
+                (Some(w), Some(h))
+            }
+            None => (width.or(max_width), height.or(max_height)),
+        };
+        if [width, height]
+            .into_iter()
+            .flatten()
+            .any(|side| !side.is_finite() || side <= 0.0 || side > IMAGE_POINTS_MAX)
+        {
+            return Err(at.evaluate(format!(
+                "the width and height of an image must be in (0, {IMAGE_POINTS_MAX}] points"
+            )));
+        }
+        self.node(
+            Node::Image {
+                data,
+                width,
+                height,
+                alt,
+            },
+            false,
+            out,
+        )
     }
     fn own(&self, tag: &str, look: &Look, inherit: &Inherit) -> Own {
         let mut text = inherit.text;
@@ -951,6 +1132,10 @@ impl<'p> Run<'p> {
         out: &mut Vec<Item>,
     ) -> Result<(), ReportError> {
         let at = &element.at;
+        let tag = element.tag.as_str();
+        if tag == "img" {
+            return self.image(element, scope, inherit, out);
+        }
         let resolved;
         let look = match &element.look {
             Some(look) => look,
@@ -963,10 +1148,9 @@ impl<'p> Run<'p> {
         if look.hidden {
             return Ok(());
         }
-        let tag = element.tag.as_str();
-        if tag == "img" || look.icon {
+        if look.icon {
             return Err(ReportError::Unsupported {
-                feature: "images and icons",
+                feature: "icons",
                 task: VECTORS_TASK,
             });
         }
@@ -1112,6 +1296,13 @@ impl<'p> Run<'p> {
                     match piece {
                         Piece::Text(text) => self.text(kids, &text)?,
                         Piece::Break => self.node(Node::LineBreak, false, kids)?,
+                        Piece::Image {
+                            data,
+                            max: [wide, high],
+                        } => {
+                            let sides = [None, None, wide, high];
+                            self.picture(data, sides, String::new(), at, kids)?;
+                        }
                     }
                 }
                 Ok(true)

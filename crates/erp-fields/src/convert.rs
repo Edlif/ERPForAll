@@ -340,6 +340,8 @@ pub fn validate_cell(field: FieldRef<'_>, ty: &FieldType, cell: Cell) -> Result<
             }
         }
         (FieldType::Json, Cell::Json(j)) if !json_truthy(&j) => Ok(Cell::Null),
+        // empty content is "no value": a read reports it as false
+        (FieldType::Binary { .. }, Cell::Bytes(b)) if b.is_empty() => Ok(Cell::Null),
         (FieldType::Many2one { .. }, Cell::Id(id)) if id <= 0 => Err(Error::validation(format!(
             "Invalid value for {}.{}: {id}",
             field.model, field.field
@@ -423,6 +425,63 @@ fn range_of<T: Copy + Ord>(
             _ => Err(bad()),
         },
         _ => Err(bad()),
+    }
+}
+
+/// The cell of a Binary or Image field (B4, column-backed mode). Accepted: `false` (the
+/// content is removed), strict padded base64 text (the RPC form), a map with `content` in base64
+/// (the reference's `{filename, content}` write form; the file name is not stored by a column),
+/// and bytes given in process. Empty content is no value.
+///
+/// Image checks (type, pixels, resizing) are not done here: they need the database's limits and
+/// run at the ORM's admission step.
+fn binary_cell(field: FieldRef<'_>, value: &Value) -> Result<Cell> {
+    let decoded = |text: &str| -> Result<Cell> {
+        if text.is_empty() {
+            return Ok(Cell::Null);
+        }
+        let bytes = crate::base64::decode_strict(text).map_err(|error| {
+            // the message names the field and the defect, never the content
+            Error::validation(format!(
+                "Invalid value for {}.{}: the content is not valid base64 ({error})",
+                field.model, field.field
+            ))
+        })?;
+        Ok(Cell::Bytes(crate::Blob::from(bytes)))
+    };
+    match value {
+        Value::False | Value::Bool(false) => Ok(Cell::Null),
+        Value::Str(text) => decoded(text),
+        Value::Bytes(bytes) if bytes.is_empty() => Ok(Cell::Null),
+        Value::Bytes(bytes) => Ok(Cell::Bytes(crate::Blob::from(Arc::clone(bytes)))),
+        Value::Map(map) => match map.get("content") {
+            Some(Value::Str(text)) => decoded(text),
+            Some(Value::False | Value::Bool(false)) => Ok(Cell::Null),
+            _ => Err(Error::validation(format!(
+                "Invalid value for {}.{}: a map needs 'content' in base64",
+                field.model, field.field
+            ))),
+        },
+        other => Err(Error::validation(format!(
+            "Invalid value for {}.{}: expected base64 text or false, got {}",
+            field.model,
+            field.field,
+            value_type_name(other)
+        ))),
+    }
+}
+
+/// The kind of a dynamic value, for a message that must not echo the value itself.
+fn value_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::False | Value::Bool(_) => "a boolean",
+        Value::Int(_) | Value::BigInt(_) => "an integer",
+        Value::Float(_) | Value::Decimal(_) => "a number",
+        Value::Str(_) => "text",
+        Value::Bytes(_) => "bytes",
+        Value::List(_) => "a list",
+        Value::Map(_) => "a map",
+        _ => "another value",
     }
 }
 
@@ -601,6 +660,7 @@ fn coerce(field: FieldRef<'_>, ty: &FieldType, value: &Value) -> Result<Cell> {
         } else {
             Cell::Null
         }),
+        FieldType::Binary { .. } => binary_cell(field, value),
         FieldType::Many2one { .. } => match value {
             Value::False => Ok(Cell::Null),
             Value::Int(i) if *i > 0 => Ok(Cell::Id(*i)),

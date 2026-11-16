@@ -393,7 +393,9 @@ fn parse_field(name: &str, attr: &syn::Attribute) -> syn::Result<FieldOut> {
             }
             "digits" | "size" | "currency_field" | "selection" | "selection_method"
             | "selection_add" | "comodel" | "ondelete" | "inverse_name" | "relation"
-            | "column1" | "column2" | "model_field" | "bounds" => kind_opts.push(meta),
+            | "column1" | "column2" | "model_field" | "bounds" | "max_width" | "max_height" => {
+                kind_opts.push(meta)
+            }
             other => return err(meta.span(), format!("unknown field parameter `{other}`")),
         }
     }
@@ -497,6 +499,24 @@ fn parse_field(name: &str, attr: &syn::Attribute) -> syn::Result<FieldOut> {
         "xid8" => (quote!(#rt::KindDecl::Xid8), quote!(Xid8)),
         "timestamptz" => (quote!(#rt::KindDecl::TimestampTz), quote!(TimestampTz)),
         "json" => (quote!(#rt::KindDecl::Json), quote!(Json)),
+        "binary" => (
+            quote!(#rt::KindDecl::Binary { image: ::core::option::Option::None }),
+            quote!(Binary),
+        ),
+        "image" => {
+            // an edge left out is unbounded (0), as in the reference
+            let edge = |k: &str| -> syn::Result<u32> {
+                match opt(k) {
+                    Some(m) => lit_u32(value(m)?),
+                    None => Ok(0),
+                }
+            };
+            let (w, h) = (edge("max_width")?, edge("max_height")?);
+            (
+                quote!(#rt::KindDecl::Binary { image: ::core::option::Option::Some((#w, #h)) }),
+                quote!(Binary),
+            )
+        }
         "many2one" => {
             let Some(m) = opt("comodel") else {
                 return err(attr.span(), "many2one needs comodel = \"model.name\"");
@@ -612,6 +632,7 @@ fn parse_field(name: &str, attr: &syn::Attribute) -> syn::Result<FieldOut> {
             "relation" | "column1" | "column2" => kind == "many2many",
             "model_field" => kind == "many2one_reference",
             "bounds" => matches!(kind.as_str(), "date_range" | "datetime_range"),
+            "max_width" | "max_height" => kind == "image",
             _ => false,
         };
         if !ok {

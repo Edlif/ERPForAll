@@ -617,7 +617,10 @@ fn predicate_matches(predicate: FieldPredicate, field: &erp_sdk::FieldSpec) -> R
             column
                 && !matches!(
                     field.ty,
-                    FieldType::Json | FieldType::DateRange { .. } | FieldType::DatetimeRange { .. }
+                    FieldType::Json
+                        | FieldType::Binary { .. }
+                        | FieldType::DateRange { .. }
+                        | FieldType::DatetimeRange { .. }
                 )
         }
         _ => {
@@ -896,6 +899,7 @@ impl<'a> Request<'a> {
                     // data) is left out here. An unsupported field that a view references itself
                     // still fails loudly through the explicit reference path.
                     if predicate_matches(*predicate, field)?
+                        && !matches!(field.ty, FieldType::Binary { .. })
                         && crate::metadata::field_kind(model, field).is_ok()
                         && path_allowed(env, tx, model, field.name).await?
                     {

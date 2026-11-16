@@ -91,6 +91,7 @@ Each
         <div class="oe_button_box" name="button_box">
           <button class="oe_stat_button" name="action_all_company_branches" type="object" string="Branches" invisible="not all_child_ids"><field name="child_ids" widget="relation_count" string="Branches"/></button>
         </div>
+        <field name="logo" widget="image" options="{'size': [0, 120], 'preview_image': 'logo_web', 'zoom': True}" alt="Company logo"/>
         <field name="name"/>
         <notebook>
           <page name="general_info" string="General Information">

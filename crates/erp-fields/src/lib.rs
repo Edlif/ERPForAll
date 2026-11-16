@@ -35,7 +35,8 @@ mod value;
 pub use uuid::Uuid;
 
 pub use cell::{
-    Cell, FieldTranslations, FieldValue, IntoFieldValue, RealId, RecId, RefType, ValueFor, kinds,
+    Blob, Cell, FieldTranslations, FieldValue, IntoFieldValue, RealId, RecId, RefType, ValueFor,
+    kinds,
 };
 pub use error::{Condition, Error, ErrorKind, Result};
 pub use label::default_label;
@@ -46,7 +47,7 @@ pub use rust_decimal::Decimal;
 pub use serde_json;
 pub use temporal::{Date, DateTime};
 pub use types::{
-    ColumnGenerated, ColumnType, Digits, FieldType, GeneratedStorage, IndexKind, M2mRelation,
-    OnDelete, ParseSelectionOnDeleteError, SelectionOnDelete, Storage, TextCollation,
+    ColumnGenerated, ColumnType, Digits, FieldType, GeneratedStorage, ImageBounds, IndexKind,
+    M2mRelation, OnDelete, ParseSelectionOnDeleteError, SelectionOnDelete, Storage, TextCollation,
 };
 pub use value::{Value, ValueMap};

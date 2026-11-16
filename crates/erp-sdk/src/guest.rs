@@ -19,9 +19,10 @@ pub use rt::{
 pub use erp_fields::TextCollation;
 pub use erp_fields::money;
 pub use erp_fields::{
-    BigInt, Cell, ColumnType, Condition, Date, DateRange, DateTime, DatetimeRange, Decimal, Digits,
-    Error, ErrorKind, FieldType, FieldValue, IndexKind, OnDelete, Range, RangeBounds, RangeValue,
-    RealId, RecId, Result, TimestampTz, Uuid, Value, ValueMap, Xid8, serde_json,
+    BigInt, Blob, Cell, ColumnType, Condition, Date, DateRange, DateTime, DatetimeRange, Decimal,
+    Digits, Error, ErrorKind, FieldType, FieldValue, ImageBounds, IndexKind, OnDelete, Range,
+    RangeBounds, RangeValue, RealId, RecId, Result, TimestampTz, Uuid, Value, ValueMap, Xid8,
+    serde_json,
 };
 use erp_fields::{IntoFieldValue, RefType, ValueFor, kinds};
 pub use erp_macros::{addon, extend, methods, model, model_ref};

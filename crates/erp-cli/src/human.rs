@@ -1117,6 +1117,10 @@ pub(crate) async fn open_attachments(
 ) -> Result<Arc<erp_sdk::blob::AttachmentRuntime>> {
     let settings = erp_sdk::blob::AttachmentConfig::from_toml(config.attachments_toml())
         .map_err(|error| failed(format!("attachments configuration: {error}")))?;
+    // the node's image decode bound (S4) sizes the ORM's process-wide decode pool
+    erp_sdk::image::DecodePool::global()
+        .set_permits(settings.limits.image_decode_permits)
+        .map_err(|error| failed(format!("attachments configuration: {error}")))?;
     erp_sdk::blob::AttachmentRuntime::open(settings)
         .await
         .map(Arc::new)

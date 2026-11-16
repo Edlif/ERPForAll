@@ -66,12 +66,16 @@ pub use erp_fields::TextCollation;
 /// `FxSnapshot` and the strict decimal text. Pure; also built for the WASM guest.
 pub use erp_fields::money;
 pub use erp_fields::{
-    BigInt, Cell, ColumnType, Condition, Date, DateRange, DateTime, DatetimeRange, Decimal, Digits,
-    Error, ErrorKind, FieldType, FieldValue, IndexKind, OnDelete, Range, RangeBounds, RangeValue,
-    RealId, RecId, Result, TimestampTz, Uuid, Value, ValueMap, Xid8, serde_json,
+    BigInt, Blob, Cell, ColumnType, Condition, Date, DateRange, DateTime, DatetimeRange, Decimal,
+    Digits, Error, ErrorKind, FieldType, FieldValue, ImageBounds, IndexKind, OnDelete, Range,
+    RangeBounds, RangeValue, RealId, RecId, Result, TimestampTz, Uuid, Value, ValueMap, Xid8,
+    serde_json,
 };
 /// The kind of a principal (user, agent, service, public, link, system).
 pub use erp_orm::PrincipalKind;
+/// Image fields: the database's image limits ([`image::ImagePolicy`]), the system parameter names
+/// and the admission function an `Image` field applies (B6).
+pub use erp_orm::image;
 /// Serialization traits used by the typed SDK wire schemas.
 pub mod serde {
     pub use serde::{Deserialize, Serialize};
@@ -491,8 +495,8 @@ pub mod prelude {
     pub use std::sync::Arc;
 
     pub use crate::{
-        Assign, Base, Batch, BigInt, Cell, Cmd, Command, ComputeSuper, Cursor, Date, DateRange,
-        DateTime, DatetimeRange, Decimal, Domain, Env, Error, Field, FieldAccessCtx,
+        Assign, Base, Batch, BigInt, Blob, Cell, Cmd, Command, ComputeSuper, Cursor, Date,
+        DateRange, DateTime, DatetimeRange, Decimal, Domain, Env, Error, Field, FieldAccessCtx,
         FieldAccessSuper, FieldMask, FieldOp, FieldSearchContext, FieldSearchRequest,
         FieldSearchSuper, GroupValue, Groups, Many2one, NameSearch, Notice, NoticeKind,
         OnchangeResult, Operator, Page, RawVals, ReadGroup, ReadTx, RecId, RecordSet, Records,

@@ -818,6 +818,11 @@ async fn create_records_inner(
             } else {
                 validate_cell(fref(spec, field), &field.ty, cell.clone())?
             };
+            if matches!(validated, Cell::Bytes(_)) && field.ty.image_bounds().is_some() {
+                // the database's image limits, read once per transaction and only when a picture
+                // is written
+                tx.ensure_image_policy(spec).await?;
+            }
             let validated = tx.admit_html_cell(spec, field, validated)?;
             crate::precision::validate(tx, &env, spec, field, &validated).await?;
             if field.company_default_for.is_some() {
@@ -1870,6 +1875,9 @@ pub(crate) async fn write_records(
         if name == "id" || (is_magic(name) && spec.log_access) {
             continue;
         }
+        if matches!(cell, Cell::Bytes(_)) && field.ty.image_bounds().is_some() {
+            tx.ensure_image_policy(spec).await?;
+        }
         let mut cell = if field.translate {
             cell.clone()
         } else if matches!(field.ty, FieldType::Html) {
@@ -1877,7 +1885,9 @@ pub(crate) async fn write_records(
         } else if all_new {
             crate::newrec::new_record_cell(spec, field, cell.clone(), tx)?
         } else {
-            validate_cell(fref(spec, field), &field.ty, cell.clone())?
+            // a picture is checked and resized to its field's bounds before it reaches the cache
+            let cell = validate_cell(fref(spec, field), &field.ty, cell.clone())?;
+            tx.admit_image_cell(spec, field, cell)?
         };
         if let Some(fc) = graph.compute(field.id)
             && let crate::graph::Source::RelatedPath(path) = &fc.source
@@ -1909,9 +1919,12 @@ pub(crate) async fn write_records(
         {
             let target_spec = spec.field_by_id(target);
             crate::database_generated::check_assignment(spec, target_spec)?;
-            // the target keeps its own HTML policy (review r1 M2); the related field's cache
-            // holds the stored value, so a read through it shows what was saved
-            if matches!(target_spec.ty, FieldType::Html) && !target_spec.translate {
+            // the target keeps its own HTML policy (review r1 M2) and its own image bounds, as
+            // on create; the related field's cache holds the stored value, so a read through it
+            // shows what was saved
+            if (matches!(target_spec.ty, FieldType::Html) && !target_spec.translate)
+                || target_spec.ty.image_bounds().is_some()
+            {
                 cell = tx.admit_html_cell(spec, target_spec, cell)?;
             }
             items.push((target, cell.clone(), false));
@@ -2327,6 +2340,11 @@ pub(crate) fn array_param(
         Storage::Json => Box::new(collect(cells, |c| match c {
             Cell::Null => Some(None),
             Cell::Json(j) => Some(Some(erp_fields::serde_json::Value::clone(&j))),
+            _ => None,
+        })?),
+        Storage::Bytes => Box::new(collect::<Vec<u8>>(cells, |c| match c {
+            Cell::Null => Some(None),
+            Cell::Bytes(b) => Some(Some(b.to_vec())),
             _ => None,
         })?),
         Storage::Ids => {

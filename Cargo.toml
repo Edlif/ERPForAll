@@ -158,6 +158,9 @@ sha1 = "0.11"
 # Magic-number content detection of the attachment store (and 14; MIT). Only
 # the `alloc` feature (`Infer::new`): `std` would bring `cfb` and its graph for Office containers.
 infer = { version = "0.22", default-features = false, features = ["alloc"] }
+# Image fields (B6; MIT OR Apache-2.0, already in the graph through the report engine): the
+# PNG and JPEG codecs here; erp-orm adds GIF and WebP to scale those down. SVG is refused.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 # The S3-compatible attachment store (MIT OR Apache-2.0, Apache Arrow project):
 # only the `aws` service client. Credentials come from the environment or an instance role.
 object_store = { version = "0.14", default-features = false, features = ["aws"] }

@@ -60,6 +60,8 @@ pub(crate) fn native_type(ty: &FieldType) -> Option<&'static str> {
         FieldType::Uuid => Some("uuid"),
         FieldType::Xid8 => Some("xid8"),
         FieldType::TimestampTz => Some("timestamptz"),
+        // file content has no ABI1 value form
+        FieldType::Binary { .. } => Some("binary"),
         FieldType::Id
         | FieldType::Boolean
         | FieldType::Integer
@@ -89,6 +91,7 @@ fn native_cell(cell: &Cell) -> Option<&'static str> {
         Cell::Uuid(_) => Some("uuid"),
         Cell::Xid8(_) => Some("xid8"),
         Cell::TimestampTz(_) => Some("timestamptz"),
+        Cell::Bytes(_) => Some("binary"),
         Cell::Null
         | Cell::Bool(_)
         | Cell::Int(_)

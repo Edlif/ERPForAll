@@ -276,6 +276,7 @@ pub(super) async fn authorize(
                     FieldType::One2many { .. }
                         | FieldType::Many2many { .. }
                         | FieldType::Json
+                        | FieldType::Binary { .. }
                         | FieldType::DateRange { .. }
                         | FieldType::DatetimeRange { .. }
                 )

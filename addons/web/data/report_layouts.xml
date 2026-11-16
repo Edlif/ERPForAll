@@ -16,12 +16,19 @@ The two layouts a printed report calls. Both take the caller's
         <div class="header">
             <div class="row border-bottom pb-2">
                 <div class="col-6">
-                    <div class="fw-bold" style="font-size: 12pt" t-field="company.name"/>
-                    <div class="small text-muted" t-if="company.street or company.street2">
-                        <span t-if="company.street" t-field="company.street"/><t t-if="company.street and company.street2">, </t><span t-if="company.street2" t-field="company.street2"/>
-                    </div>
-                    <div class="small text-muted" t-if="company.zip or company.city">
-                        <span t-field="company.zip"/> <span t-field="company.city"/>
+                    <div class="row">
+                        <div class="col-4" t-if="company.logo">
+                            <img t-att-src="image_data_uri(company.logo)" style="max-height: 45px" alt="Logo"/>
+                        </div>
+                        <div t-att-class="'col-8' if company.logo else 'col-12'">
+                            <div class="fw-bold" style="font-size: 12pt" t-field="company.name"/>
+                            <div class="small text-muted" t-if="company.street or company.street2">
+                                <span t-if="company.street" t-field="company.street"/><t t-if="company.street and company.street2">, </t><span t-if="company.street2" t-field="company.street2"/>
+                            </div>
+                            <div class="small text-muted" t-if="company.zip or company.city">
+                                <span t-field="company.zip"/> <span t-field="company.city"/>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="col-6 text-end small text-muted">

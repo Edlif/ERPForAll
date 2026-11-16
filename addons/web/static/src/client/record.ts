@@ -183,6 +183,8 @@ export class RecordState {
   /** Effective presentation/save policy from the last successful form evaluation. */
   get currentFields(): readonly Field[] { return this.effectiveFields; }
   get dirty(): boolean { return this.changes.size !== 0; }
+  /** Whether `name` differs from the loaded or last saved value. */
+  isChanged(name: string): boolean { return this.changes.has(name); }
   get busy(): boolean { return this.pending; }
   /** A sent save requires authoritative readback before another write. */
   get writeUncertain(): boolean { return this.unknownWrite; }

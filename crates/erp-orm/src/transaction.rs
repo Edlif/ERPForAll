@@ -1629,6 +1629,7 @@ impl Orm {
             scoped_ids: FxHashMap::default(),
             html_reports: crate::html::Reports::default(),
             html_mode: erp_fields::html::SanitizeMode::Clean,
+            image_policy: None,
             notices: Vec::new(),
             savepoint_notices: Vec::new(),
             notices_overflowed: 0,
@@ -2663,6 +2664,8 @@ pub struct Transaction {
     pub(crate) notices: Vec<Notice>,
     pub(crate) html_reports: crate::html::Reports,
     pub(crate) html_mode: erp_fields::html::SanitizeMode,
+    /// The database's image limits, once a write entry point loaded them (`crate::image`).
+    pub(crate) image_policy: Option<crate::image::ImagePolicy>,
     /// Notice counts at the start of open savepoints, for rollback truncation.
     savepoint_notices: Vec<usize>,
     /// Notices refused because the channel was full, this attempt.
@@ -5535,6 +5538,7 @@ impl Transaction {
         self.now = None;
         self.html_reports.clear();
         self.html_mode = erp_fields::html::SanitizeMode::Clean;
+        self.image_policy = None;
         self.notices.clear();
         self.savepoint_notices.clear();
         self.notices_overflowed = 0;

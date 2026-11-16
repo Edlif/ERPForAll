@@ -23,7 +23,7 @@ use erp_fields::{
     Cell, ColumnType, Date, DateTime, Decimal, Error, FieldType, RecId, Result, Value,
 };
 use erp_registry::{FieldId, FieldSpec, ModelId, ModelSpec};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::Transaction;
 use crate::access::Operation;
@@ -122,6 +122,14 @@ pub(crate) fn decode<R: CellSource + ?Sized>(row: &R, idx: usize, ty: ColumnType
             .cell::<Option<erp_fields::serde_json::Value>>(idx)
             .map_err(map)?
             .map_or(Cell::Null, |v| Cell::Json(Arc::new(v))),
+        // empty content is no value, as a write stores it
+        ColumnType::Bytea => row
+            .cell::<Option<&[u8]>>(idx)
+            .map_err(map)?
+            .filter(|bytes| !bytes.is_empty())
+            .map_or(Cell::Null, |bytes| {
+                Cell::Bytes(erp_fields::Blob::from(bytes))
+            }),
         // ranges are read with their field's bounds
         ColumnType::DateRange(bounds) => {
             match row
@@ -493,6 +501,8 @@ impl Transaction {
                 // many2one rec names are handled above; a many2one_reference reads its id
                 Cell::Id(id) => Cell::Str(Arc::from(id.to_string())),
                 Cell::Json(j) => Cell::Str(Arc::from(j.to_string())),
+                // file content has no text form
+                Cell::Bytes(_) => Cell::Null,
                 // `[lower, upper]` with False for an unbounded end, like the dynamic value
                 cell @ (Cell::DateRange(_) | Cell::DatetimeRange(_)) => {
                     Cell::Str(Arc::from(Value::from_cell(&cell).to_string()))
@@ -776,6 +786,76 @@ impl Transaction {
             || (field.ty.is_x2many() && field.compute.is_none() && field.related.is_none())
     }
 
+    /// The size in bytes of a binary field's value for each record of `records` (`None` when
+    /// empty), after [`Self::field_read_checks`]. A stored column read for database records that
+    /// this transaction holds no value or pending computation for is sized by PostgreSQL
+    /// (`octet_length`), so the content is never fetched; every other case sizes the values the
+    /// ordinary read gives.
+    async fn binary_sizes(
+        &mut self,
+        records: &Records,
+        field: &FieldSpec,
+    ) -> Result<Vec<Option<usize>>> {
+        let model = records.model_id();
+        let ids = records.rec_ids();
+        let by_column = field.store
+            && field.has_column()
+            && field.inherited.is_none()
+            && records.spec().has_table()
+            && ids.iter().all(|id| {
+                !id.is_new()
+                    && !self.cache.contains(model, field.id, *id)
+                    && !self
+                        .cache
+                        .model(model)
+                        .is_some_and(|cache| cache.is_pending(field.id, *id))
+            });
+        if !by_column {
+            return Ok(self
+                .field_cells_checked(records, field.id)
+                .await?
+                .into_iter()
+                .map(|cell| match cell {
+                    Cell::Bytes(content) => Some(content.len()),
+                    _ => None,
+                })
+                .collect());
+        }
+        let raw: Vec<i64> = ids.iter().map(|id| id.get()).collect();
+        let sql = format!(
+            "SELECT id, octet_length({}) FROM {} WHERE id = ANY($1)",
+            erp_sql::quote(field.name),
+            erp_sql::quote(&records.spec().table)
+        );
+        let rows = self.query(&sql, &[&raw]).await?;
+        let mut sizes: FxHashMap<i64, Option<usize>> = FxHashMap::default();
+        for row in &rows {
+            let id: i64 = row
+                .try_get(0)
+                .map_err(|e| Error::db(format!("bin_size id: {e}")))?;
+            let bytes: Option<i32> = row
+                .try_get(1)
+                .map_err(|e| Error::db(format!("bin_size of {}: {e}", field.name)))?;
+            let bytes = bytes
+                .map(|b| {
+                    usize::try_from(b)
+                        .map_err(|_| Error::internal("octet_length returned a negative size"))
+                })
+                .transpose()?;
+            sizes.insert(id, bytes);
+        }
+        raw.iter()
+            .map(|id| {
+                sizes.get(id).copied().ok_or_else(|| {
+                    Error::missing(format!(
+                        "{} record {id} is gone: its file size cannot be read",
+                        records.spec().name
+                    ))
+                })
+            })
+            .collect()
+    }
+
     /// [`Self::field_cells`] after [`Self::field_read_checks`].
     /// Currency normalization may admit only its output-field lookup separately;
     /// native computations and their input reads still execute in the original environment.
@@ -981,7 +1061,7 @@ impl Records {
             let mask = tx.field_mask(self.env(), self.model_id())?;
             spec.fields
                 .iter()
-                .filter(|f| mask.readable(f.id))
+                .filter(|f| mask.readable(f.id) && !matches!(f.ty, FieldType::Binary { .. }))
                 .map(|f| f.name)
                 .collect()
         } else {
@@ -1143,6 +1223,18 @@ impl Transaction {
     ) -> Result<Sink> {
         let fid = field.id;
         let n = records.len();
+        if matches!(field.ty, FieldType::Binary { .. }) && records.env().context().bin_size() {
+            // `bin_size`: the size as text in place of the content (false when empty)
+            self.field_read_checks(records, fid).await?;
+            let mut sink = Sink::text(n);
+            for size in self.binary_sizes(records, field).await? {
+                sink.push_cell(match size {
+                    Some(bytes) => Cell::Str(Arc::from(crate::image::human_size(bytes))),
+                    None => Cell::Null,
+                })?;
+            }
+            return Ok(sink);
+        }
         let mut sink = Sink::for_field_reusing(&field.ty, load, n, spare);
         self.field_read_checks(records, fid).await?;
         if matches!(field.ty, FieldType::Many2one { .. }) && load == Load::Classic {

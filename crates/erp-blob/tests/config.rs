@@ -259,6 +259,36 @@ fn the_stream_bound_is_configured_per_node_within_its_bounds() {
 }
 
 #[test]
+fn the_image_decode_permits_are_configured_per_node_within_their_bounds() {
+    let config = AttachmentConfig::from_toml(&format!("{GOOD}\n")).unwrap();
+    assert_eq!(config.limits.image_decode_permits, 2, "the default");
+    let with = |value: &str| {
+        GOOD.replace(
+            "gc_grace_secs = 7200",
+            &format!("gc_grace_secs = 7200\nimage_decode_permits = {value}"),
+        )
+    };
+    assert_eq!(
+        AttachmentConfig::from_toml(&with("64"))
+            .unwrap()
+            .limits
+            .image_decode_permits,
+        64
+    );
+    for refused in ["0", "65"] {
+        assert_eq!(
+            AttachmentConfig::from_toml(&with(refused))
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "attachment store configuration: attachments.image_decode_permits = {refused} is \
+                 outside 1 to 64"
+            )
+        );
+    }
+}
+
+#[test]
 fn quota_settings_have_safe_defaults_and_reject_invalid_bounds() {
     let config = AttachmentConfig::from_toml(GOOD).unwrap();
     assert_eq!(config.limits.quota_bytes, None);

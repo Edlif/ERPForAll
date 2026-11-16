@@ -356,6 +356,9 @@ impl Output {
         result.autocomplete = self.optional_text(source, "autocomplete")?;
         result.icon = self.optional_text(source, "icon")?;
         result.icon_class = self.optional_text(source, "icon_class")?;
+        result.alt = self.optional_text(source, "alt")?;
+        result.img_class = self.optional_text(source, "img_class")?;
+        result.accepted_file_extensions = self.optional_text(source, "accepted_file_extensions")?;
         result.min_date = self.optional_text(source, "min_date")?;
         result.max_date = self.optional_text(source, "max_date")?;
         result.min_precision = self.optional_text(source, "min_precision")?;
@@ -388,6 +391,12 @@ impl Output {
         result.create = optional(source, "create").map(boolean).transpose()?;
         result.can_open = optional(source, "can_open").map(boolean).transpose()?;
         result.horizontal = optional(source, "horizontal").map(boolean).transpose()?;
+        result.zoom = optional(source, "zoom").map(boolean).transpose()?;
+        result.reload = optional(source, "reload").map(boolean).transpose()?;
+        result.convert_to_webp = optional(source, "convert_to_webp")
+            .map(boolean)
+            .transpose()?;
+        result.zoom_delay = optional(source, "zoom_delay").map(integer).transpose()?;
         result.rows = optional(source, "rows").map(integer).transpose()?;
         result.max_length = optional(source, "max_length").map(integer).transpose()?;
         result.badge_limit = optional(source, "badge_limit").map(integer).transpose()?;
@@ -414,6 +423,9 @@ impl Output {
         result.color_field = optional(source, "color_field")
             .map(|value| self.field(value))
             .transpose()?;
+        result.preview_image = optional(source, "preview_image")
+            .map(|value| self.field(value))
+            .transpose()?;
         result.whitelisted_values = optional(source, "whitelisted_values")
             .map(|value| self.strings(value))
             .transpose()?;
@@ -428,6 +440,14 @@ impl Output {
             }
             result.digits = Some(values);
         }
+        if let Some(value) = optional(source, "size") {
+            let source = array(value)?;
+            let mut values = self.vector(source.len())?;
+            for value in source {
+                values.push(integer(value)?);
+            }
+            result.size = Some(values);
+        }
         result.domain = self.optional_expression(source, "domain")?;
         result.context = self.optional_expression(source, "context")?;
         for value in [
@@ -437,6 +457,7 @@ impl Output {
             result.tag_limit,
             result.search_threshold,
             result.rounding,
+            result.zoom_delay,
         ]
         .into_iter()
         .flatten()
@@ -454,6 +475,11 @@ impl Output {
                 .is_some_and(|value| !(1..=256).contains(&value))
         {
             return Err(invalid("Builtin field presentation limit is invalid"));
+        }
+        if let Some(size) = &result.size
+            && (size.len() != 2 || size.iter().any(|value| !(0..=4096).contains(value)))
+        {
+            return Err(invalid("Builtin image size is invalid"));
         }
         if let Some(digits) = &result.digits
             && (digits.len() != 2

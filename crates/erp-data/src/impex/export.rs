@@ -432,6 +432,10 @@ impl Exporter {
                     field.ty.type_name()
                 )));
             }
+            // file content exports as base64, the form an import reads back
+            (FieldType::Binary { .. }, Cell::Bytes(content)) => {
+                Value::str(erp_fields::base64::encode(content))
+            }
             (FieldType::Date, Cell::Date(d)) => Value::Date(*d),
             (FieldType::Datetime, Cell::DateTime(dt)) => Value::DateTime(
                 dt.to_timezone(&self.tz)

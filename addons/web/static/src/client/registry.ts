@@ -36,6 +36,8 @@ export interface WidgetEnvironment extends FieldWidgetProps {
   numericLocale?: NumericLocale;
   currencies?: CurrencyDisplayCache;
   values?: Readonly<Record<string, unknown>>;
+  /** The record holds an unsaved change of this field. */
+  changed?: boolean;
   fields?: readonly Field[];
   changeValues?(changes: Readonly<Record<string, unknown>>): void;
   viewContext?: "form" | "list" | "card";

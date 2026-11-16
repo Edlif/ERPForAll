@@ -229,6 +229,7 @@ impl ToSql for Cell {
             )
             .into()),
             Cell::Json(j) if *ty == Type::JSONB => j.as_ref().to_sql(ty, out),
+            Cell::Bytes(b) if *ty == Type::BYTEA => b.as_bytes().to_sql(ty, out),
             cell @ (Cell::DateRange(_) | Cell::DatetimeRange(_)) => Err(format!(
                 "cannot send {cell:?} as {ty}: a range is sent with its field's bounds (RangeSql)"
             )

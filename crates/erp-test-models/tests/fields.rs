@@ -893,6 +893,71 @@ mod upgrade {
         h.cleanup().await.unwrap();
     }
 
+    /// columns at schema sync, the stored related size included, empty on the existing rows)
+    #[tokio::test]
+    async fn binary_and_image_columns_are_added_to_an_existing_table() {
+        let v1 = ModelDecl::new("test_upgrade", "x.upgrade_pictures")
+            .fields(const { &[FieldDecl::char("name")] });
+        let h = Harness::builder([&UPGRADE])
+            .with_decls([v1])
+            .build()
+            .await
+            .unwrap();
+        let mut tx = h.begin().await.unwrap();
+        tx.batch("INSERT INTO x_upgrade_pictures (name) VALUES ('r1'), ('r2')")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let v2 = leak(ModelDecl::new("test_upgrade", "x.upgrade_pictures").fields(
+            const {
+                &[
+                    FieldDecl::char("name"),
+                    FieldDecl::binary("document"),
+                    FieldDecl::image("image_1920", 1920, 1920),
+                    FieldDecl::image("image_128", 128, 128)
+                        .related("image_1920")
+                        .store(true),
+                ]
+            },
+        ));
+        let registry = Arc::new(
+            RegistryBuilder::new([&UPGRADE])
+                .with_decls([v2])
+                .build()
+                .unwrap(),
+        );
+        let orm = Orm::builder(registry, h.db().pool().clone())
+            .policy(StaticPolicy::AllowAll)
+            .build()
+            .unwrap();
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        tx.init_models(&[]).await.unwrap();
+        let columns = rows(
+            &mut tx,
+            "SELECT column_name::text, data_type::text FROM information_schema.columns \
+             WHERE table_name = 'x_upgrade_pictures' \
+             AND column_name IN ('document', 'image_1920', 'image_128') ORDER BY column_name",
+        )
+        .await;
+        let bytea = |name: &str| vec![Some(name.to_owned()), Some("bytea".to_owned())];
+        assert_eq!(
+            columns,
+            vec![bytea("document"), bytea("image_128"), bytea("image_1920")]
+        );
+        let filled = one(
+            &mut tx,
+            "SELECT count(*)::text FROM x_upgrade_pictures \
+             WHERE document IS NOT NULL OR image_1920 IS NOT NULL OR image_128 IS NOT NULL",
+        )
+        .await;
+        assert_eq!(filled.as_deref(), Some("0"));
+        tx.commit().await.unwrap();
+        drop(tx);
+        drop(orm);
+        h.cleanup().await.unwrap();
+    }
+
     #[tokio::test]
     async fn spec_field_039_char_size_changes() {
         let v1 = ModelDecl::new("test_upgrade", "x.upgrade_char_size")

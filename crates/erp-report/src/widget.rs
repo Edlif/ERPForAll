@@ -19,6 +19,12 @@ const MINUS: &str = "-\u{feff}";
 pub(crate) enum Piece {
     Text(String),
     Break,
+    /// The bytes of an image field, printed at its natural size or shrunk into `max` (width and
+    /// height, in points).
+    Image {
+        data: std::sync::Arc<[u8]>,
+        max: [Option<f64>; 2],
+    },
 }
 pub(crate) struct Env<'a> {
     pub(crate) formats: &'a LangFormat,
@@ -290,8 +296,30 @@ fn raw(
             return display_names(env, object.type_name(), &ids, at);
         }
         "html" => return unsupported("html field content", "a later release"),
-        "image" | "image_url" | "barcode" => {
-            return unsupported("image and barcode widgets", "a later release");
+        "image" => {
+            let bytes = env.records.image(value).ok_or_else(|| {
+                at.evaluate(format!(
+                    "the image widget needs the value of an image field, got a value of type {}",
+                    value.type_name()
+                ))
+            })?;
+            // `max_width` and `max_height` are pixels, as in the reference; a pixel is 0.75 points.
+            let side = |name: &str| match option(options, name) {
+                None => Ok(None),
+                Some(ExprValue::Int(pixels)) if (1..=19_200).contains(pixels) => {
+                    Ok(u32::try_from(*pixels).ok().map(|n| f64::from(n) * 0.75))
+                }
+                Some(_) => Err(at.evaluate(format!(
+                    "widget option `{name}` must be a number of pixels in 1..=19200"
+                ))),
+            };
+            return Ok(Some(vec![Piece::Image {
+                data: bytes,
+                max: [side("max_width")?, side("max_height")?],
+            }]));
+        }
+        "image_url" | "barcode" => {
+            return unsupported("image_url and barcode widgets", "a later release");
         }
         "contact" | "duration" | "relative" | "float_time" => {
             return unsupported("contact, duration and relative widgets", FORMATS_TASK);

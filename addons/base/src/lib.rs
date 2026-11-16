@@ -32,6 +32,8 @@ mod company_tree;
 pub mod dated_parameter;
 pub mod decimal_precision;
 pub mod group_graph;
+pub mod image_mixin;
+mod image_settings;
 pub mod ir_access;
 pub mod ir_actions;
 pub mod ir_approval_policy;
@@ -85,6 +87,7 @@ mod system_parameters;
 
 pub use dated_parameter::IrDatedParameter;
 pub use decimal_precision::*;
+pub use image_mixin::ImageMixin;
 pub use ir_access::IrAccess;
 pub use ir_actions::IrActionsActions;
 pub use ir_approval_policy::IrApprovalPolicy;

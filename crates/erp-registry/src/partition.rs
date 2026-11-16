@@ -527,7 +527,8 @@ pub(crate) fn check_references(models: &[ModelSpec], sink: &mut Sink) -> Result<
                 | FieldType::DateRange { .. }
                 | FieldType::DatetimeRange { .. }
                 | FieldType::RowVersion
-                | FieldType::Json => continue,
+                | FieldType::Json
+                | FieldType::Binary { .. } => continue,
             };
             if partitioned.contains(target) {
                 let error = Error::programming(format!(

@@ -112,6 +112,26 @@ pub struct ResCompany {
         compute_sudo = true
     )]
     pub vat: Option<Arc<str>>,
+    /// The company logo: the picture of the company contact (the partner's `image_1920`), so a
+    /// write here changes the partner's picture and its stored sizes. Ships empty.
+    #[field(
+        image,
+        related = "partner_id.image_1920",
+        string = "Company Logo",
+        readonly = false,
+        compute_sudo = true
+    )]
+    pub logo: Option<Blob>,
+    /// The logo at most 180 pixels wide (any height), stored, for page headers. Filled from the
+    /// company contact's picture when that changes; never written on its own.
+    #[field(
+        image,
+        max_width = 180,
+        related = "partner_id.image_1920",
+        store = true,
+        string = "Logo Web"
+    )]
+    pub logo_web: Option<Blob>,
     /// The paper format of the company's reports when a report names none.
     #[field(
         many2one,
@@ -122,6 +142,11 @@ pub struct ResCompany {
     pub paperformat_id: Option<RecId>,
 }
 
+// `logo` mirrors the partner's picture the same way and declares `compute_sudo = true` for the same
+// reason. It is not in `PARTNER_MIRRORED` (the values copied into the partner that `create` makes):
+// a logo in the create values is left to the related field's own write. No test covers a logo
+// given at creation yet (task IMG.FIELD tests the write on an existing company).
+//
 // Without it a related field is company-bound
 // and refuses a company partner whose `company_id` lies outside the reader's active companies.
 

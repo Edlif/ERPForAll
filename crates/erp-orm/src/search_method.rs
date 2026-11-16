@@ -801,6 +801,7 @@ fn validate_operand_for_field(
                 }
                 // No unvalidated pass-through for field kinds without a typed operand contract.
                 FieldType::Json
+                | FieldType::Binary { .. }
                 | FieldType::DateRange { .. }
                 | FieldType::DatetimeRange { .. }
                 | FieldType::Boolean => false,

@@ -13,6 +13,8 @@ erp-sdk = { workspace = true }
 
 [dev-dependencies]
 erp-server.workspace = true
+# image_fields: GIF and WebP fixtures (the PNG fixtures are written byte by byte)
+image = { workspace = true, features = ["gif", "webp"] }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
 tower = { version = "=0.5.3", features = ["util"] }
 # Private impex served-floor capture reuses the existing PostgreSQL wire recorder.

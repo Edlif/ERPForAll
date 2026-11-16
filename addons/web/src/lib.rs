@@ -198,6 +198,18 @@ static COLOR_WIDGET: erp_sdk::views::WidgetDecl =
 static COLOR_PICKER_WIDGET: erp_sdk::views::WidgetDecl =
     erp_sdk::views::WidgetDecl::new("color_picker", &["integer"]);
 
+/// Native admission for the image field adapter (Binary and Image fields).
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::FIELD_WIDGETS)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+static IMAGE_WIDGET: erp_sdk::views::WidgetDecl =
+    erp_sdk::views::WidgetDecl::new("image", &["binary"]);
+
+/// Native admission for the image_url field adapter (a Char field holding an URL).
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::FIELD_WIDGETS)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+static IMAGE_URL_WIDGET: erp_sdk::views::WidgetDecl =
+    erp_sdk::views::WidgetDecl::new("image_url", &["char"]);
+
 /// Native admission for the CopyClipboardChar field adapter.
 #[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::FIELD_WIDGETS)]
 #[linkme(crate = erp_sdk::__private::linkme)]

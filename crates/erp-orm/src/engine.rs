@@ -951,6 +951,9 @@ impl Transaction {
             );
         }
         let cell = default.unwrap_or(Cell::Null);
+        if matches!(cell, Cell::Bytes(_)) {
+            Box::pin(self.ensure_image_policy(spec)).await?;
+        }
         // a default (static or a `default_<field>` context key from the caller) reaches the cache
         // like an assigned value, so HTML goes through the field's policy first (review r1 M3)
         let cell = self.admit_html_cell(spec, fs, cell)?;
@@ -1402,6 +1405,10 @@ impl Transaction {
         mut out: Outputs,
     ) -> Result<()> {
         out.validate_virtual(self, ids)?;
+        // a stored image output (a smaller size of a picture) is scaled under the database's limits
+        if out.has_picture() {
+            Box::pin(self.ensure_image_policy(spec)).await?;
+        }
         out.admit_html(self)?;
         // Validate the whole computed group before publishing any of its outputs.
         for fid in fc.group.iter() {

@@ -2722,6 +2722,16 @@ fn resolve_field(model: &str, id: FieldId, merged: Merged) -> Result<FieldSpec> 
         KindDecl::Xid8 => FieldType::Xid8,
         KindDecl::TimestampTz => FieldType::TimestampTz,
         KindDecl::Json => FieldType::Json,
+        KindDecl::Binary { image } => FieldType::Binary {
+            image: match image {
+                None => None,
+                Some((max_width, max_height)) => Some(
+                    erp_fields::ImageBounds::new(max_width, max_height).map_err(|error| {
+                        Error::programming(format!("field '{model}.{name}': {error}"))
+                    })?,
+                ),
+            },
+        },
         // the default `ondelete` depends on the model kinds: settled by `relations::finish`
         KindDecl::Many2one { comodel, ondelete } => FieldType::Many2one {
             comodel: comodel.to_owned(),
@@ -2807,6 +2817,19 @@ fn resolve_field(model: &str, id: FieldId, merged: Merged) -> Result<FieldSpec> 
             )));
         }
     }
+    // the ORM scales a computed or related picture to its bounds only when it is stored: a
+    // non-stored one would read its source at full size, so its bounds are refused, never ignored
+    if ty
+        .image_bounds()
+        .is_some_and(|bounds| !bounds.is_unbounded())
+        && (p.related.is_some() || p.compute.is_some())
+        && !store
+    {
+        return Err(Error::programming(format!(
+            "field '{model}.{name}': a computed or related image with max_width or max_height must \
+             be stored (store = true); a non-stored one is read unscaled"
+        )));
+    }
     if p.company_dependent == Some(true) {
         let supported = matches!(
             ty,
@@ -2872,7 +2895,17 @@ fn resolve_field(model: &str, id: FieldId, merged: Merged) -> Result<FieldSpec> 
             translate,
         )?;
     }
-    let prefetch = p.prefetch.unwrap_or(true) && column.is_some();
+    if matches!(ty, FieldType::Binary { .. }) && index.is_some() {
+        return Err(Error::programming(format!(
+            "field '{model}.{name}': a binary field cannot be indexed"
+        )));
+    }
+    // file content is never loaded with the other columns of a record unless the declaration
+    // asks for it (the reference does not prefetch binary fields either)
+    let prefetch = p
+        .prefetch
+        .unwrap_or(!matches!(ty, FieldType::Binary { .. }))
+        && column.is_some();
     // Native literal defaults need a reviewed ORM/schema-backfill contract. Until
     // then they must not compose successfully while sql_default omits their fill.
     // Explicit null/removal and runtime default functions retain their own policy.

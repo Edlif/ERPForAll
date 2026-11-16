@@ -263,7 +263,7 @@ fn translucent(value: &str) -> bool {
     }
 }
 /// A CSS length as points or as a share of a font size; a percentage only where it means one.
-fn length(value: &str, percent_of_font: bool) -> Option<Size> {
+pub(crate) fn length(value: &str, percent_of_font: bool) -> Option<Size> {
     if value == "0" {
         return Some(Size::Points(0.0));
     }

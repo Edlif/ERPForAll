@@ -33,6 +33,7 @@ fn domain_type(ty: &FieldType) -> (DomainFieldType, Option<&str>) {
         FieldType::DateRange { .. } => DomainFieldType::DateRange,
         FieldType::DatetimeRange { .. } => DomainFieldType::DatetimeRange,
         FieldType::Json => DomainFieldType::Json,
+        FieldType::Binary { .. } => DomainFieldType::Binary,
         FieldType::Many2one { comodel, .. } => {
             return (DomainFieldType::Many2one, Some(comodel.as_str()));
         }

@@ -1394,6 +1394,28 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         let slip = erp_addon_base::report_print::prepare(&mut tx, &slip, &[loan])
             .await
             .unwrap();
+        // The same slip printed after the company got a logo (the letterhead shows it).
+        let logo = test_png(96, 48);
+        tx.env()
+            .records("res.company")
+            .unwrap()
+            .browse(vec![1])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_cell("logo", Cell::Bytes(logo.clone().into())),
+            )
+            .await
+            .unwrap();
+        let slip_logo = {
+            let report =
+                erp_addon_base::report_print::find(&mut tx, "sample_library.report_loan_slip")
+                    .await
+                    .unwrap();
+            erp_addon_base::report_print::prepare(&mut tx, &report, &[loan])
+                .await
+                .unwrap()
+        };
         let second = books
             .create(
                 &mut tx,
@@ -1479,6 +1501,17 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         ] {
             assert!(slip_html.contains(line), "{line}: {slip_html}");
         }
+        // Without a logo the letterhead has no image, in the preview or the PDF.
+        assert!(!slip_html.contains("role=\"img\""), "{slip_html}");
+        assert!(pdf_images(slip_pdf.bytes()).is_empty());
+        // With the logo the preview has the image box and the PDF carries the raster, at the
+        // size of the stored image.
+        let logo_html = erp_report::render_html(&slip_logo, &[]).unwrap();
+        assert_eq!(logo_html.matches("role=\"img\"").count(), 1, "{logo_html}");
+        assert!(logo_html.contains("aria-label=\"Logo\""), "{logo_html}");
+        assert!(logo_html.contains("Bandung"), "{logo_html}");
+        let logo_pdf = engine.render(&slip_logo).unwrap();
+        assert_eq!(pdf_images(logo_pdf.bytes()), vec![(96, 48)]);
         // The loan register prints the loan in one table.
         let register_html = erp_report::render_html(&register, &[]).unwrap();
         assert!(
@@ -1507,6 +1540,69 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         let out = Path::new(env!("CARGO_TARGET_TMPDIR"));
         fs::write(out.join("sample-book-sheet.pdf"), pdf.bytes()).unwrap();
         fs::write(out.join("sample-loan-slip.pdf"), slip_pdf.bytes()).unwrap();
+        fs::write(out.join("sample-loan-slip-logo.pdf"), logo_pdf.bytes()).unwrap();
         fs::write(out.join("sample-book-list.pdf"), list_pdf.bytes()).unwrap();
     });
+}
+
+/// Image XObjects of a PDF as (width, height).
+fn pdf_images(bytes: &[u8]) -> Vec<(i64, i64)> {
+    let pdf = lopdf::Document::load_mem(bytes).unwrap();
+    pdf.objects
+        .values()
+        .filter_map(|object| object.as_stream().ok())
+        .filter(|s| s.dict.get(b"Subtype").and_then(|n| n.as_name()).ok() == Some(&b"Image"[..]))
+        .map(|s| {
+            let size = |key: &[u8]| s.dict.get(key).unwrap().as_i64().unwrap();
+            (size(b"Width"), size(b"Height"))
+        })
+        .collect()
+}
+
+/// A valid RGB PNG of one colour (stored zlib blocks), for a company logo.
+fn test_png(width: u32, height: u32) -> Vec<u8> {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+        out.extend((data.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend(kind);
+        out.extend(data);
+        let mut crc = !0u32;
+        for b in &out[start..] {
+            crc ^= u32::from(*b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        out.extend((!crc).to_be_bytes());
+    }
+    let row: Vec<u8> = std::iter::once(0)
+        .chain([30, 90, 160].repeat(width as usize))
+        .collect();
+    let raw = row.repeat(height as usize);
+    let mut z = vec![0x78, 0x01];
+    for (i, block) in raw.chunks(65_535).enumerate() {
+        z.push(u8::from((i + 1) * 65_535 >= raw.len()));
+        let len = block.len() as u16;
+        z.extend(len.to_le_bytes());
+        z.extend((!len).to_le_bytes());
+        z.extend(block);
+    }
+    let (mut a, mut b) = (1u32, 0u32);
+    for byte in &raw {
+        a = (a + u32::from(*byte)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    z.extend(((b << 16) | a).to_be_bytes());
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = width.to_be_bytes().to_vec();
+    ihdr.extend(height.to_be_bytes());
+    ihdr.extend([8, 2, 0, 0, 0]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &z);
+    chunk(&mut out, b"IEND", &[]);
+    out
 }

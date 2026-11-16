@@ -471,7 +471,7 @@ fn scalar_of(cell: Cell) -> Result<ScalarValue> {
         Cell::Float(f) => ScalarValue::ValFloat(f),
         Cell::Date(d) => ScalarValue::ValDate(d.days()),
         Cell::DateTime(d) => ScalarValue::ValDatetime(d.micros()),
-        Cell::Uuid(_) | Cell::Xid8(_) | Cell::TimestampTz(_) => {
+        Cell::Uuid(_) | Cell::Xid8(_) | Cell::TimestampTz(_) | Cell::Bytes(_) => {
             return Err(Error::programming(
                 "native scalar values are not supported across frozen WASM ABI1; requires a future ABI major with typed native fields",
             ));
@@ -514,9 +514,11 @@ pub async fn call_by_name<M: Model, A: Serialize, R: DeserializeOwned>(
 pub(super) fn cell_json(cell: &Cell) -> Result<serde_json::Value> {
     match cell {
         Cell::Null => Ok(serde_json::Value::Null),
-        Cell::Uuid(_) | Cell::Xid8(_) | Cell::TimestampTz(_) => Err(Error::programming(
-            "native scalar values are not supported across frozen WASM ABI1; requires a future ABI major with typed native fields",
-        )),
+        Cell::Uuid(_) | Cell::Xid8(_) | Cell::TimestampTz(_) | Cell::Bytes(_) => {
+            Err(Error::programming(
+                "native scalar values are not supported across frozen WASM ABI1; requires a future ABI major with typed native fields",
+            ))
+        }
         other => erp_fields::convert::value_to_json(&erp_fields::Value::from_cell(other)),
     }
 }

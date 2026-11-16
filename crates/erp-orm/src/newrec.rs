@@ -124,6 +124,15 @@ impl Transaction {
         self.admit_records(model).await?;
         let spec = model.spec();
         crate::database_generated::check_write_names(self, spec, vals.names())?;
+        // a picture given to `new()` is admitted under the database's image limits
+        if vals.iter().any(|(name, cell)| {
+            !matches!(cell, Cell::Null)
+                && spec
+                    .field(name)
+                    .is_some_and(|field| field.ty.image_bounds().is_some())
+        }) {
+            self.ensure_image_policy(spec).await?;
+        }
         if !spec.has_table() {
             return Err(Error::programming(format!(
                 "Cannot create new records of abstract model {}",
@@ -1218,7 +1227,7 @@ pub(crate) fn new_record_cell(
         }
         return Ok(cell);
     }
-    erp_fields::convert::validate_cell(
+    let cell = erp_fields::convert::validate_cell(
         erp_fields::convert::FieldRef {
             model: spec.name,
             field: field.name,
@@ -1226,7 +1235,10 @@ pub(crate) fn new_record_cell(
         },
         &field.ty,
         cell,
-    )
+    )?;
+    // a picture of a new record is checked and scaled as on a stored one, so a draft never holds
+    // more than its field's bounds (and its derived sizes decode the bounded picture)
+    tx.admit_image_cell(spec, field, cell)
 }
 
 impl Records {

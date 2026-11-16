@@ -140,6 +140,7 @@ impl Value {
             Cell::Xid8(value) => Self::Xid8(*value),
             Cell::TimestampTz(value) => Self::TimestampTz(*value),
             Cell::Json(j) => Self::Json(Arc::clone(j)),
+            Cell::Bytes(b) => Self::Bytes(Arc::clone(b.as_arc())),
             Cell::Ids(ids) => Self::List(ids.iter().map(|id| Self::Int(id.get())).collect()),
             Cell::DateRange(r) => Self::Range(RangeValue::Date(*r)),
             Cell::DatetimeRange(r) => Self::Range(RangeValue::Datetime(*r)),
@@ -293,7 +294,8 @@ impl fmt::Display for Value {
             Self::Float(x) => write!(f, "{x:?}"),
             Self::Decimal(d) => write!(f, "{d}"),
             Self::Str(s) => write!(f, "'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
-            Self::Bytes(b) => write!(f, "b'{}'", String::from_utf8_lossy(b)),
+            // content never reaches a message (security point 10)
+            Self::Bytes(b) => write!(f, "<{} bytes>", b.len()),
             Self::Date(d) => write!(f, "'{d}'"),
             Self::DateTime(d) => write!(f, "'{d}'"),
             Self::Uuid(value) => write!(f, "'{value}'"),
