@@ -617,6 +617,18 @@ pub struct ResPartner {
     /// Main user for authentication/ownership.
     #[field(many2one, comodel = "res.users", compute = "_compute_main_user_id")]
     pub main_user_id: Option<RecId>,
+    /// The internal user in charge of this contact: the salesperson, not a login of the contact
+    /// (B2 puts it in base, where the reference has it).
+    // shortcut: no copy from the parent company on create (the reference's `_compute_user_id`);
+    // sales orders fall back to the commercial partner's salesperson instead.
+    #[field(
+        many2one,
+        comodel = "res.users",
+        index = "btree_not_null",
+        check_company = false,
+        string = "Salesperson"
+    )]
+    pub user_id: Option<RecId>,
     /// True unless the contact is the superuser's partner or has an active internal user;
     /// the escape of the company restriction. Required with
     /// the static default `true`, so a row that was never computed takes the company test (fail

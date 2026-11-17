@@ -23,7 +23,10 @@
 //! reschedule eligible move dates on method changes, and expose authorized basic transfer counts
 //! and the overview card built from them.
 //! Each transfer's move counter vector and state follow its moves in the statement that changes
-//! them ([`move_counters`]).
+//! them ([`move_counters`]). Open move lines take their move's defaults, hold their
+//! reservation on their quant key and keep their move's quantity and state (`move_lines`).
+//! Transfers check availability and unreserve (`reservation`, probe-then-lock), and
+//! are validated in one balance change per call, after which their work is fixed (`done`).
 
 erp_sdk::addon!(
     name = "stock",
@@ -62,6 +65,7 @@ pub mod stock_move_line;
 pub mod storage;
 pub mod tracking;
 pub mod warehouse;
+mod warehouse_setup;
 
 pub use error::StockError;
 pub use location::{ProductRemoval, StockLocation, StockLocationPolicy};
@@ -93,8 +97,22 @@ mod move_guards;
 // cache notification after a move mutation.
 mod move_counter_sql;
 pub mod move_counters;
+// Open move lines: defaults from the move, reservation per quant key, move quantity and state.
+mod move_lines;
 pub mod move_relations;
 pub mod move_units;
+
+// Reservation of moves from free stock and unreservation (check availability, unreserve).
+mod reservation;
+
+// Make-to-stock confirmation of moves and transfers, and the defaults a move takes from its transfer.
+mod confirm;
+
+// Validation of transfers: the done transition of moves and lines, and done work kept fixed.
+mod done;
+
+// The transfer's own rules: defaults and reference from the operation type, cancel, delete.
+mod picking_flow;
 
 pub use quant_engine::{
     QuantBalance, QuantChange, QuantError, QuantFilter, QuantKey, apply_quant_changes,

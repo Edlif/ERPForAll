@@ -135,7 +135,9 @@ impl WorkerCommand {
     /// The running binary with the `report-worker` subcommand: the worker of `erp server`.
     pub fn current_exe() -> Result<Self, ReportError> {
         Ok(Self {
-            program: std::env::current_exe()?,
+            program: std::env::current_exe().map_err(|e| ReportError::WorkerUnavailable {
+                cause: format!("cannot find the running program to start render workers: {e}"),
+            })?,
             arguments: vec!["report-worker".into()],
         })
     }

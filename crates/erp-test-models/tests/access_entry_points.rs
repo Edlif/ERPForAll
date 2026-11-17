@@ -1696,6 +1696,76 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "after the caller's write check on the templates whose `uom_id` changes, searches their variants (archived too) and calls the `_update_uom` hook on them with privileges and `skip_uom_conversion`, as the reference ERP's template write does (`product_template.py:839`), so documents of dependent addons follow the unit change; base product's hook changes nothing and the target unit was validated and registered first",
     ),
     (
+        "purchase/line.rs::sync_lines",
+        1,
+        "after the base create or write of the caller's own lines (create and write access checked by then), reads those lines' product, quantity, unit, price, discount, taxes and currency, the definitions of the taxes linked to them (kept in the order's company by `check_company`; a tax is named only in a refusal of a tax kind the computation lacks), the currency rounding, the Product Unit precision and the product's unit, and writes only the four computed amount fields of those same lines before `sync_orders`; the amount fields are read-only to every caller, and nothing read leaves the function",
+    ),
+    (
+        "purchase/line.rs::sync_orders",
+        1,
+        "for the orders of lines the caller just created, wrote or deleted, or of orders the caller just wrote, sums subtotal, tax and earliest date of all their lines, reads their company, currency and deadline, the company currency and its rates, and writes the five total fields of those orders; a line on the same order counts in its total whoever may read it, as a stored total must; the totals are read-only to every caller and nothing is returned",
+    ),
+    (
+        "purchase/line.rs::resync_orders",
+        1,
+        "after the base write of orders the caller wrote (write access checked) with a changed currency, deadline or company, finds the ids of all lines of those orders and hands them to `sync_lines`; only ids leave the search and nothing is returned",
+    ),
+    (
+        "purchase/line.rs::orders_without_product",
+        1,
+        "for `button_confirm`, after the write check and the row locks on the caller's orders, finds the lines without a product of exactly those orders; only their order ids leave, to name in the refusal orders the caller already holds",
+    ),
+    (
+        "purchase/settings.rs::read",
+        1,
+        "reads the three purchase settings (approval levels, minimum amount, lock) of one company, the order's, for the approval question and the approval step; the framework reads its own configuration and a buyer needs no settings group; the values are bounded, decide only the operation and are not returned to the client",
+    ),
+    (
+        "sale/numbering.rs::next_number",
+        1,
+        "counts the sequence records with the code `sale.order` of the order's company or of all companies, so an order without a sequence is refused by name before a number is drawn; only the count is used, the draw runs in the caller's environment and the company name of the refusal is read as the caller",
+    ),
+    (
+        "sale/product.rs::company_policies",
+        1,
+        "reads only `sale_invoice_policy` of the companies of the order lines being computed, or of the current company for a new product, so the policy does not depend on the reader's company rule; one selection value per company, which lands on the caller's own line or product and is never returned as a company record",
+    ),
+    (
+        "sale/settings.rs::lock_confirmed",
+        1,
+        "reads the one global switch `sale.lock_confirmed_sales` while an order is confirmed; confirming needs no settings group, the framework reads its own configuration, and only the boolean is used",
+    ),
+    (
+        "sales_team/res_users.rs::active_teams",
+        1,
+        "reads the active memberships of the users whose `crm_team_ids` and `sale_team_id` are computed, so the value does not depend on who reads the user first (`sale_team_id` is stored); only team ids leave, a team's name and fields still need the reader's own access to `crm.team`; ids of teams of another company can show in these two fields (security review cycle 27, NIT)",
+    ),
+    (
+        "sales_team/team.rs::_inverse_is_favorite",
+        1,
+        "links or unlinks only the acting user in `favorite_user_ids` of the teams whose `is_favorite` the caller just wrote; the base write checked the caller's write access to those teams first, nothing else is read and nothing is returned (today only the Sales administrator passes that check, so the elevation adds nothing for a salesperson; security review cycle 27, NIT)",
+    ),
+    (
+        "sales_team/team.rs::_sales_team_seed_default_team",
+        1,
+        "install-time data callable of the `noupdate` default team (not an RPC method): makes the oldest active internal administrator the leader and first member of `sales_team.team_sales_department`; writes that one team and creates that one membership, returns nothing",
+    ),
+    (
+        "sales_team/team.rs::_get_default_team_id",
+        1,
+        "reads only `company_ids` of the salesperson the team is chosen for, to restrict the team searches, which run as the caller, to that user's companies; the companies are a filter and never returned, the result is a team id from the caller's own search (not an RPC method)",
+    ),
+    (
+        "sales_team/team.rs::add_members_to_favorites",
+        1,
+        "after the base create of teams, or a base write of their `member_ids`, checked the caller's create or write right on those teams (Sales administrator), links the members of those teams, and on a create the acting user, into their `favorite_user_ids`; reads the members through the caller's own read, writes only that relation of those teams, returns nothing",
+    ),
+    (
+        "stock/res_company.rs::create",
+        1,
+        "after the base company create (the caller's own company rights), creates each new company's warehouse with its locations, operation types and their sequences, as the reference ERP's company create sets up its per-company stock records with privileges (`res_company.py:196-209`); it reads and writes only those new companies' rows, returns the created companies the caller already had, and runs only once Inventory's default data is loaded",
+    ),
+    (
         "uom/res_groups.rs::_is_uom_feature_enabled",
         1,
         "reads the `uom.group_uom` external identity, that group's implication closure and the superuser's group links to tell whether the global multi-unit feature is on (the reference ERP `_is_feature_enabled` reads the superuser's groups with privileges); a private method without `#[rpc]`, returning one boolean, that authorizes nothing for the caller",

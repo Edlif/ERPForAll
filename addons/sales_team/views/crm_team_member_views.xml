@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+Team memberships: search, list and form (fields of sales_team/views/crm_team_member_views.xml:4-170,
+     laid out anew; the member cards come with).
+-->
+<erp>
+  <record id="crm_team_member_view_search" model="ir.ui.view">
+    <field name="name">crm.team.member.search</field>
+    <field name="model">crm.team.member</field>
+    <field name="arch" type="xml">
+      <search string="Sales Team Members">
+        <field name="user_id"/>
+        <field name="crm_team_id"/>
+        <filter name="inactive" string="Archived" domain="[('active', '=', False)]"/>
+        <group>
+          <filter name="groupby_team" string="Sales Team" context="{'group_by': 'crm_team_id'}"/>
+          <filter name="groupby_user" string="Salesperson" context="{'group_by': 'user_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="crm_team_member_view_tree" model="ir.ui.view">
+    <field name="name">crm.team.member.list</field>
+    <field name="model">crm.team.member</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="user_id"/>
+        <field name="crm_team_id"/>
+        <field name="email"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="crm_team_member_view_form" model="ir.ui.view">
+    <field name="name">crm.team.member.form</field>
+    <field name="model">crm.team.member</field>
+    <field name="arch" type="xml">
+      <form record_mode="record">
+        <sheet>
+          <group>
+            <group>
+              <field name="user_id"/>
+              <field name="crm_team_id"/>
+              <field name="active" invisible="1"/>
+            </group>
+            <group>
+              <field name="email"/>
+              <field name="phone"/>
+              <field name="company_id"/>
+            </group>
+          </group>
+        </sheet>
+        <chatter/>
+      </form>
+    </field>
+  </record>
+
+  <record id="crm_team_member_action" model="ir.actions.act_window">
+    <field name="name">Team Members</field>
+    <field name="res_model">crm.team.member</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="crm_team_member_view_tree"/>
+    <field name="search_view_id" ref="crm_team_member_view_search"/>
+  </record>
+</erp>

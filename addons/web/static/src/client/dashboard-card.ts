@@ -117,6 +117,19 @@ const number = (value: string): number => {
   return parsed;
 };
 
+/** At most this many labels under a chart: a card is narrow, and one label per point of a 30-day line cannot be read. */
+const AXIS_LABELS = 6;
+
+/** A point label for the axis: an ISO day (`2026-11-17`) reads "17 Nov", an ISO month (`2026-11`) "Nov 26", in the page's language; any other label is shown as it is. */
+export function axisLabel(label: string): string {
+  const parts = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(label);
+  if (!parts) return label;
+  const year = Number(parts[1]), month = Number(parts[2]);
+  if (month < 1 || month > 12) return label;
+  const name = new Intl.DateTimeFormat(document.documentElement.lang || "en", { month: "short", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, 1)));
+  return parts[3] ? `${Number(parts[3])} ${name}` : `${name} ${parts[1]!.slice(2)}`;
+}
+
 /** The compact chart: bars or a line over a zero baseline, height from `--dashboard-chart-height`, and the points as a list for assistive technology. */
 export function renderDashboardChart(chart: DashboardChart, locale: NumericLocale): HTMLElement {
   const figure = el("figure", undefined, "dashboard-card-chart");
@@ -142,7 +155,15 @@ export function renderDashboardChart(chart: DashboardChart, locale: NumericLocal
   const axis = el("div", undefined, "dashboard-card-chart-axis");
   axis.setAttribute("aria-hidden", "true");
   axis.style.gridTemplateColumns = `repeat(${chart.points.length}, minmax(0, 1fr))`;
-  axis.append(...chart.points.map(point => el("span", point.label)));
+  // Every `step`-th point gets its label, counted from the last one (today, the current month), each under its own point.
+  const count = chart.points.length, step = Math.ceil(count / AXIS_LABELS);
+  chart.points.forEach((point, index) => {
+    if ((count - 1 - index) % step !== 0) return;
+    const tick = el("span", axisLabel(point.label));
+    tick.style.gridColumn = String(index + 1);
+    if (step > 1) tick.style.justifySelf = index === 0 ? "start" : index === count - 1 ? "end" : "center";
+    axis.append(tick);
+  });
   const points = el("ul", undefined, "visually-hidden");
   points.append(...chart.points.map((point, index) => el("li", `${point.label}: ${formatNumeric(values[index]!, "float", locale)}${point.tone === "neutral" ? "" : ` (${point.tone})`}`)));
   figure.append(drawing, axis, points);

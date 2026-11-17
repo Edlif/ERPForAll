@@ -34,6 +34,34 @@ pub const SNAPSHOT_FIELDS: [&str; 5] = [
 /// The move columns whose write recomputes the snapshot.
 pub const UNIT_INPUTS: [&str; 4] = ["product_id", "uom_id", "product_uom_qty", "quantity"];
 
+/// The move line columns the unit service fills (a line has no demand).
+pub const LINE_SNAPSHOT_FIELDS: [&str; 4] = [
+    "uom_factor",
+    "product_uom_factor",
+    "product_unit_digits",
+    "quantity_product_uom",
+];
+
+/// The move line columns whose write recomputes the snapshot.
+pub const LINE_UNIT_INPUTS: [&str; 3] = ["product_id", "uom_id", "quantity"];
+
+/// The record kind a snapshot is stamped on: a move (demand and quantity) or a move line
+/// (quantity only).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Target {
+    Move,
+    Line,
+}
+
+impl Target {
+    fn model(self) -> &'static str {
+        match self {
+            Self::Move => "stock.move",
+            Self::Line => "stock.move.line",
+        }
+    }
+}
+
 /// A number named in values or read from a move: `Null` is zero, as the reference's `False`
 /// float; a non-numeric cell is a programming error, not zero.
 fn number(cell: Option<&Cell>, field: &str) -> Result<Decimal> {
@@ -61,7 +89,7 @@ fn context_id(env: &Env, key: &str) -> Option<i64> {
 }
 
 /// The unit of each product of `products`.
-async fn product_units(
+pub(crate) async fn product_units(
     env: &Env,
     tx: &mut Transaction,
     products: &BTreeSet<i64>,
@@ -88,7 +116,7 @@ async fn product_units(
 /// One snapshot per distinct (move unit, product unit) pair.
 // shortcut: one capture per pair (a few statements each, bounded by the distinct units of the
 // call, not by its moves); a batched capture needs a unit-service API taking several pairs
-async fn snapshots(
+pub(crate) async fn snapshots(
     env: &Env,
     tx: &mut Transaction,
     pairs: BTreeSet<(i64, i64)>,
@@ -100,15 +128,16 @@ async fn snapshots(
     Ok(out)
 }
 
-/// The five snapshot cells for `demand` and `quantity` under `snapshot`.
+/// The snapshot cells for `demand` (moves only) and `quantity` under `snapshot`.
 fn snapshot_cells(
+    target: Target,
     snapshot: &ProductUnitSnapshot,
     demand: Decimal,
     quantity: Decimal,
-) -> Result<[(&'static str, Cell); 5]> {
+) -> Result<Vec<(&'static str, Cell)>> {
     let digits = i32::try_from(snapshot.digits())
         .map_err(|e| Error::internal("Product Unit digits out of range.").with_source(e))?;
-    Ok([
+    let mut cells = vec![
         ("uom_factor", Cell::Decimal(snapshot.source_factor())),
         (
             "product_uom_factor",
@@ -116,34 +145,40 @@ fn snapshot_cells(
         ),
         ("product_unit_digits", Cell::Int(digits)),
         (
-            "product_qty",
-            Cell::Decimal(snapshot.product_quantity(demand)?),
-        ),
-        (
             "quantity_product_uom",
             Cell::Decimal(snapshot.product_quantity(quantity)?),
         ),
-    ])
+    ];
+    if target == Target::Move {
+        cells.push((
+            "product_qty",
+            Cell::Decimal(snapshot.product_quantity(demand)?),
+        ));
+    }
+    Ok(cells)
 }
 
 /// Put the snapshot cells into `vals`; a supplied cell must have the same value.
 fn stamp(
+    target: Target,
     tx: &Transaction,
     vals: &mut RawVals,
     snapshot: &ProductUnitSnapshot,
     demand: Decimal,
     quantity: Decimal,
 ) -> Result<()> {
-    for (field, cell) in snapshot_cells(snapshot, demand, quantity)? {
+    for (field, cell) in snapshot_cells(target, snapshot, demand, quantity)? {
         if let Some(given) = vals.get(field)
             && number(Some(given), field)? != number(Some(&cell), field)?
         {
             let field = tx
                 .registry()
-                .model("stock.move")
+                .model(target.model())
                 .and_then(|spec| spec.field(field))
                 .map(|spec| spec.string.clone())
-                .ok_or_else(|| Error::internal(format!("stock.move has no field '{field}'")))?;
+                .ok_or_else(|| {
+                    Error::internal(format!("{} has no field '{field}'", target.model()))
+                })?;
             return Err(StockError::UnitSnapshot { field }.into());
         }
         vals.insert(field.into(), cell);
@@ -159,6 +194,16 @@ fn stamp(
 /// [`StockError::UnitSnapshot`] for a supplied snapshot value that differs; the unit service's
 /// refusals (units of different roots); read and database errors.
 pub async fn fill_create(
+    records: &Records,
+    tx: &mut Transaction,
+    vals_list: &mut [RawVals],
+) -> Result<()> {
+    fill_create_for(Target::Move, records, tx, vals_list).await
+}
+
+/// [`fill_create`] for moves or move lines.
+pub(crate) async fn fill_create_for(
+    target: Target,
     records: &Records,
     tx: &mut Transaction,
     vals_list: &mut [RawVals],
@@ -201,7 +246,7 @@ pub async fn fill_create(
             .ok_or_else(|| Error::internal("A unit snapshot was not captured."))?;
         let demand = number(vals.get("product_uom_qty"), "product_uom_qty")?;
         let quantity = number(vals.get("quantity"), "quantity")?;
-        stamp(tx, vals, snapshot, demand, quantity)?;
+        stamp(target, tx, vals, snapshot, demand, quantity)?;
     }
     Ok(())
 }
@@ -218,11 +263,24 @@ pub async fn write_groups(
     tx: &mut Transaction,
     vals: &RawVals,
 ) -> Result<Vec<(Vec<i64>, RawVals)>> {
+    write_groups_for(Target::Move, records, tx, vals).await
+}
+
+/// [`write_groups`] for moves or move lines.
+pub(crate) async fn write_groups_for(
+    target: Target,
+    records: &Records,
+    tx: &mut Transaction,
+    vals: &RawVals,
+) -> Result<Vec<(Vec<i64>, RawVals)>> {
     let env = records.env();
     let ids = records.ids();
     let old_products = records.cells(tx, "product_id").await?;
     let old_units = records.cells(tx, "uom_id").await?;
-    let old_demands = records.cells(tx, "product_uom_qty").await?;
+    let old_demands = match target {
+        Target::Move => records.cells(tx, "product_uom_qty").await?,
+        Target::Line => vec![Cell::Null; ids.len()],
+    };
     let old_quantities = records.cells(tx, "quantity").await?;
     let new_product = vals.get("product_id").map(cell_id);
     let new_unit = vals.get("uom_id").map(cell_id);
@@ -281,7 +339,7 @@ pub async fn write_groups(
         let snapshot = snapshots
             .get(&(unit, product_unit))
             .ok_or_else(|| Error::internal("A unit snapshot was not captured."))?;
-        stamp(tx, &mut group, snapshot, demand, quantity)?;
+        stamp(target, tx, &mut group, snapshot, demand, quantity)?;
         out.push((ids, group));
     }
     Ok(out)

@@ -33,7 +33,9 @@ impl LayoutEngine for Scripted {
         }
         if let Some(marker) = id.strip_prefix("exit-once:") {
             if std::fs::metadata(marker).is_err() {
-                std::fs::write(marker, b"")?;
+                std::fs::write(marker, b"").map_err(|e| ReportError::WorkerUnavailable {
+                    cause: format!("the fixture cannot write its marker {marker}: {e}"),
+                })?;
                 std::process::exit(1);
             }
         } else if id.starts_with("exit") {

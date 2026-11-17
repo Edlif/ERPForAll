@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Warehouses and operation types with immutable company ownership. Generating a warehouse's
-//! locations, types, routes and rules, the environment defaults and the step changes belong to;
-//! numbering to (topology ADR A1).
+//! Warehouses and operation types with immutable company ownership. A new warehouse takes its
+//! company, name, short name and address defaults from the company and gets its generated
+//! locations and operation types (`warehouse_setup`); step changes on an existing warehouse,
+//! routes and rules come later; numbering is's (topology ADR A1).
 
 use erp_sdk::prelude::*;
 
@@ -545,6 +546,28 @@ pub(crate) async fn check_company_write(
 
 #[methods(StockWarehouse, addon = "stock")]
 impl StockWarehouse {
+    /// The company defaults to the environment's.
+    #[method(override)]
+    async fn default_get(
+        this: &RecordSet<StockWarehouse>,
+        tx: &mut Transaction,
+        names: Vec<String>,
+        sup: Super,
+    ) -> Result<erp_sdk::ValueMap> {
+        let requested = names.iter().any(|name| name == "company_id");
+        let mut result: erp_sdk::ValueMap = sup.call(tx, this.as_records(), (names,)).await?;
+        if requested
+            && !result.contains_key("company_id")
+            && let Some(company) = this.env().company_id()?
+        {
+            result.insert("company_id".into(), Value::Int(company));
+        }
+        Ok(result)
+    }
+
+    /// Name, short name and address come from the company when left out.
+    /// A warehouse without its own view location gets its generated locations and operation
+    /// types; the warehouse, its topology and its numbering commit together or not at all.
     #[method(override)]
     async fn create(
         this: &RecordSet<StockWarehouse>,
@@ -552,9 +575,20 @@ impl StockWarehouse {
         vals_list: Vec<RawVals>,
         sup: Super,
     ) -> Result<Records> {
-        let created = sup.call(tx, this.as_records(), (vals_list,)).await?;
-        crate::res_company::invalidate_company_locations(tx).await?;
-        Ok(created)
+        let records = this.as_records().clone();
+        tx.savepoint(async move |tx| {
+            // the caller's refusal names the warehouse, never a record generated for it
+            records.check_access(tx, erp_sdk::Operation::Create).await?;
+            let mut vals_list = vals_list;
+            crate::warehouse_setup::fill_defaults(&records, tx, &mut vals_list).await?;
+            let plan =
+                crate::warehouse_setup::create_locations(&records, tx, &mut vals_list).await?;
+            let created = sup.call(tx, &records, (vals_list,)).await?;
+            crate::warehouse_setup::create_operation_types(&records, tx, &created, &plan).await?;
+            crate::res_company::invalidate_company_locations(tx).await?;
+            Ok(created)
+        })
+        .await
     }
 
     #[method(override)]

@@ -314,6 +314,103 @@ impl ProductPricelist {
         }
     }
 
+    /// The rule of this one pricelist that applies to `product_id` at `quantity` on `date`, the
+    /// first in the pricelist's rule order; `None` when no rule applies (the list price is used).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the reads; `Programming` for more than one pricelist or an unknown
+    /// `applied_on`.
+    pub async fn get_product_rule(
+        this: &RecordSet<ProductPricelist>,
+        tx: &mut Transaction,
+        product_id: i64,
+        quantity: Decimal,
+        date: Option<DateTime>,
+    ) -> Result<Option<Records>> {
+        let prod_model = this.env().records("product.product")?;
+        let prod = prod_model.browse(vec![product_id])?;
+        let tmpl_id = cell_id(prod.cell(tx, "product_tmpl_id").await?, "product_tmpl_id")?
+            .ok_or_else(|| {
+                Error::validation(format!("Product variant {product_id} has no template."))
+            })?;
+        let tmpl_model = this.env().records("product.template")?;
+        let tmpl = tmpl_model.browse(vec![tmpl_id])?;
+        let categ_id = cell_id(tmpl.cell(tx, "categ_id").await?, "categ_id")?;
+
+        let item_model = this.env().records("product.pricelist.item")?;
+        let pricelist_id = Self::single_id(this)?;
+
+        let d1 = Domain::condition("pricelist_id", Operator::Eq, pricelist_id)?;
+        let items = item_model.search(tx, &d1).await?;
+
+        let mut best_item: Option<Records> = None;
+        for item_rec_id in items.rec_ids() {
+            let item = item_model.browse(vec![item_rec_id.get()])?;
+            let min_qty = cell_decimal(item.cell(tx, "min_quantity").await?, "min_quantity")?;
+            if min_qty > quantity {
+                continue;
+            }
+
+            if let Some(target_date) = date {
+                if let Cell::DateTime(start) = item.cell(tx, "date_start").await?
+                    && target_date < start
+                {
+                    continue;
+                }
+                if let Cell::DateTime(end) = item.cell(tx, "date_end").await?
+                    && target_date > end
+                {
+                    continue;
+                }
+            }
+
+            let applied_on = cell_str(item.cell(tx, "applied_on").await?, "applied_on")?;
+            let matched = match applied_on.as_str() {
+                "0_product_variant" => {
+                    cell_id(item.cell(tx, "product_id").await?, "product_id")? == Some(product_id)
+                }
+                "1_product" => {
+                    cell_id(item.cell(tx, "product_tmpl_id").await?, "product_tmpl_id")?
+                        == Some(tmpl_id)
+                }
+                "2_product_category" => {
+                    match (
+                        cell_id(item.cell(tx, "categ_id").await?, "categ_id")?,
+                        categ_id,
+                    ) {
+                        (Some(rule_cat), Some(prod_cat_id)) if rule_cat == prod_cat_id => true,
+                        (Some(rule_cat), Some(prod_cat_id)) => {
+                            let cat_model = this.env().records("product.category")?;
+                            let prod_cat = cat_model.browse(vec![prod_cat_id])?;
+                            let rule_cat_rec = cat_model.browse(vec![rule_cat])?;
+                            let p_path =
+                                cell_str(prod_cat.cell(tx, "parent_path").await?, "parent_path")?;
+                            let r_path = cell_str(
+                                rule_cat_rec.cell(tx, "parent_path").await?,
+                                "parent_path",
+                            )?;
+                            !r_path.is_empty() && p_path.starts_with(&r_path)
+                        }
+                        _ => false,
+                    }
+                }
+                "3_global" => true,
+                other => {
+                    return Err(Error::programming(format!(
+                        "pricelist item has unknown applied_on '{other}'"
+                    )));
+                }
+            };
+
+            if matched {
+                best_item = Some(item);
+                break;
+            }
+        }
+        Ok(best_item)
+    }
+
     fn _compute_price_recursive<'a>(
         this: &'a RecordSet<ProductPricelist>,
         tx: &'a mut Transaction,
@@ -323,89 +420,11 @@ impl ProductPricelist {
         visited: &'a mut std::collections::BTreeSet<i64>,
     ) -> BoxFuture<'a, Result<Decimal>> {
         Box::pin(async move {
-            let prod_model = this.env().records("product.product")?;
-            let prod = prod_model.browse(vec![product_id])?;
-            let tmpl_id = cell_id(prod.cell(tx, "product_tmpl_id").await?, "product_tmpl_id")?
-                .ok_or_else(|| {
-                    Error::validation(format!("Product variant {product_id} has no template."))
-                })?;
-            let tmpl_model = this.env().records("product.template")?;
-            let tmpl = tmpl_model.browse(vec![tmpl_id])?;
-            let categ_id = cell_id(tmpl.cell(tx, "categ_id").await?, "categ_id")?;
-
-            let item_model = this.env().records("product.pricelist.item")?;
-            let pricelist_id = Self::single_id(this)?;
-
-            let d1 = Domain::condition("pricelist_id", Operator::Eq, pricelist_id)?;
-            let items = item_model.search(tx, &d1).await?;
-
-            let mut best_item: Option<Records> = None;
-            for item_rec_id in items.rec_ids() {
-                let item = item_model.browse(vec![item_rec_id.get()])?;
-                let min_qty = cell_decimal(item.cell(tx, "min_quantity").await?, "min_quantity")?;
-                if min_qty > quantity {
-                    continue;
-                }
-
-                if let Some(target_date) = date {
-                    if let Cell::DateTime(start) = item.cell(tx, "date_start").await?
-                        && target_date < start
-                    {
-                        continue;
-                    }
-                    if let Cell::DateTime(end) = item.cell(tx, "date_end").await?
-                        && target_date > end
-                    {
-                        continue;
-                    }
-                }
-
-                let applied_on = cell_str(item.cell(tx, "applied_on").await?, "applied_on")?;
-                let matched = match applied_on.as_str() {
-                    "0_product_variant" => {
-                        cell_id(item.cell(tx, "product_id").await?, "product_id")?
-                            == Some(product_id)
-                    }
-                    "1_product" => {
-                        cell_id(item.cell(tx, "product_tmpl_id").await?, "product_tmpl_id")?
-                            == Some(tmpl_id)
-                    }
-                    "2_product_category" => {
-                        match (
-                            cell_id(item.cell(tx, "categ_id").await?, "categ_id")?,
-                            categ_id,
-                        ) {
-                            (Some(rule_cat), Some(prod_cat_id)) if rule_cat == prod_cat_id => true,
-                            (Some(rule_cat), Some(prod_cat_id)) => {
-                                let cat_model = this.env().records("product.category")?;
-                                let prod_cat = cat_model.browse(vec![prod_cat_id])?;
-                                let rule_cat_rec = cat_model.browse(vec![rule_cat])?;
-                                let p_path = cell_str(
-                                    prod_cat.cell(tx, "parent_path").await?,
-                                    "parent_path",
-                                )?;
-                                let r_path = cell_str(
-                                    rule_cat_rec.cell(tx, "parent_path").await?,
-                                    "parent_path",
-                                )?;
-                                !r_path.is_empty() && p_path.starts_with(&r_path)
-                            }
-                            _ => false,
-                        }
-                    }
-                    "3_global" => true,
-                    other => {
-                        return Err(Error::programming(format!(
-                            "pricelist item has unknown applied_on '{other}'"
-                        )));
-                    }
-                };
-
-                if matched {
-                    best_item = Some(item);
-                    break;
-                }
-            }
+            let prod = this
+                .env()
+                .records("product.product")?
+                .browse(vec![product_id])?;
+            let best_item = Self::get_product_rule(this, tx, product_id, quantity, date).await?;
 
             let lst_price = cell_decimal(prod.cell(tx, "lst_price").await?, "lst_price")?;
             let Some(item) = best_item else {

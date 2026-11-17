@@ -11,16 +11,11 @@ Noto Naskh Arabic: licenses/notonaskharabic-OFL.txt
 Noto Sans Hebrew: licenses/notosanshebrew-OFL.txt
 Noto Sans Thai: licenses/notosansthai-OFL.txt
 Noto Sans Devanagari: licenses/notosansdevanagari-OFL.txt
-Noto Sans SC: licenses/notosanssc-OFL.txt
-Noto Sans TC: licenses/notosanstc-OFL.txt
-Noto Sans JP: licenses/notosansjp-OFL.txt
-Noto Sans KR: licenses/notosanskr-OFL.txt
 
 Source repository: https://github.com/google/fonts
 Source commit: cc39c4c2c304bc368c9b7c311ea2bcc6013299fe
 Source directories: ofl/notosans, ofl/notosansarabic, ofl/notosanshebrew,
-ofl/notosansthai, ofl/notosansdevanagari, ofl/notosanssc, ofl/notosanstc,
-ofl/notosansjp, ofl/notosanskr, ofl/notonaskharabic, ofl/amiri.
+ofl/notosansthai, ofl/notosansdevanagari, ofl/notonaskharabic, ofl/amiri.
 
 Exact pinned source URLs and SHA-256 hashes are in fonts.json and
 source-inventory.json. Font bytes were not modified or subsetted. Only local

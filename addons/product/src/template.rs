@@ -607,32 +607,23 @@ impl ProductTemplate {
         tx: &mut Transaction,
         out: &mut Assign<'_, ProductTemplate>,
     ) -> Result<()> {
-        let comp_ids = this.mapped(tx, ProductTemplate::COMPANY_ID).await?;
-        for (index, comp_opt) in comp_ids.into_iter().enumerate() {
-            // a shared catalog entry takes the currency of the active company; no company at all
-            // is refused instead of guessing one
-            let target_comp_id = match comp_opt {
-                Some(comp_id) => comp_id.get(),
-                None => env_company_id(this.env(), "the currency of a product without company")?,
-            };
-            let currency_id = company_currency_id(tx, this.env(), target_comp_id).await?;
-            out.set(
-                index,
-                ProductTemplate::CURRENCY_ID,
-                RecId::from_real(currency_id),
-            )?;
+        for (index, currency) in company_currencies(this, tx).await?.into_iter().enumerate() {
+            out.set(index, ProductTemplate::CURRENCY_ID, currency)?;
         }
         Ok(())
     }
 
-    /// Compute cost_currency_id.
+    /// Compute cost_currency_id: the same company currency, assigned to its own field.
     #[compute(depends = ["company_id"])]
     async fn _compute_cost_currency_id(
         this: &RecordSet<ProductTemplate>,
         tx: &mut Transaction,
         out: &mut Assign<'_, ProductTemplate>,
     ) -> Result<()> {
-        Self::_compute_currency_id(this, tx, out).await
+        for (index, currency) in company_currencies(this, tx).await?.into_iter().enumerate() {
+            out.set(index, ProductTemplate::COST_CURRENCY_ID, currency)?;
+        }
+        Ok(())
     }
 
     /// Synchronize barcode for single-variant products.
@@ -760,4 +751,23 @@ impl ProductTemplate {
         crate::variant_generator::create_or_get_dynamic_variant(tx, this.env(), tmpl_id, ptav_ids)
             .await
     }
+}
+
+/// The currency of each template's company; a shared catalog entry takes the currency of the
+/// active company, and no company at all is refused instead of guessing one.
+async fn company_currencies(
+    this: &RecordSet<ProductTemplate>,
+    tx: &mut Transaction,
+) -> Result<Vec<Option<RecId>>> {
+    let comp_ids = this.mapped(tx, ProductTemplate::COMPANY_ID).await?;
+    let mut currencies = Vec::with_capacity(comp_ids.len());
+    for comp_opt in comp_ids {
+        let target_comp_id = match comp_opt {
+            Some(comp_id) => comp_id.get(),
+            None => env_company_id(this.env(), "the currency of a product without company")?,
+        };
+        let currency_id = company_currency_id(tx, this.env(), target_comp_id).await?;
+        currencies.push(RecId::from_real(currency_id));
+    }
+    Ok(currencies)
 }

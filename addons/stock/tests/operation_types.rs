@@ -74,6 +74,55 @@ async fn create(tx: &mut Transaction, model: &str, vals: RawVals) -> i64 {
         .get()
 }
 
+/// Put `moves` in `state` the way the stock engine's statements do: one plain statement, then the
+/// ORM is told of the changed moves and transfer counters. A move's status follows from its lines,
+/// confirmation and reservation, so no create or write may name it; these tests need states those
+/// paths do not reach yet (done, cancelled, waiting without origins).
+async fn engine_state(tx: &mut Transaction, moves: &[i64], state: &str) {
+    tx.flush().await.unwrap();
+    let mut pickings: Vec<i64> = tx
+        .query(
+            "UPDATE stock_move SET state = $2 WHERE id = ANY($1) RETURNING picking_id",
+            &[&moves, &state],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|row| row.get::<_, Option<i64>>(0))
+        .collect();
+    pickings.sort_unstable();
+    pickings.dedup();
+    let model = tx.env().records("stock.move").unwrap();
+    model
+        .browse(moves.iter().copied())
+        .unwrap()
+        .modified_external(tx, &["state"])
+        .await
+        .unwrap();
+    erp_addon_stock::move_counters::notify_pickings(&model, tx, &pickings)
+        .await
+        .unwrap();
+}
+
+/// The `state` a test names for a move, taken out of its values for [`engine_state`].
+fn take_state(vals: &mut RawVals) -> Option<String> {
+    match vals.remove("state") {
+        None => None,
+        Some(Cell::Str(state)) => Some(state.to_string()),
+        Some(other) => panic!("a move state is text, got {other:?}"),
+    }
+}
+
+/// A move created through the ORM; a named non-draft `state` is then set by [`engine_state`].
+async fn create_move(tx: &mut Transaction, mut vals: RawVals) -> i64 {
+    let state = take_state(&mut vals);
+    let id = create(tx, "stock.move", vals).await;
+    if let Some(state) = state.filter(|state| state != "draft") {
+        engine_state(tx, &[id], &state).await;
+    }
+    id
+}
+
 /// An operation type of `company` between the two fixture locations.
 async fn create_picking_type(
     tx: &mut Transaction,
@@ -290,9 +339,9 @@ async fn move_in_state(
         .set_cell("location_dest_id", Cell::Id(f.other_location))
         .set_cell("product_uom_qty", dec("1"))
         .set_cell("product_qty", dec("1"))
-        .set_cell("picking_id", Cell::Id(picking))
-        .set_cell("state", text(state));
-    tx.env()
+        .set_cell("picking_id", Cell::Id(picking));
+    let id = tx
+        .env()
         .sudo(true)
         .with_company(company)
         .unwrap()
@@ -301,7 +350,11 @@ async fn move_in_state(
         .create(tx, vec![vals])
         .await
         .unwrap_or_else(|e| panic!("move in state {state}: {e:?}"))
-        .ids()[0]
+        .ids()[0];
+    if state != "draft" {
+        engine_state(tx, &[id], state).await;
+    }
+    id
 }
 async fn wh(tx: &mut Transaction, f: &Fixture) -> i64 {
     create(
@@ -626,12 +679,7 @@ async fn reservation_switch_updates_open_moves_and_preserves_closed_or_assigned(
         "cancel",
     ] {
         for priority in ["0", "1"] {
-            let id = create(
-                &mut tx,
-                "stock.move",
-                move_values(&f, state, priority, f.picking_type),
-            )
-            .await;
+            let id = create_move(&mut tx, move_values(&f, state, priority, f.picking_type)).await;
             moves.push((row(&tx, "stock.move", id), state, priority));
         }
     }
@@ -950,12 +998,7 @@ async fn denied_field_precedes_side_effects_and_dependent_write_failure_rolls_ba
         error.message(),
         "Writing stock.picking.type.sequence_code is not allowed."
     );
-    let mid = create(
-        &mut tx,
-        "stock.move",
-        move_values(&f, "confirmed", "0", f.picking_type),
-    )
-    .await;
+    let mid = create_move(&mut tx, move_values(&f, "confirmed", "0", f.picking_type)).await;
     let error = update(
         &mut tx,
         &r,
@@ -1026,12 +1069,7 @@ async fn restricted_fixture() -> Fixture {
 async fn hidden_moves_refuse_rescheduling_without_partial_policy_change() {
     let f = restricted_fixture().await;
     let mut tx = f.h.begin().await.unwrap();
-    create(
-        &mut tx,
-        "stock.move",
-        move_values(&f, "confirmed", "1", f.picking_type),
-    )
-    .await;
+    create_move(&mut tx, move_values(&f, "confirmed", "1", f.picking_type)).await;
     let r = row(&tx, "stock.picking.type", f.picking_type).with_user(7);
     let err = update(
         &mut tx,
@@ -1087,10 +1125,7 @@ async fn counters_respect_transfer_record_rules_and_invalidate_after_writes() {
         Cell::Int(1)
     );
     // the visible transfer becomes done through its move
-    let mv = row(&tx, "stock.move", visible_move.unwrap());
-    update(&mut tx, &mv, RawVals::new().set_cell("state", text("done")))
-        .await
-        .unwrap();
+    engine_state(&mut tx, &[visible_move.unwrap()], "done").await;
     assert_eq!(
         caller.cell(&mut tx, "count_picking_ready").await.unwrap(),
         Cell::Int(0)
@@ -1333,7 +1368,7 @@ async fn default_prerequisites_fail_by_name_without_orphan_sequences() {
     assert_eq!(error.kind(), ErrorKind::UserError);
     assert_eq!(
         error.message(),
-        "No warehouse is available for the operation type company; warehouse provisioning is not supported until a later release."
+        "No warehouse is available for the operation type company; create a warehouse for it first."
     );
     let warehouse = wh(&mut tx, &f).await;
     let error = model
@@ -1503,9 +1538,8 @@ async fn sequence_copy_overrides_and_warehouse_free_configuration_are_explicit()
 async fn reservation_dates_cross_years_and_remain_scoped_to_each_type() {
     let f = fixture().await;
     let mut tx = f.h.begin().await.unwrap();
-    let foreign_move = create(
+    let foreign_move = create_move(
         &mut tx,
-        "stock.move",
         move_values(&f, "confirmed", "0", f.other_picking_type)
             .set_cell("company_id", Cell::Id(f.other_company)),
     )
@@ -1521,9 +1555,8 @@ async fn reservation_dates_cross_years_and_remain_scoped_to_each_type() {
     let mut moves = Vec::new();
     for (type_id, normal, priority) in [(f.picking_type, 2, 7), (second, 5, 1)] {
         for p in ["0", "1"] {
-            let id = create(
+            let id = create_move(
                 &mut tx,
-                "stock.move",
                 move_values(&f, "confirmed", p, type_id).set_cell(
                     "date",
                     Cell::DateTime(DateTime::parse_odoo("2028-01-01 11:30:00").unwrap()),

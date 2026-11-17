@@ -35,7 +35,10 @@
 //! behind a guard waits for it and is retried on the guard's change. The same read takes `FOR SHARE` on
 //! the key locations' policy rows: a negative-stock switch committed after this transaction's snapshot
 //! fails the lock with `40001`, so the forbid decision is never taken on a stale flag, and the switch's
-//! own `FOR UPDATE NOWAIT` on the policy row is refused while an engine call holds it.
+//! own `FOR UPDATE NOWAIT` on the policy row is refused while an engine call holds it. A call that
+//! leaves a key below zero (a decrease at a location without the switch) also writes a new version
+//! of that location's policy row ([`MARK_NEGATIVE`]), so a switch whose snapshot predates the call's
+//! commit fails its lock with `40001` instead of counting negative balances it cannot see.
 //!
 //! **Access.** The engine reads and writes the quant table directly, as the reference's `sudo()` does:
 //! it checks no model access and no record rule. It is for the stock transitions (move validation,
@@ -49,14 +52,26 @@ use std::num::NonZeroU32;
 
 use erp_sdk::ErrorKind;
 use erp_sdk::delta::{
-    CanonicalKey, DeltaLimits, GrainColumn, GrainType, GrainValue, InsertFill, MeasureColumn,
-    MeasureGuard, MeasureType, MeasureValue, ProjectionShape, SyncApply, apply_synchronous,
+    CanonicalKey, DeltaLimits, GrainColumn, GrainType, GrainValue, MeasureColumn, MeasureType,
+    MeasureValue, ProjectionShape,
 };
 use erp_sdk::prelude::*;
 
-/// The quant table, its business key and the decimal precision of its quantities.
-const TABLE: &str = "stock_quant";
-const KEY_CONSTRAINT: &str = "stock_quant_key";
+/// The balances `$2`, `$3` of the locked rows `$1` (step (b)).
+const WRITE_BALANCES: &str = "UPDATE stock_quant q SET quantity = b.quantity, \
+       reserved_quantity = b.reserved \
+     FROM unnest($1::int8[], $2::numeric[], $3::numeric[]) AS b(id, quantity, reserved) \
+     WHERE q.id = b.id";
+/// A new version of the policy rows of the locations `$1` (ascending, one row each) without changing
+/// a value: the mark of a call that left a key there below zero. A switch whose snapshot predates the
+/// mark's commit fails its `FOR UPDATE` with `40001` (`REPEATABLE READ`), so it never counts on a
+/// snapshot that misses the negative balance; the row versions written by `FOR SHARE` alone do not
+/// do that. The call already holds the rows `FOR SHARE` from its validation read; another call
+/// holding them too is waited for, and a deadlock between two marking calls is retried (`40P01`).
+const MARK_NEGATIVE: &str = "WITH o AS (SELECT id FROM stock_location_policy \
+       WHERE location_id = ANY($1) ORDER BY location_id FOR NO KEY UPDATE) \
+     UPDATE stock_location_policy p SET forbid_negative = p.forbid_negative FROM o WHERE p.id = o.id";
+/// The decimal precision of the quant quantities.
 const PRECISION_USAGE: &str = "Product Unit";
 /// Significant digits of a quantity measure: the most an exact decimal holds.
 const MEASURE_PRECISION: u32 = 28;
@@ -130,6 +145,14 @@ pub struct QuantChange {
     pub reserved_quantity: Decimal,
     /// Incoming date carried by the stock; `None` lets the key keep its own date or take now.
     pub in_date: Option<DateTime>,
+    /// An allocation the caller probed without a lock: its key may not end with more
+    /// reserved than on hand. A key that would is refused as a retryable concurrency failure
+    /// ([`QuantError::ChangedSinceProbe`]), never reserved short.
+    pub probed: bool,
+    /// A take of on-hand stock that was never reserved (3): at a location that forbids
+    /// negative stock it may not use stock reserved for others, so a key it leaves with more
+    /// reserved than on hand is refused ([`QuantError::ReservationExceedsFree`]).
+    pub floored: bool,
 }
 
 impl QuantChange {
@@ -140,6 +163,8 @@ impl QuantChange {
             quantity,
             reserved_quantity,
             in_date: None,
+            probed: false,
+            floored: false,
         }
     }
 
@@ -147,6 +172,24 @@ impl QuantChange {
     #[must_use]
     pub fn in_date(self, in_date: Option<DateTime>) -> Self {
         Self { in_date, ..self }
+    }
+
+    /// The same change as a probed allocation (the `probed` field).
+    #[must_use]
+    pub fn as_probed(self) -> Self {
+        Self {
+            probed: true,
+            ..self
+        }
+    }
+
+    /// The same change as an unreserved take held to the free quantity (the `floored` field).
+    #[must_use]
+    pub fn as_floored(self) -> Self {
+        Self {
+            floored: true,
+            ..self
+        }
     }
 }
 
@@ -302,6 +345,24 @@ pub enum QuantError {
         /// The on-hand the change would have produced.
         after: Decimal,
     },
+    /// A reservation that would take more than is free at a location whose policy forbids
+    /// negative stock (6, D6.3, D6.4). Nothing was changed.
+    ReservationExceedsFree {
+        /// The key.
+        key: QuantKey,
+        /// The location's name.
+        location: String,
+        /// On hand minus reserved before the change.
+        free: Decimal,
+        /// The reserved quantity asked for.
+        requested: Decimal,
+    },
+    /// A probed allocation that no longer fits its locked key (2): another unit changed
+    /// it since the probe. Retryable as a whole unit (`40001`); nothing is reserved short.
+    ChangedSinceProbe {
+        /// The key.
+        key: QuantKey,
+    },
     /// A release larger than the locked reserved counter (2): a defect, never clamped.
     ReservationUnderflow {
         /// The key.
@@ -406,6 +467,28 @@ impl fmt::Display for QuantError {
                 before = before.normalize(),
                 after = after.normalize(),
             ),
+            Self::ReservationExceedsFree {
+                key,
+                location,
+                free,
+                requested,
+            } => write!(
+                f,
+                "Location {location} does not allow negative stock: only {free} of product {}{} is \
+                 free to reserve; {requested} was requested.",
+                key.product_id,
+                key_parts(key),
+                free = free.normalize(),
+                requested = requested.normalize(),
+            ),
+            Self::ChangedSinceProbe { key } => write!(
+                f,
+                "could not serialize access: the stock balance of product {} at location {}{} \
+                 changed after it was read for a reservation",
+                key.product_id,
+                key.location_id,
+                key_parts(key)
+            ),
             Self::ReservationUnderflow {
                 key,
                 reserved,
@@ -474,6 +557,11 @@ impl std::error::Error for QuantError {}
 impl From<QuantError> for Error {
     fn from(error: QuantError) -> Self {
         let message = error.to_string();
+        if matches!(error, QuantError::ChangedSinceProbe { .. }) {
+            return Self::new(ErrorKind::Concurrency, message)
+                .with_sqlstate(Some("40001".to_owned()))
+                .with_source(error);
+        }
         let base = match &error {
             QuantError::Missing { .. }
             | QuantError::ReservationUnderflow { .. }
@@ -774,8 +862,7 @@ struct Planned {
 /// production) are dropped, their effect is in the ledger only (1); keys whose nets are
 /// both zero are dropped. The rest are locked in key order in one statement (a zero row is inserted
 /// for a new key), their new values are computed from the locked rows and refused before any write
-/// when the reserved counter would go below zero, then written by the synchronous guarded apply of,
-/// and finally given their incoming date, or deleted when they ended at zero with no count
+/// when the reserved counter would go below zero, then written by id on the locked rows, and finally given their incoming date, or deleted when they ended at zero with no count
 /// state. Negative on-hand is allowed (the reference's default) except at a location whose policy row
 /// forbids it: a change that lowers such a key below zero is refused with
 /// [`QuantError::NegativeStockForbidden`] before any write.
@@ -784,8 +871,8 @@ struct Planned {
 /// the changes carry, else now.
 ///
 /// Returns the balances of the stored keys, in lock order. Statements: one validation read and the
-/// three of D1.3, whatever the batch size; the work runs in a savepoint, so a refusal leaves nothing
-/// behind. The batch is bounded by the delta limits (2,000 distinct keys, 32,000 changes).
+/// three of D1.3, whatever the batch size, and one more when the call leaves a key below zero; the
+/// work runs in a savepoint, so a refusal leaves nothing behind. The batch is bounded by the delta limits (2,000 distinct keys, 32,000 changes).
 ///
 /// # Errors
 ///
@@ -853,6 +940,12 @@ async fn apply_in_savepoint(
     let (stored, standing, forbidding) = validate_keys(tx, &distinct, call).await?;
     tx.extension::<HeldKeys>().keep(&standing);
     let shape = shape(digits)?;
+    let probed: HashSet<QuantKey> = changes.iter().filter(|c| c.probed).map(|c| c.key).collect();
+    let floored: HashSet<QuantKey> = changes
+        .iter()
+        .filter(|c| c.floored)
+        .map(|c| c.key)
+        .collect();
     let mut dates: HashMap<QuantKey, DateTime> = HashMap::new();
     let mut contributions = Vec::with_capacity(changes.len());
     for change in changes.iter().filter(|c| stored.contains(&c.key)) {
@@ -967,6 +1060,37 @@ async fn apply_in_savepoint(
             }
             .into());
         }
+        // a reservation that grows past the on-hand: a probed allocation retries, a flagged
+        // location refuses (2, D6.3); elsewhere over-reservation stays legal (O7)
+        if dr > Decimal::ZERO && new_reserved > new_quantity {
+            if probed.contains(&key) {
+                return Err(QuantError::ChangedSinceProbe { key }.into());
+            }
+            if let Some(location) = forbidding.get(&key.location_id) {
+                return Err(QuantError::ReservationExceedsFree {
+                    key,
+                    location: location.clone(),
+                    free: quantity - reserved,
+                    requested: dr,
+                }
+                .into());
+            }
+        }
+        // an unreserved take that lowers the free quantity below zero at a flagged location would
+        // use stock reserved for others (3); elsewhere it stays legal (O7)
+        if floored.contains(&key)
+            && dq - dr < Decimal::ZERO
+            && new_quantity < new_reserved
+            && let Some(location) = forbidding.get(&key.location_id)
+        {
+            return Err(QuantError::ReservationExceedsFree {
+                key,
+                location: location.clone(),
+                free: quantity - reserved,
+                requested: -dq,
+            }
+            .into());
+        }
         // the row is locked, so no concurrent writer can pass this check with the same balance; a
         // change that only repays an existing deficit (dq >= 0) is never refused
         if dq < Decimal::ZERO
@@ -999,50 +1123,38 @@ async fn apply_in_savepoint(
         });
     }
 
-    // (b) the synchronous guarded apply (amendment B1); the floor is the backstop of (a').
-    // Every key exists after (a), but PostgreSQL checks NOT NULL on the proposed row before it
-    // resolves the conflict, so the required incoming date gets an insert-only fill (B7);
-    // (c) writes the real date.
-    let registry = tx.registry().clone();
-    let model = registry
-        .model("stock.quant")
-        .ok_or_else(|| Error::internal("stock quant engine: stock.quant is not in the registry"))?;
-    let apply = SyncApply::new(
-        &shape,
-        TABLE,
-        KEY_CONSTRAINT,
-        vec![MeasureGuard::at_least(
-            "reserved_quantity",
-            MeasureValue::Numeric(Decimal::ZERO),
-            "The reserved quantity of a stock balance cannot be negative.",
-        )],
-    )?
-    .with_insert_fill(model, "in_date", InsertFill::TransactionTime)?;
-    let applied = apply_synchronous(tx, &apply, &batch)
-        .await
-        .map_err(erp_sdk::delta::SyncApplyFailure::into_error)?;
-    if applied.rows().len() != planned.len() {
+    // (a'') the mark of the locations where this call leaves a key below zero (see MARK_NEGATIVE)
+    let mut marked: Vec<i64> = planned
+        .iter()
+        .zip(&deltas)
+        .filter(|(plan, (dq, _))| *dq < Decimal::ZERO && plan.quantity < Decimal::ZERO)
+        .map(|(plan, _)| plan.key.location_id)
+        .collect();
+    marked.sort_unstable();
+    marked.dedup();
+    if !marked.is_empty() {
+        tx.execute(MARK_NEGATIVE, &[&marked]).await?;
+    }
+
+    // (b) every key exists and is locked since (a), and (a') checked every outcome: the planned
+    // balances are written by id. An upsert carries the delta as its proposed row, which
+    // PostgreSQL checks against the table's CHECKs before it resolves the conflict, so a release
+    // (a negative reserved delta) could never pass `_reserved_nonneg`; that CHECK stays the
+    // backstop of (a').
+    let ids: Vec<i64> = planned.iter().map(|p| p.id).collect();
+    let quantities: Vec<Decimal> = planned.iter().map(|p| p.quantity).collect();
+    let reserved: Vec<Decimal> = planned.iter().map(|p| p.reserved_quantity).collect();
+    let written = tx
+        .execute(WRITE_BALANCES, &[&ids, &quantities, &reserved])
+        .await?;
+    if usize::try_from(written).ok() != Some(planned.len()) {
         return Err(mismatch(format!(
-            "{} rows applied for {} keys",
-            applied.rows().len(),
+            "{written} rows written for {} keys",
             planned.len()
         )));
     }
-    for (row, plan) in applied.rows().iter().zip(&planned) {
-        let measures = row.measures();
-        if row.inserted()
-            || numeric(measures, 0)? != plan.quantity
-            || numeric(measures, 1)? != plan.reserved_quantity
-        {
-            return Err(mismatch(format!(
-                "key of row {} was applied otherwise",
-                plan.id
-            )));
-        }
-    }
 
     // (c) incoming dates and zero-key deletion
-    let ids: Vec<i64> = planned.iter().map(|p| p.id).collect();
     let in_dates: Vec<Option<DateTime>> = planned.iter().map(|p| p.in_date).collect();
     let drops: Vec<bool> = planned.iter().map(|p| p.drop_key).collect();
     let finished = tx

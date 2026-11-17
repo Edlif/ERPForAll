@@ -822,8 +822,8 @@ async fn picking_columns_defaults_and_indexes() {
     ]) {
         assert!(spec.field(field).unwrap().readonly, "{field} is readonly");
     }
-    // no default name: a picking without one is refused
-    let error = create_picking(
+    // a picking without a name takes its type's next reference, or the "/" placeholder
+    let unnamed = create_picking(
         &mut tx,
         f.company,
         RawVals::new()
@@ -833,16 +833,13 @@ async fn picking_columns_defaults_and_indexes() {
             .set_cell("location_dest_id", Cell::Id(f.other_location)),
     )
     .await
-    .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
-    assert_eq!(
-        error.message(),
-        format!(
-            "{PREFIX}Missing required field '{}' (name) for model '{}' (stock.picking)",
-            spec.field("name").unwrap().string,
-            spec.description
-        )
-    );
+    .unwrap();
+    let name: String = tx
+        .query("SELECT name FROM stock_picking WHERE id = $1", &[&unnamed])
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert!(!name.is_empty());
     let id = create_picking(
         &mut tx,
         f.company,
@@ -1904,29 +1901,94 @@ fn counted_move(
         )
 }
 
-async fn create_moves(tx: &mut Transaction, company: i64, vals: Vec<RawVals>) -> Result<Vec<i64>> {
-    tx.savepoint(async |tx| {
-        Ok(tx
-            .env()
-            .with_company(company)?
-            .records("stock.move")?
-            .create(tx, vals)
-            .await?
-            .ids())
-    })
-    .await
+/// Put `moves` in `state` the way the stock engine's statements do: one plain statement, then the
+/// ORM is told of the changed moves and transfer counters. A move's status follows from its lines,
+/// confirmation and reservation, so no create or write may name it; these tests need states those
+/// paths do not reach yet (done, cancelled, waiting without origins).
+async fn engine_state(tx: &mut Transaction, moves: &[i64], state: &str) {
+    tx.flush().await.unwrap();
+    let mut pickings: Vec<i64> = tx
+        .query(
+            "UPDATE stock_move SET state = $2 WHERE id = ANY($1) RETURNING picking_id",
+            &[&moves, &state],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|row| row.get::<_, Option<i64>>(0))
+        .collect();
+    pickings.sort_unstable();
+    pickings.dedup();
+    let model = tx.env().records("stock.move").unwrap();
+    model
+        .browse(moves.iter().copied())
+        .unwrap()
+        .modified_external(tx, &["state"])
+        .await
+        .unwrap();
+    erp_addon_stock::move_counters::notify_pickings(&model, tx, &pickings)
+        .await
+        .unwrap();
 }
 
-async fn write_moves(tx: &mut Transaction, company: i64, ids: &[i64], vals: RawVals) -> Result<()> {
-    tx.savepoint(async |tx| {
-        tx.env()
-            .with_company(company)?
-            .records("stock.move")?
-            .browse(ids.iter().copied())?
-            .write(tx, vals)
-            .await
-    })
-    .await
+/// The `state` a test names for a move, taken out of its values for [`engine_state`].
+fn take_state(vals: &mut RawVals) -> Option<String> {
+    match vals.remove("state") {
+        None => None,
+        Some(Cell::Str(state)) => Some(state.to_string()),
+        Some(other) => panic!("a move state is text, got {other:?}"),
+    }
+}
+
+/// Moves created through the ORM; a named non-draft `state` is then set by [`engine_state`].
+async fn create_moves(
+    tx: &mut Transaction,
+    company: i64,
+    mut vals: Vec<RawVals>,
+) -> Result<Vec<i64>> {
+    let states: Vec<Option<String>> = vals.iter_mut().map(take_state).collect();
+    let ids = tx
+        .savepoint(async |tx| {
+            Ok(tx
+                .env()
+                .with_company(company)?
+                .records("stock.move")?
+                .create(tx, vals)
+                .await?
+                .ids())
+        })
+        .await?;
+    for (id, state) in ids.iter().zip(states) {
+        if let Some(state) = state.filter(|state| state != "draft") {
+            engine_state(tx, &[*id], &state).await;
+        }
+    }
+    Ok(ids)
+}
+
+/// A move write through the ORM; a named `state` is then set by [`engine_state`].
+async fn write_moves(
+    tx: &mut Transaction,
+    company: i64,
+    ids: &[i64],
+    mut vals: RawVals,
+) -> Result<()> {
+    let state = take_state(&mut vals);
+    if !vals.is_empty() {
+        tx.savepoint(async |tx| {
+            tx.env()
+                .with_company(company)?
+                .records("stock.move")?
+                .browse(ids.iter().copied())?
+                .write(tx, vals)
+                .await
+        })
+        .await?;
+    }
+    if let Some(state) = state {
+        engine_state(tx, ids, &state).await;
+    }
+    Ok(())
 }
 
 async fn unlink_moves(tx: &mut Transaction, company: i64, ids: &[i64]) -> Result<()> {
@@ -3860,14 +3922,15 @@ async fn demand_and_quantity_convert_to_the_product_unit() {
             f.company,
             bare_move(&f)
                 .set_cell("uom_id", Cell::Id(unit))
-                .set_cell("product_uom_qty", dec(qty))
-                .set_cell("quantity", dec(qty)),
+                .set_cell("product_uom_qty", dec(qty)),
         )
         .await
         .unwrap();
+        // a new move has no quantity: it follows from the lines (move_flow tests)
         let want = expected_product_qty(&mut tx, unit, f.unit, qty).await;
+        let zero = expected_product_qty(&mut tx, unit, f.unit, "0").await;
         let cells = move_cells(&mut tx, id, &["product_qty", "quantity_product_uom"]).await;
-        assert_eq!(cells, vec![want.clone(), want], "{qty} of unit {unit}");
+        assert_eq!(cells, vec![want, zero], "{qty} of unit {unit}");
     }
     tx.rollback().await.unwrap();
     drop(tx);

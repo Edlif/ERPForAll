@@ -576,7 +576,7 @@ fn amount(value: Decimal) -> Json {
     Json::String(value.to_string())
 }
 
-/// A stat; `None` when it counts nothing (the reference shows no row then).
+/// A stat.
 fn stat(
     journal: &Journal,
     label: &str,
@@ -586,9 +586,7 @@ fn stat(
     domain: Json,
     tone: &str,
 ) -> Option<Json> {
-    if sum.count == 0 {
-        return None;
-    }
+    let tone = if sum.count == 0 { "neutral" } else { tone };
     let (amount_value, currency) = if money {
         (amount(sum.amount), json!(journal.currency))
     } else {
@@ -648,9 +646,6 @@ fn button(journal: &Journal) -> Json {
 fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings) -> Result<Json> {
     let id = journal.id;
     let entries = |state: &str| f.entries.get(&(id, state.to_owned())).copied().unwrap_or(0);
-    let has_entries = ["draft", "posted", "cancel"]
-        .iter()
-        .any(|state| entries(state) > 0);
     let drafts_domain = json!([["journal_id", "=", id], ["state", "=", "draft"]]);
     let (stats, chart) = match journal.kind {
         Kind::Sale | Kind::Purchase => {
@@ -716,7 +711,9 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                     "danger",
                 ),
             ];
-            let chart = if has_entries {
+            // always drawn, with every month at zero on a journal without entries (the reference
+            // draws sample bars there; ours shows the real, empty months)
+            let chart = {
                 let points: Vec<Json> = chart_months(today, settings.graph_months)?
                     .into_iter()
                     .map(|month| {
@@ -730,8 +727,6 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                     })
                     .collect();
                 json!({"type": "bar", "label": chart_label, "points": points})
-            } else {
-                Json::Null
             };
             (stats.into_iter().flatten().collect::<Vec<_>>(), chart)
         }
@@ -759,8 +754,8 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                 balance_domain,
                 "neutral",
             );
-            // a bank or credit card journal without entries shows no chart; a cash journal does
-            let chart = if has_entries || journal.kind == Kind::Cash {
+            // always drawn: a journal without entries shows its flat balance line
+            let chart = {
                 let mut running = pair
                     .and_then(|p| f.opening.get(&p).copied())
                     .unwrap_or_default();
@@ -779,8 +774,6 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                     }));
                 }
                 json!({"type": "line", "label": labels::BALANCE, "points": points})
-            } else {
-                Json::Null
             };
             (stats.into_iter().collect(), chart)
         }
@@ -868,9 +861,9 @@ mod tests {
         assert!(GRAPH_MONTHS_HARD <= limit, "one bar per month");
     }
 
-    /// A stat that counts nothing is left out, as the reference shows no row for it.
+    /// A stat that counts nothing is still shown, at zero and in the neutral tone.
     #[test]
-    fn a_stat_counting_nothing_is_left_out() {
+    fn a_stat_counting_nothing_is_shown_at_zero() {
         let journal = Journal {
             id: 7,
             kind: Kind::Sale,
@@ -878,19 +871,19 @@ mod tests {
             currency: Some(3),
             default_account: None,
         };
-        let empty = Sum::default();
-        assert!(
-            stat(
-                &journal,
-                labels::LATE,
-                empty,
-                true,
-                "a.b",
-                json!([]),
-                "danger"
-            )
-            .is_none()
-        );
+        let empty = stat(
+            &journal,
+            labels::LATE,
+            Sum::default(),
+            true,
+            "a.b",
+            json!([]),
+            "danger",
+        )
+        .unwrap();
+        assert_eq!(empty["count"], 0);
+        assert_eq!(empty["amount"], "0");
+        assert_eq!(empty["tone"], "neutral");
         let late = Sum {
             count: 2,
             amount: Decimal::from(5),

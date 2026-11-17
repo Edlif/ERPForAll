@@ -556,6 +556,8 @@ async fn installed_links() -> InstalledLinks {
             RawVals::new()
                 .set_cell("name", Cell::Str(format!("{code} warehouse").into()))
                 .set_cell("code", Cell::Str(code.into()))
+                // ahead of the warehouse each company gets when it is created
+                .set_cell("sequence", Cell::Int(1))
                 .set_cell("company_id", Cell::Id(company))
                 .set_cell("view_location_id", Cell::Id(loc))
                 .set_cell("lot_stock_id", Cell::Id(loc)),

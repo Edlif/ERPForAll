@@ -1033,6 +1033,13 @@ async fn a_mutation_flushed_through_another_environment_keeps_its_company_and_wr
         .unwrap();
     // company 2 has no such cost: the value did not move to the flushing environment's company
     assert!(found.is_empty());
+    // Bob's search is what flushed: the row is written before any flush without an environment
+    // (the raw read does not flush, as the `None` above shows).
+    assert_eq!(
+        raw_cost(&mut tx, id).await,
+        Some(json!({"1": stored(value)}))
+    );
+    assert_eq!(writer_of(&mut tx).await, Some(ALICE));
     tx.flush().await.unwrap();
     assert_eq!(
         raw_cost(&mut tx, id).await,

@@ -1081,6 +1081,8 @@ async fn create_records_inner(
         .ok_or_else(|| Error::programming("INSERT did not return an id for every row"))?;
     // `restrict` references the new rows hold in their company maps: their targets are locked and
     // recorded, so a deletion running at the same time is refused or fails
+    let mut guarded = Vec::new();
+    let mut targets = crate::company_ref_guard::Targets::default();
     for field in spec
         .fields
         .iter()
@@ -1092,7 +1094,13 @@ async fn create_records_inner(
                 crate::company_ref_guard::map_changes(*id, map, &mut changes)?;
             }
         }
-        tx.guard_company_references(spec, field, &changes).await?;
+        targets.add(spec, field, &changes)?;
+        guarded.push((field, changes));
+    }
+    // one id-ordered lock over the targets of every guarded field, then the statement of each
+    tx.lock_company_references(&targets).await?;
+    for (field, changes) in &guarded {
+        tx.guard_company_references(spec, field, changes).await?;
     }
     // a created record never reports tracked changes (D2)
     if !spec.tracked.is_empty() {
@@ -2661,6 +2669,27 @@ impl Transaction {
                     .collect::<Vec<_>>()
             })
             .collect();
+        // One id-ordered lock over the targets that the `restrict` company-dependent many2one
+        // fields of every group and chunk below are about to reference, before the first of their
+        // statements: locks ordered only inside each statement deadlock with a deletion of the
+        // same targets.
+        let mut targets = crate::company_ref_guard::Targets::default();
+        for (group_fields, ids) in &groups {
+            for fid in group_fields {
+                let field = spec.field_by_id(*fid);
+                if field.column().is_none() || !crate::company_ref_guard::guards(field) {
+                    continue;
+                }
+                let mut changes = crate::company_ref_guard::Changes::default();
+                for id in ids {
+                    let id = RecId::real(*id);
+                    let patch = self.company_patch(spec, *fid, id)?;
+                    crate::company_ref_guard::patch_changes(id, &patch, &mut changes)?;
+                }
+                targets.add(spec, field, &changes)?;
+            }
+        }
+        self.lock_company_references(&targets).await?;
         for (group_fields, ids) in groups {
             let rec_ids: Vec<RecId> = ids.iter().map(|id| RecId::real(*id)).collect();
             let mut columns: Vec<(&str, ColumnType)> = Vec::with_capacity(group_fields.len());
@@ -2678,22 +2707,7 @@ impl Transaction {
                     company_cols.push(field.name);
                     let deltas = rec_ids
                         .iter()
-                        .map(|id| {
-                            let current = self.cache.get(spec.id, *fid, *id).ok_or_else(|| {
-                                Error::programming("Company-dependent flush lost its map")
-                            })?;
-                            let before = self
-                                .engine
-                                .properties
-                                .baselines
-                                .get(&(spec.id, *fid, *id))
-                                .ok_or_else(|| {
-                                    Error::programming(
-                                        "Company-dependent flush is missing its baseline",
-                                    )
-                                })?;
-                            crate::company_dependent::delta(before, &current)
-                        })
+                        .map(|id| self.company_patch(spec, *fid, *id))
                         .collect::<Result<Vec<_>>>()?;
                     if crate::company_ref_guard::guards(field) {
                         let mut changes = crate::company_ref_guard::Changes::default();

@@ -1,0 +1,19 @@
+name = "Sales Teams"
+summary = "Sales teams, their members and tags, and the Sales access groups"
+category = "Sales/Sales"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "mail"]
+exact_only = true
+# Data order (B1): the groups first, then the default team, then the views, and the access
+# rows last (as the reference's own list). No menu: the reference's
+# sales_team has none; the Teams entry of the Sales configuration menu is sale's.
+data = [
+    "security/sales_team_security.xml",
+    "data/crm_team_data.xml",
+    "views/crm_tag_views.xml",
+    "views/crm_team_views.xml",
+    "views/crm_team_member_views.xml",
+    "security/ir.access.csv",
+]

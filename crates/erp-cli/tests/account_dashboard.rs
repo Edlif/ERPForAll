@@ -242,14 +242,6 @@ async fn card(tx: &mut Transaction, company: i64, journal: i64) -> Result<Json> 
     }
 }
 
-fn has_stat(card: &Json, label: &str) -> bool {
-    card["stats"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| s["label"] == label)
-}
-
 fn stat<'a>(card: &'a Json, label: &str) -> &'a Json {
     card["stats"]
         .as_array()
@@ -361,11 +353,13 @@ async fn cards_per_journal_type_with_drafts_body() {
     assert_eq!(amount(&drafts["amount"]), Decimal::from(75));
     assert_eq!(drafts["currency_id"], currency);
     assert_eq!(drafts["action"], "account.action_move_out_invoice_type");
-    // as the reference, a figure that counts nothing is not shown
-    assert!(
-        !has_stat(&sale, "Unpaid") && !has_stat(&sale, "Late"),
-        "{sale}"
-    );
+    // a figure that counts nothing is shown at zero, in the neutral tone
+    for label in ["Unpaid", "Late"] {
+        let zero = stat(&sale, label);
+        assert_eq!(zero["count"], 0, "{sale}");
+        assert_eq!(amount(&zero["amount"]), Decimal::ZERO);
+        assert_eq!(zero["tone"], "neutral");
+    }
     assert_eq!(sale["chart"]["type"], "bar");
     // the current month and the twelve before it, each zero without posted invoices
     let points = sale["chart"]["points"].as_array().unwrap();
@@ -375,11 +369,19 @@ async fn cards_per_journal_type_with_drafts_body() {
     let (year, month, _) = today.ymd();
     assert_eq!(points[12]["label"], format!("{year:04}-{month:02}"));
 
-    // a journal without entries shows no figure and no chart
+    // a journal without entries shows its three figures at zero and the months of its chart at zero
     let empty = journal(&mut tx, main, "Dash Empty Sales", "sale", Some(b.income)).await;
     let empty = card(&mut tx, main, empty).await.unwrap();
-    assert!(empty["stats"].as_array().unwrap().is_empty(), "{empty}");
-    assert!(empty["chart"].is_null());
+    let figures = empty["stats"].as_array().unwrap();
+    assert_eq!(figures.len(), 3, "{empty}");
+    assert!(
+        figures
+            .iter()
+            .all(|f| f["count"] == 0 && f["tone"] == "neutral")
+    );
+    let months = empty["chart"]["points"].as_array().unwrap();
+    assert_eq!(months.len(), 13);
+    assert!(months.iter().all(|p| amount(&p["value"]) == Decimal::ZERO));
 
     let purchase = card(&mut tx, main, b.purchase).await.unwrap();
     assert_eq!(purchase["buttons"][0]["label"], "New Bill");
@@ -402,10 +404,9 @@ async fn cards_per_journal_type_with_drafts_body() {
         "account.action_move_journal_line"
     );
     assert!(bank["buttons"][0]["view_mode"].is_null());
-    assert!(
-        !has_stat(&bank, "Balance"),
-        "a draft is not in the balance, so no posted line shows it: {bank}"
-    );
+    // a draft is not in the balance: the figure is shown at zero
+    assert_eq!(stat(&bank, "Balance")["count"], 0, "{bank}");
+    assert_eq!(amount(&stat(&bank, "Balance")["amount"]), Decimal::ZERO);
     assert_eq!(bank["chart"]["type"], "line");
     assert_eq!(bank["chart"]["points"].as_array().unwrap().len(), 30);
 

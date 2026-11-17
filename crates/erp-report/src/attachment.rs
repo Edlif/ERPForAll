@@ -500,8 +500,12 @@ pub fn check_attachment<F: Fn(&str, &str) -> Option<FieldInfo>>(
             events.push(analysis.scope(&bindings)?);
             // The alias shadows an outer name until the loop's restore boundary.
             bindings.remove(alias);
-            analysis.bind(&mut bindings, alias, Some(model), key, line)?;
-            for helper in ["index", "first", "last", "size"] {
+            analysis.bind(&mut bindings, alias, Some(model.clone()), key, line)?;
+            // QWeb also binds `<alias>_value` to the iterated record: it carries the loop's model,
+            // never an outer binding of that name.
+            // Set like the scalar helpers below: the alias already passed the name and count checks.
+            bindings.insert(format!("{alias}_value"), Some(model));
+            for helper in ["index", "first", "last", "size", "odd", "even", "parity"] {
                 // QWeb's scalar loop helpers (design §5.1) shadow any outer name for the loop.
                 bindings.insert(format!("{alias}_{helper}"), None);
             }

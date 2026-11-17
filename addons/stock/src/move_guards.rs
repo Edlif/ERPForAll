@@ -8,11 +8,20 @@
 //! gets the columns' initial values, so no stored `ir.default` can supply them either. The engine
 //! never reaches these overrides.
 //!
+//! A move's status and quantity follow from its operation lines, its confirmation and its
+//! reservation ([`crate::move_lines`], [`crate::confirm`], [`crate::reservation`]): they are
+//! refused the same way for every caller, superuser included, and a new move starts `draft` with
+//! no quantity.
+//!
 //! The same overrides keep a transfer's move counters (D3, lead conditions M4, M5):
 //! the counter vector and state of `stock.picking` are refused by name on `create` and `write` for
 //! every caller, and a move `create`, a `write` naming a counted column, and an `unlink` lock their
 //! transfers before their moves ([`crate::move_counters`]), flush, and notify the ORM of the
 //! counters the triggers changed.
+//!
+//! They also keep done work fixed ([`crate::done`]): no create, write or default sets a move to
+//! done, done moves and transfers change only within their allow-lists, a move is not added to a
+//! done transfer, and done moves and transfers are not deleted.
 //!
 //! They also keep the move references and chains of [`crate::move_relations`] (topology ADR D3):
 //! a move create, a write naming the transfer or the references, a move unlink and a reference
@@ -23,21 +32,28 @@
 use erp_sdk::Operation;
 use erp_sdk::prelude::*;
 
+use crate::confirm::fill_from_pickings;
+use crate::done::{check_move_create, check_move_write, check_picking_write, check_unlink};
 use crate::error::StockError;
 use crate::move_counters::{
     COUNTED_MOVE_FIELDS, DERIVED_FIELDS, STATE_INPUT_FIELDS, cell_id, lock_move_roots,
     lock_pickings, notify_pickings, pickings_of,
 };
+use crate::move_lines::{create_lines, unlink_lines, write_lines};
 use crate::move_relations::{
     apply_deadlines, deadline_plan, inherit_references, member_pickings, rebuild_references,
 };
 use crate::move_units::{SNAPSHOT_FIELDS, UNIT_INPUTS, fill_create, write_groups};
 use crate::picking::StockPicking;
+use crate::picking_flow::{delete_moves_of, fill_from_types};
 use crate::reference::StockReference;
 use crate::stock_move::StockMove;
 use crate::stock_move_line::StockMoveLine;
 
 const MOVE_FIELDS: [&str; 2] = ["done_at", "open_line_version"];
+/// Move columns the line, confirmation and reservation statements write. The product-unit
+/// quantity follows the quantity through the unit snapshot check ([`crate::move_units`]).
+const LINE_DERIVED: [&str; 2] = ["state", "quantity"];
 const LINE_FIELDS: [&str; 3] = ["done_at", "membership", "correction_seq"];
 
 fn label(tx: &Transaction, model: &str, field: &str) -> Result<String> {
@@ -54,6 +70,7 @@ fn label(tx: &Transaction, model: &str, field: &str) -> Result<String> {
 enum Writer {
     Engine(&'static str),
     Moves,
+    Lines,
     References,
 }
 
@@ -63,6 +80,7 @@ impl Writer {
             (Self::Engine(what), false) => StockError::EngineOnlyField { what, field },
             (Self::Engine(what), true) => StockError::EngineOnlyDefault { what, field },
             (Self::Moves, default) => StockError::DerivedFromMoves { field, default },
+            (Self::Lines, default) => StockError::DerivedFromLines { field, default },
             (Self::References, default) => StockError::ReferenceProjection { field, default },
         }
         .into()
@@ -103,6 +121,7 @@ fn initial(field: &str) -> Result<Cell> {
     match field {
         "membership" => Ok(Cell::Str("open".into())),
         "correction_seq" | "open_line_version" => Ok(Cell::Int(0)),
+        "quantity" => Ok(Cell::Decimal(Decimal::ZERO)),
         "done_at" => Ok(Cell::Null),
         other => Err(Error::internal(format!(
             "no initial value for the engine-owned field '{other}'"
@@ -166,10 +185,11 @@ async fn check_write(
 
 #[methods(StockMove, addon = "stock")]
 impl StockMove {
-    /// The done time and the open-line version come from the engine; refused by name or context
-    /// default after the create access check, then set to their initial values. The transfers the
-    /// new moves name (in the values or as the context default) are locked before the insert; the
-    /// counters the insert changed are notified once it is flushed.
+    /// The done time, the open-line version, the status and the quantity come from the engine;
+    /// refused by name or context default after the create access check, then set to their
+    /// initial values. The transfers the new moves name (in the values or as the context default)
+    /// are locked before the insert; the counters the insert changed are notified once it is
+    /// flushed.
     #[method(override)]
     async fn create(
         this: &RecordSet<StockMove>,
@@ -187,6 +207,17 @@ impl StockMove {
             &mut vals_list,
         )
         .await?;
+        check_create(
+            records,
+            tx,
+            "stock.move",
+            Writer::Lines,
+            &LINE_DERIVED,
+            &mut vals_list,
+        )
+        .await?;
+        check_move_create(records, tx, &vals_list).await?;
+        fill_from_pickings(records, tx, &mut vals_list).await?;
         fill_create(records, tx, &mut vals_list).await?;
         let mut roots: Vec<i64> = vals_list
             .iter()
@@ -210,9 +241,9 @@ impl StockMove {
         Ok(created)
     }
 
-    /// The done time and the open-line version come from the engine; refused by name after the
-    /// write access check. A write naming a counted column (state, demand, scrap flag, supply
-    /// method, transfer) locks the old and new transfers, then the moves, writes, flushes and
+    /// The done time, the open-line version, the status and the quantity come from the engine;
+    /// refused by name after the write access check. A write naming a counted column (demand,
+    /// scrap flag, supply method, transfer) locks the old and new transfers, then the moves, writes, flushes and
     /// notifies the counters of those transfers. A deadline write first locks the transfers, then
     /// the moves, of every move its shift may reach.
     #[method(override)]
@@ -232,6 +263,16 @@ impl StockMove {
             &vals,
         )
         .await?;
+        check_write(
+            records,
+            tx,
+            "stock.move",
+            Writer::Lines,
+            &LINE_DERIVED,
+            &vals,
+        )
+        .await?;
+        check_move_write(records, tx, &vals).await?;
         let mut vals = vals;
         if !records.is_empty()
             && (UNIT_INPUTS.iter().any(|f| vals.contains(f))
@@ -302,6 +343,7 @@ impl StockMove {
             return sup.call(tx, records, ()).await;
         }
         records.check_access(tx, Operation::Unlink).await?;
+        check_unlink(records, tx, "stock.move").await?;
         tx.flush().await?;
         let roots = lock_move_roots(tx, &records.ids(), &[]).await?;
         sup.call(tx, records, ()).await?;
@@ -334,7 +376,8 @@ async fn write_each(
 #[methods(StockPicking, addon = "stock")]
 impl StockPicking {
     /// The counter vector and the state follow from the moves: refused by name or context default
-    /// after the create access check, then set to their initial values (no move, `draft`).
+    /// after the create access check, then set to their initial values (no move, `draft`). The
+    /// operation type supplies the reference, locations and company (`crate::picking_flow`).
     #[method(override)]
     async fn create(
         this: &RecordSet<StockPicking>,
@@ -361,6 +404,7 @@ impl StockPicking {
             &mut vals_list,
         )
         .await?;
+        fill_from_types(records, tx, &mut vals_list).await?;
         sup.call(tx, records, (vals_list,)).await
     }
 
@@ -393,6 +437,7 @@ impl StockPicking {
             &vals,
         )
         .await?;
+        check_picking_write(records, tx, &vals).await?;
         let reevaluate = !records.is_empty() && STATE_INPUT_FIELDS.iter().any(|f| vals.contains(f));
         sup.call(tx, records, (vals,)).await?;
         if reevaluate {
@@ -400,6 +445,24 @@ impl StockPicking {
             notify_pickings(records, tx, &records.ids()).await?;
         }
         Ok(())
+    }
+
+    /// A done transfer is not deleted (`crate::done`); the moves of any other are cancelled and
+    /// deleted first (`crate::picking_flow`).
+    #[method(override)]
+    async fn unlink(
+        this: &RecordSet<StockPicking>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
+        let records = this.as_records();
+        if records.is_empty() {
+            return sup.call(tx, records, ()).await;
+        }
+        records.check_access(tx, Operation::Unlink).await?;
+        check_unlink(records, tx, "stock.picking").await?;
+        delete_moves_of(records, tx).await?;
+        sup.call(tx, records, ()).await
     }
 }
 
@@ -474,7 +537,8 @@ impl StockReference {
 #[methods(StockMoveLine, addon = "stock")]
 impl StockMoveLine {
     /// Done time, membership and correction counter come from the engine; refused by name or context
-    /// default after the create access check, then set to their initial values.
+    /// default after the create access check, then set to their initial values. The line takes its
+    /// move's defaults and snapshot, and its reservation and move follow (`move_lines`).
     #[method(override)]
     async fn create(
         this: &RecordSet<StockMoveLine>,
@@ -492,11 +556,12 @@ impl StockMoveLine {
             &mut vals_list,
         )
         .await?;
-        sup.call(tx, records, (vals_list,)).await
+        create_lines(records, tx, vals_list, sup).await
     }
 
     /// Done time, membership and correction counter come from the engine; refused by name after the
-    /// write access check.
+    /// write access check. The move link is fixed, done lines are refused, and a quantity, unit or
+    /// key change moves the reservation (`move_lines`).
     #[method(override)]
     async fn write(
         this: &RecordSet<StockMoveLine>,
@@ -514,6 +579,17 @@ impl StockMoveLine {
             &vals,
         )
         .await?;
-        sup.call(tx, records, (vals,)).await
+        write_lines(records, tx, vals, sup).await
+    }
+
+    /// Deleting open lines gives their reservations back and resettles their moves; done lines are
+    /// refused (`move_lines`).
+    #[method(override)]
+    async fn unlink(
+        this: &RecordSet<StockMoveLine>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
+        unlink_lines(this.as_records(), tx, sup).await
     }
 }

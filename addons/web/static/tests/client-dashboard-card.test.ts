@@ -4,7 +4,7 @@
 // through the application to the action named by its XML id.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { HumanApp } from "../src/client/app.js";
-import { dashboardCardWidget, parseDashboardCard } from "../src/client/dashboard-card.js";
+import { axisLabel, dashboardCardWidget, parseDashboardCard } from "../src/client/dashboard-card.js";
 import { CurrencyDisplayCache } from "../src/client/field-currency.js";
 import { kanbanLayout, renderKanbanCards } from "../src/client/kanban.js";
 import { describeViews, type Field } from "../src/client/metadata.js";
@@ -145,6 +145,28 @@ test("the bar chart draws one bar per point in its tone, with the points as text
   expect(drawing.querySelector("polyline")).toBeNull();
   expect([...figure.querySelectorAll(".dashboard-card-chart-axis span")].map(item => item.textContent)).toEqual(["Overdue", "This week", "Later"]);
   expect([...figure.querySelectorAll("ul.visually-hidden li")].map(item => item.textContent)).toEqual(["Overdue: 900,000 (danger)", "This week: 1,250.5", "Later: -20 (warning)"]);
+});
+
+test("a long chart labels at most six points, counted from the last, as short dates", () => {
+  const days = Array.from({ length: 30 }, (_, index) => new Date(Date.UTC(2026, 9, 19 + index)).toISOString().slice(0, 10));
+  const { node } = dashboardCardWidget(environment(json(value => {
+    value.chart.type = "line";
+    value.chart.points = days.map(label => ({ label, value: "0", tone: "neutral" }));
+  })).env);
+  const ticks = [...node.querySelectorAll<HTMLElement>(".dashboard-card-chart-axis span")];
+  expect(ticks.map(item => item.textContent)).toEqual(["23 Oct", "28 Oct", "2 Nov", "7 Nov", "12 Nov", "17 Nov"]);
+  expect(ticks.map(item => item.style.gridColumn)).toEqual(["5", "10", "15", "20", "25", "30"]);
+  expect(ticks.at(-1)!.style.justifySelf).toBe("end");
+  // every point stays in the text alternative, with its full label
+  expect(node.querySelectorAll("figure ul.visually-hidden li")).toHaveLength(30);
+  expect(node.querySelector("figure ul.visually-hidden li")!.textContent).toBe("2026-10-19: 0");
+});
+
+test("axis labels read ISO days and months as short dates and leave other labels alone", () => {
+  expect(axisLabel("2026-11-17")).toBe("17 Nov");
+  expect(axisLabel("2025-11")).toBe("Nov 25");
+  expect(axisLabel("Overdue")).toBe("Overdue");
+  expect(axisLabel("2026-13")).toBe("2026-13");
 });
 
 test("the line chart draws one line through every point, with the same text alternative", () => {

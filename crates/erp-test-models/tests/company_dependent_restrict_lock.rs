@@ -491,3 +491,68 @@ async fn link_rows_go_with_their_entry_their_holder_and_their_target() {
     assert_eq!(traces(&h, w.tag).await, (0, 0));
     h.cleanup().await.unwrap();
 }
+
+/// The statements of `tx` recorded so far that touch the guard table.
+fn guard_statements(tx: &Transaction) -> Vec<String> {
+    tx.captured()
+        .iter()
+        .filter(|sql| sql.contains("erp_company_ref_guard"))
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn a_flush_with_several_guard_statements_locks_every_target_first() {
+    let h = harness().await;
+    let w = world(&h).await;
+    let mut tx = h.begin().await.unwrap();
+    let env = company(&tx.env());
+    let other_tag = new_tag(&mut tx, &env, "u").await;
+    let other_holder = new_holder(&mut tx, None).await.unwrap();
+    let holders = env.records("plock.holder").unwrap();
+    tx.capture_statements(true);
+    // Two sets of written fields, so two UPDATE statements with a guard statement each.
+    holders
+        .browse([w.holder])
+        .unwrap()
+        .write_values(&mut tx, &vals(&[("restrict_id", Value::Int(other_tag))]))
+        .await
+        .unwrap();
+    holders
+        .browse([other_holder])
+        .unwrap()
+        .write_values(
+            &mut tx,
+            &vals(&[
+                ("name", Value::str("renamed")),
+                ("restrict_id", Value::Int(w.tag)),
+            ]),
+        )
+        .await
+        .unwrap();
+    tx.flush().await.unwrap();
+    let guards = guard_statements(&tx);
+    tx.capture_statements(false);
+    assert_eq!(guards.len(), 3, "{guards:#?}");
+    // the lock statement: both targets at once, no link row yet
+    assert!(guards[0].contains("FOR KEY SHARE"), "{}", guards[0]);
+    assert!(!guards[0].contains("erp_company_ref_link"), "{}", guards[0]);
+    for writer in &guards[1..] {
+        assert!(writer.contains("erp_company_ref_link"), "{writer}");
+    }
+
+    tx.capture_statements(true);
+    refer(&mut tx, w.holder, w.tag).await.unwrap();
+    let guards = guard_statements(&tx);
+    tx.capture_statements(false);
+    assert_eq!(guards.len(), 1, "{guards:#?}");
+    assert!(guards[0].contains("erp_company_ref_link"), "{}", guards[0]);
+    tx.commit().await.unwrap();
+    assert_eq!(
+        map_of(&h, w.holder).await,
+        Some(json!({"1": w.tag})),
+        "the last write of the holder is the stored reference"
+    );
+    assert_eq!(map_of(&h, other_holder).await, Some(json!({"1": w.tag})));
+    h.cleanup().await.unwrap();
+}

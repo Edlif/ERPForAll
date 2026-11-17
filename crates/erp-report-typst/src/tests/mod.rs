@@ -172,7 +172,12 @@ fn panic_is_typed_and_next_render_succeeds() {
         panic!("{error}")
     };
     assert_eq!(document, "safe-id");
-    assert_eq!(reason, "renderer panicked");
+    // The reason names where the renderer panicked (here the injection point), never the payload.
+    let Some(site) = reason.strip_prefix("renderer panicked at ") else {
+        panic!("{reason}")
+    };
+    assert!(site.contains("mod.rs:"), "{reason}");
+    assert!(!reason.contains("SECRET-PAYLOAD"), "{reason}");
     assert_eq!(
         error.to_string(),
         "report layout Panic for safe-id: renderer panicked"

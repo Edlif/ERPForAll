@@ -1948,35 +1948,8 @@ async fn an_engine_call_behind_a_committed_switch_is_retried() {
     f.h.cleanup().await.unwrap();
 }
 
-/// Cycle 26 review, the switch behind the engine: E left L's key negative and has not committed; B
-/// switches L's flag on. B must not pass on a snapshot that cannot see E's balance: it is retried and,
-/// once E committed, refused.
-#[tokio::test]
-async fn a_switch_behind_an_open_engine_call_is_retried_and_refused() {
-    let f = fixture().await;
-    let key = f.key(f.p, f.l);
-    let mut e = f.h.begin().await.unwrap();
-    apply(&mut e, &[change(key, "-2", "0")]).await;
-    let attempts = AtomicUsize::new(0);
-    let switch = f.h.run(async |tx| {
-        attempts.fetch_add(1, Ordering::SeqCst);
-        switch_on(tx, f.l).await
-    });
-    let release = async {
-        let started = Instant::now();
-        while attempts.load(Ordering::SeqCst) < 2 && started.elapsed() < Duration::from_secs(5) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        e.commit().await.unwrap();
-    };
-    let (switch, ()) = tokio::join!(switch, release);
-    let error = orm_error(switch.expect_err("the switch passed over a negative balance"));
-    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
-    assert!(
-        error.message().contains(&format!("location {}", f.l)),
-        "{error:?}"
-    );
-    assert!(attempts.load(Ordering::SeqCst) >= 2);
+/// The flag of L's policy row as committed.
+async fn committed_flag(f: &Fixture) -> bool {
     let mut tx = f.h.begin().await.unwrap();
     let flag: bool = tx
         .query(
@@ -1986,7 +1959,144 @@ async fn a_switch_behind_an_open_engine_call_is_retried_and_refused() {
         .await
         .unwrap()[0]
         .get(0);
-    assert!(!flag);
+    tx.rollback().await.unwrap();
+    flag
+}
+
+/// The switch at L in a fresh transaction, which sees every committed balance: refused by name.
+async fn switch_is_refused(f: &Fixture) {
+    let mut tx = f.h.begin().await.unwrap();
+    let error = switch_on(&mut tx, f.l)
+        .await
+        .expect_err("the switch passed over a negative balance");
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert!(
+        error.message().contains(&format!("location {}", f.l)),
+        "{error:?}"
+    );
+    tx.rollback().await.unwrap();
+}
+
+/// over-reserved count and the correction as a move line are not covered)
+/// Cycle 26 review, the switch behind an open engine call: E left L's key negative and has not
+/// committed; B's switch fails its lock with a retryable `40001`, and once E committed it is refused.
+#[tokio::test]
+async fn a_switch_behind_an_open_engine_call_is_retried_and_refused() {
+    let f = fixture().await;
+    let key = f.key(f.p, f.l);
+    let mut e = f.h.begin().await.unwrap();
+    apply(&mut e, &[change(key, "-2", "0")]).await;
+    let mut b = f.h.begin().await.unwrap();
+    let error = switch_on(&mut b, f.l)
+        .await
+        .expect_err("the switch passed an open engine call");
+    assert_eq!(error.sqlstate(), Some("40001"), "{error:?}");
+    b.rollback().await.unwrap();
+    drop(b);
+    e.commit().await.unwrap();
+    drop(e);
+    switch_is_refused(&f).await;
+    assert!(!committed_flag(&f).await);
+    f.h.cleanup().await.unwrap();
+}
+
+/// before its lock; the over-reserved count and the correction as a move line are not covered)
+/// The window the policy lock alone left open: B's snapshot predates E's commit, so B's count cannot
+/// see E's negative balance; E's mark on the policy row makes B's lock fail with `40001` instead.
+#[tokio::test]
+async fn a_switch_behind_a_committed_engine_call_is_retried_and_refused() {
+    let f = fixture().await;
+    let key = f.key(f.p, f.l);
+    let mut b = f.h.begin().await.unwrap();
+    b.query("SELECT 1", &[]).await.unwrap();
+    let mut e = f.h.begin().await.unwrap();
+    apply(&mut e, &[change(key, "-2", "0")]).await;
+    e.commit().await.unwrap();
+    drop(e);
+    let error = switch_on(&mut b, f.l)
+        .await
+        .expect_err("the switch counted on a snapshot without the negative balance");
+    assert_eq!(error.sqlstate(), Some("40001"), "{error:?}");
+    b.rollback().await.unwrap();
+    drop(b);
+    switch_is_refused(&f).await;
+    assert!(!committed_flag(&f).await);
+    // once the balance is repaid, an engine call that leaves no key below zero writes no mark: a
+    // switch behind it passes
+    let mut tx = f.h.begin().await.unwrap();
+    apply(&mut tx, &[change(key, "2", "0")]).await;
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut b = f.h.begin().await.unwrap();
+    b.query("SELECT 1", &[]).await.unwrap();
+    let mut e = f.h.begin().await.unwrap();
+    apply(&mut e, &[change(f.key(f.q, f.l), "3", "0")]).await;
+    e.commit().await.unwrap();
+    drop(e);
+    switch_on(&mut b, f.l).await.unwrap();
+    b.commit().await.unwrap();
+    drop(b);
+    assert!(committed_flag(&f).await);
+    f.h.cleanup().await.unwrap();
+}
+
+/// PostgreSQL checks a table's `CHECK` on the proposed row of `INSERT … ON CONFLICT DO UPDATE` before
+/// it resolves the conflict: an upsert that carries a release as its proposed row is refused although
+/// the updated row would be valid. The reason the engine writes the locked balances by id.
+#[tokio::test]
+async fn an_upsert_checks_its_proposed_row_before_the_conflict() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    tx.batch(
+        "CREATE TEMP TABLE t_release (k int PRIMARY KEY, v numeric NOT NULL CHECK (v >= 0)) \
+         ON COMMIT DROP; INSERT INTO t_release VALUES (1, 5)",
+    )
+    .await
+    .unwrap();
+    let error = tx
+        .execute(
+            "INSERT INTO t_release AS t VALUES (1, -3) \
+             ON CONFLICT (k) DO UPDATE SET v = t.v + EXCLUDED.v",
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.sqlstate(), Some("23514"), "{error:?}");
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// reservation on another key in the same call, and refuses a release on a key without a balance by
+/// name; the move validation that releases a line is the move slices')
+#[tokio::test]
+async fn releases_lower_the_reserved_counter() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let key = f.key(f.p, f.l);
+    let other = f.key(f.q, f.l);
+    apply(&mut tx, &[change(key, "10", "5"), change(other, "4", "0")]).await;
+    // a partial release
+    let partial = apply(&mut tx, &[change(key, "0", "-2")]).await;
+    assert_eq!(partial[0].reserved_quantity, dec("3"));
+    assert_eq!(stored(&mut tx, key).await, Some(("10".into(), "3".into())));
+    // a release and a reservation on another key in one call
+    apply(&mut tx, &[change(key, "0", "-1"), change(other, "0", "4")]).await;
+    assert_eq!(stored(&mut tx, key).await, Some(("10".into(), "2".into())));
+    assert_eq!(stored(&mut tx, other).await, Some(("4".into(), "4".into())));
+    // the rest of the reservation, together with the stock leaving
+    let whole = apply(&mut tx, &[change(key, "-2", "-2")]).await;
+    assert_eq!(whole[0].reserved_quantity, dec("0"));
+    assert_eq!(stored(&mut tx, key).await, Some(("8".into(), "0".into())));
+    // a release on a key without a balance is refused by name and stores no row
+    let fresh = f.key(f.q, f.x);
+    let error = refused(&mut tx, &[change(fresh, "0", "-1")]).await;
+    assert_eq!(error.kind(), ErrorKind::Programming, "{error:?}");
+    assert!(
+        error.message().contains("would become negative"),
+        "{error:?}"
+    );
+    assert_eq!(stored(&mut tx, fresh).await, None);
     tx.rollback().await.unwrap();
     drop(tx);
     f.h.cleanup().await.unwrap();

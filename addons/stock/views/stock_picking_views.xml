@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <erp>
-  <!-- Transfers: list with a Ready/Waiting strip, form, search. Validate and the other workflow
-       buttons come with the transfer behaviour; no header button names a method that does not exist. -->
+  <!-- Transfers: list with a Ready/Waiting strip, form, search. The form offers the workflow methods
+       that exist (confirm, check availability, validate, unreserve, cancel). -->
   <record id="view_picking_list" model="ir.ui.view">
     <field name="name">stock.picking.list</field>
     <field name="model">stock.picking</field>
@@ -28,7 +28,12 @@
     <field name="arch" type="xml">
       <form string="Transfer">
         <header>
-          <field name="state" widget="statusbar"/>
+          <button name="action_confirm" type="object" string="Confirm" class="oe_highlight" invisible="state != 'draft'"/>
+          <button name="action_assign" type="object" string="Check Availability" class="oe_highlight" invisible="state not in ('confirmed', 'waiting', 'assigned')"/>
+          <button name="button_validate" type="object" string="Validate" class="oe_highlight" invisible="state not in ('draft', 'confirmed', 'waiting', 'assigned')"/>
+          <button name="do_unreserve" type="object" string="Unreserve" invisible="state not in ('assigned', 'confirmed', 'waiting')"/>
+          <button name="action_cancel" type="object" string="Cancel" invisible="state not in ('assigned', 'confirmed', 'draft', 'waiting')"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,confirmed,assigned,done"/>
         </header>
         <sheet>
           <div class="oe_title"><h1><field name="name"/></h1></div>
@@ -45,13 +50,14 @@
             </group>
           </group>
           <notebook>
-            <!-- Lines are shown, not entered here yet: a move needs the transfer's defaults that the move behaviour
-                 supplies. They show with the line models' default lists below. -->
+            <!-- Products are added while the transfer is a draft, through the move list and form below; the
+                 server gives each new move the transfer's company, locations and operation type. -->
             <page name="operations" string="Operations">
-              <field name="move_ids" readonly="1"/>
+              <field name="move_ids" readonly="state != 'draft'"/>
             </page>
+            <!-- the done quantity of an open transfer is set on its lines; done work is fixed -->
             <page name="detailed_operations" string="Detailed Operations">
-              <field name="move_line_ids" readonly="1"/>
+              <field name="move_line_ids" readonly="state in ('draft', 'done', 'cancel')"/>
             </page>
             <page name="extra" string="Additional Info">
               <group>
@@ -80,8 +86,9 @@
       <list>
         <field name="product_id"/>
         <field name="product_uom_qty" string="Demand"/>
-        <field name="quantity"/>
+        <field name="quantity" readonly="1"/>
         <field name="uom_id" string="Unit"/>
+        <field name="state"/>
       </list>
     </field>
   </record>
@@ -95,13 +102,14 @@
             <group>
               <field name="product_id"/>
               <field name="product_uom_qty" string="Demand"/>
-              <field name="quantity"/>
               <field name="uom_id" string="Unit"/>
             </group>
             <group>
-              <field name="location_id"/>
-              <field name="location_dest_id"/>
-              <field name="state"/>
+              <!-- taken from the transfer on the server, so a new line does not ask for them -->
+              <field name="location_id" readonly="1"/>
+              <field name="location_dest_id" readonly="1"/>
+              <field name="quantity" readonly="1"/>
+              <field name="state" readonly="1"/>
             </group>
           </group>
         </sheet>

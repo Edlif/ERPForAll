@@ -1,0 +1,266 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Quotations and sales orders: search, the two lists, the form, the line list and line form, and
+     the two actions (fields and buttons of sale/views/sale_order_views.xml, laid out anew). Lines
+     show in the line model's default list and open in its form as a dialog. -->
+<erp>
+  <record id="sale_order_line_view_list" model="ir.ui.view">
+    <field name="name">sale.order.line.list</field>
+    <field name="model">sale.order.line</field>
+    <field name="priority" eval="10"/>
+    <field name="arch" type="xml">
+      <list>
+        <field name="sequence"/>
+        <field name="display_type" invisible="1"/>
+        <field name="product_id"/>
+        <field name="name"/>
+        <field name="product_uom_qty"/>
+        <field name="product_uom_id"/>
+        <field name="price_unit"/>
+        <field name="discount"/>
+        <field name="tax_ids" widget="many2many_tags"/>
+        <field name="currency_id" invisible="1"/>
+        <field name="price_subtotal"/>
+        <field name="price_total"/>
+        <field name="qty_delivered"/>
+        <field name="qty_invoiced"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="sale_order_line_view_form" model="ir.ui.view">
+    <field name="name">sale.order.line.form</field>
+    <field name="model">sale.order.line</field>
+    <field name="priority" eval="10"/>
+    <field name="arch" type="xml">
+      <form string="Order Line">
+        <sheet>
+          <group>
+            <group>
+              <field name="display_type"/>
+              <field name="product_id" invisible="display_type"/>
+              <field name="name"/>
+            </group>
+            <group>
+              <field name="product_uom_qty" invisible="display_type"/>
+              <field name="product_uom_id" invisible="display_type"/>
+              <field name="price_unit" invisible="display_type"/>
+              <field name="technical_price_unit" invisible="1"/>
+              <field name="discount" invisible="display_type"/>
+              <field name="tax_ids" widget="many2many_tags" domain="[('type_tax_use', '=', 'sale')]" invisible="display_type"/>
+            </group>
+          </group>
+          <group>
+            <group>
+              <field name="currency_id" invisible="1"/>
+              <field name="price_subtotal" invisible="display_type"/>
+              <field name="price_tax" invisible="display_type"/>
+              <field name="price_total" invisible="display_type"/>
+            </group>
+            <group>
+              <field name="customer_lead" invisible="display_type"/>
+              <field name="qty_delivered" invisible="display_type"/>
+              <field name="qty_invoiced" invisible="display_type"/>
+              <field name="invoice_status" invisible="display_type"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_sales_order_filter" model="ir.ui.view">
+    <field name="name">sale.order.search</field>
+    <field name="model">sale.order</field>
+    <field name="arch" type="xml">
+      <search string="Sales Orders">
+        <field name="name"/>
+        <field name="partner_id"/>
+        <field name="user_id"/>
+        <field name="team_id"/>
+        <field name="client_order_ref"/>
+        <field name="order_line" string="Product" filter_domain="[('order_line.product_id', 'ilike', self)]"/>
+        <filter name="my_quotation" string="My Quotations" domain="[('user_id', '=', uid)]"/>
+        <separator/>
+        <filter name="draft" string="Quotations" domain="[('state', 'in', ('draft', 'sent'))]"/>
+        <filter name="sales" string="Sales Orders" domain="[('state', '=', 'sale')]"/>
+        <separator/>
+        <filter name="to_invoice" string="To Invoice" domain="[('invoice_status', '=', 'to invoice')]"/>
+        <filter name="upselling" string="To Upsell" domain="[('invoice_status', '=', 'upselling')]"/>
+        <group>
+          <filter name="customer" string="Customer" context="{'group_by': 'partner_id'}"/>
+          <filter name="salesperson" string="Salesperson" context="{'group_by': 'user_id'}"/>
+          <filter name="sales_team" string="Sales Team" context="{'group_by': 'team_id'}"/>
+          <filter name="status" string="Status" context="{'group_by': 'state'}"/>
+          <filter name="order_month" string="Order Date" context="{'group_by': 'date_order'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="view_quotation_tree" model="ir.ui.view">
+    <field name="name">sale.order.list.quotation</field>
+    <field name="model">sale.order</field>
+    <field name="priority" eval="10"/>
+    <field name="arch" type="xml">
+      <list string="Quotations">
+        <field name="name" string="Number"/>
+        <field name="date_order" string="Creation Date"/>
+        <field name="partner_id"/>
+        <field name="user_id"/>
+        <field name="team_id"/>
+        <field name="company_id"/>
+        <field name="currency_id" invisible="1"/>
+        <field name="amount_untaxed"/>
+        <field name="amount_total"/>
+        <field name="state" widget="badge"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_order_tree" model="ir.ui.view">
+    <field name="name">sale.order.list</field>
+    <field name="model">sale.order</field>
+    <field name="priority" eval="20"/>
+    <field name="arch" type="xml">
+      <list string="Sales Orders">
+        <field name="name" string="Number"/>
+        <field name="date_order" string="Order Date"/>
+        <field name="partner_id"/>
+        <field name="user_id"/>
+        <field name="team_id"/>
+        <field name="company_id"/>
+        <field name="currency_id" invisible="1"/>
+        <field name="amount_untaxed"/>
+        <field name="amount_total"/>
+        <field name="state" widget="badge"/>
+        <field name="delivery_status" widget="badge"/>
+        <field name="invoice_status" widget="badge"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_order_form" model="ir.ui.view">
+    <field name="name">sale.order.form</field>
+    <field name="model">sale.order</field>
+    <field name="arch" type="xml">
+      <form string="Sales Order">
+        <header>
+          <button name="action_confirm" type="object" string="Confirm" class="btn-primary" invisible="state not in ('draft', 'sent')"/>
+          <button name="action_quotation_sent" type="object" string="Mark as Sent" invisible="state != 'draft'"/>
+          <button name="action_lock" type="object" string="Lock" invisible="state != 'sale' or locked" groups="sales_team.group_sale_manager"/>
+          <button name="action_unlock" type="object" string="Unlock" invisible="state != 'sale' or not locked" groups="sales_team.group_sale_manager"/>
+          <button name="action_draft" type="object" string="Set to Quotation" invisible="state != 'cancel'"/>
+          <button name="action_cancel" type="object" string="Cancel" invisible="state == 'cancel' or locked"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,sent,sale"/>
+        </header>
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group name="sale_header">
+            <group name="partner_details">
+              <field name="partner_id" readonly="state not in ('draft', 'sent')"/>
+              <field name="partner_invoice_id" readonly="locked or state == 'cancel'"/>
+              <field name="partner_shipping_id" readonly="locked or state == 'cancel'"/>
+            </group>
+            <group name="order_details">
+              <field name="validity_date" readonly="state not in ('draft', 'sent')"/>
+              <field name="date_order" readonly="state not in ('draft', 'sent')"/>
+              <field name="pricelist_id" readonly="state not in ('draft', 'sent')"/>
+              <field name="currency_id" readonly="1"/>
+              <field name="company_id" readonly="state not in ('draft', 'sent')"/>
+              <field name="locked" invisible="1"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Order Lines" name="order_lines">
+              <field name="order_line" readonly="locked or state == 'cancel'"/>
+              <group name="note_group">
+                <group>
+                  <field name="note"/>
+                </group>
+                <group name="sale_total">
+                  <field name="amount_untaxed"/>
+                  <field name="amount_tax"/>
+                  <field name="amount_total"/>
+                </group>
+              </group>
+            </page>
+            <page string="Other Info" name="other_information">
+              <group>
+                <group name="sales_person" string="Sales">
+                  <field name="user_id" readonly="locked or state == 'cancel'"/>
+                  <field name="team_id" readonly="locked or state == 'cancel'"/>
+                  <field name="client_order_ref"/>
+                  <field name="tag_ids" widget="many2many_tags"/>
+                </group>
+                <group name="sale_info" string="Invoicing">
+                  <field name="fiscal_position_id" readonly="state not in ('draft', 'sent')"/>
+                  <field name="invoice_status"/>
+                  <field name="invoicing_closed" readonly="1"/>
+                </group>
+                <group name="sale_shipping" string="Delivery">
+                  <field name="commitment_date"/>
+                  <field name="delivery_status"/>
+                </group>
+                <group name="sale_reporting" string="Tracking">
+                  <field name="origin"/>
+                </group>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+        <chatter/>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_quotations" model="ir.actions.act_window">
+    <field name="name">Quotations</field>
+    <field name="res_model">sale.order</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_quotation_tree"/>
+    <field name="search_view_id" ref="view_sales_order_filter"/>
+  </record>
+  <record id="action_quotations_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_quotations"/>
+    <field name="view_id" ref="view_quotation_tree"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_quotations_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_quotations"/>
+    <field name="view_id" ref="view_order_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+
+  <record id="action_orders" model="ir.actions.act_window">
+    <field name="name">Sales Orders</field>
+    <field name="res_model">sale.order</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_order_tree"/>
+    <field name="search_view_id" ref="view_sales_order_filter"/>
+  </record>
+  <record id="action_orders_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_orders"/>
+    <field name="view_id" ref="view_order_tree"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_orders_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_orders"/>
+    <field name="view_id" ref="view_order_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+
+  <record id="action_customers" model="ir.actions.act_window">
+    <field name="name">Customers</field>
+    <field name="res_model">res.partner</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="base.partner_list"/>
+    <field name="search_view_id" ref="base.partner_search"/>
+  </record>
+</erp>

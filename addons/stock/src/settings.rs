@@ -72,6 +72,12 @@ fn parameters() -> Result<Vec<ParameterDecl>> {
             10000,
             (1, 1_000_000),
         ),
+        (
+            crate::warehouse_setup::CODE_LENGTH_KEY,
+            "Characters of the company name in a new warehouse's short name",
+            5,
+            (1, 20),
+        ),
     ]
     .into_iter()
     .map(|(key, label, default, bounds)| ParameterDecl::integer(key, label, default, bounds))
@@ -233,7 +239,10 @@ impl StockSettings {
         }
         let expected_parameters: std::collections::BTreeSet<_> = QUANT_KEYS
             .into_iter()
-            .chain([crate::move_relations::CHAIN_LIMIT_KEY])
+            .chain([
+                crate::move_relations::CHAIN_LIMIT_KEY,
+                crate::warehouse_setup::CODE_LENGTH_KEY,
+            ])
             .map(str::to_owned)
             .collect();
         if keys != expected

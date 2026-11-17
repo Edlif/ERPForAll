@@ -25,6 +25,9 @@ members = [
     "addons/stock_dropshipping",
     "addons/analytic",
     "addons/account",
+    "addons/purchase",
+    "addons/sales_team",
+    "addons/sale",
     # sample WebAssembly addons: Rust code packed as .erpaddon components
     "examples/wasm/sample_library_wasm",
     "examples/wasm/sample_library_wasm_policy",
@@ -110,6 +113,9 @@ erp-addon-sale_stock = { path = "addons/sale_stock" }
 erp-addon-stock_dropshipping = { path = "addons/stock_dropshipping" }
 erp-addon-analytic = { path = "addons/analytic" }
 erp-addon-account = { path = "addons/account" }
+erp-addon-purchase = { path = "addons/purchase" }
+erp-addon-sales_team = { path = "addons/sales_team" }
+erp-addon-sale = { path = "addons/sale" }
 # Fixture addon crates (tests only)
 erp-addon-test_ext_a = { path = "crates/erp-test-models/addons/test_ext_a" }
 erp-addon-test_ext_b = { path = "crates/erp-test-models/addons/test_ext_b" }

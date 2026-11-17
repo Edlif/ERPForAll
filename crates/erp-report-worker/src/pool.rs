@@ -726,10 +726,18 @@ impl WorkerPool {
                 reason: "the font store path is not UTF-8".into(),
                 source: None,
             })?;
+        // Each step is named: an I/O error without its step tells the operator nothing.
         let directory = tempfile::Builder::new()
             .prefix("erp-report-worker-")
-            .tempdir()?;
-        read_only(directory.path())?;
+            .tempdir()
+            .map_err(|e| ReportError::WorkerUnavailable {
+                cause: format!("cannot create the working directory of the render workers: {e}"),
+            })?;
+        read_only(directory.path()).map_err(|e| ReportError::WorkerUnavailable {
+            cause: format!(
+                "cannot make the working directory of the render workers read-only: {e}"
+            ),
+        })?;
         Ok(Self {
             shared: Arc::new(Shared {
                 settings,

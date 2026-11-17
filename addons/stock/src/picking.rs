@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Transfers (`stock.picking`). The counter
 //! vector and the state are kept by the move counter triggers ([`crate::move_counters`])
-//! and refused on `create` and `write` (`move_guards`); the name sequence draw is's.
+//! and refused on `create` and `write` (`move_guards`); the reference is drawn from the operation
+//! type's sequence (`picking_flow`).
 
 use erp_sdk::DefaultContext;
 use erp_sdk::prelude::*;
@@ -16,8 +17,9 @@ fn current_user(ctx: &DefaultContext) -> Value {
 
 /// `stock.picking`: a transfer, the document that groups moves of one operation type.
 ///
-/// The name is unique per company whatever the operation type and has
-/// no default until the numbering slice draws it from the type's sequence.
+/// The name is unique per company whatever the operation type; it
+/// starts as `/`, and a create without one draws it from the operation type's sequence
+/// (`picking_flow`).
 /// Company scope: its own company only; the
 /// operation type, locations, partners and self links are checked by the framework default.
 #[model(
@@ -76,6 +78,7 @@ pub struct StockPicking {
         char,
         required = true,
         copy = false,
+        default = "/",
         index = "trigram",
         string = "Reference"
     )]

@@ -38,7 +38,9 @@ ignore = [
     { id = "RUSTSEC-2024-0320", reason = "yaml-rust under syntect/two-face: compiled-in syntax data only; code blocks are not in the print profile" },
     { id = "RUSTSEC-2024-0436", reason = "paste under biblatex: a proc-macro, compile time only" },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml under serde_yaml/hayagriva: YAML bibliography parsing, unreachable" },
-    # Risk row: reachable shaping and font parsing; fonts are parsed only inside a render worker.
+    # Risk row: reachable shaping and font parsing. Only digest-admitted shipped fonts are parsed
+    # and shaped (a family outside the compiled manifest is refused, uploaded fonts included), and a served
+    # node builds the engine only inside a render worker process (`erp report-worker`).
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained, reachable for shaping; risk row, until Typst and krilla move to harfrust" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, reachable for font parsing; risk row, until Typst and krilla move to skrifa" },
 ]

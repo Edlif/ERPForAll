@@ -378,6 +378,8 @@ impl StockLocationPolicy {
     /// A write of the switch first locks its policy rows without waiting. An open quant engine call
     /// at the location holds the row `FOR SHARE`, so the lock fails with `55P03`, answered as a
     /// retryable `40001`, and the retry's count sees the engine's balance once it committed. An engine
+    /// call that left a key below zero and committed after this transaction's snapshot wrote a new
+    /// version of the row (the engine's negative mark), so the lock fails with `40001` as well. An engine
     /// call behind the switch waits on the row and fails with `40001` once the switch committed, so it
     /// decides on the new flag. Policy rows are created only with their location (the insertion
     /// trigger), so no create can race an engine call.
@@ -401,9 +403,10 @@ impl StockLocationPolicy {
     }
 
     /// Switching the guard on is refused while the location holds a negative quant (1).
-    /// The write locked the policy rows first (see `write`). Not covered, as for the location guards
-    /// (`quant_guards::lock_guarded`): an engine call that committed after this transaction's snapshot
-    /// and before that lock is invisible to the count.
+    /// The write locked the policy rows first (see `write`), so every negative balance an engine call
+    /// left at the location is either in this snapshot or failed that lock. A balance an engine call
+    /// raised back from below zero after the snapshot still counts: the switch is refused and passes
+    /// on the next attempt.
     #[constrains("forbid_negative")]
     async fn _check_forbid_negative_blocked(
         this: &RecordSet<StockLocationPolicy>,

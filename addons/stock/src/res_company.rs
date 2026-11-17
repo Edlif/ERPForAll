@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Company stock links. WH-STEPS owns topology provisioning; an empty lookup stays empty.
+//! Company stock links and the warehouse every company gets (`warehouse_setup`); an empty
+//! lookup stays empty.
 use crate::error::StockError;
 use erp_addon_base::ResCompany;
 use erp_sdk::{Operation, prelude::*};
@@ -154,7 +155,28 @@ impl StockCompany {
             }
             return Err(StockError::CompanyLocationsDerived.into());
         }
-        sup.call(tx, this.as_records(), (vals_list,)).await
+        let records = this.as_records().clone();
+        tx.savepoint(async move |tx| {
+            let created = sup.call(tx, &records, (vals_list,)).await?;
+            if crate::warehouse_setup::inventory_data_loaded(tx, records.env()).await? {
+                // A new company gets its warehouse whatever Inventory rights its creator holds;
+                // only the new companies' own topology is created and nothing is returned.
+                let env = records.env().sudo(true);
+                crate::warehouse_setup::provision(tx, &env, &created.ids()).await?;
+            }
+            Ok(created)
+        })
+        .await
+    }
+
+    /// Module data loader only, at install: every company without a warehouse gets one.
+    #[method]
+    #[data_callable(model)]
+    async fn _stock_create_missing_warehouses(
+        this: &RecordSet<ResCompany>,
+        tx: &mut Transaction,
+    ) -> Result<()> {
+        crate::warehouse_setup::provision_missing(tx, this.env()).await
     }
 
     #[method(override)]

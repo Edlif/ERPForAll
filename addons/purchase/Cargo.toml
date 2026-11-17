@@ -1,0 +1,22 @@
+[package]
+name = "erp-addon-purchase"
+description = "ERPForAll addon purchase: requests for quotation and purchase orders"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+erp-addon-account = { workspace = true }
+erp-addon-base = { workspace = true }
+erp-addon-product = { workspace = true }
+erp-addon-uom = { workspace = true }
+erp-sdk = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+toml = { workspace = true }

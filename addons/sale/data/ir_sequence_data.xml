@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+The order numbers (B4, B5): prefix and padding are fields of this record, which an
+     administrator may edit (kept on upgrade) or override with a record of their own company. 
+-->
+<erp>
+  <data noupdate="1">
+    <record id="seq_sale_order" model="ir.sequence">
+      <field name="name">Sales orders</field>
+      <field name="code">sale.order</field>
+      <field name="prefix">S</field>
+      <field name="padding">5</field>
+      <field name="company_id" eval="False"/>
+    </record>
+  </data>
+</erp>

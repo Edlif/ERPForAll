@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Typst adapter. Only shipped renderer source and hash-admitted fonts are executable resources.
-//! In-process compilation cannot be interrupted; use the isolated worker for hostile assets.
+//! In-process compilation cannot be interrupted and the page limit is checked after layout: a served
+//! node builds this engine only inside a render worker process (`erp report-worker`, deadline and
+//! memory cap of `erp-report-worker`), and record text must not reach it any other way.
 mod encode;
 mod fonts;
 mod world;
@@ -69,12 +71,30 @@ fn maintain(interval: usize, failed: bool) {
 }
 thread_local! {static REPORT_THREAD:Cell<bool>=const {Cell::new(false)};}
 static PANIC_HOOK: Once = Once::new();
+/// Source locations (`file:line:column`) of the panics raised on layout threads and not yet reported:
+/// the hook adds one, [`contain`] takes one for the error it builds. A location is a line of renderer
+/// source, never document text. The list is shared by the engines of the process (a panic can be
+/// raised on another pool thread than the one that catches it), so two renders that panic at the same
+/// moment may get each other's location.
+static PANIC_SITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Locations kept when nothing takes them; a build invariant, the oldest goes first.
+const PANIC_SITES_KEPT: usize = 16;
 fn install_hook() {
     PANIC_HOOK.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             if !REPORT_THREAD.get() {
                 previous(info);
+                return;
+            }
+            // The payload can quote document text and is dropped; the location cannot.
+            if let Some(at) = info.location() {
+                // A list of strings is whole after any interrupted update: a poisoned lock is taken over.
+                let mut sites = PANIC_SITES.lock().unwrap_or_else(PoisonError::into_inner);
+                if sites.len() >= PANIC_SITES_KEPT {
+                    sites.remove(0);
+                }
+                sites.push(format!("{}:{}:{}", at.file(), at.line(), at.column()));
             }
         }));
     });
@@ -85,7 +105,8 @@ const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 /// Native engine instance. Font bytes and compiled renderer source are reused between documents.
 ///
 /// The first engine of a process installs a panic hook that keeps the panic text of its own layout
-/// threads off stderr and passes every other panic to the hook that was installed before it. Install
+/// threads off stderr, keeps the panic's source location for the `reason` field of the error the
+/// render returns, and passes every other panic to the hook that was installed before it. Install
 /// the host's hook before the first engine and do not replace the hook afterwards: a later
 /// `std::panic::set_hook` that does not chain would print renderer panic text again.
 #[non_exhaustive]
@@ -215,10 +236,20 @@ fn missing_glyphs(pages: &[Page]) -> usize {
     missing
 }
 fn contain<T>(id: &str, render: impl FnOnce() -> Result<T, ReportError>) -> Result<T, ReportError> {
-    catch_unwind(AssertUnwindSafe(render)).map_err(|_| ReportError::Layout {
-        document: id.into(),
-        kind: LayoutFailure::Panic,
-        reason: "renderer panicked".into(),
+    catch_unwind(AssertUnwindSafe(render)).map_err(|_| {
+        let site = PANIC_SITES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop();
+        ReportError::Layout {
+            document: id.into(),
+            kind: LayoutFailure::Panic,
+            // For the operator: where the renderer panicked. `Display` never prints the reason.
+            reason: match site {
+                Some(site) => format!("renderer panicked at {site}"),
+                None => "renderer panicked".into(),
+            },
+        }
     })?
 }
 impl LayoutEngine for TypstEngine {

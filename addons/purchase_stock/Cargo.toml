@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 erp-sdk = { workspace = true }
 erp-addon-stock_account = { workspace = true }
+erp-addon-purchase = { workspace = true }
 
 [lints]
 workspace = true

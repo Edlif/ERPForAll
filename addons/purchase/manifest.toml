@@ -1,0 +1,17 @@
+name = "Purchase"
+summary = "Requests for quotation and purchase orders"
+category = "Supply Chain/Purchase"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "account"]
+application = true
+exact_only = true
+# Groups first, then the default data, the views, actions and menus, access rows last (the order of the
+# account addon).
+data = [
+    "security/purchase_security.xml",
+    "data/purchase_data.xml",
+    "views/purchase_views.xml",
+    "security/ir.access.csv",
+]

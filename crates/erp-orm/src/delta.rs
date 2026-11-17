@@ -34,7 +34,9 @@ use tokio_postgres::types::{ToSql, Type};
 
 use crate::{Isolation, Transaction};
 
-type Bound = Box<dyn ToSql + Sync>;
+// Send, so a caller's future that holds the bound values across the query stays Send (method
+// dispatch needs Send futures).
+type Bound = Box<dyn ToSql + Sync + Send>;
 
 fn wrong_value(what: &str) -> Error {
     Error::internal(format!(
@@ -46,7 +48,7 @@ fn wrong_value(what: &str) -> Error {
 const UNIX_EPOCH_JULIAN_DAY: i32 = 2_440_588;
 
 fn grain_column(batch: &NettedBatch, index: usize, ty: GrainType) -> Result<(Bound, Type)> {
-    fn collect<T: ToSql + Sync + 'static>(
+    fn collect<T: ToSql + Sync + Send + 'static>(
         batch: &NettedBatch,
         index: usize,
         convert: impl Fn(&GrainValue) -> Result<Option<T>>,
@@ -184,7 +186,7 @@ async fn run(
     }
     let params: Vec<(&(dyn ToSql + Sync), Type)> = bound
         .iter()
-        .map(|(value, ty)| (value.as_ref(), ty.clone()))
+        .map(|(value, ty)| (value.as_ref() as &(dyn ToSql + Sync), ty.clone()))
         .collect();
     let rows = tx.query_typed(&sql, &params).await?;
     let mut returned = Vec::with_capacity(rows.len());

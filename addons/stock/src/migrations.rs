@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stock upgrade steps: missing reservation lead times keep their former zero (1.1); the stock unit
-//! policy moves from the Settings store to its declared system parameters (1.5).
+//! policy moves from the Settings store to its declared system parameters (1.5);
+//! every company without a warehouse gets one (1.8).
 use erp_sdk::migrations::SemverVersion;
 use erp_sdk::prelude::*;
 
@@ -129,4 +130,15 @@ async fn quant_policy_parameters(tx: &mut Transaction, _from: &SemverVersion) ->
     }
     params.validate_groups(&values)?;
     tx.invalidate_model("ir.config_parameter", None).await
+}
+
+/// A database that has Inventory without a warehouse gets one per company, through the same path
+/// as install and company creation. All upgrade stages share one REPEATABLE READ transaction: a
+/// warehouse an older node commits during the upgrade is not in its snapshot, so that company
+/// ends with the user's warehouse and the generated one, or, when both carry the same name or
+/// short name, the uniqueness check stops the whole upgrade and it can be run again.
+#[erp_sdk::migration(addon = "stock", version = "1.8", stage = post)]
+async fn company_warehouses(tx: &mut Transaction, _from: &SemverVersion) -> Result<()> {
+    let env = tx.env();
+    crate::warehouse_setup::provision_missing(tx, &env).await
 }

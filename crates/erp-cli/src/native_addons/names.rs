@@ -17,8 +17,11 @@ pub const LINKED: &[&str] = &[
     "theme_office_blue",
     "analytic",
     "account",
+    "purchase",
     "barcodes_gs1_nomenclature",
     "stock",
+    "sales_team",
+    "sale",
 ];
 
 /// The reason for an addon that is only its manifest and its dependency declaration: offering it

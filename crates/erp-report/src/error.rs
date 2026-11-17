@@ -255,8 +255,6 @@ pub enum ReportError {
     /// The engine could not be set up on this node; no document is involved.
     #[error("report engine setup: {reason}")]
     Engine { reason: &'static str },
-    #[error("report asset I/O: {0}")]
-    Io(#[from] std::io::Error),
 }
 pub(crate) fn invalid(reason: &'static str) -> ReportError {
     ReportError::InvalidDocument { reason }

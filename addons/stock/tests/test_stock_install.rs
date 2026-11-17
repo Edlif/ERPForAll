@@ -35,6 +35,7 @@ fn all_addons() -> Vec<&'static AddonDescriptor> {
         &erp_addon_product::ADDON,
         &erp_addon_analytic::ADDON,
         &erp_addon_account::ADDON,
+        &erp_addon_purchase::ADDON,
     ];
     all.extend(m7_addons());
     all
@@ -145,7 +146,9 @@ fn inventory_addon_descriptors_and_manifest_graph() {
     let known: BTreeSet<&str> = deps_map
         .keys()
         .copied()
-        .chain(["base", "web", "uom", "product", "analytic", "account"])
+        .chain([
+            "base", "web", "uom", "product", "analytic", "account", "purchase",
+        ])
         .collect();
     for (name, deps) in &deps_map {
         for dep in *deps {

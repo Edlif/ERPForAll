@@ -68,6 +68,24 @@ pub enum StockError {
         /// Named by a context default rather than in the values.
         default: bool,
     },
+    /// A create or write named a column of a stock move that its operation lines, confirmation and
+    /// reservation decide (status, quantity), or a create carried a `default_<field>` context key
+    /// for one. Refused for every caller, superuser included.
+    ///
+    /// ```
+    /// let error: erp_sdk::Error = erp_addon_stock::StockError::DerivedFromLines {
+    ///     field: "Status".into(),
+    ///     default: false,
+    /// }
+    /// .into();
+    /// assert_eq!(error.kind(), erp_sdk::ErrorKind::Programming);
+    /// ```
+    DerivedFromLines {
+        /// The label of the field named.
+        field: String,
+        /// Named by a context default rather than in the values.
+        default: bool,
+    },
     /// A create or write named the reference set of a transfer or the transfers of a reference:
     /// both follow from the references of the moves (topology ADR D3), or a create carried a
     /// `default_<field>` context key for one. Refused for every caller, superuser included.
@@ -111,6 +129,80 @@ pub enum StockError {
         /// The label of the field named.
         field: String,
     },
+    /// A move line named a lot, a lot name or serial rows: lots on operation lines come with.
+    ///
+    /// ```
+    /// let error: erp_sdk::Error = erp_addon_stock::StockError::LotsNotAvailable.into();
+    /// assert_eq!(error.kind(), erp_sdk::ErrorKind::UserError);
+    /// ```
+    LotsNotAvailable,
+    /// A move line was created without a move; a line that creates its move comes with.
+    LineNeedsMove,
+    /// A move line was added to a done or cancelled move.
+    LineMoveClosed,
+    /// A done move line was written or deleted; corrections of done work come with a later slice.
+    DoneLineChange,
+    /// A create or write of a done move or a done transfer named a field outside the allow-list
+    /// of the stock `done` module (quantities, product, locations, state, links), or a move was added to
+    /// a done transfer.
+    ///
+    /// ```
+    /// let error: erp_sdk::Error = erp_addon_stock::StockError::DoneRecordFixed {
+    ///     what: "stock move",
+    ///     field: "Demand".into(),
+    /// }
+    /// .into();
+    /// assert_eq!(error.kind(), erp_sdk::ErrorKind::UserError);
+    /// ```
+    DoneRecordFixed {
+        /// `stock move` or `transfer`.
+        what: &'static str,
+        /// The label of the field named.
+        field: String,
+    },
+    /// A done move or a done transfer was deleted.
+    DoneDelete {
+        /// `stock move` or `transfer`.
+        what: &'static str,
+    },
+    /// Validate named only transfers that are done already.
+    AlreadyDone,
+    /// Validate named a cancelled transfer.
+    ValidateCancelled,
+    /// Cancel named a done transfer.
+    CancelDone,
+    /// Cancel named a transfer without moves: its state follows from its moves, so an
+    /// empty transfer stays a draft; it is deleted instead.
+    CancelEmpty,
+    /// Validate named a transfer without products (E-empty).
+    ValidateEmpty,
+    /// Validate named a transfer whose moves have no quantity (
+    /// E-zero).
+    ValidateNoQuantity,
+    /// Validate would leave part of a demand open, which needs a backorder (a later slice).
+    BackorderNotAvailable {
+        /// Display name of the first product short of its demand.
+        product: String,
+    },
+    /// Cancelling a move whose destination moves are still open needs cancel propagation along
+    /// the chain (a later slice).
+    CancelChained,
+    /// A move line write named a column that follows the line's move (move, transfer, company,
+    /// product).
+    LineRelink {
+        /// The label of the field named.
+        field: String,
+    },
+    /// Check availability on transfers that have no move to reserve.
+    NothingToAssign,
+    /// Confirm on transfers that have no draft move (the reference does nothing; refused so the
+    /// person sees why nothing happened).
+    NothingToConfirm,
+    /// Confirming a make-to-order move, or one whose rule falls back to an order, needs the
+    /// procurement engine.
+    NeedsProcurement,
+    /// Unreserve named a done move.
+    UnreserveDone,
     /// A create or write named the generated identity of a route or rule (warehouse, addon, role),
     /// or a create carried a `default_<field>` context key for it. Only the warehouse setup that
     /// generates the record sets it, through [`crate::set_generated_identity`].
@@ -171,6 +263,23 @@ impl fmt::Display for StockError {
                 "{field} of a transfer follows from its moves; a new transfer cannot take it \
                  from a default in the context."
             ),
+            Self::DerivedFromLines {
+                field,
+                default: false,
+            } => write!(
+                f,
+                "{field} of a stock move follows from its detailed operations, its confirmation \
+                 and its reservation; it cannot be set directly."
+            ),
+            Self::DerivedFromLines {
+                field,
+                default: true,
+            } => write!(
+                f,
+                "{field} of a stock move follows from its detailed operations, its confirmation \
+                 and its reservation; a new stock move cannot take it from a default in the \
+                 context."
+            ),
             Self::ReferenceProjection {
                 field,
                 default: false,
@@ -197,6 +306,72 @@ impl fmt::Display for StockError {
                 "{field} of a stock move is converted from its unit and product by the unit \
                  service; it cannot be set to another value."
             ),
+            Self::LotsNotAvailable => f.write_str(
+                "Lots and serial numbers on operation lines are not available yet (a later release); leave them empty."
+            ),
+            Self::LineNeedsMove => f.write_str(
+                "An operation line belongs to a stock move; add the product to the transfer's \
+                 operations first. Lines that create their own move are not available yet."
+            ),
+            Self::LineMoveClosed => {
+                f.write_str("Operation lines cannot be added to a done or cancelled move.")
+            }
+            Self::DoneLineChange => f.write_str(
+                "A done operation line cannot be changed or deleted. Corrections of done work \
+                 are not available yet."
+            ),
+            Self::DoneRecordFixed { what, field } => write!(
+                f,
+                "{field} of a done {what} cannot be changed: its stock has already moved."
+            ),
+            Self::DoneDelete { what } => write!(
+                f,
+                "A done {what} cannot be deleted: its stock has already moved."
+            ),
+            Self::AlreadyDone => f.write_str("Nothing to validate: the transfer was validated earlier."),
+            Self::ValidateCancelled => f.write_str("A cancelled transfer cannot be validated."),
+            Self::CancelDone => f.write_str("A done transfer cannot be cancelled."),
+            Self::CancelEmpty => f.write_str(
+                "A transfer without products cannot be cancelled; delete it instead."
+            ),
+            Self::ValidateEmpty => f.write_str(
+                "A transfer without products has nothing to validate; add the products to move."
+            ),
+            Self::ValidateNoQuantity => f.write_str(
+                "There is no quantity to validate: check availability or set the quantities of \
+                 the operation lines first."
+            ),
+            Self::BackorderNotAvailable { product } => write!(
+                f,
+                "{product} is short of its demand. Validating part of a transfer creates a \
+                 backorder for the rest, and backorders are not available yet: set the \
+                 quantities to the demand, lower the demand, or set the operation type to never \
+                 create backorders."
+            ),
+            Self::CancelChained => f.write_str(
+                "This move feeds another open operation; cancelling along such a chain is not \
+                 available yet."
+            ),
+            Self::LineRelink { field } => write!(
+                f,
+                "{field} of an operation line follows its stock move and cannot be changed; \
+                 delete the line and add it on the other move."
+            ),
+            Self::NothingToAssign => f.write_str(
+                "There is nothing to check the availability for: confirm the transfer first, or \
+                 add products to it."
+            ),
+            Self::NothingToConfirm => f.write_str(
+                "There is nothing to confirm: add products to the transfer first, or it is \
+                 already confirmed."
+            ),
+            Self::NeedsProcurement => f.write_str(
+                "A move that is supplied by order cannot be confirmed yet: procurement comes with \
+                 task a later release. Set its supply method to take from stock."
+            ),
+            Self::UnreserveDone => {
+                f.write_str("A done stock move cannot be unreserved; its stock has already moved.")
+            }
             Self::GeneratedIdentity { what, field } => write!(
                 f,
                 "{field} of a stock {what} is filled in only when a warehouse generates the \
@@ -216,8 +391,28 @@ impl From<StockError> for erp_sdk::Error {
             | StockError::LocationOwnershipDerived
             | StockError::EngineOnlyField { .. }
             | StockError::EngineOnlyDefault { .. }
-            | StockError::GeneratedIdentity { .. } => Self::user(error.to_string()),
+            | StockError::GeneratedIdentity { .. }
+            | StockError::LotsNotAvailable
+            | StockError::LineNeedsMove
+            | StockError::LineMoveClosed
+            | StockError::DoneLineChange
+            | StockError::DoneRecordFixed { .. }
+            | StockError::DoneDelete { .. }
+            | StockError::AlreadyDone
+            | StockError::ValidateCancelled
+            | StockError::CancelDone
+            | StockError::CancelEmpty
+            | StockError::ValidateEmpty
+            | StockError::ValidateNoQuantity
+            | StockError::BackorderNotAvailable { .. }
+            | StockError::CancelChained
+            | StockError::LineRelink { .. }
+            | StockError::NothingToAssign
+            | StockError::UnreserveDone
+            | StockError::NothingToConfirm
+            | StockError::NeedsProcurement => Self::user(error.to_string()),
             StockError::DerivedFromMoves { .. }
+            | StockError::DerivedFromLines { .. }
             | StockError::ReferenceProjection { .. }
             | StockError::UnitSnapshot { .. } => Self::programming(error.to_string()),
             StockError::ForbidNegativeBlocked { .. }

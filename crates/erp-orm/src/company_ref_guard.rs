@@ -30,6 +30,8 @@
 //! snapshot does not show gets no lock but does get its guard and link rows: the row may have been
 //! created after that snapshot, and an id without any row may still be assigned.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use erp_fields::{Cell, Error, OnDelete, RecId, Result};
 use erp_registry::{FieldSpec, ModelSpec};
 use serde_json::Value as Json;
@@ -84,6 +86,47 @@ impl Changes {
     fn is_empty(&self) -> bool {
         self.set.is_empty() && self.cleared.is_empty()
     }
+}
+
+/// The target ids the guard statements of one insert or flush are about to reference, per
+/// comodel: what [`Transaction::lock_company_references`] locks before the first of them.
+#[derive(Debug, Default)]
+pub(crate) struct Targets {
+    by_comodel: BTreeMap<String, BTreeSet<i64>>,
+    /// Guard statements that take a target lock.
+    statements: usize,
+}
+
+impl Targets {
+    /// Add the targets `changes` sets in `field` of `holder`.
+    ///
+    /// # Errors
+    /// `Programming` for a guarded field without a comodel.
+    pub(crate) fn add(
+        &mut self,
+        holder: &ModelSpec,
+        field: &FieldSpec,
+        changes: &Changes,
+    ) -> Result<()> {
+        if changes.set.is_empty() {
+            return Ok(());
+        }
+        self.statements += 1;
+        self.by_comodel
+            .entry(comodel_of(holder, field)?.to_owned())
+            .or_default()
+            .extend(changes.set.iter().map(|entry| entry.2));
+        Ok(())
+    }
+}
+
+fn comodel_of<'a>(holder: &ModelSpec, field: &'a FieldSpec) -> Result<&'a str> {
+    field.ty.comodel().ok_or_else(|| {
+        Error::programming(format!(
+            "{}.{}: a guarded company-dependent field has no comodel",
+            holder.name, field.name
+        ))
+    })
 }
 
 /// Whether references stored in `field` are guarded: a company-dependent many2one of its own
@@ -218,7 +261,78 @@ fn writer_sql(table: &str) -> String {
     )
 }
 
+/// The lock over every target of one insert or flush, for the target table `table` (already
+/// quoted). `$1`: the target ids, ascending and distinct; `$2`: comodel. The same `FOR KEY SHARE`
+/// and guard rows as [`writer_sql`], in id order over all guarded fields and chunks at once.
+fn lock_sql(table: &str) -> String {
+    format!(
+        "WITH locked AS (\
+             SELECT t.\"id\" FROM {table} AS t WHERE t.\"id\" = ANY($1::int8[]) ORDER BY t.\"id\" FOR KEY SHARE\
+         ) \
+         INSERT INTO erp_company_ref_guard (comodel, target_id) \
+         SELECT $2::text, target.id FROM unnest($1::int8[]) AS target(id) \
+         WHERE (SELECT count(*) FROM locked) >= 0 \
+         ORDER BY target.id \
+         ON CONFLICT DO NOTHING"
+    )
+}
+
 impl Transaction {
+    /// The company patch the flush writes for `field` of the row `id` of `spec`: the difference
+    /// between the map read from the database and the cached one.
+    ///
+    /// # Errors
+    /// `Programming` when the cached map or its baseline is missing.
+    pub(crate) fn company_patch(
+        &self,
+        spec: &ModelSpec,
+        field: erp_registry::FieldId,
+        id: RecId,
+    ) -> Result<Cell> {
+        let current = self
+            .cache
+            .get(spec.id, field, id)
+            .ok_or_else(|| Error::programming("Company-dependent flush lost its map"))?;
+        let before = self
+            .engine
+            .properties
+            .baselines
+            .get(&(spec.id, field, id))
+            .ok_or_else(|| Error::programming("Company-dependent flush is missing its baseline"))?;
+        crate::company_dependent::delta(before, &current)
+    }
+
+    /// Lock every target in `targets` and insert its guard row, one statement per comodel
+    /// (comodels in name order, ids ascending), before the per-field guard statements of the same
+    /// insert or flush. A lock order that holds only inside each of those statements deadlocks
+    /// with a deletion, or with another writer, that takes the same targets in id order. A single
+    /// guard statement is already that one ordered lock, so nothing is sent for it.
+    ///
+    /// The order holds for one insert or one flush of one holder model. A transaction that
+    /// references targets in several flushes, or a deletion of several models in another order
+    /// than the comodel names, can still meet a deadlock: PostgreSQL ends it with `40P01`, which
+    /// is a retryable `Concurrency` error like `40001`.
+    ///
+    /// # Errors
+    /// `Concurrency` (`40001`) as [`Self::guard_company_references`]; the statement's errors
+    /// otherwise.
+    pub(crate) async fn lock_company_references(&mut self, targets: &Targets) -> Result<()> {
+        if targets.statements < 2 {
+            return Ok(());
+        }
+        for (comodel, ids) in &targets.by_comodel {
+            let sql = {
+                let target = self.registry().model(comodel).ok_or_else(|| {
+                    Error::programming(format!("unknown property comodel {comodel}"))
+                })?;
+                lock_sql(&erp_sql::quote(&target.table))
+            };
+            let ids: Vec<i64> = ids.iter().copied().collect();
+            self.execute_orm(&sql, &[&ids, comodel]).await?;
+        }
+        Ok(())
+    }
+
     /// The writer's side for what a statement does to `field` (a field [`guards`] accepts) of
     /// `holder`: one statement, in the transaction that writes the holder rows. It waits for a
     /// deletion of a target in flight (the caller's `lock_timeout` bounds the wait).
@@ -235,12 +349,7 @@ impl Transaction {
         if changes.is_empty() {
             return Ok(());
         }
-        let comodel = field.ty.comodel().ok_or_else(|| {
-            Error::programming(format!(
-                "{}.{}: a guarded company-dependent field has no comodel",
-                holder.name, field.name
-            ))
-        })?;
+        let comodel = comodel_of(holder, field)?;
         let sql = {
             let target = self
                 .registry()

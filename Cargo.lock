@@ -1523,11 +1523,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "erp-addon-purchase"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-account",
+ "erp-addon-base",
+ "erp-addon-product",
+ "erp-addon-uom",
+ "erp-sdk",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "erp-addon-purchase_stock"
 version = "0.1.0"
 dependencies = [
+ "erp-addon-purchase",
  "erp-addon-stock_account",
  "erp-sdk",
+]
+
+[[package]]
+name = "erp-addon-sale"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-account",
+ "erp-addon-base",
+ "erp-addon-mail",
+ "erp-addon-product",
+ "erp-addon-sales_team",
+ "erp-addon-uom",
+ "erp-sdk",
+ "erp-testkit",
+ "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -1536,6 +1565,18 @@ version = "0.1.0"
 dependencies = [
  "erp-addon-stock_account",
  "erp-sdk",
+]
+
+[[package]]
+name = "erp-addon-sales_team"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-base",
+ "erp-addon-mail",
+ "erp-sdk",
+ "erp-testkit",
+ "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -1566,6 +1607,7 @@ dependencies = [
  "erp-addon-delivery",
  "erp-addon-product",
  "erp-addon-product_expiry",
+ "erp-addon-purchase",
  "erp-addon-purchase_stock",
  "erp-addon-sale_stock",
  "erp-addon-stock_account",
@@ -1833,6 +1875,9 @@ dependencies = [
  "erp-addon-mail",
  "erp-addon-product",
  "erp-addon-product-mail",
+ "erp-addon-purchase",
+ "erp-addon-sale",
+ "erp-addon-sales_team",
  "erp-addon-sample_library_wasm",
  "erp-addon-stock",
  "erp-addon-stock_account",

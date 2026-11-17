@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Addon `sale`: quotations and sales orders (`sale.order`) and their lines (`sale.order.line`):
+//! the order number, states, lock, addresses, salesperson and team (B2), the lines with
+//! their guards, quantities and statuses, and the invoicing policy of products and companies (B3).
+
+erp_sdk::addon!(
+    name = "sale",
+    exact_only = true,
+    depends = ["base", "sales_team", "product", "mail", "account"]
+);
+
+mod amounts;
+pub mod line;
+mod numbering;
+pub mod order;
+pub mod order_ops;
+pub mod order_status;
+pub mod product;
+pub mod res_groups;
+pub mod settings;
+
+pub use line::SaleOrderLine;
+pub use order::{PLACEHOLDER, ProtectedFields, SEQUENCE_CODE, SaleOrder};
+pub use order_ops::LOCK_GROUP;
+pub use product::{CompanySale, ProductTemplateSale};
+pub use settings::LOCK_CONFIRMED;

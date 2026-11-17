@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+The default team (sales_team/data/crm_team_data.xml:4-13): shared by every
+     company and first in order. Its leader and only member is the administrator, set on install by
+     _sales_team_seed_default_team; inside noupdate the function never runs on an upgrade. The
+     reference's inactive Website and Point of Sale teams come with those applications (V7).
+-->
+<erp noupdate="1">
+  <record id="team_sales_department" model="crm.team">
+    <field name="name">Sales</field>
+    <field name="sequence">0</field>
+    <field name="company_id" eval="False"/>
+  </record>
+  <function model="crm.team" name="_sales_team_seed_default_team"/>
+</erp>

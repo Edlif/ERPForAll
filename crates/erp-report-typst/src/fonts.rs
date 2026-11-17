@@ -16,6 +16,14 @@ struct Entry {
     file: String,
     sha256: String,
 }
+/// The families of the optional CJK font addon (task): known by name, not shipped
+/// in this manifest, so their refusal names that addon instead of the uploaded-font route.
+const CJK_FAMILIES: [&str; 4] = [
+    "Noto Sans SC",
+    "Noto Sans TC",
+    "Noto Sans JP",
+    "Noto Sans KR",
+];
 /// The compiled manifest is the trust anchor, never a mutable manifest supplied by a document.
 pub(crate) struct FontStore {
     root: PathBuf,
@@ -58,11 +66,18 @@ impl FontStore {
                 .filter(|e| e.family == *family)
                 .collect();
             if entries.is_empty() {
+                let reason = if CJK_FAMILIES.contains(&family.as_str()) {
+                    format!(
+                        "family {family:?} is not in the shipped font manifest; the Chinese, Japanese and Korean families come as a separate optional addon (a later release)"
+                    )
+                } else {
+                    format!(
+                        "family {family:?} is not in the shipped font manifest; uploaded fonts require WorkerPool (a later release)"
+                    )
+                };
                 return Err(ReportError::Font {
                     source: None,
-                    reason: format!(
-                        "family {family:?} is not in the shipped font manifest; uploaded fonts require WorkerPool (a later release)"
-                    ),
+                    reason,
                 });
             }
             for entry in entries {

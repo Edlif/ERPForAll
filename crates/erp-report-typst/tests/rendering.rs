@@ -440,6 +440,31 @@ fn read_line(pdf: &lopdf::Document, page: lopdf::ObjectId) -> Line {
     line
 }
 
+/// file is read, and the message names the optional font addon's task)
+#[test]
+fn cjk_families_are_refused_by_name_with_their_addon_task() {
+    for family in [
+        "Noto Sans SC",
+        "Noto Sans TC",
+        "Noto Sans JP",
+        "Noto Sans KR",
+    ] {
+        let mut b = DocumentBuilder::new(Limits::default());
+        let body = b.add(Node::Text("text".into())).unwrap();
+        let options = options().with_fonts(vec![family.into()]).unwrap();
+        let error = engine()
+            .render(&b.finish(body, options).unwrap())
+            .unwrap_err();
+        assert!(matches!(error, ReportError::Font { .. }), "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "report font: family {family:?} is not in the shipped font manifest; the Chinese, Japanese and Korean families come as a separate optional addon (a later release)"
+            )
+        );
+    }
+}
+
 /// missing-glyph box is shown, right-to-left runs are marked and laid out from the right, and the
 /// text layer matches as far as the family allows; reading-order extraction with pdfium and the
 /// raster are evidence outside this test, and the raster has no reviewer besides the implementer)

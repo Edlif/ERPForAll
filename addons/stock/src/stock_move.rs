@@ -436,6 +436,7 @@ pub struct StockMove {
         digits = "Product Unit",
         required = true,
         readonly = true,
+        copy = false,
         default = 0,
         string = "Quantity"
     )]
@@ -491,4 +492,16 @@ pub struct StockMove {
     /// installed by [`crate::schema_guards`], amendment C1).
     #[field(datetime, readonly = true, copy = false, string = "Done At")]
     pub done_at: Option<DateTime>,
+    /// Operation lines of the move (the other side of `stock.move.line.move_id`); written through
+    /// the lines. Declared here, on the model: an extension inside the defining addon would be
+    /// composed before the model when its file sorts first.
+    #[field(
+        one2many,
+        comodel = "stock.move.line",
+        inverse_name = "move_id",
+        readonly = true,
+        copy = false,
+        string = "Move Lines"
+    )]
+    pub move_line_ids: Vec<RecId>,
 }

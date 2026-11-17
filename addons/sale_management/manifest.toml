@@ -1,0 +1,13 @@
+name = "Sales"
+summary = "Quotations, sales orders and the Sales menu"
+description = "The Sales application: shows the Sales menu of the sale addon. Data-only: the models, screens and menus live in sale."
+version = "1.0.0"
+license = "MIT OR Apache-2.0"
+author = "Arkana"
+category = "Sales/Sales"
+application = true
+depends = ["base", "sale"]
+# The application of `sale`: its one data record switches the Sales menu on.
+data = [
+    "data/sale_management_menus.xml",
+]

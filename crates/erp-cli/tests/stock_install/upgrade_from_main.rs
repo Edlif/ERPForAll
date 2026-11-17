@@ -587,3 +587,132 @@ fn stock_upgrade_from_main_1_0_preserves_rows_and_repeats() {
         db.cleanup().await.unwrap();
     });
 }
+
+/// Take the generated warehouses out again, as on a database that had stock 1.7 without one.
+async fn drop_warehouses(client: &Client) {
+    client
+        .batch_execute(
+            "BEGIN;
+        CREATE TEMP TABLE gone_types ON COMMIT DROP AS
+          SELECT id, sequence_id FROM stock_picking_type WHERE warehouse_id IS NOT NULL;
+        CREATE TEMP TABLE gone_locations ON COMMIT DROP AS
+          SELECT id FROM stock_location WHERE generated_warehouse_id IS NOT NULL;
+        UPDATE stock_warehouse SET in_type_id = NULL, out_type_id = NULL, int_type_id = NULL,
+          pick_type_id = NULL, pack_type_id = NULL, qc_type_id = NULL, store_type_id = NULL,
+          xdock_type_id = NULL;
+        DELETE FROM stock_picking_type WHERE id IN (SELECT id FROM gone_types);
+        DELETE FROM ir_sequence WHERE id IN (SELECT sequence_id FROM gone_types);
+        UPDATE stock_location SET generated_warehouse_id = NULL, generated_addon = NULL,
+          generated_role = NULL, warehouse_id = NULL WHERE id IN (SELECT id FROM gone_locations);
+        DELETE FROM stock_warehouse;
+        DELETE FROM stock_location WHERE id IN (SELECT id FROM gone_locations) AND usage <> 'view';
+        DELETE FROM stock_location WHERE id IN (SELECT id FROM gone_locations);
+        UPDATE ir_module_module SET latest_version = '1.7.0' WHERE name = 'stock';
+        COMMIT;",
+        )
+        .await
+        .unwrap();
+}
+
+#[test]
+fn stock_upgrade_from_1_7_gives_each_company_without_one_its_warehouse() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let installed = install(&db).await;
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        let currency: i64 = tx
+            .query(
+                "SELECT currency_id FROM res_company ORDER BY id LIMIT 1",
+                &[],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let second = tx
+            .env()
+            .records("res.company")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Second Company".into()))
+                        .set_cell("currency_id", Cell::Id(currency)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        tx.commit().await.unwrap();
+        drop(installed);
+        let client = db.client().await.unwrap();
+        drop_warehouses(&client).await;
+        assert_eq!(
+            client
+                .query_one("SELECT count(*) FROM stock_warehouse", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+        let sys = system(&db);
+        let modules = [ModuleName::new("stock").unwrap()];
+        let upgraded = sys
+            .button_immediate_upgrade(&sys.system_env(Context::new()), &modules)
+            .await
+            .unwrap();
+        assert!(
+            upgraded.post_commit.is_clean(),
+            "{:?}",
+            upgraded.post_commit
+        );
+        let mut tx = upgraded.orm.begin(SUPERUSER_ID).await.unwrap();
+        let main: i64 = tx
+            .query(
+                "SELECT res_id FROM ir_model_data WHERE module='base' AND name='main_company'",
+                &[],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        for (company, name, code) in [
+            (main, "Main Company", "Main"),
+            (second, "Second Company", "Secon"),
+        ] {
+            let warehouse = super::warehouse_setup::warehouse_of(&mut tx, company).await;
+            super::warehouse_setup::assert_topology(&mut tx, warehouse, name, code).await;
+        }
+        let snapshot = super::warehouse_setup::topology_image(&mut tx).await;
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(upgraded);
+        // a repeat of the upgrade creates and changes nothing
+        client
+            .execute(
+                "UPDATE ir_module_module SET latest_version = '1.7.0' WHERE name = 'stock'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let repeated = sys
+            .button_immediate_upgrade(&sys.system_env(Context::new()), &modules)
+            .await
+            .unwrap();
+        assert!(
+            repeated.post_commit.is_clean(),
+            "{:?}",
+            repeated.post_commit
+        );
+        let mut tx = repeated.orm.begin(SUPERUSER_ID).await.unwrap();
+        assert_eq!(
+            super::warehouse_setup::topology_image(&mut tx).await,
+            snapshot
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(repeated);
+        drop(sys);
+        drop(client);
+        db.cleanup().await.unwrap();
+    });
+}

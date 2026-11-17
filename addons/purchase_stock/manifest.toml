@@ -4,5 +4,6 @@ category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
 version = "1.0.0"
-depends = ["stock_account"]
+depends = ["stock_account", "purchase"]
+auto_install = true
 data = []

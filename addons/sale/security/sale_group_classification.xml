@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Outside the noupdate groups file so that it runs on every install and upgrade. -->
+<erp>
+  <function model="res.groups" name="_sale_reclassify_light_groups"/>
+</erp>

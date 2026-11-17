@@ -1,0 +1,5 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_purchase_order_user,purchase.order.user,model_purchase_order,purchase.group_purchase_user,crud,
+access_purchase_order_account_readonly,purchase.order.account.readonly,model_purchase_order,account.group_account_readonly,r,
+access_purchase_order_line_user,purchase.order.line.user,model_purchase_order_line,purchase.group_purchase_user,crud,
+access_purchase_order_line_account_readonly,purchase.order.line.account.readonly,model_purchase_order_line,account.group_account_readonly,r,

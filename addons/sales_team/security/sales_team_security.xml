@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- The Sales privilege and its three groups, from the least to the most access
+     (sales_team/security/sales_team_security.xml:2-29). The system administrators hold the
+     administrator group through implied_by_ids, as the other applications of this tree do. -->
+<erp noupdate="1">
+  <record id="res_groups_privilege_sales" model="res.groups.privilege">
+    <field name="name">Sales</field>
+    <field name="description">Control who sells and who configures sales.</field>
+    <field name="placeholder">No sales role</field>
+    <field name="sequence">1</field>
+  </record>
+
+  <record id="group_sale_salesman" model="res.groups">
+    <field name="name">User: Own Documents Only</field>
+    <field name="sequence">10</field>
+    <field name="privilege_id" ref="res_groups_privilege_sales"/>
+    <field name="implied_ids" eval="[Command.link(ref('base.group_user'))]"/>
+    <field name="comment">Works on their own sales documents only.</field>
+  </record>
+
+  <record id="group_sale_salesman_all_leads" model="res.groups">
+    <field name="name">User: All Documents</field>
+    <field name="sequence">20</field>
+    <field name="privilege_id" ref="res_groups_privilege_sales"/>
+    <field name="implied_ids" eval="[Command.link(ref('sales_team.group_sale_salesman'))]"/>
+    <field name="comment">Works on the sales documents of every salesperson.</field>
+  </record>
+
+  <record id="group_sale_manager" model="res.groups">
+    <field name="name">Administrator</field>
+    <field name="sequence">30</field>
+    <field name="privilege_id" ref="res_groups_privilege_sales"/>
+    <field name="implied_ids" eval="[Command.link(ref('sales_team.group_sale_salesman_all_leads'))]"/>
+    <field name="implied_by_ids" eval="[Command.link(ref('base.group_system'))]"/>
+    <field name="comment">Configures sales and reads its reports.</field>
+  </record>
+</erp>

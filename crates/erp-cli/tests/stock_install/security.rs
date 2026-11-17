@@ -1019,10 +1019,21 @@ fn stock_security_transactional_company_and_line_mutations() {
             let line = create(
                 &mut setup,
                 "stock.move.line",
-                vals.set_cell("move_id", Cell::Id(mv))
-                    .set_cell("child_mode", Cell::Bool(true)),
+                vals.set_cell("move_id", Cell::Id(mv)),
             )
             .await;
+            // Fixture only: serial rows are refused through the ORM until lots exist.
+            setup
+                .execute(
+                    "UPDATE stock_move_line SET child_mode = true WHERE id = $1",
+                    &[&line],
+                )
+                .await
+                .unwrap();
+            setup
+                .invalidate_model("stock.move.line", None)
+                .await
+                .unwrap();
             let child = create(
                 &mut setup,
                 "stock.move.line.serial",

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The install-time default records of `account` and `stock`, as (query, expected rows): one
+//! The install-time default records of `account`, `stock`, `sales_team` and `sale`, as (query, expected rows): one
 //! set of checks for the direct install tests and the served-node install test.
 #![allow(
     dead_code,
@@ -73,7 +73,9 @@ pub const ACCOUNT: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// The default removal strategies, shared locations, the MTO route and the topology version row.
+/// The default removal strategies, shared locations, the MTO route, the topology version row
+/// and the main company's warehouse with its eight
+/// operation types, two of them active.
 pub const STOCK: &[(&str, &[&str])] = &[
     (
         "SELECT d.name || '=' || r.method || '/' || (r.name->>'en_US') FROM ir_model_data d \
@@ -111,5 +113,94 @@ pub const STOCK: &[(&str, &[&str])] = &[
         "SELECT d.name || '=' || v.generation::text FROM stock_topology_version v \
          LEFT JOIN ir_model_data d ON d.res_id = v.id AND d.model = 'stock.topology.version'",
         &["stock_topology_version=0"],
+    ),
+    (
+        "SELECT w.name || '/' || w.code || '/' || count(t.id) FILTER (WHERE t.active)::text \
+         || '/' || count(t.id)::text FROM stock_warehouse w \
+         LEFT JOIN stock_picking_type t ON t.warehouse_id = w.id GROUP BY w.id ORDER BY w.id",
+        &["Main Company/Main/2/8"],
+    ),
+];
+
+/// The Sales privilege and its groups, the access rows, the default team (no "Website" or "Point
+/// of Sale" team) and no menu of `sales_team` (B1).
+pub const SALES_TEAM: &[(&str, &[&str])] = &[
+    (
+        "SELECT d.name || '=' || g.name || '/' || g.sequence::text FROM ir_model_data d \
+         JOIN res_groups g ON g.id = d.res_id \
+         WHERE d.module = 'sales_team' AND d.model = 'res.groups' ORDER BY d.name",
+        &[
+            "group_sale_manager=Administrator/30",
+            "group_sale_salesman=User: Own Documents Only/10",
+            "group_sale_salesman_all_leads=User: All Documents/20",
+        ],
+    ),
+    (
+        "SELECT name FROM ir_model_data WHERE module = 'sales_team' AND model = 'res.groups.privilege'",
+        &["res_groups_privilege_sales"],
+    ),
+    (
+        "SELECT r FROM (SELECT m.model || '/' || coalesce(g.module || '.' || g.name, '-') || '/' \
+         || a.operation AS r FROM ir_access a JOIN ir_model m ON m.id = a.model_id \
+         LEFT JOIN ir_model_data g ON g.model = 'res.groups' AND g.res_id = a.group_id \
+         WHERE m.model IN ('crm.team', 'crm.team.member', 'crm.tag') AND NOT coalesce(a.generated, false)) access_rows \
+         ORDER BY r COLLATE \"C\"",
+        &[
+            "crm.tag/sales_team.group_sale_manager/crud",
+            "crm.tag/sales_team.group_sale_salesman/cru",
+            "crm.team.member/base.group_user/r",
+            "crm.team.member/sales_team.group_sale_manager/crud",
+            "crm.team/base.group_user/r",
+            "crm.team/sales_team.group_sale_manager/crud",
+        ],
+    ),
+    (
+        "SELECT (name->>'en_US') || '/' || sequence::text || '/' || coalesce(company_id::text, 'shared') \
+         || '/' || active::text FROM crm_team ORDER BY id",
+        &["Sales/0/shared/true"],
+    ),
+    (
+        "SELECT count(*)::text FROM ir_model_data WHERE module = 'sales_team' AND model = 'ir.ui.menu'",
+        &["0"],
+    ),
+];
+
+/// The order sequence and the Sales administrator's access row of `sale` (B5).
+pub const SALE: &[(&str, &[&str])] = &[
+    (
+        "SELECT d.name || '=' || s.code || '/' || s.prefix || '/' || s.padding::text || '/' \
+         || s.number_next::text || '/' || s.number_increment::text || '/' \
+         || coalesce(s.company_id::text, 'shared') \
+         FROM ir_model_data d JOIN ir_sequence s ON s.id = d.res_id \
+         WHERE d.module = 'sale' AND d.model = 'ir.sequence' ORDER BY d.name",
+        &["seq_sale_order=sale.order/S/5/1/1/shared"],
+    ),
+    (
+        "SELECT r FROM (SELECT m.model || '/' || coalesce(g.module || '.' || g.name, '-') || '/' \
+         || a.operation AS r FROM ir_access a JOIN ir_model m ON m.id = a.model_id \
+         LEFT JOIN ir_model_data g ON g.model = 'res.groups' AND g.res_id = a.group_id \
+         WHERE m.model IN ('sale.order', 'sale.order.line') AND NOT coalesce(a.generated, false)) access_rows \
+         ORDER BY r COLLATE \"C\"",
+        &[
+            "sale.order.line/sales_team.group_sale_manager/crud",
+            "sale.order.line/sales_team.group_sale_salesman/crud",
+            "sale.order.line/sales_team.group_sale_salesman_all_leads/crud",
+            "sale.order/sales_team.group_sale_manager/crud",
+            "sale.order/sales_team.group_sale_salesman/cru",
+            "sale.order/sales_team.group_sale_salesman_all_leads/cru",
+        ],
+    ),
+    (
+        "SELECT d.name || '=' || g.name || '/' \
+         || (SELECT count(*) FROM res_groups_implied_rel r WHERE r.gid = g.id)::text \
+         FROM ir_model_data d JOIN res_groups g ON g.id = d.res_id \
+         WHERE d.module = 'sale' AND d.model = 'res.groups' ORDER BY d.name",
+        &[
+            "group_auto_done_setting=Confirmed sales orders locked/0",
+            "group_discount_per_so_line=Line discounts on sales orders/0",
+            "group_proforma_sales=Sales pro-forma invoices/0",
+            "group_services_and_material=Services and materials on sales orders/0",
+            "group_warning_sale=Sales warnings on products and customers/0",
+        ],
     ),
 ];

@@ -130,7 +130,7 @@ async fn locations(
                         .await?;
                     if found.is_empty() {
                         return Err(Error::user(
-                            "No warehouse is available for the operation type company; warehouse provisioning is not supported until a later release.",
+                            "No warehouse is available for the operation type company; create a warehouse for it first.",
                         ));
                     }
                     cache.company_warehouses.insert(company, found.ids()[0]);

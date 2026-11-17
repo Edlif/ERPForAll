@@ -418,6 +418,35 @@ fn loop_helpers_are_scalars_and_end_with_their_loop() {
 }
 
 #[test]
+fn the_loop_value_alias_carries_the_loop_model_and_the_parity_helpers_are_scalars() {
+    // `line_value` is the iterated line inside the loop, whatever an outer `line_value` was.
+    let xml = "<t><t t-set='line_value' t-value='doc'/><t t-foreach='doc.lines' t-as='line'>\
+               <b t-out='line_value.cost'/></t></t>";
+    let findings = check(xml, true, true).unwrap();
+    assert_eq!(
+        findings.iter().map(|f| f.field()).collect::<Vec<_>>(),
+        ["sale.line.cost"]
+    );
+    let error = check(xml, true, false).unwrap_err();
+    assert!(matches!(&error, ReportError::Restricted { .. }));
+    assert_eq!(
+        error.to_string(),
+        "report sample.action: sample.report:1 prints restricted field sale.line.cost; set allow_attachment_group_fields explicitly to acknowledge the first printer's field view"
+    );
+    // The outer binding is back after the loop.
+    let after = "<t><t t-set='line_value' t-value='doc'/><t t-foreach='doc.lines' t-as='line'/>\
+                 <b t-out='line_value.secret'/></t>";
+    assert_eq!(
+        check(after, true, true).unwrap()[0].field(),
+        "sale.order.secret"
+    );
+    // An outer record named like a parity helper is a scalar inside the loop: no field is read.
+    let shadowed = "<t><t t-set='line_odd' t-value='doc'/><t t-foreach='doc.lines' t-as='line'>\
+                    <p t-if='line_odd or line_even' t-out='line_parity'/></t></t>";
+    assert!(check(shadowed, true, false).unwrap().is_empty());
+}
+
+#[test]
 fn unknown_and_orphan_directives_are_never_a_pass() {
     for (xml, named) in [
         ("<b t-raw='doc.secret'/>", "t-raw"),

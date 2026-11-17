@@ -1,0 +1,1146 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! A line created with a product and without a price takes it from the product's vendor price
+//! for the order's vendor (the seller service of `product`, never a second selection), else from
+//! the product cost, converted to the line's unit and the order's currency. Subtotal, tax and
+//! total come from the tax computation of `account` (`erp_addon_account::tax::compute`) and are
+//! written after every create, write and delete together with the order's totals. The amounts,
+//! the selected vendor price and the received quantity are never written by a client.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use erp_addon_account::invoice::TAX_CHILDREN_TASK;
+use erp_addon_account::tax::compute::{self, AmountType, BaseLine, KERNEL_TASK, TaxDef, TaxKind};
+use erp_addon_base::money::{CURRENCY_ROUNDING_MODE, RoundingTable, convert};
+use erp_addon_product::{SellerInfo, SellerQuery};
+use erp_addon_uom::conversion::{price_exact, quantity_rounded};
+use erp_addon_uom::models::load_unit;
+use erp_sdk::Command;
+use erp_sdk::money::{Increment, RoundingMode};
+use erp_sdk::prelude::*;
+
+use crate::order::refuse_context_defaults;
+
+/// The task that fills the received quantity and lets a buyer edit it.
+pub const RECEIPT_QTY_TASK: &str = "a later release";
+
+/// Fields only this module writes: the amounts, the quantity in the product unit and the vendor
+/// price the line was priced from.
+pub(crate) const COMPUTED: [&str; 5] = [
+    "price_subtotal",
+    "price_tax",
+    "price_total",
+    "product_uom_qty",
+    "selected_seller_id",
+];
+
+/// The received quantity and its method, filled by the receipt slices.
+pub(crate) const RECEIVED: [&str; 2] = ["qty_received", "qty_received_method"];
+
+/// Related fields of the order that only its buttons set; a write through the line would reach the order.
+const ORDER_OPERATION: [&str; 2] = ["state", "date_approve"];
+
+/// A change of these fields prices a line again unless its price was set by hand
+/// (the `technical_price_unit` guard at `:547`).
+const REPRICE: [&str; 2] = ["product_qty", "uom_id"];
+
+const MICROS_PER_DAY: i64 = 86_400_000_000;
+
+/// `purchase.order.line`: product, description, quantity, unit, planned date, price, discount,
+/// taxes and the computed amounts.
+#[model(
+    name = "purchase.order.line",
+    description = "Purchase Order Line",
+    order = "order_id, sequence, id",
+    check_company_auto = true,
+    company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
+)]
+pub struct PurchaseOrderLine {
+    /// The order the line belongs to; deleting the order deletes its lines.
+    #[field(
+        many2one,
+        comodel = "purchase.order",
+        required = true,
+        ondelete = "cascade",
+        index = true,
+        string = "Order Reference"
+    )]
+    pub order_id: Option<RecId>,
+    /// The position of the line on its order.
+    #[field(integer, default = 10, string = "Sequence")]
+    pub sequence: i32,
+    /// The product bought; required to confirm the order.
+    #[field(
+        many2one,
+        comodel = "product.product",
+        ondelete = "restrict",
+        index = "btree_not_null",
+        string = "Product"
+    )]
+    pub product_id: Option<RecId>,
+    /// The text the vendor reads; the product's purchase description when none is given.
+    #[field(text, string = "Description")]
+    pub name: Option<Arc<str>>,
+    /// The quantity ordered, in the line's unit.
+    #[field(
+        float,
+        digits = "Product Unit",
+        required = true,
+        default = 1,
+        string = "Quantity"
+    )]
+    pub product_qty: Decimal,
+    /// The quantity in the product's own unit.
+    #[field(
+        float,
+        digits = "Product Unit",
+        readonly = true,
+        copy = false,
+        string = "Total Quantity"
+    )]
+    pub product_uom_qty: Decimal,
+    /// The unit of the quantity and the price; the product's unit when none is given.
+    #[field(many2one, comodel = "uom.uom", ondelete = "restrict", string = "Unit")]
+    pub uom_id: Option<RecId>,
+    /// The date the goods are expected: the order deadline plus the vendor's lead time.
+    #[field(datetime, index = true, copy = false, string = "Expected Arrival")]
+    pub date_planned: Option<DateTime>,
+    /// The price of one unit, in the order currency, before the discount.
+    #[field(
+        float,
+        digits = "Product Price",
+        required = true,
+        default = 0,
+        string = "Unit Price"
+    )]
+    pub price_unit: Decimal,
+    /// The price the line was last priced at; differs from the unit price once a person set it.
+    /// The default 0 lets the line form send it with the untouched default price (see `fill_line`).
+    #[field(float, digits = "Product Price", copy = false, default = 0)]
+    pub technical_price_unit: Decimal,
+    /// Discount in percent.
+    #[field(float, digits = "Discount", default = 0, string = "Discount (%)")]
+    pub discount: Decimal,
+    /// The taxes of the line; the product's vendor taxes of the order company when none are given.
+    #[field(
+        many2many,
+        comodel = "account.tax",
+        relation = "account_tax_purchase_order_line_rel",
+        column1 = "purchase_order_line_id",
+        column2 = "account_tax_id",
+        check_company = true,
+        string = "Taxes"
+    )]
+    pub tax_ids: Vec<RecId>,
+    /// The vendor price row the line was priced from, if any.
+    #[field(
+        many2one,
+        comodel = "product.supplierinfo",
+        readonly = true,
+        copy = false,
+        ondelete = "set null",
+        string = "Selected Vendor Price"
+    )]
+    pub selected_seller_id: Option<RecId>,
+    /// Amount without taxes, in the order currency.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        readonly = true,
+        copy = false,
+        string = "Subtotal"
+    )]
+    pub price_subtotal: Decimal,
+    /// The taxes of the line, in the order currency.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        readonly = true,
+        copy = false,
+        string = "Tax"
+    )]
+    pub price_tax: Decimal,
+    /// Amount with taxes, in the order currency.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        readonly = true,
+        copy = false,
+        string = "Total"
+    )]
+    pub price_total: Decimal,
+    /// The order's company.
+    #[field(
+        many2one,
+        comodel = "res.company",
+        related = "order_id.company_id",
+        store = true,
+        index = true,
+        string = "Company"
+    )]
+    pub company_id: Option<RecId>,
+    /// The order's state.
+    #[field(selection, related = "order_id.state", string = "Status")]
+    pub state: Option<Arc<str>>,
+    /// The order's vendor.
+    #[field(
+        many2one,
+        comodel = "res.partner",
+        related = "order_id.partner_id",
+        store = true,
+        index = "btree_not_null",
+        string = "Partner"
+    )]
+    pub partner_id: Option<RecId>,
+    /// The order's currency.
+    #[field(
+        many2one,
+        comodel = "res.currency",
+        related = "order_id.currency_id",
+        string = "Currency"
+    )]
+    pub currency_id: Option<RecId>,
+    /// The order's deadline.
+    #[field(datetime, related = "order_id.date_order", string = "Order Deadline")]
+    pub date_order: Option<DateTime>,
+    /// The order's approval date.
+    #[field(
+        datetime,
+        related = "order_id.date_approve",
+        string = "Confirmation Date"
+    )]
+    pub date_approve: Option<DateTime>,
+    /// How the received quantity is known; another addon adds its value with `selection_add`.
+    #[field(
+        selection,
+        selection = [("manual", "Manual")],
+        default = "manual",
+        readonly = true,
+        copy = false,
+        string = "Received Qty Method"
+    )]
+    pub qty_received_method: Option<Arc<str>>,
+    /// The quantity received, in the line's unit; zero until the receipt slices fill it.
+    #[field(
+        float,
+        digits = "Product Unit",
+        readonly = true,
+        copy = false,
+        default = 0,
+        string = "Received Qty"
+    )]
+    pub qty_received: Decimal,
+}
+
+#[methods(PurchaseOrderLine, addon = "purchase")]
+impl PurchaseOrderLine {
+    /// Refuses the computed and received fields, fills unit, description, taxes, price, discount
+    /// and planned date from the product and the order's vendor, then writes the amounts and the
+    /// order totals.
+    #[method(override)]
+    async fn create(
+        this: &RecordSet<PurchaseOrderLine>,
+        tx: &mut Transaction,
+        mut vals_list: Vec<RawVals>,
+        sup: Super,
+    ) -> Result<Records> {
+        let env = this.env().clone();
+        refuse_context_defaults(&env, &COMPUTED, "purchase order line")?;
+        refuse_context_defaults(&env, &RECEIVED, "purchase order line")?;
+        refuse_context_defaults(&env, &ORDER_OPERATION, "purchase order line")?;
+        let mut order_ids = BTreeSet::new();
+        for vals in &vals_list {
+            refuse_line_fields(vals)?;
+            order_ids.insert(id_of(vals.get("order_id"), "order_id")?.ok_or_else(|| {
+                Error::validation("A purchase order line needs its order (order_id).")
+            })?);
+        }
+        let heads = order_heads(tx, &env, &order_ids).await?;
+        refuse_closed(&heads, &order_ids, "add lines to", false)?;
+        for vals in &mut vals_list {
+            let order = id_of(vals.get("order_id"), "order_id")?.unwrap_or_default();
+            fill_line(tx, &env, &heads[&order], vals).await?;
+        }
+        let lines = sup.call(tx, this.as_records(), (vals_list,)).await?;
+        sync_lines(tx, &env, &lines).await?;
+        Ok(lines)
+    }
+
+    /// Refuses the computed and received fields and a move to another order, and edits of lines of
+    /// cancelled or locked orders; prices again the lines whose quantity or unit changed and whose
+    /// price was not set by hand; then the amounts and the order totals.
+    #[method(override)]
+    async fn write(
+        this: &RecordSet<PurchaseOrderLine>,
+        tx: &mut Transaction,
+        vals: RawVals,
+        sup: Super,
+    ) -> Result<()> {
+        refuse_line_fields(&vals)?;
+        if vals.contains("order_id") {
+            return Err(Error::validation(
+                "A purchase order line cannot move to another order; delete it and add a new one.",
+            ));
+        }
+        let lines = this.as_records().clone();
+        if lines.is_empty() {
+            return sup.call(tx, &lines, (vals,)).await;
+        }
+        let env = this.env().clone();
+        let orders = line_orders(tx, &lines).await?;
+        let order_ids: BTreeSet<i64> = orders.values().copied().collect();
+        let heads = order_heads(tx, &env, &order_ids).await?;
+        refuse_closed(&heads, &order_ids, "change lines of", false)?;
+        let reprice = !vals.contains("price_unit") && REPRICE.iter().any(|f| vals.contains(f));
+        let manual = if reprice {
+            manual_prices(tx, &lines).await?
+        } else {
+            BTreeSet::new()
+        };
+        sup.call(tx, &lines, (vals,)).await?;
+        if reprice {
+            for id in lines.ids() {
+                if !manual.contains(&id) {
+                    reprice_line(tx, &env, &heads[&orders[&id]], id).await?;
+                }
+            }
+        }
+        sync_lines(tx, &env, &lines).await
+    }
+
+    /// Lines of confirmed, cancelled or locked orders stay; the order totals follow.
+    #[method(override)]
+    async fn unlink(
+        this: &RecordSet<PurchaseOrderLine>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
+        let lines = this.as_records().clone();
+        if lines.is_empty() {
+            return sup.call(tx, &lines, ()).await;
+        }
+        let env = this.env().clone();
+        let order_ids: BTreeSet<i64> = line_orders(tx, &lines).await?.into_values().collect();
+        let heads = order_heads(tx, &env, &order_ids).await?;
+        refuse_closed(&heads, &order_ids, "delete lines of", true)?;
+        sup.call(tx, &lines, ()).await?;
+        sync_orders(tx, &env, &order_ids).await
+    }
+}
+
+/// What a line reads of its order.
+struct OrderHead {
+    name: String,
+    state: String,
+    locked: bool,
+    company: i64,
+    currency: i64,
+    partner: i64,
+    date_order: DateTime,
+}
+
+fn id_of(cell: Option<&Cell>, field: &str) -> Result<Option<i64>> {
+    match cell {
+        None | Some(Cell::Null | Cell::Bool(false)) => Ok(None),
+        Some(Cell::Id(id)) => Ok(Some(*id)),
+        Some(Cell::Int(id)) => Ok(Some(i64::from(*id))),
+        Some(other) => Err(Error::validation(format!(
+            "{field} takes a record id, not {other:?}."
+        ))),
+    }
+}
+
+pub(crate) fn amount(cell: &Cell, field: &str) -> Result<Decimal> {
+    match cell {
+        Cell::Null | Cell::Bool(false) => Ok(Decimal::ZERO),
+        Cell::Decimal(value) => Ok(*value),
+        Cell::Int(value) => Ok(Decimal::from(*value)),
+        Cell::Float(value) => Decimal::try_from(*value)
+            .map_err(|e| Error::validation(format!("{field} {value} is not exact: {e}"))),
+        other => Err(Error::validation(format!(
+            "{field} takes a number, not {other:?}."
+        ))),
+    }
+}
+
+fn value_amount(value: Option<&Value>, field: &str) -> Result<Decimal> {
+    match value {
+        None | Some(Value::False) => Ok(Decimal::ZERO),
+        Some(Value::Decimal(d)) => Ok(*d),
+        Some(Value::Int(i)) => Ok(Decimal::from(*i)),
+        Some(Value::Float(f)) => Decimal::try_from(*f)
+            .map_err(|e| Error::internal(format!("vendor price {field} {f}: {e}"))),
+        Some(other) => Err(Error::internal(format!(
+            "vendor price {field} is {other:?}, not a number"
+        ))),
+    }
+}
+
+fn value_id(value: Option<&Value>, field: &str) -> Result<i64> {
+    match value {
+        Some(Value::Int(id)) if *id > 0 => Ok(*id),
+        other => Err(Error::internal(format!(
+            "vendor price {field} is {other:?}, not a record id"
+        ))),
+    }
+}
+
+/// Refuses the fields only this module or a later slice writes, by name.
+fn refuse_line_fields(vals: &RawVals) -> Result<()> {
+    if let Some(field) = COMPUTED.iter().find(|f| vals.contains(f)) {
+        return Err(Error::validation(format!(
+            "The field {field} of a purchase order line is computed from the line and its order, \
+             not written."
+        )));
+    }
+    if let Some(field) = ORDER_OPERATION.iter().find(|f| vals.contains(f)) {
+        return Err(Error::validation(format!(
+            "The field {field} of a purchase order line is the one of its order, set by the order's \
+             buttons, not written."
+        )));
+    }
+    if let Some(field) = RECEIVED.iter().find(|f| vals.contains(f)) {
+        return Err(Error::user(format!(
+            "The received quantity of a purchase order line ({field}) is filled by receipts, \
+             which come with task {RECEIPT_QTY_TASK}."
+        )));
+    }
+    Ok(())
+}
+
+/// The heads of `ids`, read as the caller (who must read the orders of the lines it edits).
+async fn order_heads(
+    tx: &mut Transaction,
+    env: &Env,
+    ids: &BTreeSet<i64>,
+) -> Result<BTreeMap<i64, OrderHead>> {
+    let orders = env.records("purchase.order")?.browse(ids.iter().copied())?;
+    let mut columns = BTreeMap::new();
+    for field in [
+        "name",
+        "state",
+        "locked",
+        "company_id",
+        "currency_id",
+        "partner_id",
+        "date_order",
+    ] {
+        columns.insert(field, orders.cells(tx, field).await?);
+    }
+    let mut heads = BTreeMap::new();
+    for (i, id) in orders.ids().into_iter().enumerate() {
+        let cell = |field: &str| -> Result<&Cell> {
+            columns
+                .get(field)
+                .and_then(|c| c.get(i))
+                .ok_or_else(|| Error::invariant(format!("order column {field} is short")))
+        };
+        let text = |field: &str| -> Result<String> {
+            match cell(field)? {
+                Cell::Str(s) => Ok(s.to_string()),
+                other => Err(Error::invariant(format!("order {id} {field} is {other:?}"))),
+            }
+        };
+        let required = |field: &str| -> Result<i64> {
+            id_of(Some(cell(field)?), field)?
+                .ok_or_else(|| Error::invariant(format!("order {id} has no {field}")))
+        };
+        heads.insert(
+            id,
+            OrderHead {
+                name: text("name")?,
+                state: text("state")?,
+                locked: matches!(cell("locked")?, Cell::Bool(true)),
+                company: required("company_id")?,
+                currency: required("currency_id")?,
+                partner: required("partner_id")?,
+                date_order: match cell("date_order")? {
+                    Cell::DateTime(at) => *at,
+                    other => return Err(Error::invariant(format!("order {id} date {other:?}"))),
+                },
+            },
+        );
+    }
+    Ok(heads)
+}
+
+/// Refuses line changes on cancelled or locked orders, and with `confirmed` on purchase orders
+/// too, naming the orders (V5, V3).
+fn refuse_closed(
+    heads: &BTreeMap<i64, OrderHead>,
+    ids: &BTreeSet<i64>,
+    what: &str,
+    confirmed: bool,
+) -> Result<()> {
+    let closed: Vec<String> = ids
+        .iter()
+        .filter_map(|id| heads.get(id))
+        .filter(|h| h.state == "cancel" || h.locked || (confirmed && h.state == "purchase"))
+        .map(|h| {
+            let lock = if h.locked { ", locked" } else { "" };
+            format!("{} ({}{lock})", h.name, h.state)
+        })
+        .collect();
+    if closed.is_empty() {
+        return Ok(());
+    }
+    Err(Error::user(format!(
+        "You cannot {what} these purchase orders: {}.",
+        closed.join(", ")
+    )))
+}
+
+/// The order of each line.
+async fn line_orders(tx: &mut Transaction, lines: &Records) -> Result<BTreeMap<i64, i64>> {
+    let cells = lines.cells(tx, "order_id").await?;
+    let mut orders = BTreeMap::new();
+    for (id, cell) in lines.ids().into_iter().zip(cells.iter()) {
+        let order = id_of(Some(cell), "order_id")?
+            .ok_or_else(|| Error::invariant(format!("purchase order line {id} has no order")))?;
+        orders.insert(id, order);
+    }
+    Ok(orders)
+}
+
+/// The lines whose unit price differs from the price they were last given: set by a person.
+async fn manual_prices(tx: &mut Transaction, lines: &Records) -> Result<BTreeSet<i64>> {
+    let prices = lines.cells(tx, "price_unit").await?;
+    let technical = lines.cells(tx, "technical_price_unit").await?;
+    let mut manual = BTreeSet::new();
+    for (i, id) in lines.ids().into_iter().enumerate() {
+        let get = |cells: &[Cell]| cells.get(i).cloned().unwrap_or(Cell::Null);
+        if amount(&get(&prices), "price_unit")? != amount(&get(&technical), "technical_price_unit")?
+        {
+            manual.insert(id);
+        }
+    }
+    Ok(manual)
+}
+
+/// The vendor price of `product` for the order's vendor, quantity and unit at the deadline's
+/// date, through the product seller service under the order's company.
+async fn seller(
+    tx: &mut Transaction,
+    env: &Env,
+    head: &OrderHead,
+    product: i64,
+    quantity: Decimal,
+    unit: i64,
+) -> Result<Option<SellerInfo>> {
+    let date = Date::context_today_at(env.tz(), head.date_order)
+        .map_err(|e| Error::internal(e.message().to_owned()))?;
+    let query = SellerQuery::default()
+        .with_partner(head.partner)?
+        .with_quantity(Some(quantity.abs()))
+        .with_date(date)
+        .with_unit(unit)?
+        .with_force_uom(true);
+    env.with_company(head.company)?
+        .records("product.product")?
+        .browse([product])?
+        .call(tx, "_select_seller_exact", (query,))
+        .await
+}
+
+/// The price, discount, vendor price row and lead time of a line of `product` in `unit`: the
+/// vendor price when one applies, else the product cost; converted to `unit` and the order's
+/// currency at the deadline's date.
+async fn price_of(
+    tx: &mut Transaction,
+    env: &Env,
+    head: &OrderHead,
+    product: i64,
+    quantity: Decimal,
+    unit: i64,
+) -> Result<(Decimal, Decimal, Option<i64>, i64)> {
+    let company_env = env.with_company(head.company)?;
+    let digits =
+        erp_addon_base::decimal_precision::precision_get(&company_env, tx, "Product Price").await?;
+    let precision = Increment::from_places(digits)?;
+    let target = load_unit(&company_env, tx, unit).await?;
+    let (price, from_unit, currency, discount, row, delay) =
+        match seller(tx, env, head, product, quantity, unit).await? {
+            Some(info) => {
+                let v = info.values();
+                (
+                    value_amount(v.get("price"), "price")?,
+                    value_id(v.get("uom_id"), "uom_id")?,
+                    value_id(v.get("currency_id"), "currency_id")?,
+                    value_amount(v.get("discount"), "discount")?,
+                    Some(value_id(v.get("supplierinfo"), "supplierinfo")?),
+                    // the reference's lead time is required with a default of 1 day
+                    // : never guessed
+                    match v.get("delay") {
+                        Some(Value::Int(days)) => *days,
+                        _ => {
+                            return Err(Error::validation(format!(
+                                "The vendor price {} of this product has no lead time; give it a \
+                                 number of days.",
+                                value_id(v.get("supplierinfo"), "supplierinfo")?
+                            )));
+                        }
+                    },
+                )
+            }
+            None => {
+                let record = company_env.records("product.product")?.browse([product])?;
+                let cost = amount(&record.cell(tx, "standard_price").await?, "standard_price")?;
+                let from_unit = id_of(Some(&record.cell(tx, "uom_id").await?), "uom_id")?
+                    .ok_or_else(|| Error::invariant(format!("product {product} has no unit")))?;
+                // the reference's cost currency is the product company's or the active company's
+                // currency, never empty;
+                // it is read under the order's company, so an empty one is a broken product
+                let currency = id_of(
+                    Some(&record.cell(tx, "cost_currency_id").await?),
+                    "cost_currency_id",
+                )?
+                .ok_or_else(|| {
+                    Error::invariant(format!("product {product} has no cost currency"))
+                })?;
+                // no vendor price: no lead time, the line is expected at the deadline
+                // (an empty seller info)
+                (cost, from_unit, currency, Decimal::ZERO, None, 0)
+            }
+        };
+    let source = load_unit(&company_env, tx, from_unit).await?;
+    let in_unit =
+        price_exact(&source, &target, price)?.quantize(&precision, CURRENCY_ROUNDING_MODE)?;
+    let in_currency = if currency == head.currency {
+        in_unit
+    } else {
+        let at = Date::context_today_at(env.tz(), head.date_order)
+            .map_err(|e| Error::internal(e.message().to_owned()))?;
+        let rec = |id: i64| {
+            RecId::from_real(id).ok_or_else(|| Error::invariant(format!("record id {id}")))
+        };
+        convert(
+            &company_env,
+            tx,
+            in_unit,
+            rec(currency)?,
+            rec(head.currency)?,
+            rec(head.company)?,
+            at,
+        )
+        .await?
+    };
+    Ok((in_currency, discount, row, delay))
+}
+
+/// The deadline moved by `days` days.
+fn planned(head: &OrderHead, days: i64) -> Result<DateTime> {
+    days.checked_mul(MICROS_PER_DAY)
+        .and_then(|delta| head.date_order.micros().checked_add(delta))
+        .map(DateTime::from_micros)
+        .ok_or_else(|| Error::validation(format!("A lead time of {days} days is out of range.")))
+}
+
+/// Unit, description, taxes, price, discount, vendor price row and planned date of a new line,
+/// each only when not given.
+async fn fill_line(
+    tx: &mut Transaction,
+    env: &Env,
+    head: &OrderHead,
+    vals: &mut RawVals,
+) -> Result<()> {
+    let Some(product) = id_of(vals.get("product_id"), "product_id")? else {
+        if !vals.contains("date_planned") {
+            vals.insert("date_planned".into(), Cell::DateTime(head.date_order));
+        }
+        return Ok(());
+    };
+    let company_env = env.with_company(head.company)?;
+    let record = company_env.records("product.product")?.browse([product])?;
+    let unit = match id_of(vals.get("uom_id"), "uom_id")? {
+        Some(unit) => unit,
+        None => {
+            let unit = id_of(Some(&record.cell(tx, "uom_id").await?), "uom_id")?
+                .ok_or_else(|| Error::invariant(format!("product {product} has no unit")))?;
+            vals.insert("uom_id".into(), Cell::Id(unit));
+            unit
+        }
+    };
+    if !vals.contains("name")
+        && let Some(text) = description(tx, &record).await?
+    {
+        vals.insert("name".into(), Cell::Str(text));
+    }
+    if vals.commands("tax_ids").is_none() && !vals.contains("tax_ids") {
+        let taxes = vendor_taxes(tx, &company_env, &record, head.company).await?;
+        vals.insert_commands("tax_ids".into(), vec![Command::Set(taxes)]);
+    }
+    // a price is set by hand unless it equals the price the line was last given: the line form
+    // sends its untouched default price with that technical price (the reference's rule,
+    // ); a given price without it is the caller's (a copy, an import)
+    let priced = match (vals.get("price_unit"), vals.get("technical_price_unit")) {
+        (None, _) => false,
+        (Some(price), Some(last)) => {
+            amount(price, "price_unit")? != amount(last, "technical_price_unit")?
+        }
+        (Some(_), None) => true,
+    };
+    // the form also sends the default discount 0; with an untouched price the vendor's applies
+    let discounted = match vals.get("discount") {
+        None => false,
+        Some(discount) => priced || amount(discount, "discount")? != Decimal::ZERO,
+    };
+    if !priced || !discounted || !vals.contains("date_planned") {
+        let quantity = match vals.get("product_qty") {
+            Some(cell) => amount(cell, "product_qty")?,
+            None => Decimal::ONE,
+        };
+        let (price, discount, row, delay) =
+            price_of(tx, env, head, product, quantity, unit).await?;
+        if !priced {
+            vals.insert("price_unit".into(), Cell::Decimal(price));
+            vals.insert("technical_price_unit".into(), Cell::Decimal(price));
+        }
+        if !discounted {
+            vals.insert("discount".into(), Cell::Decimal(discount));
+        }
+        if !vals.contains("date_planned") {
+            vals.insert("date_planned".into(), Cell::DateTime(planned(head, delay)?));
+        }
+        vals.insert(
+            "selected_seller_id".into(),
+            row.map_or(Cell::Null, Cell::Id),
+        );
+    }
+    if !vals.contains("technical_price_unit") {
+        // a given price counts as the last price the line was given, so the quantity can reprice it
+        let price = vals.get("price_unit").cloned().unwrap_or(Cell::Null);
+        vals.insert("technical_price_unit".into(), price);
+    }
+    Ok(())
+}
+
+/// The product's purchase description, if it has one; the product itself is shown next to it
+/// (attribute values without variants come with the order
+/// lines slice).
+async fn description(tx: &mut Transaction, product: &Records) -> Result<Option<Arc<str>>> {
+    Ok(match product.cell(tx, "description_purchase").await? {
+        Cell::Str(text) if !text.trim().is_empty() => Some(text),
+        _ => None,
+    })
+}
+
+/// The product's vendor taxes that belong to `company` or a parent of it
+/// (fiscal positions come with the order defaults slice).
+async fn vendor_taxes(
+    tx: &mut Transaction,
+    env: &Env,
+    product: &Records,
+    company: i64,
+) -> Result<Vec<RecId>> {
+    let proposed: Vec<i64> = match product.cell(tx, "supplier_taxes_id").await? {
+        Cell::Ids(ids) => ids
+            .iter()
+            .filter_map(|id| id.as_real().map(|id| id.get()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    if proposed.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(env
+        .records("account.tax")?
+        .search(
+            tx,
+            &Domain::and([
+                Domain::condition("id", Operator::In, proposed)?,
+                Domain::condition("company_id", Operator::ParentOf, company)?,
+            ]),
+        )
+        .await?
+        .ids()
+        .into_iter()
+        .filter_map(RecId::from_real)
+        .collect())
+}
+
+/// Prices line `id` again from its current product, quantity and unit.
+async fn reprice_line(tx: &mut Transaction, env: &Env, head: &OrderHead, id: i64) -> Result<()> {
+    let line = env.records("purchase.order.line")?.browse([id])?;
+    let Some(product) = id_of(Some(&line.cell(tx, "product_id").await?), "product_id")? else {
+        return Ok(());
+    };
+    let Some(unit) = id_of(Some(&line.cell(tx, "uom_id").await?), "uom_id")? else {
+        return Ok(());
+    };
+    let quantity = amount(&line.cell(tx, "product_qty").await?, "product_qty")?;
+    let (price, discount, row, _) = price_of(tx, env, head, product, quantity, unit).await?;
+    line.write_base(
+        tx,
+        RawVals::new()
+            .set_cell("price_unit", Cell::Decimal(price))
+            .set_cell("technical_price_unit", Cell::Decimal(price))
+            .set_cell("discount", Cell::Decimal(discount))
+            .set_cell("selected_seller_id", row.map_or(Cell::Null, Cell::Id)),
+    )
+    .await
+}
+
+/// The taxes of `ids` as the tax computation takes them. A group of taxes waits for
+/// [`TAX_CHILDREN_TASK`] and a tax with a negative factor (reverse charge) for [`KERNEL_TASK`],
+/// both refused as on invoices; other unsupported kinds are refused by the computation.
+async fn load_taxes(
+    tx: &mut Transaction,
+    env: &Env,
+    ids: &BTreeSet<i64>,
+) -> Result<BTreeMap<i64, TaxDef>> {
+    if ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let taxes = env.records("account.tax")?.browse(ids.iter().copied())?;
+    let mut columns = BTreeMap::new();
+    for field in [
+        "name",
+        "amount_type",
+        "amount",
+        "sequence",
+        "price_include",
+        "include_base_amount",
+        "is_base_affected",
+        "has_negative_factor",
+    ] {
+        columns.insert(field, taxes.cells(tx, field).await?);
+    }
+    let mut defs = BTreeMap::new();
+    for (i, id) in taxes.ids().into_iter().enumerate() {
+        let cell = |field: &str| -> Result<Cell> {
+            columns
+                .get(field)
+                .and_then(|c| c.get(i))
+                .cloned()
+                .ok_or_else(|| Error::invariant(format!("tax column {field} is short")))
+        };
+        let flag = |field: &str| -> Result<bool> { Ok(matches!(cell(field)?, Cell::Bool(true))) };
+        let name = || -> Result<String> {
+            Ok(match cell("name")? {
+                Cell::Str(name) => name.to_string(),
+                _ => format!("#{id}"),
+            })
+        };
+        let kind = match cell("amount_type")? {
+            Cell::Str(kind) if kind.as_ref() == "group" => {
+                return Err(Error::user(format!(
+                    "Tax {} is a group of taxes: groups need their child taxes, which come \
+                     with task {TAX_CHILDREN_TASK}.",
+                    name()?
+                )));
+            }
+            Cell::Str(kind) => AmountType::parse(&kind)?,
+            other => return Err(Error::invariant(format!("tax {id} amount type {other:?}"))),
+        };
+        if flag("has_negative_factor")? {
+            return Err(Error::user(format!(
+                "Tax {} has a negative distribution (reverse charge), which comes with task \
+                 {KERNEL_TASK}.",
+                name()?
+            )));
+        }
+        defs.insert(
+            id,
+            TaxDef {
+                id,
+                sequence: match cell("sequence")? {
+                    Cell::Int(seq) => seq,
+                    _ => {
+                        return Err(Error::validation(format!(
+                            "Tax {} has no sequence; give it one.",
+                            match cell("name")? {
+                                Cell::Str(name) => name.to_string(),
+                                _ => format!("#{id}"),
+                            }
+                        )));
+                    }
+                },
+                kind: TaxKind::Simple(kind),
+                amount: amount(&cell("amount")?, "amount")?,
+                price_include: flag("price_include")?,
+                include_base_amount: flag("include_base_amount")?,
+                is_base_affected: flag("is_base_affected")?,
+            },
+        );
+    }
+    Ok(defs)
+}
+
+/// Writes subtotal, tax, total and the quantity in the product unit of `lines`, then the totals
+/// of their orders.
+async fn sync_lines(tx: &mut Transaction, env: &Env, lines: &Records) -> Result<()> {
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let sudo = env.sudo(true);
+    let lines = sudo.records("purchase.order.line")?.browse(lines.ids())?;
+    let mut columns = BTreeMap::new();
+    for field in [
+        "order_id",
+        "product_id",
+        "product_qty",
+        "uom_id",
+        "price_unit",
+        "discount",
+        "tax_ids",
+        "currency_id",
+    ] {
+        columns.insert(field, lines.cells(tx, field).await?);
+    }
+    let get = |field: &str, i: usize| -> Cell {
+        columns
+            .get(field)
+            .and_then(|c| c.get(i))
+            .cloned()
+            .unwrap_or(Cell::Null)
+    };
+    let ids = lines.ids();
+    let mut tax_ids = BTreeSet::new();
+    let mut currencies = BTreeSet::new();
+    let mut orders = BTreeSet::new();
+    for i in 0..ids.len() {
+        if let Cell::Ids(taxes) = get("tax_ids", i) {
+            tax_ids.extend(taxes.iter().filter_map(|t| t.as_real().map(|t| t.get())));
+        }
+        if let Some(currency) = id_of(Some(&get("currency_id", i)), "currency_id")? {
+            currencies.insert(currency);
+        }
+        if let Some(order) = id_of(Some(&get("order_id", i)), "order_id")? {
+            orders.insert(order);
+        }
+    }
+    let defs = load_taxes(tx, &sudo, &tax_ids).await?;
+    let currency_ids: Vec<RecId> = currencies
+        .iter()
+        .filter_map(|c| RecId::from_real(*c))
+        .collect();
+    let table = RoundingTable::load(&sudo, tx, &currency_ids).await?;
+    let digits =
+        erp_addon_base::decimal_precision::precision_get(&sudo, tx, "Product Unit").await?;
+    let qty_precision = Increment::from_places(digits)?;
+    for (i, id) in ids.iter().enumerate() {
+        let currency = id_of(Some(&get("currency_id", i)), "currency_id")?
+            .and_then(RecId::from_real)
+            .ok_or_else(|| Error::invariant(format!("purchase order line {id} has no currency")))?;
+        let taxes: Vec<TaxDef> = match get("tax_ids", i) {
+            Cell::Ids(taxes) => taxes
+                .iter()
+                .filter_map(|t| t.as_real().and_then(|t| defs.get(&t.get())).cloned())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let quantity = amount(&get("product_qty", i), "product_qty")?;
+        let result = compute::compute(&BaseLine {
+            price_unit: amount(&get("price_unit", i), "price_unit")?,
+            quantity,
+            discount: amount(&get("discount", i), "discount")?,
+            taxes: &taxes,
+            increment: table.get(currency)?.increment(),
+        })?;
+        let tax = result.total_included - result.total_excluded;
+        let in_product_unit = product_quantity(
+            tx,
+            &sudo,
+            &get("product_id", i),
+            &get("uom_id", i),
+            quantity,
+            &qty_precision,
+        )
+        .await?;
+        sudo.records("purchase.order.line")?
+            .browse([*id])?
+            .write_base(
+                tx,
+                RawVals::new()
+                    .set_cell("price_subtotal", Cell::Decimal(result.total_excluded))
+                    .set_cell("price_tax", Cell::Decimal(tax))
+                    .set_cell("price_total", Cell::Decimal(result.total_included))
+                    .set_cell("product_uom_qty", Cell::Decimal(in_product_unit)),
+            )
+            .await?;
+    }
+    sync_orders(tx, env, &orders).await
+}
+
+/// `quantity` in `unit` expressed in the product's unit, rounded up at Product Unit precision.
+async fn product_quantity(
+    tx: &mut Transaction,
+    env: &Env,
+    product: &Cell,
+    unit: &Cell,
+    quantity: Decimal,
+    precision: &Increment,
+) -> Result<Decimal> {
+    let (Some(product), Some(unit)) = (
+        id_of(Some(product), "product_id")?,
+        id_of(Some(unit), "uom_id")?,
+    ) else {
+        return Ok(quantity);
+    };
+    let main = id_of(
+        Some(
+            &env.records("product.product")?
+                .browse([product])?
+                .cell(tx, "uom_id")
+                .await?,
+        ),
+        "uom_id",
+    )?
+    .unwrap_or(unit);
+    if main == unit {
+        return Ok(quantity);
+    }
+    let source = load_unit(env, tx, unit).await?;
+    let target = load_unit(env, tx, main).await?;
+    Ok(quantity_rounded(
+        &source,
+        &target,
+        quantity,
+        precision,
+        RoundingMode::AwayFromZero,
+    )?)
+}
+
+/// Writes the untaxed amount, taxes, total, total in the company currency and earliest planned
+/// date of `orders` from their lines. Taxes are rounded
+/// per line, the only rounding the tax computation has (the company choice comes with
+/// `erp_addon_account::tax::compute::ROUNDING_TASK`).
+pub(crate) async fn sync_orders(
+    tx: &mut Transaction,
+    env: &Env,
+    orders: &BTreeSet<i64>,
+) -> Result<()> {
+    if orders.is_empty() {
+        return Ok(());
+    }
+    let sudo = env.sudo(true);
+    let ids: Vec<i64> = orders.iter().copied().collect();
+    let lines = sudo
+        .records("purchase.order.line")?
+        .search(
+            tx,
+            &Domain::condition("order_id", Operator::In, ids.clone())?,
+        )
+        .await?;
+    let owners = lines.cells(tx, "order_id").await?;
+    let subtotals = lines.cells(tx, "price_subtotal").await?;
+    let taxes = lines.cells(tx, "price_tax").await?;
+    let dates = lines.cells(tx, "date_planned").await?;
+    let mut sums: BTreeMap<i64, (Decimal, Decimal, Option<DateTime>)> = ids
+        .iter()
+        .map(|id| (*id, (Decimal::ZERO, Decimal::ZERO, None)))
+        .collect();
+    for i in 0..owners.len() {
+        let Some(order) = id_of(owners.get(i), "order_id")? else {
+            continue;
+        };
+        let entry = sums
+            .entry(order)
+            .or_insert((Decimal::ZERO, Decimal::ZERO, None));
+        entry.0 += amount(subtotals.get(i).unwrap_or(&Cell::Null), "price_subtotal")?;
+        entry.1 += amount(taxes.get(i).unwrap_or(&Cell::Null), "price_tax")?;
+        if let Some(Cell::DateTime(at)) = dates.get(i) {
+            entry.2 = Some(entry.2.map_or(*at, |seen: DateTime| seen.min(*at)));
+        }
+    }
+    let records = sudo
+        .records("purchase.order")?
+        .browse(ids.iter().copied())?;
+    let companies = records.cells(tx, "company_id").await?;
+    let currencies = records.cells(tx, "currency_id").await?;
+    let deadlines = records.cells(tx, "date_order").await?;
+    for (i, id) in ids.iter().enumerate() {
+        let (untaxed, tax, earliest) = sums[id];
+        let total = untaxed + tax;
+        let company = id_of(companies.get(i), "company_id")?.and_then(RecId::from_real);
+        let currency = id_of(currencies.get(i), "currency_id")?.and_then(RecId::from_real);
+        let (Some(company), Some(currency)) = (company, currency) else {
+            return Err(Error::invariant(format!(
+                "purchase order {id} has no company or currency"
+            )));
+        };
+        let deadline = match deadlines.get(i) {
+            Some(Cell::DateTime(at)) => Some(*at),
+            _ => None,
+        };
+        let total_cc = in_company_currency(tx, &sudo, total, currency, company, deadline).await?;
+        sudo.records("purchase.order")?
+            .browse([*id])?
+            .write_base(
+                tx,
+                RawVals::new()
+                    .set_cell("amount_untaxed", Cell::Decimal(untaxed))
+                    .set_cell("amount_tax", Cell::Decimal(tax))
+                    .set_cell("amount_total", Cell::Decimal(total))
+                    .set_cell("amount_total_cc", Cell::Decimal(total_cc))
+                    .set_cell("date_planned", earliest.map_or(Cell::Null, Cell::DateTime)),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// `total` in `currency` expressed in the currency of `company` at the deadline's date (today
+/// without one), with the rates of that company (BUG-132).
+pub(crate) async fn in_company_currency(
+    tx: &mut Transaction,
+    env: &Env,
+    total: Decimal,
+    currency: RecId,
+    company: RecId,
+    deadline: Option<DateTime>,
+) -> Result<Decimal> {
+    let company_currency = id_of(
+        Some(
+            &env.records("res.company")?
+                .browse([company.get()])?
+                .cell(tx, "currency_id")
+                .await?,
+        ),
+        "currency_id",
+    )?
+    .and_then(RecId::from_real)
+    .ok_or_else(|| Error::invariant(format!("company {company:?} has no currency")))?;
+    if company_currency == currency {
+        return Ok(total);
+    }
+    let date = deadline.map_or_else(Date::today, |at| at.date());
+    convert(env, tx, total, currency, company_currency, company, date).await
+}
+
+/// The lines of `orders` priced again in their (changed) currency, deadline or company.
+pub(crate) async fn resync_orders(
+    tx: &mut Transaction,
+    env: &Env,
+    orders: &BTreeSet<i64>,
+) -> Result<()> {
+    let ids: Vec<i64> = orders.iter().copied().collect();
+    let lines = env
+        .sudo(true)
+        .records("purchase.order.line")?
+        .search(tx, &Domain::condition("order_id", Operator::In, ids)?)
+        .await?;
+    if lines.is_empty() {
+        return sync_orders(tx, env, orders).await;
+    }
+    sync_lines(tx, env, &lines).await
+}
+
+/// The orders of `orders` that have a line without a product, by number.
+pub(crate) async fn orders_without_product(
+    tx: &mut Transaction,
+    env: &Env,
+    orders: &[i64],
+) -> Result<BTreeSet<i64>> {
+    let lines = env
+        .sudo(true)
+        .records("purchase.order.line")?
+        .search(
+            tx,
+            &Domain::and([
+                Domain::condition("order_id", Operator::In, orders.to_vec())?,
+                Domain::condition("product_id", Operator::Eq, false)?,
+            ]),
+        )
+        .await?;
+    Ok(line_orders(tx, &lines).await?.into_values().collect())
+}

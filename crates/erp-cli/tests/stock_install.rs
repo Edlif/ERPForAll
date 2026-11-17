@@ -42,6 +42,9 @@ mod upgrade_from_main;
 #[path = "stock_install/policy_migration_utc.rs"]
 mod policy_migration_utc;
 
+#[path = "stock_install/warehouse_setup.rs"]
+mod warehouse_setup;
+
 fn system(db: &TestDb) -> ModuleSystem {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(
@@ -148,9 +151,9 @@ fn stock_installs_its_default_topology_records() {
             "locations without policy row: {unguarded:?}"
         );
 
+        // none of these ship outside demo data; each company's warehouse and its operation types
+        // are checked by `install_defaults::STOCK` above
         for table in [
-            "stock_warehouse",
-            "stock_picking_type",
             "stock_rule",
             "stock_storage_category",
             "stock_package_type",

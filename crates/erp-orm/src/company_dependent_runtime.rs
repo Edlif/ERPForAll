@@ -93,7 +93,10 @@ pub(crate) struct State {
 }
 
 /// The board task that lifts a refusal of this module's callers. Each refusal names its own
-/// task, so the ids exist once, here.
+/// task; the ids of this crate's refusals exist once, here. Two refusals of crates below this one
+/// carry their task id in their own message (`erp-registry`, the declaration refusal in
+/// `compose.rs`; `erp-sql`, the keyset refusal in `keyset.rs`:
+/// ); a test pins each of those messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Owner {
     Upsert,

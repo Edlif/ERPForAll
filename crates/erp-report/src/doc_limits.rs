@@ -34,65 +34,65 @@ impl LimitKind {
     ];
     /// The kind whose `Display` text is `name`.
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.to_string() == name)
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
     fn index(self) -> usize {
         self as usize
     }
-    fn ceiling(self) -> usize {
-        [
-            500_000,
-            64 * 1024 * 1024,
-            32,
-            10 * 1024 * 1024,
-            40_000_000,
-            5_000,
-            256 * 1024 * 1024,
-            64,
-            20 * 1024 * 1024,
-            4,
-        ][self.index()]
+    /// The hard bound of the kind, which is also its default: a host can only lower it.
+    const fn ceiling(self) -> usize {
+        match self {
+            Self::Nodes => 500_000,
+            Self::Bytes => 64 * 1024 * 1024,
+            Self::Depth => 32,
+            Self::ImageBytes => 10 * 1024 * 1024,
+            Self::ImagePixels => 40_000_000,
+            Self::Pages => 5_000,
+            Self::PdfBytes => 256 * 1024 * 1024,
+            Self::EvictionInterval => 64,
+            Self::FontBytes => 20 * 1024 * 1024,
+            Self::WorkerThreads => 4,
+        }
+    }
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Nodes => "nodes",
+            Self::Bytes => "bytes",
+            Self::Depth => "depth",
+            Self::ImageBytes => "image_bytes",
+            Self::ImagePixels => "image_pixels",
+            Self::Pages => "pages",
+            Self::PdfBytes => "pdf_bytes",
+            Self::EvictionInterval => "eviction_interval",
+            Self::FontBytes => "font_bytes",
+            Self::WorkerThreads => "worker_threads",
+        }
     }
 }
+// `ALL` is in discriminant order, so `values[kind as usize]` is the value of `kind`.
+const _: () = {
+    let mut i = 0;
+    while i < LimitKind::ALL.len() {
+        assert!(LimitKind::ALL[i] as usize == i);
+        i += 1;
+    }
+};
 impl fmt::Display for LimitKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(
-            [
-                "nodes",
-                "bytes",
-                "depth",
-                "image_bytes",
-                "image_pixels",
-                "pages",
-                "pdf_bytes",
-                "eviction_interval",
-                "font_bytes",
-                "worker_threads",
-            ][self.index()],
-        )
+        f.write_str(self.name())
     }
 }
 /// Positive admission limits, never a switch for unlimited rendering.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Limits {
-    values: [usize; 10],
+    /// One value per kind, in the order of [`LimitKind::ALL`].
+    values: [usize; LimitKind::ALL.len()],
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            values: [
-                500_000,
-                64 * 1024 * 1024,
-                32,
-                10 * 1024 * 1024,
-                40_000_000,
-                5_000,
-                256 * 1024 * 1024,
-                64,
-                20 * 1024 * 1024,
-                4,
-            ],
+            values: LimitKind::ALL.map(LimitKind::ceiling),
         }
     }
 }
