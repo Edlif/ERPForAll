@@ -250,3 +250,13 @@ test("a column measured on a placeholder is measured again when its cell content
  expect(widths.get("amount")).toBe(100);again.querySelector("td span")!.textContent="$ 14,250.00";
  await frame();await frame();expect(widths.get("amount")).toBe(120);
 });
+test("a measured content width is rounded up, never down",async()=>{
+ const widths=new Map<string,number>(),host=document.createElement("div");document.body.append(host);
+ Object.defineProperty(host,"clientWidth",{configurable:true,value:400});
+ const t=document.createElement("table");t.innerHTML='<thead><tr><th>Name</th><th>Amount</th></tr></thead><tbody><tr class="x2many-row"><td>A line</td><td>$ 3,400.00</td></tr></tbody>';host.append(t);
+ const [name,amount]=[...t.querySelectorAll("th")];
+ vi.spyOn(name!,"getBoundingClientRect").mockReturnValue({width:200} as DOMRect);vi.spyOn(amount!,"getBoundingClientRect").mockReturnValue({width:100.4} as DOMRect);
+ resizeColumns(t,[{name:"name",label:"Name"},{name:"amount",label:"Amount",kind:"monetary"}],widths,{selector:false,actions:false});
+ await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
+ expect(widths.get("amount")).toBe(101);
+});

@@ -480,6 +480,8 @@ async function journalsPage(actionRef: () => Response | Promise<Response>) {
     if (method === "get_views") return reply(model === "t.move" ? moves : journals);
     if (method === "fields_get") return reply({ name: { string: "Name", type: "char", groupable: true } });
     if (method === "web_search_read") return reply(model === "t.move" ? { length: 0, records: [] } : { length: 1, records: [{ id: 5, name: "Customer Invoices", dashboard: json() }] });
+    if (method === "default_get") return reply({ name: "" });
+    if (method === "onchange") return reply({ value: {} });
     if (model === "res.currency" && method === "web_read") return reply([{ id: 12, symbol: "Rp", position: "before", decimal_places: 2 }]);
     return reply([]);
   }));
@@ -493,6 +495,16 @@ async function journalsPage(actionRef: () => Response | Promise<Response>) {
 }
 const invoices = () => reply({ wire_major: 1, id: 30, name: "Invoices", model: "t.move", target: "current", views: [{ id: 12, type: "list" }, { id: 13, type: "form" }], domain: null, context: null });
 const settled = () => new Promise(resolve => setTimeout(resolve, 30));
+
+test("a card button that opens a form names the dashboard once: the back link is the way back to it", async () => {
+  const page = await journalsPage(invoices);
+  [...page.root.querySelectorAll<HTMLButtonElement>(".kanban-card button")].find(node => node.textContent?.trim() === "New Invoice")!.click();
+  await vi.waitFor(() => expect(page.root.querySelector(".breadcrumb-back")).not.toBeNull());
+  expect(new URL(window.location.href).searchParams.get("view_type")).toBe("form");
+  // The trail is [dashboard, record]: the back link already leads to the origin, so no second crumb names it.
+  expect(page.root.querySelector(".breadcrumb-back")!.textContent).toBe("Journals");
+  expect(page.root.querySelector(".breadcrumb-origin")).toBeNull();
+});
 
 test("a figure activated twice while its action is read opens its list once", async () => {
   const answers: ((response: Response) => void)[] = [];

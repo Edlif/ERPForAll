@@ -199,6 +199,16 @@ pub struct ProductTemplate {
     pub seller_ids: Vec<RecId>,
 }
 
+/// The stored row a template stands for, as a domain operand: its own id, its origin for the
+/// in-memory record of a form's onchange, none for a template not saved yet.
+fn row_of(id: &RecId) -> Vec<i64> {
+    id.as_real()
+        .or(id.origin())
+        .map(|id| id.get())
+        .into_iter()
+        .collect()
+}
+
 #[methods(ProductTemplate, addon = "product")]
 impl ProductTemplate {
     /// Template labels preserve the caller's code-display preferences.
@@ -503,7 +513,7 @@ impl ProductTemplate {
         let prod_model = this.env().records("product.product")?;
 
         for (index, tmpl_id) in ids.iter().enumerate() {
-            let domain = Domain::condition("product_tmpl_id", Operator::Eq, tmpl_id.get())?;
+            let domain = Domain::condition("product_tmpl_id", Operator::In, row_of(tmpl_id))?;
             let variants = prod_model.search(tx, &domain).await?;
             let first = variants.rec_ids().first().copied();
             out.set(index, ProductTemplate::PRODUCT_VARIANT_ID, first)?;
@@ -521,7 +531,7 @@ impl ProductTemplate {
         let prod_model = this.env().records("product.product")?;
 
         for (index, tmpl_id) in ids.iter().enumerate() {
-            let domain = Domain::condition("product_tmpl_id", Operator::Eq, tmpl_id.get())?;
+            let domain = Domain::condition("product_tmpl_id", Operator::In, row_of(tmpl_id))?;
             let count = prod_model.search_count(tx, &domain, None).await?;
             let count = i32::try_from(count).map_err(|_| {
                 Error::programming(format!("variant count {count} does not fit an i32"))
@@ -556,7 +566,7 @@ impl ProductTemplate {
     ) -> Result<()> {
         let prod_model = this.env().records("product.product")?;
         for (index, tmpl_id) in this.as_records().rec_ids().iter().enumerate() {
-            let domain = Domain::condition("product_tmpl_id", Operator::Eq, tmpl_id.get())?;
+            let domain = Domain::condition("product_tmpl_id", Operator::In, row_of(tmpl_id))?;
             let variants = prod_model.search(tx, &domain).await?;
             if let Some(first_id) = variants.rec_ids().first() {
                 // through Hook N6: a valuation addon may supply the cost of the variant
@@ -638,7 +648,7 @@ impl ProductTemplate {
             .records("product.product")?
             .with_context([("active_test", Value::Bool(false))]);
         for (index, tmpl_id) in this.as_records().rec_ids().iter().enumerate() {
-            let domain = Domain::condition("product_tmpl_id", Operator::Eq, tmpl_id.get())?;
+            let domain = Domain::condition("product_tmpl_id", Operator::In, row_of(tmpl_id))?;
             let variants = prod_model.search(tx, &domain).await?;
             if variants.len() == 1 {
                 let bc = match variants.cell(tx, "barcode").await? {
@@ -685,7 +695,7 @@ impl ProductTemplate {
     ) -> Result<()> {
         let prod_model = this.env().records("product.product")?;
         for (index, tmpl_id) in this.as_records().rec_ids().iter().enumerate() {
-            let domain = Domain::condition("product_tmpl_id", Operator::Eq, tmpl_id.get())?;
+            let domain = Domain::condition("product_tmpl_id", Operator::In, row_of(tmpl_id))?;
             let variants = prod_model.search(tx, &domain).await?;
             if variants.len() == 1 {
                 let dc = match variants.cell(tx, "default_code").await? {

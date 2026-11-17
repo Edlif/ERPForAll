@@ -20,6 +20,11 @@ use erp_sdk::{Command, ErrorKind, SUPERUSER_ID};
 
 /// A bank journal created through the ORM, with an outstanding account on both method lines.
 async fn bank_journal(tx: &mut Transaction, company: i64, code: &str) -> i64 {
+    money_journal(tx, company, code, "bank").await
+}
+
+/// A bank or cash journal (`kind`), with an outstanding account on both method lines.
+async fn money_journal(tx: &mut Transaction, company: i64, code: &str, kind: &str) -> i64 {
     let cash = account(tx, company, &format!("10{code}"), "asset_cash").await;
     let outstanding = account(tx, company, &format!("11{code}"), "asset_current").await;
     let id = tx
@@ -34,7 +39,7 @@ async fn bank_journal(tx: &mut Transaction, company: i64, code: &str) -> i64 {
                 RawVals::new()
                     .set_cell("name", text(code))
                     .set_cell("code", text(code))
-                    .set_cell("type", text("bank"))
+                    .set_cell("type", text(kind))
                     .set_cell("company_id", Cell::Id(company))
                     .set_cell("default_account_id", Cell::Id(cash)),
             ],
@@ -54,7 +59,7 @@ async fn bank_journal(tx: &mut Transaction, company: i64, code: &str) -> i64 {
     assert_eq!(
         lines.len(),
         2,
-        "a new bank journal has its two manual lines"
+        "a new money journal has its two manual lines"
     );
     lines
         .write(
@@ -814,6 +819,599 @@ async fn instalment_body() {
     );
     assert_eq!(string(&invoice, &mut tx, "payment_state").await, "paid");
     tx.rollback().await.unwrap();
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+struct Host;
+impl erp_rpc::RpcHost for Host {
+    fn language_active(&self, code: &str) -> Result<bool> {
+        Ok(code == "en_US")
+    }
+    fn has_capability(&self, _: &erp_orm::Principal, _: &erp_orm::Capability) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+/// One JSON-2 call as the web client sends it; the status and the parsed body.
+async fn json2(
+    service: &erp_rpc::RpcService,
+    principal: &erp_orm::Principal,
+    path: &str,
+    args: Json,
+) -> (u16, Json) {
+    let response = service
+        .call(erp_rpc::RpcCall::json2(
+            &format!("/json/2/{path}"),
+            erp_sdk::serde_json::to_vec(&args).unwrap(),
+            erp_rpc::Caller::Principal(principal.clone()),
+        ))
+        .await;
+    let body = erp_sdk::serde_json::from_slice(response.body())
+        .unwrap_or_else(|_| Json::String(String::from_utf8_lossy(response.body()).into_owned()));
+    (response.status(), body)
+}
+
+async fn json2_ok(
+    service: &erp_rpc::RpcService,
+    principal: &erp_orm::Principal,
+    path: &str,
+    args: Json,
+) -> Json {
+    let (status, body) = json2(service, principal, path, args).await;
+    assert_eq!(status, 200, "{path}: {body}");
+    body
+}
+
+/// A many2one as an onchange answers it: `{id, display_name}` or a bare id.
+fn id_of(value: &Json) -> i64 {
+    value
+        .get("id")
+        .unwrap_or(value)
+        .as_i64()
+        .unwrap_or_else(|| panic!("a record id, not {value}"))
+}
+
+/// What the dialog must show for some documents.
+struct Expected {
+    due: f64,
+    partner: i64,
+    payment_type: &'static str,
+    /// What the user enters before Pay; `None`: the dialog is saved as it was shown.
+    entered: Option<Entered>,
+}
+
+/// The amount, journal (its first method line of the direction is chosen) and memo a user enters.
+struct Entered {
+    amount: f64,
+    journal: i64,
+    memo: &'static str,
+}
+
+/// The first method line of `journal` for `direction`, as the dialog's compute picks it.
+async fn line_of(tx: &mut Transaction, journal: i64, direction: &str) -> i64 {
+    tx.query(
+        "SELECT id::int8 FROM account_payment_method_line WHERE journal_id = $1 \
+         AND payment_type = $2 ORDER BY id LIMIT 1",
+        &[&journal, &direction],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+/// A company's id and currency for `doc`'s company.
+async fn company_of(tx: &mut Transaction, doc: i64) -> (i64, i64) {
+    let row = &tx
+        .query(
+            "SELECT c.id::int8, c.currency_id::int8 FROM res_company c JOIN account_move m \
+             ON m.company_id = c.id WHERE m.id = $1",
+            &[&doc],
+        )
+        .await
+        .unwrap()[0];
+    (row.get(0), row.get(1))
+}
+
+/// The dialog's first onchange as the client sends it on a new record with `context`.
+fn first_onchange(context: &Json) -> Json {
+    let relation = erp_sdk::serde_json::json!({"fields": {"display_name": {}}});
+    erp_sdk::serde_json::json!({
+        "ids": [], "values": {}, "field_names": [], "context": context,
+        "fields_spec": {
+            "journal_id": relation, "payment_method_line_id": relation, "partner_id": relation,
+            "group_payment": {}, "amount_due": {}, "amount": {}, "currency_id": relation,
+            "payment_type": {}, "company_id": relation, "payment_date": {}, "communication": {},
+            "single_payment": {}, "invoice_ids": relation,
+        },
+    })
+}
+
+/// The Register Payment button pressed on `docs` the way the web client presses it: the button's
+/// action, normalized; the first onchange of a new dialog with the action's context and no id; an
+/// onchange of the amount; the dialog saved with what the user entered (or what it showed); Pay;
+/// the answer normalized. The documents are paid, in part when a smaller amount was entered.
+async fn client_pays(
+    service: &erp_rpc::RpcService,
+    principal: &erp_orm::Principal,
+    orm: &erp_sdk::Orm,
+    docs: &[i64],
+    bank: i64,
+    expected: Expected,
+) {
+    use erp_sdk::serde_json::json;
+    let opened = json2_ok(
+        service,
+        principal,
+        "account.move/action_register_payment",
+        json!({"ids": docs}),
+    )
+    .await;
+    let normalized = json2_ok(
+        service,
+        principal,
+        "account.payment.register/erp_normalize_action_result",
+        json!({"wire_major": 1, "result": opened}),
+    )
+    .await;
+    let window = &normalized["result"];
+    assert_eq!(window["kind"], "window", "{normalized}");
+    assert_eq!(window["model"], "account.payment.register", "{normalized}");
+    assert_eq!(window["res_id"], Json::Null, "a new dialog: {normalized}");
+    let context = window["context"].clone();
+    assert_eq!(
+        context["default_invoice_ids"],
+        json!([[6, 0, docs]]),
+        "{normalized}"
+    );
+
+    let (status, shown) = json2(
+        service,
+        principal,
+        "account.payment.register/onchange",
+        first_onchange(&context),
+    )
+    .await;
+    assert_eq!(status, 200, "the dialog's first onchange: {shown}");
+    let value = &shown["value"];
+    assert_eq!(value["amount_due"].as_f64(), Some(expected.due), "{shown}");
+    assert_eq!(value["amount"].as_f64(), Some(expected.due), "{shown}");
+    assert_eq!(id_of(&value["partner_id"]), expected.partner, "{shown}");
+    assert_eq!(value["payment_type"], expected.payment_type, "{shown}");
+    assert_eq!(id_of(&value["journal_id"]), bank, "{shown}");
+    assert_eq!(value["single_payment"], true, "{shown}");
+    let line = id_of(&value["payment_method_line_id"]);
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let row = tx
+        .query(
+            "SELECT journal_id::int8, payment_type::text FROM account_payment_method_line \
+             WHERE id = $1",
+            &[&line],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        row[0].get::<_, i64>(0),
+        bank,
+        "the method line of the journal"
+    );
+    assert_eq!(row[0].get::<_, String>(1), expected.payment_type);
+    let (company, currency) = company_of(&mut tx, docs[0]).await;
+    assert_eq!(id_of(&value["company_id"]), company, "{shown}");
+    assert_eq!(id_of(&value["currency_id"]), currency, "{shown}");
+    // what the user enters, else what the dialog showed
+    let (amount, journal, memo) = match &expected.entered {
+        Some(e) => (json!(e.amount), e.journal, json!(e.memo)),
+        None => (
+            value["amount"].clone(),
+            bank,
+            value["communication"].clone(),
+        ),
+    };
+    let line = if journal == bank {
+        line
+    } else {
+        line_of(&mut tx, journal, expected.payment_type).await
+    };
+    tx.rollback().await.unwrap();
+
+    // the client's onchange when the user edits the amount: the whole form, one changed field
+    let mut form = value.as_object().unwrap().clone();
+    for name in [
+        "journal_id",
+        "payment_method_line_id",
+        "partner_id",
+        "currency_id",
+        "company_id",
+    ] {
+        form.insert(name.to_owned(), json!(id_of(&value[name])));
+    }
+    form.insert("invoice_ids".to_owned(), json!([[6, 0, docs]]));
+    form.insert("amount".to_owned(), amount.clone());
+    let (status, edited) = json2(
+        service,
+        principal,
+        "account.payment.register/onchange",
+        json!({"ids": [], "values": form, "field_names": ["amount"],
+               "fields_spec": first_onchange(&context)["fields_spec"], "context": context}),
+    )
+    .await;
+    assert_eq!(status, 200, "the onchange of the amount: {edited}");
+    if let Some(answered) = edited["value"].get("amount") {
+        assert_eq!(answered, &amount, "the edited amount stays: {edited}");
+    }
+
+    // the form saves (writable fields; the payment date moved into the open year)
+    let saved = json2_ok(
+        service,
+        principal,
+        "account.payment.register/web_save",
+        json!({
+            "ids": [],
+            "vals": {
+                "journal_id": journal, "payment_method_line_id": line,
+                "group_payment": value["group_payment"], "amount": amount,
+                "payment_date": "2024-03-01", "communication": memo,
+                "invoice_ids": [[6, 0, docs]],
+            },
+            "specification": {"display_name": {}},
+            "context": context,
+        }),
+    )
+    .await;
+    let wizard = saved[0]["id"].as_i64().unwrap_or_else(|| panic!("{saved}"));
+    // the saved row holds what was entered, and the documents' company and currency
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let row = &tx
+        .query(
+            "SELECT company_id::int8, currency_id::int8, amount::float8, communication::text, \
+             journal_id::int8, payment_method_line_id::int8 FROM account_payment_register \
+             WHERE id = $1",
+            &[&wizard],
+        )
+        .await
+        .unwrap()[0];
+    let stored = (
+        row.get::<_, i64>(0),
+        row.get::<_, i64>(1),
+        json!(row.get::<_, f64>(2)),
+        json!(row.get::<_, String>(3)),
+        row.get::<_, i64>(4),
+        row.get::<_, i64>(5),
+    );
+    assert_eq!(
+        stored,
+        (
+            company,
+            currency,
+            json!(amount.as_f64().unwrap()),
+            memo.clone(),
+            journal,
+            line
+        ),
+        "the saved dialog row"
+    );
+    tx.rollback().await.unwrap();
+    let done = json2_ok(
+        service,
+        principal,
+        "account.payment.register/action_create_payments",
+        json!({"ids": [wizard], "context": context}),
+    )
+    .await;
+    // what Pay answers ends the dialog with a message: the client closes it and refreshes the
+    // document; it never reads the dialog row again (Pay deleted it)
+    let ended = json2_ok(
+        service,
+        principal,
+        "account.payment.register/erp_normalize_action_result",
+        json!({"wire_major": 1, "result": done}),
+    )
+    .await;
+    assert_eq!(ended["result"]["kind"], "notification", "{ended}");
+    assert_eq!(ended["result"]["then_close"], true, "{ended}");
+    assert_eq!(ended["result"]["level"], "success", "{ended}");
+
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let states: Vec<String> = tx
+        .query(
+            "SELECT payment_state::text FROM account_move WHERE id = ANY($1) ORDER BY id",
+            &[&docs],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    let paid = match &expected.entered {
+        Some(e) if e.amount < expected.due => "partial",
+        _ => "paid",
+    };
+    assert_eq!(states, vec![paid.to_owned(); docs.len()], "{docs:?}");
+    let payment = &tx
+        .query(
+            "SELECT amount::float8, journal_id::int8, payment_method_line_id::int8, memo::text \
+             FROM account_payment ORDER BY id DESC LIMIT 1",
+            &[],
+        )
+        .await
+        .unwrap()[0];
+    assert_eq!(
+        (
+            json!(payment.get::<_, f64>(0)),
+            payment.get::<_, i64>(1),
+            payment.get::<_, i64>(2),
+            json!(payment.get::<_, String>(3)),
+        ),
+        (json!(amount.as_f64().unwrap()), journal, line, memo),
+        "the registered payment"
+    );
+    let gone = tx
+        .query(
+            "SELECT 1 FROM account_payment_register WHERE id = $1",
+            &[&wizard],
+        )
+        .await
+        .unwrap();
+    assert!(gone.is_empty(), "a paid dialog is deleted");
+    tx.rollback().await.unwrap();
+}
+
+/// on a new record whose documents come from the button's context)
+/// through the client's calls)
+#[test]
+fn the_dialog_opens_and_pays_as_the_web_client_calls_it() {
+    big_stack(client_body);
+}
+
+async fn client_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.commit().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let b = books(&mut tx, company).await;
+    let bank = bank_journal(&mut tx, company, "BNK6").await;
+    let cash = money_journal(&mut tx, company, "CSH6", "cash").await;
+    let one = |r: Records| r.ids()[0];
+    let partly = one(posted_invoice(
+        &mut tx,
+        &b,
+        "out_invoice",
+        b.customer,
+        "1000",
+        d(2024, 1, 16),
+    )
+    .await);
+    let single = one(posted_invoice(
+        &mut tx,
+        &b,
+        "out_invoice",
+        b.customer,
+        "1000",
+        d(2024, 1, 10),
+    )
+    .await);
+    let first = one(posted_invoice(
+        &mut tx,
+        &b,
+        "out_invoice",
+        b.customer,
+        "300",
+        d(2024, 1, 11),
+    )
+    .await);
+    let second = one(posted_invoice(
+        &mut tx,
+        &b,
+        "out_invoice",
+        b.customer,
+        "200",
+        d(2024, 1, 12),
+    )
+    .await);
+    let invoice = one(posted_invoice(
+        &mut tx,
+        &b,
+        "out_invoice",
+        b.customer,
+        "1000",
+        d(2024, 1, 13),
+    )
+    .await);
+    let refund =
+        one(posted_invoice(&mut tx, &b, "out_refund", b.customer, "200", d(2024, 1, 14)).await);
+    let bill =
+        one(posted_invoice(&mut tx, &b, "in_invoice", b.vendor, "700", d(2024, 1, 15)).await);
+    let system = xml_id(&mut tx, "base", "group_system").await;
+    user(&mut tx, "client-pay-admin", company, &[system]).await;
+    let accounting = xml_id(&mut tx, "account", "group_account_user").await;
+    let accountant = user(&mut tx, "client-pay-accountant", company, &[accounting]).await;
+    tx.commit().await.unwrap();
+
+    let policy = policy_orm(&db, &orm).await;
+    // JSON-2 records audited calls; without the audit schema a write answers 503
+    let mut audit = policy
+        .begin_opts(
+            erp_orm::BeginOptions::new(SUPERUSER_ID)
+                .isolation(erp_orm::Isolation::ReadCommitted)
+                .on_primary(),
+        )
+        .await
+        .unwrap();
+    audit.install_audit_schema().await.unwrap();
+    audit.commit().await.unwrap();
+    let mut tx = policy
+        .begin(erp_orm::UserId::new(accountant).unwrap())
+        .await
+        .unwrap();
+    let principal = tx.env().principal().clone();
+    tx.rollback().await.unwrap();
+    let service = erp_rpc::RpcService::new(policy.clone(), Host, erp_rpc::RpcConfig::default());
+    let customer = |due| Expected {
+        due,
+        partner: b.customer,
+        payment_type: "inbound",
+        entered: None,
+    };
+    client_pays(
+        &service,
+        &principal,
+        &policy,
+        &[single],
+        bank,
+        customer(1000.0),
+    )
+    .await;
+    client_pays(
+        &service,
+        &principal,
+        &policy,
+        &[first, second],
+        bank,
+        customer(500.0),
+    )
+    .await;
+    client_pays(
+        &service,
+        &principal,
+        &policy,
+        &[invoice, refund],
+        bank,
+        customer(800.0),
+    )
+    .await;
+    let vendor = Expected {
+        due: 700.0,
+        partner: b.vendor,
+        payment_type: "outbound",
+        entered: None,
+    };
+    client_pays(&service, &principal, &policy, &[bill], bank, vendor).await;
+    // the user pays 400 of 1,000 in cash with a memo of their own
+    let entered = Expected {
+        entered: Some(Entered {
+            amount: 400.0,
+            journal: cash,
+            memo: "Deposit at the counter",
+        }),
+        ..customer(1000.0)
+    };
+    client_pays(&service, &principal, &policy, &[partly], bank, entered).await;
+    let mut tx = policy.begin(SUPERUSER_ID).await.unwrap();
+    let residual: f64 = tx
+        .query(
+            "SELECT amount_residual::float8 FROM account_move WHERE id = $1",
+            &[&partly],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(residual, 600.0, "the rest stays due");
+    tx.rollback().await.unwrap();
+    drop(service);
+    drop(policy);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// A dialog opened by an accountant of one company on a document of another company the caller
+/// cannot read: the onchange is refused as an access error that names the model, not the
+/// document; saving such a dialog is refused the same way.
+#[test]
+fn a_dialog_on_a_document_of_another_company_shows_nothing_of_it() {
+    big_stack(foreign_body);
+}
+
+async fn foreign_body() {
+    use erp_sdk::serde_json::json;
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    let second = other_company(&mut tx, company).await;
+    tx.commit().await.unwrap();
+    periods(&orm, company).await;
+    periods(&orm, second).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    bank_journal(&mut tx, company, "BNK1").await;
+    let theirs = books(&mut tx, second).await;
+    let foreign = posted_invoice(
+        &mut tx,
+        &theirs,
+        "out_invoice",
+        theirs.customer,
+        "900",
+        d(2024, 1, 10),
+    )
+    .await
+    .ids()[0];
+    let name = string(
+        &moves(&tx, second).browse([foreign]).unwrap(),
+        &mut tx,
+        "name",
+    )
+    .await;
+    let system = xml_id(&mut tx, "base", "group_system").await;
+    user(&mut tx, "foreign-pay-admin", company, &[system]).await;
+    let accounting = xml_id(&mut tx, "account", "group_account_user").await;
+    let accountant = user(&mut tx, "foreign-pay-accountant", company, &[accounting]).await;
+    tx.commit().await.unwrap();
+
+    let policy = policy_orm(&db, &orm).await;
+    let mut audit = policy
+        .begin_opts(
+            erp_orm::BeginOptions::new(SUPERUSER_ID)
+                .isolation(erp_orm::Isolation::ReadCommitted)
+                .on_primary(),
+        )
+        .await
+        .unwrap();
+    audit.install_audit_schema().await.unwrap();
+    audit.commit().await.unwrap();
+    let mut tx = policy
+        .begin(erp_orm::UserId::new(accountant).unwrap())
+        .await
+        .unwrap();
+    let principal = tx.env().principal().clone();
+    tx.rollback().await.unwrap();
+    let service = erp_rpc::RpcService::new(policy.clone(), Host, erp_rpc::RpcConfig::default());
+    let context = json!({"default_invoice_ids": [[6, 0, [foreign]]]});
+    let (status, shown) = json2(
+        &service,
+        &principal,
+        "account.payment.register/onchange",
+        first_onchange(&context),
+    )
+    .await;
+    assert_eq!(status, 403, "{shown}");
+    assert_eq!(shown["name"], "erp.exceptions.AccessError", "{shown}");
+    assert!(
+        !shown.to_string().contains(&name),
+        "the answer names the other company's document: {shown}"
+    );
+    let (status, refused) = json2(
+        &service,
+        &principal,
+        "account.payment.register/web_save",
+        json!({
+            "ids": [],
+            "vals": {"payment_date": "2024-03-01", "invoice_ids": [[6, 0, [foreign]]]},
+            "specification": {"display_name": {}},
+            "context": context,
+        }),
+    )
+    .await;
+    assert_ne!(
+        status, 200,
+        "a dialog on another company's document: {refused}"
+    );
+    assert!(
+        !refused.to_string().contains(&name),
+        "the refusal names the other company's document: {refused}"
+    );
+    drop(service);
+    drop(policy);
     drop(orm);
     db.cleanup().await.unwrap();
 }

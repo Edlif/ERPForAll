@@ -59,7 +59,7 @@ pub struct AccountPaymentRegister {
     #[field(
         many2one,
         comodel = "res.company",
-        compute = "_compute_from_documents",
+        compute = "_compute_company",
         store,
         string = "Company"
     )]
@@ -68,7 +68,7 @@ pub struct AccountPaymentRegister {
     #[field(
         many2one,
         comodel = "res.currency",
-        compute = "_compute_from_documents",
+        compute = "_compute_company",
         store,
         string = "Currency"
     )]
@@ -204,7 +204,8 @@ fn db(error: impl std::fmt::Display) -> Error {
 }
 
 /// Reads the documents of `moves` after the caller's read check, in id order: their facts and the
-/// receivable or payable account of their open items (`None` when they have several).
+/// receivable or payable account of their open items (`None` when they have several). In an
+/// onchange the dialog's documents are in-memory records: callers pass their origin.
 async fn documents(tx: &mut Transaction, moves: &Records) -> Result<Vec<Document>> {
     moves.check_access(tx, Operation::Read).await?;
     let ids = moves.ids();
@@ -427,8 +428,53 @@ fn plan(
 
 #[methods(AccountPaymentRegister, addon = "account")]
 impl AccountPaymentRegister {
-    /// Company, partner, direction, amount due, amount and memo from the documents. Lenient: what
+    /// The company of the first document and its currency. Read-only (a candidate compute): a
+    /// create that carries the amount is admitted instead of refused for an async currency. The
+    /// documents are linked after the INSERT, so this sees none then and the company and currency
+    /// arrive with the recompute after the link.
+    #[compute(candidate, depends = ["invoice_ids"])]
+    async fn _compute_company(
+        this: &RecordSet<AccountPaymentRegister>,
+        tx: &mut ReadTx<'_>,
+        out: &mut Assign<'_, AccountPaymentRegister>,
+    ) -> Result<()> {
+        let lists = tx.mapped(this, AccountPaymentRegister::INVOICE_IDS).await?;
+        for (i, list) in lists.into_iter().enumerate() {
+            // in an onchange the documents are in-memory records of their stored rows; the list is
+            // the x2many read, which leaves out the documents the caller's record rules hide
+            let ids: Vec<i64> = list
+                .iter()
+                .filter_map(|id| id.as_real().or(id.origin()))
+                .map(|id| id.get())
+                .collect();
+            let rows = tx
+                .query(
+                    "SELECT m.company_id::int8, co.currency_id::int8 FROM account_move m \
+                     JOIN res_company co ON co.id = m.company_id \
+                     WHERE m.id = ANY($1::int8[]) ORDER BY m.id LIMIT 1",
+                    &[&ids],
+                )
+                .await?;
+            let (company, currency) = match rows.first() {
+                Some(row) => (
+                    RecId::from_real(row.try_get(0).map_err(db)?),
+                    RecId::from_real(row.try_get(1).map_err(db)?),
+                ),
+                None => (None, None),
+            };
+            out.set(i, AccountPaymentRegister::COMPANY_ID, company)?;
+            out.set(i, AccountPaymentRegister::CURRENCY_ID, currency)?;
+        }
+        Ok(())
+    }
+
+    /// Partner, direction, amount due, amount and memo from the documents. Lenient: what
     /// cannot be paid together is refused by name at confirmation, not while the dialog is filled.
+    ///
+    /// The first computation keeps an amount and a memo the row already holds: the client creates
+    /// the dialog with what the user entered, and the documents are linked (and this computed)
+    /// after the INSERT, outside the protection of the given values (`relcrud.rs`, x2many writes
+    /// of a create). An amount due already computed means the documents changed: both reset.
     #[compute(depends = ["invoice_ids"])]
     async fn _compute_from_documents(
         this: &RecordSet<AccountPaymentRegister>,
@@ -436,26 +482,21 @@ impl AccountPaymentRegister {
         out: &mut Assign<'_, AccountPaymentRegister>,
     ) -> Result<()> {
         let lists = this.mapped(tx, AccountPaymentRegister::INVOICE_IDS).await?;
+        let held_due = this.mapped(tx, AccountPaymentRegister::AMOUNT_DUE).await?;
+        let held_amount = this.mapped(tx, AccountPaymentRegister::AMOUNT).await?;
+        let held_memo = this
+            .mapped(tx, AccountPaymentRegister::COMMUNICATION)
+            .await?;
         let moves = this.env().records("account.move")?;
         for (i, list) in lists.into_iter().enumerate() {
-            let docs = documents(tx, &moves.browse(list.iter().map(|id| id.get()))?).await?;
+            let first = held_due[i].is_zero();
+            let docs = documents(tx, &moves.browse_ids(list).origin()).await?;
             let net: Decimal = docs.iter().map(Document::signed).sum();
             let customer = docs.first().is_none_or(Document::customer);
             let partner = docs
                 .first()
                 .and_then(|d| d.partner)
                 .filter(|p| docs.iter().all(|d| d.partner == Some(*p)));
-            out.set(
-                i,
-                AccountPaymentRegister::COMPANY_ID,
-                docs.first().and_then(|d| RecId::from_real(d.company)),
-            )?;
-            out.set(
-                i,
-                AccountPaymentRegister::CURRENCY_ID,
-                docs.first()
-                    .and_then(|d| RecId::from_real(d.company_currency)),
-            )?;
             out.set(
                 i,
                 AccountPaymentRegister::PARTNER_ID,
@@ -481,12 +522,20 @@ impl AccountPaymentRegister {
                 })),
             )?;
             out.set(i, AccountPaymentRegister::AMOUNT_DUE, net.abs())?;
-            out.set(i, AccountPaymentRegister::AMOUNT, net.abs())?;
+            let amount = match held_amount[i] {
+                held if first && !held.is_zero() => held,
+                _ => net.abs(),
+            };
+            out.set(i, AccountPaymentRegister::AMOUNT, amount)?;
             let all: Vec<&Document> = docs.iter().collect();
+            let communication = match &held_memo[i] {
+                Some(held) if first && !held.trim().is_empty() => Arc::clone(held),
+                _ => Arc::<str>::from(memo(&all)),
+            };
             out.set(
                 i,
                 AccountPaymentRegister::COMMUNICATION,
-                Some(Arc::<str>::from(memo(&all))),
+                Some(communication),
             )?;
         }
         Ok(())
@@ -505,7 +554,7 @@ impl AccountPaymentRegister {
             .await?;
         let moves = this.env().records("account.move")?;
         for (i, (list, group)) in lists.into_iter().zip(grouped).enumerate() {
-            let docs = documents(tx, &moves.browse(list.iter().map(|id| id.get()))?).await?;
+            let docs = documents(tx, &moves.browse_ids(list).origin()).await?;
             out.set(
                 i,
                 AccountPaymentRegister::SINGLE_PAYMENT,
@@ -515,7 +564,8 @@ impl AccountPaymentRegister {
         Ok(())
     }
 
-    /// The company's first bank journal, else its first cash journal.
+    /// The company's first bank journal, else its first cash journal; a journal the row already
+    /// holds (the user's choice, given with the create) is kept: Pay refuses one of another company.
     #[compute(depends = ["company_id"])]
     async fn _compute_journal(
         this: &RecordSet<AccountPaymentRegister>,
@@ -523,10 +573,13 @@ impl AccountPaymentRegister {
         out: &mut Assign<'_, AccountPaymentRegister>,
     ) -> Result<()> {
         let companies = this.mapped(tx, AccountPaymentRegister::COMPANY_ID).await?;
+        let held = this.mapped(tx, AccountPaymentRegister::JOURNAL_ID).await?;
         let journals = this.env().records("account.journal")?;
         for (i, company) in companies.into_iter().enumerate() {
-            let mut found = None;
-            if let Some(company) = company {
+            let mut found = held[i];
+            if found.is_none()
+                && let Some(company) = company
+            {
                 for kind in ["bank", "cash"] {
                     let hits = journals
                         .search(
@@ -548,7 +601,8 @@ impl AccountPaymentRegister {
         Ok(())
     }
 
-    /// The journal's first method line of the direction.
+    /// The journal's first method line of the direction; a line the row already holds is kept
+    /// while it is one of the journal's lines of the direction.
     #[compute(depends = ["journal_id", "payment_type"])]
     async fn _compute_method_line(
         this: &RecordSet<AccountPaymentRegister>,
@@ -558,6 +612,9 @@ impl AccountPaymentRegister {
         let journals = this.mapped(tx, AccountPaymentRegister::JOURNAL_ID).await?;
         let kinds = this
             .mapped(tx, AccountPaymentRegister::PAYMENT_TYPE)
+            .await?;
+        let held = this
+            .mapped(tx, AccountPaymentRegister::PAYMENT_METHOD_LINE_ID)
             .await?;
         let lines = this.env().records("account.payment.method.line")?;
         for (i, (journal, kind)) in journals.into_iter().zip(kinds).enumerate() {
@@ -573,7 +630,10 @@ impl AccountPaymentRegister {
                         ]),
                     )
                     .await?;
-                found = hits.ids().first().and_then(|id| RecId::from_real(*id));
+                let ids = hits.ids();
+                found = held[i]
+                    .filter(|line| ids.contains(&line.get()))
+                    .or_else(|| ids.first().and_then(|id| RecId::from_real(*id)));
             }
             out.set(i, AccountPaymentRegister::PAYMENT_METHOD_LINE_ID, found)?;
         }

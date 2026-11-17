@@ -2704,3 +2704,141 @@ fn product_barcode_claims_upgrade_validates_legacy_rows() {
         }
     });
 }
+
+/// An edit of a variant that has attribute values, as the variant form sends it: the onchange
+/// computes the variant's name and extra price from its in-memory attribute values, which are new
+/// records of their stored rows (it refused them as ids that are not positive before).
+#[test]
+fn a_variant_with_attribute_values_answers_its_form_onchange() {
+    big_stack(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let (_system, orm) = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let env = tx.env().clone();
+        let create = async |tx: &mut erp_orm::Transaction, model: &str, vals: RawVals| {
+            env.records(model)
+                .unwrap()
+                .create(tx, vec![vals])
+                .await
+                .unwrap()
+                .ids()[0]
+        };
+        let size = create(
+            &mut tx,
+            "product.attribute",
+            RawVals::new().set_cell("name", Cell::Str("Size".into())),
+        )
+        .await;
+        let mut values = Vec::new();
+        for name in ["S", "M"] {
+            let value = create(
+                &mut tx,
+                "product.attribute.value",
+                RawVals::new()
+                    .set_cell("name", Cell::Str(name.into()))
+                    .set_cell("attribute_id", Cell::Id(size)),
+            )
+            .await;
+            values.push(RecId::from_real(value).unwrap());
+        }
+        let shirt = create(
+            &mut tx,
+            "product.template",
+            RawVals::new().set_cell("name", Cell::Str("Shirt".into())),
+        )
+        .await;
+        create(
+            &mut tx,
+            "product.template.attribute.line",
+            RawVals::new()
+                .set_cell("product_tmpl_id", Cell::Id(shirt))
+                .set_cell("attribute_id", Cell::Id(size))
+                .set_cell("value_ids", Cell::Ids(values.clone().into())),
+        )
+        .await;
+        // the variant of value S; the template attribute value of M and M's name
+        let variant: i64 = tx
+            .query(
+                "SELECT pp.id::int8 FROM product_product pp \
+                 JOIN product_variant_combination c ON c.product_product_id = pp.id \
+                 JOIN product_template_attribute_value ptav \
+                   ON ptav.id = c.product_template_attribute_value_id \
+                 WHERE pp.product_tmpl_id = $1 AND ptav.product_attribute_value_id = $2",
+                &[&shirt, &values[0].get()],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let row = &tx
+            .query(
+                "SELECT ptav.id::int8, pav.name->>'en_US' FROM product_template_attribute_value ptav \
+                 JOIN product_attribute_value pav ON pav.id = ptav.product_attribute_value_id \
+                 WHERE ptav.product_tmpl_id = $1 AND pav.id = $2",
+                &[&shirt, &values[1].get()],
+            )
+            .await
+            .unwrap()[0];
+        let (ptav, value_name): (i64, String) = (row.get(0), row.get(1));
+        env.records("product.template.attribute.value")
+            .unwrap()
+            .browse([ptav])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_cell("price_extra", Cell::Decimal("7.5".parse().unwrap())),
+            )
+            .await
+            .unwrap();
+        let variants = env
+            .records("product.product")
+            .unwrap()
+            .browse([variant])
+            .unwrap();
+        let fields = [
+            "display_name",
+            "price_extra",
+            "product_template_attribute_value_ids",
+        ]
+        .into_iter()
+        .map(|key| {
+            (
+                key.to_owned(),
+                erp_fields::Value::Map(Arc::new(erp_fields::ValueMap::new())),
+            )
+        });
+        let spec = erp_orm::Spec::from_value(&erp_fields::Value::Map(Arc::new(
+            erp_fields::ValueMap::from_iter(fields),
+        )))
+        .unwrap();
+        // the form changes the variant's value to M: its name and extra price are computed from
+        // the in-memory attribute values
+        let combination = erp_fields::Value::list([erp_fields::Value::list([
+            erp_fields::Value::Int(6),
+            erp_fields::Value::Int(0),
+            erp_fields::Value::list([erp_fields::Value::Int(ptav)]),
+        ])]);
+        let answer = variants
+            .onchange(
+                &mut tx,
+                erp_fields::ValueMap::from_iter([(
+                    "product_template_attribute_value_ids".to_owned(),
+                    combination,
+                )]),
+                vec!["product_template_attribute_value_ids".to_owned()],
+                spec,
+            )
+            .await
+            .unwrap();
+        let json = erp_fields::convert::value_to_json(&answer).unwrap();
+        // a decimal answers as text
+        assert_eq!(json["value"]["price_extra"], "7.5", "{json}");
+        let shown = json["value"]["display_name"].as_str().unwrap_or_default();
+        assert!(
+            shown.contains(&value_name),
+            "the variant's name shows {value_name}: {json}"
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}

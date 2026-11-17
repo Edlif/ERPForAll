@@ -600,18 +600,18 @@ impl ProductProduct {
         let ptav_model = this.env().records("product.template.attribute.value")?;
         for index in 0..this.len() {
             let rec = this.at(index as isize)?;
-            let ptav_ids: Vec<i64> = rec
+            // record ids, not raw ids: in an onchange the values are in-memory records
+            let ptav_ids: Vec<RecId> = rec
                 .mapped(tx, ProductProduct::PRODUCT_TEMPLATE_ATTRIBUTE_VALUE_IDS)
                 .await?
                 .into_iter()
                 .flatten()
-                .map(|id| id.get())
                 .collect();
             let total_extra = if ptav_ids.is_empty() {
                 Decimal::ZERO
             } else {
                 let ptav_set = RecordSet::<ProductTemplateAttributeValue>::try_from(
-                    ptav_model.browse(ptav_ids)?,
+                    ptav_model.browse_ids(ptav_ids),
                 )?;
                 ptav_set
                     .mapped(tx, ProductTemplateAttributeValue::PRICE_EXTRA)
@@ -642,7 +642,12 @@ impl ProductProduct {
             if ptav_ids.is_empty() {
                 out.set(index, ProductProduct::COMBINATION_INDICES, None)?;
             } else {
-                let mut sorted_ids: Vec<i64> = ptav_ids.into_iter().map(|id| id.get()).collect();
+                // the stored rows, also for the in-memory values of a form's onchange
+                let mut sorted_ids: Vec<i64> = ptav_ids
+                    .into_iter()
+                    .filter_map(|id| id.as_real().or(id.origin()))
+                    .map(|id| id.get())
+                    .collect();
                 sorted_ids.sort_unstable();
                 let serialized = sorted_ids
                     .into_iter()
@@ -911,10 +916,11 @@ async fn combination_names(
     let per_variant = this
         .mapped(tx, ProductProduct::PRODUCT_TEMPLATE_ATTRIBUTE_VALUE_IDS)
         .await?;
-    let ptav_ids: Vec<i64> = per_variant
+    // record ids, not raw ids: in an onchange the values are in-memory records
+    let ptav_ids: Vec<RecId> = per_variant
         .iter()
         .flatten()
-        .map(|id| id.get())
+        .copied()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -925,7 +931,7 @@ async fn combination_names(
     let env = this.env();
     let ptavs = RecordSet::<ProductTemplateAttributeValue>::try_from(
         env.records("product.template.attribute.value")?
-            .browse(ptav_ids.clone())?,
+            .browse_ids(ptav_ids.iter().copied()),
     )?;
     let lines = ptavs
         .mapped(tx, ProductTemplateAttributeValue::ATTRIBUTE_LINE_ID)
@@ -1007,7 +1013,7 @@ async fn combination_names(
         .collect();
 
     // ptav id -> sort key and name, only for the values that belong in the name
-    let mut shown: HashMap<i64, ShownValue> = HashMap::new();
+    let mut shown: HashMap<RecId, ShownValue> = HashMap::new();
     for ((ptav, line), value) in ptav_ids.iter().zip(lines).zip(raw_values) {
         let (Some(line), Some(value)) = (line, value) else {
             return Err(Error::programming(format!(
@@ -1029,8 +1035,7 @@ async fn combination_names(
     Ok(per_variant
         .iter()
         .map(|ids| {
-            let mut parts: Vec<&ShownValue> =
-                ids.iter().filter_map(|id| shown.get(&id.get())).collect();
+            let mut parts: Vec<&ShownValue> = ids.iter().filter_map(|id| shown.get(id)).collect();
             parts.sort_by_key(|(key, _)| *key);
             parts
                 .iter()

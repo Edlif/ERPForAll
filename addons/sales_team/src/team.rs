@@ -299,7 +299,10 @@ impl CrmTeam {
             out.set(
                 index,
                 CrmTeam::IS_FAVORITE,
-                users.iter().any(|user| user.get() == uid),
+                users
+                    .iter()
+                    .filter_map(|user| user.as_real().or(user.origin()))
+                    .any(|user| user.get() == uid),
             )?;
         }
         Ok(())

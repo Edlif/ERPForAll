@@ -157,7 +157,8 @@ export function resizeColumns(table: HTMLTableElement, columns: readonly ListCol
     table.style.removeProperty("table-layout"); table.style.removeProperty("width"); table.style.removeProperty("min-width");
     for (const {col} of entries) col.style.removeProperty("width");
     table.classList.add("list-auto-layout");
-    for (const {field, head, spec} of entries) if (!pins.has(field.name)) state.specs.set(field.name, spec(Math.round(head.getBoundingClientRect().width)));
+    // Rounded up: a column one fraction of a pixel narrower than its widest value cuts or wraps that value.
+    for (const {field, head, spec} of entries) if (!pins.has(field.name)) state.specs.set(field.name, spec(Math.ceil(head.getBoundingClientRect().width)));
     table.classList.remove("list-auto-layout");
     state.empty = !hasRecords();
   };

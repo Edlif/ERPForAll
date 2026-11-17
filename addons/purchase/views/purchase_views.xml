@@ -13,7 +13,7 @@
         <field name="name"/>
         <field name="product_qty"/>
         <field name="uom_id"/>
-        <field name="date_planned"/>
+        <field name="date_planned" invisible="1"/>
         <field name="price_unit"/>
         <field name="discount" string="Disc. %"/>
         <field name="tax_ids" widget="many2many_tags"/>

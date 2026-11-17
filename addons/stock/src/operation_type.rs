@@ -428,7 +428,10 @@ impl StockPickingType {
             out.set(
                 i,
                 StockPickingType::IS_FAVORITE,
-                users.iter().any(|u| u.get() == this.env().uid()),
+                users
+                    .iter()
+                    .filter_map(|u| u.as_real().or(u.origin()))
+                    .any(|u| u.get() == this.env().uid()),
             )?;
         }
         Ok(())

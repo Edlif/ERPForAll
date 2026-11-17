@@ -2758,7 +2758,11 @@ export class HumanApp {
       if (related) {
         // A list opened by a form button keeps the way back: menu path, the source record, this list.
         const trail = el("div", undefined, "form-breadcrumb-path");
-        for (const item of this.menuTrail(related.origin)) trail.append(item, el("span", "›", "form-breadcrumb-divider"));
+        const menus = this.menuTrail(related.origin);
+        // An origin that is a page of the menu's own action (a dashboard, a pivot, a chart) takes the place of the menu's last
+        // link: both name that page ("Dashboard › Accounting Dashboard"), and only the origin crumb brings it back as it was left.
+        if (!related.origin.id) menus.pop();
+        for (const item of menus) trail.append(item, el("span", "›", "form-breadcrumb-divider"));
         trail.append(this.originCrumb(related), el("span", "›", "form-breadcrumb-divider"));
         title.className = "breadcrumb-current form-breadcrumb-record"; title.setAttribute("aria-current", "page");
         trail.append(title);
@@ -3898,9 +3902,18 @@ export class HumanApp {
         report: error => this.reportError(error)
       });
       // A form opened from a related list keeps the way back to the record whose button opened it.
+      // It is left out when the
+      // back link already leads to that page: a record reached without its list, by the browser's Forward for one.
       const origin = route.method_action ? this.methodActions.get(route.method_action) : undefined;
-      const path = origin ? breadcrumbs.querySelector(".form-breadcrumb-path") : null;
-      if (origin && path) path.prepend(this.originCrumb(origin), el("span", "›", "form-breadcrumb-divider"));
+      const back = this.breadcrumbs.previous?.route;
+      // The same view too: the list of an action is not its pivot or chart as it was left.
+      const backIsOrigin = !!origin && !!back && !back.method_action && back.action === origin.origin.action && back.id === origin.origin.id
+        && back.view_type === origin.origin.view_type;
+      const previous = origin && !backIsOrigin ? breadcrumbs.querySelector(".breadcrumb-previous") : null;
+      if (origin && previous) {
+        const divider = el("span", "›", "form-breadcrumb-divider"); divider.setAttribute("aria-hidden", "true");
+        previous.prepend(this.originCrumb(origin), divider);
+      }
       if (recordMenu) breadcrumbs.append(recordMenu);
       breadcrumbs.append(statusIndicator);
       syncPageHeading?.();

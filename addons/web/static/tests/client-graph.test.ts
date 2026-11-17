@@ -524,6 +524,8 @@ test("a bar opens its records as a list and the way back restores the chart", as
   expect(of("web_search_read").at(-1)!.body["domain"]).toEqual([["priority", "=", "normal"], ["state", "=", "draft"]]);
   expect(root.querySelector(".list-table tbody")!.textContent).toContain("Alpha");
   expect(root.querySelector("h1.breadcrumb-current")!.textContent).toBe("Normal / Draft");
+  // The chart is the page of the menu "Notes": the path names it once, with the crumb that restores it.
+  expect([...root.querySelectorAll(".form-breadcrumb-path button.link")].map(link => link.textContent)).toEqual(["Notes"]);
   root.querySelector<HTMLButtonElement>(".breadcrumb-origin")!.click();
   await ready(root);
   expect(window.location.href).toBe(chartAddress);

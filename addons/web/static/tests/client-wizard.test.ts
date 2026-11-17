@@ -1305,6 +1305,8 @@ test("a form opened from a related list keeps the origin crumb and returns to th
   root.querySelector<HTMLButtonElement>('.list-table tbody button.link')!.click();
   await vi.waitFor(()=>expect(root.querySelector('input[name="name"]')).not.toBeNull());
   expect(root.querySelector(".breadcrumb-origin")).not.toBeNull();
+  // The origin sits on the back link's line, inside its wrapper: the two-line header places that wrapper, nothing else.
+  expect(root.querySelector(".breadcrumb-previous > .breadcrumb-origin + .form-breadcrumb-divider + .breadcrumb-back")).not.toBeNull();
   root.querySelector<HTMLButtonElement>(".breadcrumb-back")!.click();
   await vi.waitFor(()=>expect(root.querySelector(".list-table")).not.toBeNull());
   expect(new URL(location.href).searchParams.get("method_action")).toBe(actionId);
