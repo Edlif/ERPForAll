@@ -464,8 +464,8 @@ fn row_lines(widths: &[Option<u8>]) -> Vec<std::ops::Range<usize>> {
     lines.push(start..fixed.len());
     lines
 }
-/// The widest `colspan` a cell may take, as in HTML.
-const MAX_COLSPAN: usize = 1000;
+/// The widest `colspan` a cell may take, as in HTML: the widest table.
+const MAX_COLSPAN: usize = crate::document::MAX_TABLE_COLUMNS;
 /// Elements that carry style to their cells and emit no node themselves.
 fn is_table_part(tag: &str) -> bool {
     matches!(tag, "thead" | "tbody" | "tfoot" | "tr")

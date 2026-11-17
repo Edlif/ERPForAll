@@ -29,7 +29,9 @@ async fn print(
         .canonicalize()
         .unwrap();
     let engine = erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
-    let pdf = engine.render(&document).unwrap();
+    let pdf = engine
+        .render(&crate::report_frame::through_frame(&document))
+        .unwrap();
     std::fs::write(
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("sale-{name}.pdf")),
         pdf.bytes(),

@@ -282,7 +282,7 @@ fn table_spans_are_validated() {
         "invalid report document: table cell spans must be at least 1"
     );
 
-    let cases: [(&str, usize, Spans); 4] = [
+    let cases: [(&str, usize, Spans); 5] = [
         (
             "invalid report document: table cell spans past the last column",
             2,
@@ -302,6 +302,12 @@ fn table_spans_are_validated() {
             "invalid report document: table row span reaches past the last row",
             2,
             &[(1, 2), (1, 1)],
+        ),
+        // Rows that no cell starts in, beyond the table's cell count: the renderers walk each one.
+        (
+            "invalid report document: table section has more rows than cells: a row span covers rows that start no cell",
+            1,
+            &[(1, 5), (1, 1)],
         ),
     ];
     for (message, columns, spans) in cases {
@@ -324,6 +330,14 @@ fn table_spans_are_validated() {
         .map(|(c, r)| cell(&mut b, "x", *c, *r))
         .collect::<Vec<_>>();
     table(&mut b, 2, cells).unwrap();
+    // No table is wider than 1000 columns, the widest span a template may write.
+    let x = b.add(Node::Text("x".into())).unwrap();
+    let e = table(&mut b, 1001, vec![x.clone(); 1001]).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "invalid report document: table has more than 1000 columns"
+    );
+    table(&mut b, 1000, vec![x; 1000]).unwrap();
 }
 
 #[test]

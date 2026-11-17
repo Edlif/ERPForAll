@@ -25,6 +25,8 @@ use erp_testkit::TestDb;
 
 #[path = "support/report_access.rs"]
 mod report_access;
+#[path = "support/report_frame.rs"]
+mod report_frame;
 
 fn addons_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -151,7 +153,9 @@ async fn print(orm: &Orm, key: &str, orders: &[i64], name: &str) -> Vec<String> 
         erp_report::Limits::default(),
     )
     .unwrap();
-    let pdf = engine.render(&document).unwrap();
+    let pdf = engine
+        .render(&report_frame::through_frame(&document))
+        .unwrap();
     fs::write(
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(name),
         pdf.bytes(),

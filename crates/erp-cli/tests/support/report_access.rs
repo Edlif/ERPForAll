@@ -112,7 +112,9 @@ pub async fn print_as(
     tx.rollback().await.unwrap();
     let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../addons/report_fonts");
     let engine = erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
-    let pdf = engine.render(&prepared?).unwrap();
+    let pdf = engine
+        .render(&crate::report_frame::through_frame(&prepared?))
+        .unwrap();
     let parsed = lopdf::Document::load_mem(pdf.bytes()).unwrap();
     Ok(parsed
         .get_pages()

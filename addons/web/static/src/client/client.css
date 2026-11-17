@@ -106,6 +106,7 @@
     --hover: #2b3b47; /* ui-lint: allow raw-colour (token definition) */
     --text: #e3ebf0;
     --muted: #acbdc9;
+    --label: #c4d1da; /* ui-lint: allow raw-colour (token definition; it was missing here, so a label kept its light value on the device's dark scheme) */
     --line: #384a58; /* ui-lint: allow raw-colour (token definition) */
     --input-line: #7e96a6;
     --accent: #67d2ca;
@@ -515,7 +516,7 @@ input[type=checkbox].boolean-toggle { appearance: none; width: 38px; height: 22p
 .many2one-value { font-weight: 500; }
 
 /* Required and Readonly Field Styling */
-.field-required > span { font-weight: 600; }
+/* (A rule `.field-required > span { font-weight: 600 }` stood here: it emboldened the read value of a required cell in a line list, and a label is 600 or 500 by the label rules.) */
 /* Required marker is emitted once by the widget label, never duplicated with generated content. */
 .field-readonly input, .field-readonly select, .field-readonly textarea { border-color: transparent !important; background: transparent !important; box-shadow: none !important; padding-left: 0 !important; padding-right: 0 !important; color: var(--text) !important; cursor: default !important; }
 
@@ -3536,3 +3537,93 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .form-title-block > .field-label > .field-image .field-image-button > svg { display: block; }
 .form-title-block > .field-label > .field-image .field-image-button > span { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .form-title-block > .field-label > .field-image > .field-image-status { grid-area: 2 / 1; max-width: 14rem; text-align: center; }
+
+/*
+  One rule set, so a
+ record reads the same whether a field is editable or read-only.
+ 1. A read-only value is text of the size, weight and colour of an editable value, on the same left edge and the same
+ 28px row. The read value is a span directly under the field, so the label rules (13px, 500, label colour) styled it,
+ and a read-only relation carried its own 13px, muted colour, 5px inset and 36px height. 
+ */
+.record-form:not(.settings-form) .field-label > .field-read-value { font-size: 14px; font-weight: 400; color: var(--text); }
+.record-form:not(.settings-form) .field-label.field-readonly > .field-currency-value { font-size: 14px; font-weight: 400; color: var(--text); }
+@media (min-width: 641px) { .record-form:not(.settings-form) .field-label > .field-read-value { align-self: center; } }
+.record-form:not(.settings-form) .many2one-readonly { box-sizing: border-box; min-height: var(--form-row-height); padding: 0; font-size: 14px; }
+.record-form:not(.settings-form) .many2one-readonly > .many2one-open-btn { min-height: 0; padding: 0; font-size: inherit; color: var(--text); text-align: start; }
+.record-form:not(.settings-form) .many2one-readonly > .many2one-open-btn:hover { background: transparent; color: var(--accent); text-decoration: underline; }
+.record-form:not(.settings-form) .datetime-editor > label { color: var(--label); }
+/* In a line list the same value is the cell's own text: its size and colour, one line, an ellipsis when it does not fit. */
+.record-form:not(.settings-form) .x2many-table .many2one-readonly { min-width: 0; min-height: 0; padding: 0; font-size: inherit; }
+.record-form:not(.settings-form) .x2many-table .many2one-readonly > .many2one-open-btn { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
+/* 2. The record's name is the page title also when it is read-only (a confirmed order's number was 13px label text). */
+.record-form :is(.form-title-heading, .form-title-field) .field-label > .field-read-value { display: flex; align-items: center; align-self: stretch; min-height: 48px; font-size: 26px; font-weight: 600; line-height: 1.25; color: var(--text); }
+@media (max-width: 640px) { .record-form :is(.form-title-heading, .form-title-field) .field-label > .field-read-value { font-size: 23px; } }
+.wizard-dialog .record-form :is(.form-title-heading, .form-title-field) .field-label > .field-read-value { min-height: 40px; font-size: 20px; }
+/* 3. Notebook tabs: one hairline around the open tab, its top corners rounded, and the accent edge inside that outline so it
+      follows the corners (a 2px accent border met the 1px sides in a step at each corner). */
+.record-form:not(.settings-form) .form-tab { position: relative; overflow: hidden; border: 1px solid transparent; border-bottom: 0; transition: color var(--motion-fast) ease, background-color var(--motion-fast) ease; }
+.record-form:not(.settings-form) .form-tab:hover:not([aria-selected=true]) { color: var(--text); background: var(--hover); }
+.record-form:not(.settings-form) .form-tab[aria-selected=true] { border-color: var(--line); background: var(--surface); color: var(--text); font-weight: 600; }
+.record-form:not(.settings-form) .form-tab[aria-selected=true]::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px; background: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .record-form:not(.settings-form) .form-tab { transition: none; } }
+/* 4. A group that holds only read-only amounts, three or more, is a totals block (two amounts side by side, a debit and a
+      credit, are not): it sits at the right edge of its column, each label
+      beside its amount, the amounts on one right edge in tabular figures, and the last row (the total) set off by a
+      hairline and weight. It was a label column and a value column a hand apart, the total like any other row. */
+@media (min-width: 641px) {
+  .record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) { grid-template-columns: max-content minmax(7rem, max-content); justify-content: safe end; column-gap: 24px; }
+  .record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) :is(.field-currency-value, .field-label > .field-read-value) { justify-self: end; justify-content: flex-end; }
+}
+.record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) .field-currency-value { font-variant-numeric: tabular-nums; }
+.record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) > .field-monetary:last-child { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
+.record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) > .field-monetary:last-child :is(.field-label > span:first-child, .field-currency-value, .field-read-value, .field-currency-symbol) { font-size: 15px; font-weight: 600; color: var(--text); }
+/* 5. Small things of the same pass: a tag in a line cell ends in an ellipsis instead of being cut at the cell edge, and an
+      empty read-only date shows the dash the other empty read-only values show. */
+.x2many-table .field-readonly .many2many-tags .relation-chip { display: inline-block; box-sizing: border-box; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.record-form:not(.settings-form) .datetime-editor.field-readonly.field-empty .datetime-input-area::before { content: "\2014"; content: "\2014" / ""; align-self: center; color: var(--muted); }
+.record-form:not(.settings-form) .datetime-editor.field-readonly.field-empty .datetime-input-area > input { display: none; }
+/* A tags field sits on the same 28px row as the other fields (it was 34px with its own inset, so its rows stood off the pitch). */
+.record-form:not(.settings-form) .field-label .many2many-tags .tag-list { box-sizing: border-box; min-height: var(--form-row-height); padding-block: 0; }
+.record-form:not(.settings-form) .field-label .many2many-tags .tag-list > input { box-sizing: border-box; height: calc(var(--form-row-height) - 1px); min-height: 0; padding-block: 0; padding-inline-start: 0; }
+
+
+/*
+  Every entry is one flat row on
+ the page ground: avatar, then name, time and a quiet "Note" tag on one baseline, then the body. An internal note was a
+ filled warning-colour slab with its own inset: consecutive notes merged into one block, the day rule of the first entry
+ sat inside it, and a note's avatar stood 8px right of a message's. A message sent to followers keeps its bubble; that
+ bubble, not a colour, is what tells it from a note or a log line. 
+ */
+.record-form-chatter .erp-mail-chatter .erp-mail-message.is-note { margin: 0; padding: 8px 0; border: 0; border-radius: 0; background: transparent; }
+.record-form-chatter .erp-mail-chatter .erp-mail-author { font-weight: 600; }
+.record-form-chatter .erp-mail-chatter .erp-mail-time { font-variant-numeric: tabular-nums; }
+.record-form-chatter .erp-mail-chatter .erp-mail-badge { padding: 0 6px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 500; line-height: 16px; letter-spacing: 0; text-transform: none; }
+.record-form-chatter .erp-mail-chatter .erp-mail-author { color: var(--text); }
+.record-form-chatter .erp-mail-chatter .erp-mail-tracking-new { color: var(--text); }
+.record-form-chatter .erp-mail-day { padding: 8px 0 4px; }
+/* Writing a note: the pressed "Log note" and the Log button use the one action colour and the draft the plain surface. The
+   warning colour (a filled brown button, a yellow box) said "something is wrong" about an ordinary note. The placeholder and
+   the button's word say which kind is being written. */
+.record-form-chatter .erp-mail-chatter[data-kind="note"] .erp-mail-kind[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.record-form-chatter .erp-mail-chatter[data-kind="note"] .erp-mail-draft { background: var(--surface); border-color: var(--input-line); }
+.record-form-chatter .erp-mail-chatter[data-kind="note"] .erp-mail-send { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.record-form-chatter .erp-mail-chatter[data-kind="note"] .erp-mail-send:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+/* Scheduling an activity: a white panel, labels in the label colour with room above each control, every control 32px, and a
+   focus ring that stays inside the panel (the page's 3px ring at 3px covered the label above the focused control). */
+.record-form-chatter .erp-mail-activity-form { gap: 8px; padding: 12px; background: var(--surface); border-radius: var(--radius-panel); }
+.record-form-chatter .erp-mail-activity-field { gap: 4px; font-weight: 500; color: var(--label); }
+.record-form-chatter .erp-mail-activity-field > :not(span) { box-sizing: border-box; height: 32px; min-height: 32px; padding: 0 8px; font-weight: 400; }
+.record-form-chatter .erp-mail-activity-field > textarea { height: auto; min-height: 64px; padding: 6px 8px; }
+.record-form-chatter .erp-mail-activity-field > :not(span):focus-visible, .record-form-chatter .erp-mail-activity-feedback:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.record-form-chatter .erp-mail-activity-form-bar > button { box-sizing: border-box; height: 32px; min-height: 32px; padding-block: 0; }
+.record-form-chatter .erp-mail-chatter .erp-mail-draft:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+/* Planned activities: each state is a labelled list in one white panel on the panel's own edges (it was an indented row with
+   a rule down its left side). Overdue and today keep their colour on the panel's outline, the icon and the due text. The
+   box of an activity marked done opens inside its row. */
+.record-form-chatter .erp-mail-activity-group .erp-mail-activity-group-title { padding: 0 0 4px; background: transparent; letter-spacing: 0; }
+.record-form-chatter .erp-mail-activity-rows { border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--surface); }
+.record-form-chatter .erp-mail-activity { padding: 8px 8px 8px 12px; border-inline-start: 0; border-top: 1px solid var(--line); }
+.record-form-chatter .erp-mail-activity:first-child { border-top: 0; }
+.record-form-chatter .is-overdue .erp-mail-activity-rows { border-color: var(--danger-line); }
+.record-form-chatter .is-today .erp-mail-activity-rows { border-color: var(--warning-line); }
+.record-form-chatter .erp-mail-activity > .erp-mail-activity-done { padding-top: 4px; }

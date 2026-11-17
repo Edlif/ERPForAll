@@ -174,3 +174,32 @@ test("the open home menu takes the app's menus and phone burger out of the top b
     expect(last(selector)).toMatch(/visibility:\s*hidden/);
   }
 });
+
+test("a read-only value in a form is text like an editable one, and the record's name is the title", () => {
+  const read = last(".record-form:not(.settings-form) .field-label > .field-read-value");
+  expect(rulesFor(".record-form:not(.settings-form) .field-label > .field-read-value")[0]).toMatch(/font-size:\s*14px;\s*font-weight:\s*400;\s*color:\s*var\(--text\)/);
+  expect(read).toMatch(/align-self:\s*center/);
+  expect(last(".record-form:not(.settings-form) .many2one-readonly")).toMatch(/min-height:\s*var\(--form-row-height\);\s*padding:\s*0/);
+  expect(last(".record-form:not(.settings-form) .many2one-readonly > .many2one-open-btn")).toMatch(/color:\s*var\(--text\)/);
+  // The helper splits selector lists on commas, so a selector with `:is(a, b)` is matched in the stylesheet text itself.
+  expect(clientCss).toMatch(/\.record-form :is\(\.form-title-heading, \.form-title-field\) \.field-label > \.field-read-value \{[^}]*font-size:\s*26px;\s*font-weight:\s*600/);
+  // Only the label of a required field is emphasised: the old rule made the read value of a required line cell bold.
+  expect(rulesFor(".field-required > span", false)).toEqual([]);
+  expect(last(".record-form:not(.settings-form) .field-label.field-readonly > .field-currency-value")).toMatch(/font-size:\s*14px/);
+  // A dialog's title stays the dialog's size.
+  expect(clientCss).toMatch(/\.wizard-dialog \.record-form :is\(\.form-title-heading, \.form-title-field\) \.field-label > \.field-read-value \{[^}]*font-size:\s*20px/);
+  // Three amounts make a totals block; a debit and a credit side by side do not.
+  expect(clientCss).toContain(".form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary)");
+  expect(clientCss).not.toMatch(/\.form-group-grid:has\(> \.field-monetary ~ \.field-monetary\):not/);
+});
+
+test("the open notebook tab carries its accent edge inside one hairline outline", () => {
+  // Not `last`: the reduced-motion rule of the same selector comes after it.
+  expect(rulesFor(".record-form:not(.settings-form) .form-tab").some(body => /border:\s*1px solid transparent;\s*border-bottom:\s*0/.test(body))).toBe(true);
+  expect(last(".record-form:not(.settings-form) .form-tab[aria-selected=true]::before")).toMatch(/height:\s*2px;\s*background:\s*var\(--accent\)/);
+});
+
+test("a tags field and its input sit on the form's row height", () => {
+  expect(last(".record-form:not(.settings-form) .field-label .many2many-tags .tag-list")).toMatch(/min-height:\s*var\(--form-row-height\)/);
+  expect(last(".record-form:not(.settings-form) .field-label .many2many-tags .tag-list > input")).toMatch(/min-height:\s*0/);
+});

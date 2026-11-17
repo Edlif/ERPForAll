@@ -139,5 +139,4 @@ fn the_row_alignment_of_a_grid_survives_the_worker_frame() {
         assert_eq!((columns.as_slice(), *gutter), (&[4.0, 8.0][..], 15.0));
         assert_eq!(*got, align);
     }
-    assert_eq!(erp_report_worker::PROTOCOL_VERSION, 5);
 }

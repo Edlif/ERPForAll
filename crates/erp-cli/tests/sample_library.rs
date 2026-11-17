@@ -9,6 +9,9 @@
     reason = "integration assertions"
 )]
 
+#[path = "support/report_frame.rs"]
+mod report_frame;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -1484,9 +1487,11 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         let fonts = repo_addons().join("report_fonts");
         let engine =
             erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
-        let pdf = engine.render(&document).unwrap();
+        let pdf = engine
+            .render(&report_frame::through_frame(&document))
+            .unwrap();
         assert!(pdf.bytes().starts_with(b"%PDF-"));
-        let slip_pdf = engine.render(&slip).unwrap();
+        let slip_pdf = engine.render(&report_frame::through_frame(&slip)).unwrap();
         assert!(slip_pdf.bytes().starts_with(b"%PDF-"));
         let slip_html = erp_report::render_html(&slip, &[]).unwrap();
         assert!(slip_html.contains("Ari Wibowo"), "{slip_html}");
@@ -1510,7 +1515,9 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         assert_eq!(logo_html.matches("role=\"img\"").count(), 1, "{logo_html}");
         assert!(logo_html.contains("aria-label=\"Logo\""), "{logo_html}");
         assert!(logo_html.contains("Bandung"), "{logo_html}");
-        let logo_pdf = engine.render(&slip_logo).unwrap();
+        let logo_pdf = engine
+            .render(&report_frame::through_frame(&slip_logo))
+            .unwrap();
         assert_eq!(pdf_images(logo_pdf.bytes()), vec![(96, 48)]);
         // The same two slips through `erp report-worker` processes, as the server prints them
         // (`report_print.rs`): the document crosses the frame protocol, so the logo reaches the
@@ -1539,7 +1546,7 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         );
         assert!(
             engine
-                .render(&register)
+                .render(&report_frame::through_frame(&register))
                 .unwrap()
                 .bytes()
                 .starts_with(b"%PDF-")
@@ -1553,7 +1560,7 @@ fn sample_library_reports_are_listed_and_print_a_book() {
             "{list_html}"
         );
         assert_eq!(list_html.matches("<table").count(), 1, "{list_html}");
-        let list_pdf = engine.render(&list).unwrap();
+        let list_pdf = engine.render(&report_frame::through_frame(&list)).unwrap();
         assert!(list_pdf.bytes().starts_with(b"%PDF-"));
         // The two sample prints, kept in the test scratch folder for a look at the layout.
         let out = Path::new(env!("CARGO_TARGET_TMPDIR"));

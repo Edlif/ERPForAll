@@ -13,11 +13,13 @@
 //! - [`run`], the loop of a worker, generic over the engine. `erp report-worker` calls it with the
 //!   Typst engine; this crate links no layout engine and no database.
 //!
-//! The frames between them are length-prefixed CBOR ([`Request`], [`Response`]).
+//! The frames between them are length-prefixed CBOR ([`Request`], [`Response`]). A document crosses
+//! as [`WireDocument`]: every node kind, spanning table cells included (protocol 6), except the
+//! barcode and QR graphic (`Node::Vector`), which is refused before it is sent.
 //!
 //! Not in this crate yet, each named where it is refused: the cgroup v2 memory cap,
-//! Landlock and seccomp, and the `pdf-process` and
-//! `validate-font` frames.
+//! Landlock and seccomp, barcode and QR graphics in a
+//! document frame, and the `pdf-process` and `validate-font` frames.
 mod frame;
 mod log;
 mod memory;

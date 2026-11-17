@@ -356,6 +356,9 @@ enum WireNode<'a> {
     /// Picture bytes (a CBOR byte string), width and height in points, alternative text.
     #[serde(rename = "m")]
     Image(WireBytes<'a>, Option<f64>, Option<f64>, Cow<'a, str>),
+    /// A table cell: its child, colspan and rowspan (protocol 6). The builder admits the spans again.
+    #[serde(rename = "s")]
+    Cell(u32, u64, u64),
 }
 /// size, bold, italic, underline, colour, padding, alignment (0 start, 1 centre, 2 end), keep together,
 /// space above and below, fill, rules above and below, table look (0 lined, 1 bordered, 2 borderless)
@@ -530,7 +533,21 @@ impl<'a> WireDocument<'a> {
                     *height,
                     Cow::Borrowed(alt),
                 ),
-                _ => return Err(later("document node over the render worker protocol")),
+                Node::Cell {
+                    child,
+                    colspan,
+                    rowspan,
+                } => WireNode::Cell(index(child)?, *colspan as u64, *rowspan as u64),
+                Node::Vector { .. } => {
+                    return Err(later(
+                        "barcode or QR graphic over the render worker protocol",
+                    ));
+                }
+                _ => {
+                    return Err(later(
+                        "document node of a newer kind over the render worker protocol",
+                    ));
+                }
             });
         }
         let options = tree.options();
@@ -634,6 +651,19 @@ impl<'a> WireDocument<'a> {
                     height,
                     alt: alt.into_owned(),
                 },
+                // spans and the "only inside a Table" rule are checked by the builder, as in process
+                WireNode::Cell(child, colspan, rowspan) => {
+                    let span = |value: u64| {
+                        usize::try_from(value).map_err(|_| ReportError::InvalidDocument {
+                            reason: "table cell span out of range in a document frame",
+                        })
+                    };
+                    Node::Cell {
+                        child: one(&ids, child)?,
+                        colspan: span(colspan)?,
+                        rowspan: span(rowspan)?,
+                    }
+                }
             };
             ids.push(builder.add(node)?);
         }

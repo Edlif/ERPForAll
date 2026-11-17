@@ -9,6 +9,9 @@
     reason = "integration assertions"
 )]
 
+#[path = "support/report_frame.rs"]
+mod report_frame;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -386,7 +389,9 @@ fn the_shared_document_parts_print_a_complete_document() {
         let fonts = repo_addons().join("report_fonts");
         let engine =
             erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
-        let pdf = engine.render(&document).unwrap();
+        let pdf = engine
+            .render(&report_frame::through_frame(&document))
+            .unwrap();
         let pages = page_texts(pdf.bytes());
         assert!(pages.len() >= 2, "60 lines fill more than one page");
         let last = pages.len() - 1;
@@ -420,7 +425,9 @@ fn the_shared_document_parts_print_a_complete_document() {
         }
         // The invoice-shaped sample fits one page: the full column set, a long number beside its
         // status, and a total row per tax group.
-        let invoice_pdf = engine.render(&invoice).unwrap();
+        let invoice_pdf = engine
+            .render(&report_frame::through_frame(&invoice))
+            .unwrap();
         let invoice_pages = page_texts(invoice_pdf.bytes());
         assert_eq!(invoice_pages.len(), 1, "{invoice_pages:?}");
         for text in [

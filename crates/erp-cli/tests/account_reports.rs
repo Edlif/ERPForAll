@@ -27,6 +27,8 @@ use tokio_postgres::types::ToSql;
 
 #[path = "support/report_access.rs"]
 mod report_access;
+#[path = "support/report_frame.rs"]
+mod report_frame;
 
 /// Run a test future on a thread with a 16 MiB stack (the install overflows the default one).
 fn big_stack<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
@@ -407,7 +409,9 @@ async fn print(tx: &mut Transaction, report: &str, ids: &[i64], keep: &str) -> P
     let html = erp_report::render_html(&document, &[]).unwrap();
     let fonts = addons_dir().join("report_fonts");
     let engine = erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
-    let pdf = engine.render(&document).unwrap();
+    let pdf = engine
+        .render(&report_frame::through_frame(&document))
+        .unwrap();
     // Kept in the test scratch folder for a look at the layout.
     let out = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(out.join(format!("account-{keep}.pdf")), pdf.bytes()).unwrap();

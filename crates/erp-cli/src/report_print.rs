@@ -87,8 +87,10 @@ fn unavailable(error: &ReportError) -> Error {
     ))
 }
 
-/// A document's own failure (too long, too large) is the user's to fix; a worker that cannot
-/// start or crashed is the server's.
+/// A document's own failure (too long, too large) is the user's to fix, and so is a document the
+/// worker frame or the worker refuses: printing it again fails the same way. Workers that do not
+/// start are the server being unavailable; a worker that crashed or an export that failed is the
+/// server's error.
 fn layout_error(error: &ReportError) -> Error {
     match error {
         ReportError::Deadline { .. }
@@ -98,7 +100,13 @@ fn layout_error(error: &ReportError) -> Error {
         | ReportError::Layout { .. } => {
             Error::validation(format!("The document could not be laid out: {error}"))
         }
-        other => unavailable(other),
+        ReportError::Unsupported { .. }
+        | ReportError::InvalidDocument { .. }
+        | ReportError::WorkerRefused { .. } => {
+            Error::user(format!("This document cannot be printed: {error}."))
+        }
+        ReportError::WorkerUnavailable { .. } => unavailable(error),
+        other => Error::internal(format!("Printing failed on this server ({other}).")),
     }
 }
 
@@ -428,5 +436,71 @@ impl WebReport for ReportRuntime {
                 ))),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use erp_fields::ErrorKind;
+
+    /// A document the frame or the worker refuses is the user's error and says what cannot be
+    /// printed; only workers that do not start read as the server being unavailable
+    /// (C33-FIX-PRINT-CELL: the journal entry's refusal was shown as a temporary outage).
+    #[test]
+    fn a_refused_document_is_a_user_error_and_a_start_failure_is_the_servers() {
+        for (error, feature) in [
+            (
+                ReportError::Unsupported {
+                    feature: "barcode or QR graphic over the render worker protocol",
+                    task: "a later release",
+                },
+                "barcode or QR graphic",
+            ),
+            (
+                ReportError::InvalidDocument {
+                    reason: "table has more than 1000 columns",
+                },
+                "more than 1000 columns",
+            ),
+            (
+                ReportError::WorkerRefused {
+                    document: "account.report_move".into(),
+                    message: "invalid report document: table cell spans past the last column"
+                        .into(),
+                },
+                "spans past the last column",
+            ),
+        ] {
+            let mapped = layout_error(&error);
+            assert_eq!(mapped.kind(), ErrorKind::UserError, "{error}");
+            assert!(
+                mapped
+                    .message()
+                    .starts_with("This document cannot be printed: ")
+                    && mapped.message().contains(feature),
+                "{}",
+                mapped.message()
+            );
+        }
+        let start = layout_error(&ReportError::WorkerUnavailable {
+            cause: "the worker exited at start".into(),
+        });
+        assert_eq!(start.kind(), ErrorKind::Internal);
+        assert!(
+            start.message().contains("cannot start"),
+            "{}",
+            start.message()
+        );
+        let failed = layout_error(&ReportError::Pdf {
+            document: "account.report_move".into(),
+            reason: "export".into(),
+        });
+        assert_eq!(failed.kind(), ErrorKind::Internal);
+        assert!(
+            !failed.message().contains("cannot start"),
+            "{}",
+            failed.message()
+        );
     }
 }

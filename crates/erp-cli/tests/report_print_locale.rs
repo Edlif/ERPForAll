@@ -9,6 +9,9 @@
     reason = "integration assertions"
 )]
 
+#[path = "support/report_frame.rs"]
+mod report_frame;
+
 use std::{
     path::{Path, PathBuf},
     thread,
@@ -202,7 +205,12 @@ fn a_print_uses_the_users_language_formats_and_timezone() {
         let fonts = repo_addons().join("report_fonts");
         let engine =
             erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
-        let pages = page_texts(engine.render(&documents[0]).unwrap().bytes());
+        let pages = page_texts(
+            engine
+                .render(&report_frame::through_frame(&documents[0]))
+                .unwrap()
+                .bytes(),
+        );
         assert_eq!(pages.len(), 2, "{pages:?}");
         for (page, name) in pages.iter().zip(["SinarAbadi", "MajuJaya"]) {
             assert!(page.contains(&format!("Name{name}")), "{page}");

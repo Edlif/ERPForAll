@@ -28,6 +28,8 @@ mod prices;
 
 #[path = "support/report_access.rs"]
 mod report_access;
+#[path = "support/report_frame.rs"]
+mod report_frame;
 #[path = "sale_order/reports.rs"]
 mod reports;
 

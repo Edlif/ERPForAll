@@ -210,6 +210,9 @@ impl Style {
         self.keep
     }
 }
+/// The widest table a document may hold: no page shows more columns, and placing the cells of a
+/// table costs its columns once per row. Also the widest `colspan` a template may write, as in HTML.
+pub(crate) const MAX_TABLE_COLUMNS: usize = 1000;
 /// Unvalidated layout nodes, admitted through [`DocumentBuilder::add`].
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -507,12 +510,15 @@ impl DocumentBuilder {
     }
     /// Places one table section row by row, as the renderer's automatic placement does, and refuses
     /// what it would place differently: a span past the last column, a cell that would overlap a row
-    /// span or skip a free slot, an incomplete last row and a row span past the section's last row.
+    /// span or skip a free slot, an incomplete last row, a row span past the section's last row, and
+    /// more rows than cells. Every row a template writes starts a cell, so a section never needs more
+    /// rows than cells; a larger row span would make the renderers walk rows that hold nothing new.
     /// Memory is one counter per column, whatever the row count.
     fn place(&self, columns: usize, cells: &[NodeId]) -> Result<(), ReportError> {
         // Rows still covered by a row span from above, per column, counting the current row.
         let mut busy = vec![0usize; columns];
         let mut col = 0;
+        let mut rows = usize::from(!cells.is_empty());
         let next_row = |busy: &mut [usize]| {
             busy.iter_mut().for_each(|b| *b = b.saturating_sub(1));
         };
@@ -531,6 +537,12 @@ impl DocumentBuilder {
                     let covered = busy.iter().copied().min().unwrap_or(0);
                     if covered > 0 {
                         busy.iter_mut().for_each(|b| *b -= covered);
+                    }
+                    rows = rows.saturating_add(1).saturating_add(covered);
+                    if rows > cells.len() {
+                        return Err(invalid(
+                            "table section has more rows than cells: a row span covers rows that start no cell",
+                        ));
                     }
                 }
                 if busy[col] == 0 {
@@ -609,6 +621,9 @@ impl DocumentBuilder {
                     return Err(invalid(
                         "table rows must fill a positive column count no larger than its cells",
                     ));
+                }
+                if *columns > MAX_TABLE_COLUMNS {
+                    return Err(invalid("table has more than 1000 columns"));
                 }
                 self.place(*columns, header)?;
                 self.place(*columns, cells)?;
