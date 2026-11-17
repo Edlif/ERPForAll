@@ -31,7 +31,7 @@ const OPTIONS: [&str; 4] = [
     "expects_chart_of_accounts",
     "chart_template",
 ];
-const CHART_UNAVAILABLE: &str = "Chart activation is unavailable until a later release.";
+const CHART_UNAVAILABLE: &str = "Chart activation is not available yet.";
 
 fn touches_configuration(vals: &RawVals) -> bool {
     PREFIXES

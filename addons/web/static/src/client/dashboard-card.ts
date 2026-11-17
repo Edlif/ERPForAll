@@ -120,14 +120,17 @@ const number = (value: string): number => {
 /** At most this many labels under a chart: a card is narrow, and one label per point of a 30-day line cannot be read. */
 const AXIS_LABELS = 6;
 
-/** A point label for the axis: an ISO day (`2026-11-17`) reads "17 Nov", an ISO month (`2026-11`) "Nov 26", in the page's language; any other label is shown as it is. */
+/** A point label for the axis: an ISO day (`2026-11-17`) reads "17 Nov" (day and month in the order of the language), an ISO month (`2026-11`) "Nov 26", in the page's language; any other label is shown as it is. */
 export function axisLabel(label: string): string {
   const parts = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(label);
   if (!parts) return label;
   const year = Number(parts[1]), month = Number(parts[2]);
   if (month < 1 || month > 12) return label;
-  const name = new Intl.DateTimeFormat(document.documentElement.lang || "en", { month: "short", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, 1)));
-  return parts[3] ? `${Number(parts[3])} ${name}` : `${name} ${parts[1]!.slice(2)}`;
+  const lang = document.documentElement.lang || "en";
+  // the locale orders day and month itself
+  if (parts[3]) return new Intl.DateTimeFormat(lang, { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, Number(parts[3]))));
+  const name = new Intl.DateTimeFormat(lang, { month: "short", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, 1)));
+  return `${name} ${parts[1]!.slice(2)}`;
 }
 
 /** The compact chart: bars or a line over a zero baseline, height from `--dashboard-chart-height`, and the points as a list for assistive technology. */

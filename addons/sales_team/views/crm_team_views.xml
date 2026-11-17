@@ -44,7 +44,7 @@ Sales teams: search, list and form (fields of sales_team/views/crm_team_views.xm
       <form record_mode="record">
         <sheet>
           <div class="oe_title">
-            <h1><field name="name" placeholder="e.g. North America"/></h1>
+            <h1><field name="name" placeholder="Team name"/></h1>
           </div>
           <group>
             <group>

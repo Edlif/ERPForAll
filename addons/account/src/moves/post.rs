@@ -3,11 +3,14 @@
 //! reference `_post`, `button_draft`, `button_cancel` in,
 //! 6920-6940, 7070-7082`).
 //!
-//! Posting a batch is set-based: one read of the headers, one aggregate over their lines, one lock
-//! check (two when entries are re-dated), one header lock, one statement that flips the headers and
-//! their lines together, then the numbering step last (3 steps 2, 3, 5 and 7). The
-//! statement count does not grow with the batch. The validations are collected and refused
-//! together, as the reference does.
+//! Posting a batch of plain entries is set-based: one read of the headers, one aggregate over their
+//! lines, one lock check (two when entries are re-dated), one header lock, one statement that flips
+//! the headers and their lines together, then the numbering step last (3 steps 2, 3, 5
+//! and 7); for them the statement count does not grow with the batch. The draft invoices of a batch
+//! are first rebuilt from their product lines by the invoice line sync, which writes each changed
+//! line and each changed header on its own, and an undated customer invoice takes today's date
+//! through the entry write: that part grows with the invoices that need it. The validations are
+//! collected and refused together, as the reference does.
 //!
 //! The company posting policy is `reversal_only` for every company until the opt-in policy column
 //! exists, so a posted entry never returns to draft or to cancelled: it is reversed.
@@ -31,9 +34,6 @@ use crate::numbering::{LockWait, NumberRequest, assign_numbers};
 /// invoicing group, which this addon does not declare yet; the accounting users hold the rights
 /// on entries, `security/ir.access.csv`).
 pub const POSTER_GROUP: &str = "account.group_account_user";
-
-/// The task that delivers the reversal wizard a posted entry is corrected with.
-pub const REVERSAL_TASK: &str = "a later release";
 
 /// What a caller may still change on a posted or cancelled entry: its reference. Every other
 /// field is refused by name, the invoice fields included (due date, totals, payment state, invoice
@@ -123,6 +123,17 @@ impl Header {
             "out_invoice" | "out_refund" | "out_receipt"
         )
     }
+
+    /// The numbering kind of the entry: a credit note asks for the refund chain, which the journal
+    /// gives only when it keeps one (`R` before the code; else the document chain); everything
+    /// else is a document (reference). Payments come with their slice.
+    fn sequence_kind(&self) -> &'static str {
+        if crate::invoice::is_refund(&self.move_type) {
+            "refund"
+        } else {
+            "document"
+        }
+    }
 }
 
 /// What the posting reads of the lines of one entry.
@@ -152,8 +163,13 @@ pub async fn post_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
     let ids = sorted_ids(moves);
     tx.savepoint(async |tx| {
         tx.flush().await?;
-        // The invoice checks and the invoice date default run first: the date they write is part
-        // of what the header read below sees. Entries that are not invoices pass both.
+        // The draft invoices of the batch are rebuilt from their product lines first: a price,
+        // quantity, discount or tax written on an invoice line directly did not run the sync, and
+        // the checks below read the stored totals. Then the invoice checks and the invoice date
+        // default: the date they write is part of what the header read below sees. Entries that
+        // are not invoices pass all three.
+        crate::invoice::sync_lines(tx, moves.env(), &ids).await?;
+        tx.flush().await?;
         crate::invoice::post::check_postable(tx, moves.env(), &ids).await?;
         crate::invoice::post::before_post(tx, moves.env(), &ids).await?;
         tx.flush().await?;
@@ -192,7 +208,7 @@ pub async fn post_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
             .filter(|(_, f)| f.taxed)
             .map(|(id, _)| *id)
             .collect();
-        let dates = accounting_dates(tx, &headers, &taxed, today).await?;
+        let dates = accounting_dates(tx, moves.env(), &headers, &taxed, today).await?;
         let locked = lock_headers(tx, &ids).await?;
         let unchanged = headers.len() == locked.len()
             && headers
@@ -308,7 +324,7 @@ pub(crate) async fn refuse_closed_entries(
     let label = name.unwrap_or_else(|| format!("{id}"));
     Err(Error::user(format!(
         "You cannot {what} the {state} entry {label}: a posted entry is corrected by a reversal \
-         (task {REVERSAL_TASK}), a cancelled one by resetting it to draft first."
+         (which is not available yet), a cancelled one by resetting it to draft first."
     )))
 }
 
@@ -363,11 +379,11 @@ fn sorted_ids(moves: &Records) -> Vec<i64> {
 }
 
 fn reversal_only() -> Error {
-    Error::user(format!(
+    Error::user(
         "A posted journal entry cannot be reset to draft or cancelled: this company's posting \
-         policy only allows a reversal (task {REVERSAL_TASK}). The opt-in policy of is \
-         not delivered yet."
-    ))
+         policy only allows a reversal, which is not available yet. A policy that allows \
+         resetting a posted entry is not available yet either.",
+    )
 }
 
 async fn authorize(tx: &mut Transaction, moves: &Records, what: &str) -> Result<()> {
@@ -530,6 +546,17 @@ fn validate(
             header.id
         ));
     }
+    if header.state == "draft"
+        && let Some(name) = &header.name
+    {
+        // A posted entry never returns to draft (reversal-only), so a draft with a name was named
+        // by hand. Such a name is not posted: it could repeat a posted number or take one the
+        // journal's chain gives out later.
+        messages.push(format!(
+            "The draft carries the number {name:?}, written by hand: clear it, an entry takes \
+             its number from its journal when it is posted."
+        ));
+    }
     if facts.accountable == 0 {
         messages
             .push("There is nothing to post: the entry has no line with an account.".to_owned());
@@ -581,8 +608,16 @@ fn names(ids: &[i64], account_names: &BTreeMap<i64, String>) -> String {
 /// The re-dated entries are checked again and a
 /// refusal of the new date (a period that is not open) is final. The entries of `taxed` reach
 /// the tax report, so the tax lock date binds them too.
+///
+/// A re-dated entry keeps its company-currency balances: they are not converted again at the new
+/// date. Observed: the reference's balance of a plain entry is the amount entered
+/// and an invoice converts at its
+/// invoice date; neither follows the
+/// accounting date. A draft invoice whose date is changed by hand is converted again by the
+/// invoice line sync.
 async fn accounting_dates(
     tx: &mut Transaction,
+    env: &Env,
     headers: &[Header],
     taxed: &BTreeSet<i64>,
     today: Date,
@@ -599,6 +634,7 @@ async fn accounting_dates(
         .iter()
         .map(|h| check(h, h.date))
         .collect::<Result<_>>()?;
+    ensure_periods_for(tx, env, &checks).await?;
     let verdicts = check_lock_dates(tx, &checks).await?;
     let mut dates = Vec::with_capacity(headers.len());
     let mut moved = Vec::new();
@@ -639,10 +675,20 @@ async fn accounting_dates(
         .filter(|(index, _)| moved.contains(index))
         .map(|(_, (header, date))| check(header, *date))
         .collect::<Result<_>>()?;
+    ensure_periods_for(tx, env, &rechecks).await?;
     for verdict in check_lock_dates(tx, &rechecks).await? {
         verdict.into_result()?;
     }
     Ok(dates)
+}
+
+/// Posting creates the fiscal periods it needs (a system step, R2): the first entry of
+/// a month must not be refused because nobody generated its period. Locks and a date beyond the
+/// horizon setting still refuse.
+async fn ensure_periods_for(tx: &mut Transaction, env: &Env, checks: &[LockCheck]) -> Result<()> {
+    let rows: Vec<(i64, Date)> = checks.iter().map(|c| (c.company, c.date)).collect();
+    crate::fiscal::ensure::ensure_for_rows(tx, env, &rows).await?;
+    Ok(())
 }
 
 pub(crate) fn shifted_date(
@@ -750,15 +796,19 @@ async fn set_state(tx: &mut Transaction, pairs: &[(i64, Date)], state: &str) -> 
     Ok(())
 }
 
-/// Number the entries that have no name yet, last in the posting (3 step 7): one
-/// declaration read per journal, one calendar read per root company, one allocation for the
-/// batch and one statement writing the names. `dates` is in `headers` order.
+/// Number the entries, last in the posting (3 step 7): one declaration read per
+/// journal, one calendar read per root company, one allocation for the batch and one statement
+/// writing the names. Every entry is unnamed here: a named draft was refused with the
+/// validations. Credit notes are numbered in the refund chain of a journal that keeps one.
+/// `dates` is in `headers` order.
 async fn number(tx: &mut Transaction, env: &Env, headers: &[Header], dates: &[Date]) -> Result<()> {
-    let unnamed: Vec<(&Header, Date)> = headers
-        .iter()
-        .zip(dates.iter().copied())
-        .filter(|(h, _)| h.name.is_none())
-        .collect();
+    if let Some(named) = headers.iter().find(|h| h.name.is_some()) {
+        return Err(Error::invariant(format!(
+            "entry {} reached numbering with a name",
+            named.id
+        )));
+    }
+    let unnamed: Vec<(&Header, Date)> = headers.iter().zip(dates.iter().copied()).collect();
     if unnamed.is_empty() {
         return Ok(());
     }
@@ -769,7 +819,8 @@ async fn number(tx: &mut Transaction, env: &Env, headers: &[Header], dates: &[Da
         .with_context([("active_test", Value::Bool(false))])
         .browse(journal_ids.iter().copied())?;
     let journals = RecordSet::<AccountJournal>::try_from(journals)?;
-    let mut patterns: BTreeMap<i64, (&'static str, SequencePattern)> = BTreeMap::new();
+    let mut patterns: BTreeMap<(i64, &'static str), (&'static str, SequencePattern)> =
+        BTreeMap::new();
     for journal in journals.iter() {
         let id = journal
             .as_records()
@@ -777,9 +828,15 @@ async fn number(tx: &mut Transaction, env: &Env, headers: &[Header], dates: &[Da
             .first()
             .copied()
             .ok_or_else(|| Error::invariant("a journal record has no id"))?;
-        // entries are numbered in the document chain; refunds and payments come with invoices
         let declaration = JournalSequence::of(tx, &journal).await?;
-        patterns.insert(id, declaration.pattern("document")?);
+        let kinds: BTreeSet<&'static str> = unnamed
+            .iter()
+            .filter(|(h, _)| h.journal == id)
+            .map(|(h, _)| h.sequence_kind())
+            .collect();
+        for kind in kinds {
+            patterns.insert((id, kind), declaration.pattern(kind)?);
+        }
     }
     let mut calendars: BTreeMap<i64, FiscalCalendar> = BTreeMap::new();
     for (header, _) in &unnamed {
@@ -792,7 +849,7 @@ async fn number(tx: &mut Transaction, env: &Env, headers: &[Header], dates: &[Da
     let mut requests = Vec::with_capacity(unnamed.len());
     for (header, date) in &unnamed {
         let (kind, pattern) = patterns
-            .get(&header.journal)
+            .get(&(header.journal, header.sequence_kind()))
             .ok_or_else(|| Error::invariant("a journal pattern was not read"))?;
         let calendar = calendars
             .get(&header.root_company)

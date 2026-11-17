@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Every read is one query per field for all the invoices together; new lines are created in one
-//! call and stale ones deleted in one call. A line whose stored values already match is not
-//! written.
+//! Reads are one query per field for all the invoices together. New lines are created in one call
+//! and stale ones deleted in one call. A changed line is written with one write per line (product,
+//! tax and receivable/payable lines) and the header once per invoice whose totals, payment state
+//! or due date changed; lines and headers whose stored values already match are not written.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,37 +10,62 @@ use erp_addon_base::money::{MAX_CURRENCIES_PER_CALL, RoundingTable};
 use erp_sdk::money::Increment;
 use erp_sdk::prelude::*;
 
-use super::{TAX_CHILDREN_TASK, direction_sign, is_invoice, is_refund, is_sale, journal_type};
+use super::settings;
+use super::{direction_sign, is_invoice, is_refund, is_sale, journal_type};
 use crate::moves::{id_cell, unchecked};
-use crate::tax::compute::{self, AmountType, BaseLine, KERNEL_TASK, TaxDef, TaxKind};
+use crate::tax::compute::{self, AmountType, BaseLine, TaxDef, TaxKind};
 
 fn real(id: i64) -> Result<RecId> {
     RecId::from_real(id)
         .ok_or_else(|| Error::invariant(format!("record id {id} is not a stored record id")))
 }
 
-fn text(cell: &Cell) -> Option<Arc<str>> {
+/// The cell of row `i` of a column read for a set of records; a column shorter than the set is a
+/// broken read, never an empty value.
+fn nth<'a>(cells: &'a [Cell], i: usize, column: &str) -> Result<&'a Cell> {
+    cells
+        .get(i)
+        .ok_or_else(|| Error::invariant(format!("the {column} column is short")))
+}
+
+fn text(cell: &Cell, field: &str) -> Result<Option<Arc<str>>> {
     match cell {
-        Cell::Str(text) => Some(text.clone()),
-        _ => None,
+        Cell::Null | Cell::Bool(false) => Ok(None),
+        Cell::Str(text) => Ok(Some(text.clone())),
+        other => Err(Error::invariant(format!(
+            "{field} holds {other:?} instead of a text"
+        ))),
     }
 }
 
-fn flag(cell: &Cell) -> bool {
-    matches!(cell, Cell::Bool(true))
-}
-
-fn date(cell: &Cell) -> Option<Date> {
+fn flag(cell: &Cell, field: &str) -> Result<bool> {
     match cell {
-        Cell::Date(date) => Some(*date),
-        _ => None,
+        Cell::Null => Ok(false),
+        Cell::Bool(value) => Ok(*value),
+        other => Err(Error::invariant(format!(
+            "{field} holds {other:?} instead of true or false"
+        ))),
     }
 }
 
-fn int(cell: &Cell) -> i32 {
+fn date(cell: &Cell, field: &str) -> Result<Option<Date>> {
     match cell {
-        Cell::Int(value) => *value,
-        _ => 0,
+        Cell::Null | Cell::Bool(false) => Ok(None),
+        Cell::Date(date) => Ok(Some(*date)),
+        other => Err(Error::invariant(format!(
+            "{field} holds {other:?} instead of a date"
+        ))),
+    }
+}
+
+/// An ordering number; an empty one sorts as 0 (a sequence is not a required field).
+fn int(cell: &Cell, field: &str) -> Result<i32> {
+    match cell {
+        Cell::Null | Cell::Bool(false) => Ok(0),
+        Cell::Int(value) => Ok(*value),
+        other => Err(Error::invariant(format!(
+            "{field} holds {other:?} instead of a whole number"
+        ))),
     }
 }
 
@@ -47,13 +73,22 @@ fn id(cell: &Cell, field: &str) -> Result<Option<i64>> {
     id_cell(Some(cell), field)
 }
 
-fn ids(cell: &Cell) -> Vec<i64> {
+fn ids(cell: &Cell, field: &str) -> Result<Vec<i64>> {
     match cell {
+        Cell::Null | Cell::Bool(false) => Ok(Vec::new()),
         Cell::Ids(ids) => ids
             .iter()
-            .filter_map(|id| id.as_real().map(|id| id.get()))
+            .map(|id| {
+                id.as_real().map(|id| id.get()).ok_or_else(|| {
+                    Error::invariant(format!(
+                        "{field} holds {id:?}, which is not a stored record"
+                    ))
+                })
+            })
             .collect(),
-        _ => Vec::new(),
+        other => Err(Error::invariant(format!(
+            "{field} holds {other:?} instead of a list of records"
+        ))),
     }
 }
 
@@ -67,6 +102,14 @@ fn amount(cell: &Cell, field: &str) -> Result<Decimal> {
         other => Err(Error::invariant(format!(
             "{field} holds {other:?} instead of an amount"
         ))),
+    }
+}
+
+/// A stored header amount; `None` when nothing is stored yet, which differs from a stored zero.
+fn stored_amount(cell: &Cell, field: &str) -> Result<Option<Decimal>> {
+    match cell {
+        Cell::Null | Cell::Bool(false) => Ok(None),
+        other => amount(other, field).map(Some),
     }
 }
 
@@ -86,6 +129,17 @@ struct Invoice {
     invoice_date: Option<Date>,
     due: Option<Date>,
     date: Option<Date>,
+    stored: Totals,
+}
+
+/// The header values the sync keeps, as stored before the sync.
+#[derive(Default)]
+struct Totals {
+    untaxed: Option<Decimal>,
+    tax: Option<Decimal>,
+    total: Option<Decimal>,
+    residual: Option<Decimal>,
+    payment_state: Option<Arc<str>>,
 }
 
 /// A journal item of an invoice, as the sync reads it.
@@ -130,10 +184,10 @@ async fn load_invoices(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Res
     let states = moves.cells(tx, "state").await?;
     let mut chosen = Vec::new();
     let mut kinds = Vec::new();
-    for ((id, kind), state) in moves.ids().into_iter().zip(types).zip(states) {
-        let kind = text(&kind);
+    for (i, id) in moves.ids().into_iter().enumerate() {
+        let kind = text(nth(&types, i, "move_type")?, "move_type")?;
         if let Some(kind) = kind.filter(|k| is_invoice(k))
-            && text(&state).as_deref() == Some("draft")
+            && text(nth(&states, i, "state")?, "state")?.as_deref() == Some("draft")
         {
             chosen.push(id);
             kinds.push(kind);
@@ -152,20 +206,34 @@ async fn load_invoices(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Res
     let invoice_dates = moves.cells(tx, "invoice_date").await?;
     let dues = moves.cells(tx, "invoice_date_due").await?;
     let dates = moves.cells(tx, "date").await?;
+    let untaxed = moves.cells(tx, "amount_untaxed").await?;
+    let taxes = moves.cells(tx, "amount_tax").await?;
+    let totals = moves.cells(tx, "amount_total").await?;
+    let residuals = moves.cells(tx, "amount_residual").await?;
+    let payment_states = moves.cells(tx, "payment_state").await?;
     let mut invoices = Vec::with_capacity(chosen.len());
     for (i, (id, move_type)) in chosen.into_iter().zip(kinds).enumerate() {
         let missing = |field: &str| Error::invariant(format!("draft invoice {id} has no {field}"));
         invoices.push(Invoice {
             id,
             move_type,
-            company: id_cell(companies.get(i), "company_id")?.ok_or_else(|| missing("company"))?,
-            currency: id_cell(currencies.get(i), "currency_id")?
+            company: id_cell(Some(nth(&companies, i, "company_id")?), "company_id")?
+                .ok_or_else(|| missing("company"))?,
+            currency: id_cell(Some(nth(&currencies, i, "currency_id")?), "currency_id")?
                 .ok_or_else(|| missing("currency"))?,
-            journal: id_cell(journals.get(i), "journal_id")?.ok_or_else(|| missing("journal"))?,
-            partner: id_cell(partners.get(i), "partner_id")?,
-            invoice_date: invoice_dates.get(i).and_then(date),
-            due: dues.get(i).and_then(date),
-            date: dates.get(i).and_then(date),
+            journal: id_cell(Some(nth(&journals, i, "journal_id")?), "journal_id")?
+                .ok_or_else(|| missing("journal"))?,
+            partner: id_cell(Some(nth(&partners, i, "partner_id")?), "partner_id")?,
+            invoice_date: date(nth(&invoice_dates, i, "invoice_date")?, "invoice_date")?,
+            due: date(nth(&dues, i, "invoice_date_due")?, "invoice_date_due")?,
+            date: date(nth(&dates, i, "date")?, "date")?,
+            stored: Totals {
+                untaxed: stored_amount(nth(&untaxed, i, "amount_untaxed")?, "amount_untaxed")?,
+                tax: stored_amount(nth(&taxes, i, "amount_tax")?, "amount_tax")?,
+                total: stored_amount(nth(&totals, i, "amount_total")?, "amount_total")?,
+                residual: stored_amount(nth(&residuals, i, "amount_residual")?, "amount_residual")?,
+                payment_state: text(nth(&payment_states, i, "payment_state")?, "payment_state")?,
+            },
         });
     }
     Ok(invoices)
@@ -178,11 +246,11 @@ async fn check_journals(tx: &mut Transaction, env: &Env, invoices: &[Invoice]) -
     let journals = env
         .records("account.journal")?
         .browse(wanted.iter().copied())?;
-    let types: BTreeMap<i64, Option<Arc<str>>> = journals
-        .ids()
-        .into_iter()
-        .zip(journals.cells(tx, "type").await?.iter().map(text))
-        .collect();
+    let cells = journals.cells(tx, "type").await?;
+    let mut types: BTreeMap<i64, Option<Arc<str>>> = BTreeMap::new();
+    for (i, journal) in journals.ids().into_iter().enumerate() {
+        types.insert(journal, text(nth(&cells, i, "journal type")?, "type")?);
+    }
     for invoice in invoices {
         let needed = journal_type(&invoice.move_type);
         let actual = types.get(&invoice.journal).cloned().flatten();
@@ -264,13 +332,16 @@ async fn load_lines(tx: &mut Transaction, env: &Env, invoices: &[Invoice]) -> Re
             id: line_id,
             move_id: id(cell("move_id", i)?, "move_id")?
                 .ok_or_else(|| Error::invariant(format!("journal item {line_id} has no entry")))?,
-            kind: text(cell("display_type", i)?).unwrap_or_else(|| "product".into()),
+            // the field is required with the default `product` (`moves/line.rs`), so an empty
+            // cell is a product line; any other kind of cell is refused by `text`
+            kind: text(cell("display_type", i)?, "display_type")?
+                .unwrap_or_else(|| "product".into()),
             account: id(cell("account_id", i)?, "account_id")?,
             partner: id(cell("partner_id", i)?, "partner_id")?,
             quantity: amount(cell("quantity", i)?, "quantity")?,
             price_unit: amount(cell("price_unit", i)?, "price_unit")?,
             discount: amount(cell("discount", i)?, "discount")?,
-            taxes: ids(cell("tax_ids", i)?),
+            taxes: ids(cell("tax_ids", i)?, "tax_ids")?,
             repartition: id(
                 cell("tax_repartition_line_id", i)?,
                 "tax_repartition_line_id",
@@ -280,15 +351,15 @@ async fn load_lines(tx: &mut Transaction, env: &Env, invoices: &[Invoice]) -> Re
             balance: amount(cell("balance", i)?, "balance")?,
             subtotal: amount(cell("price_subtotal", i)?, "price_subtotal")?,
             price_total: amount(cell("price_total", i)?, "price_total")?,
-            maturity: date(cell("date_maturity", i)?),
+            maturity: date(cell("date_maturity", i)?, "date_maturity")?,
         });
     }
     Ok(lines)
 }
 
 /// The taxes of `tax_ids` as the computation needs them, with their labels, and their `tax`
-/// repartition lines. A group of taxes waits for [`TAX_CHILDREN_TASK`] and a tax with a negative
-/// factor (reverse charge) for [`KERNEL_TASK`]; both are refused.
+/// repartition lines. A group of taxes and a tax with a negative
+/// factor (reverse charge); both are refused.
 async fn load_taxes(
     tx: &mut Transaction,
     env: &Env,
@@ -321,31 +392,31 @@ async fn load_taxes(
     };
     let mut defs = BTreeMap::new();
     for (i, tax_id) in taxes.ids().into_iter().enumerate() {
-        let label = text(cell("tax_label", i)?).unwrap_or_else(|| "".into());
-        let kind = match text(cell("amount_type", i)?).as_deref() {
+        let label = text(cell("tax_label", i)?, "tax_label")?
+            .ok_or_else(|| Error::invariant(format!("tax {tax_id} has no label")))?;
+        let kind = match text(cell("amount_type", i)?, "amount_type")?.as_deref() {
             Some("group") => {
                 return Err(Error::user(format!(
-                    "Tax {label} is a group of taxes: groups need their child taxes, which come \
-                     with task {TAX_CHILDREN_TASK}."
+                    "Tax {label} is a group of taxes: groups need their child taxes, which are not \
+                     available yet."
                 )));
             }
             Some(kind) => AmountType::parse(kind)?,
             None => return Err(Error::invariant(format!("tax {tax_id} has no amount type"))),
         };
-        if flag(cell("has_negative_factor", i)?) {
+        if flag(cell("has_negative_factor", i)?, "has_negative_factor")? {
             return Err(Error::user(format!(
-                "Tax {label} has a negative distribution (reverse charge), which comes with task \
-                 {KERNEL_TASK}."
+                "Tax {label} has a negative distribution (reverse charge), which is not available yet."
             )));
         }
         let def = TaxDef {
             id: tax_id,
-            sequence: int(cell("sequence", i)?),
+            sequence: int(cell("sequence", i)?, "sequence")?,
             kind: TaxKind::Simple(kind),
             amount: amount(cell("amount", i)?, "amount")?,
-            price_include: flag(cell("price_include", i)?),
-            include_base_amount: flag(cell("include_base_amount", i)?),
-            is_base_affected: flag(cell("is_base_affected", i)?),
+            price_include: flag(cell("price_include", i)?, "price_include")?,
+            include_base_amount: flag(cell("include_base_amount", i)?, "include_base_amount")?,
+            is_base_affected: flag(cell("is_base_affected", i)?, "is_base_affected")?,
         };
         defs.insert(tax_id, (def, label));
     }
@@ -370,15 +441,25 @@ async fn load_taxes(
     let sequences = found.cells(tx, "sequence").await?;
     let mut repartitions = Vec::with_capacity(found.len());
     for (i, rep_id) in found.ids().into_iter().enumerate() {
-        let get = |cells: &[Cell]| cells.get(i).cloned().unwrap_or(Cell::Null);
+        let document = text(nth(&documents, i, "document_type")?, "document_type")?;
+        let refund = match document.as_deref() {
+            Some("refund") => true,
+            Some("invoice") => false,
+            other => {
+                return Err(Error::invariant(format!(
+                    "repartition line {rep_id} is for the document type {other:?}, which is \
+                     neither invoice nor refund"
+                )));
+            }
+        };
         repartitions.push(Repartition {
             id: rep_id,
-            tax: id(&get(&owners), "tax_id")?
+            tax: id(nth(&owners, i, "tax_id")?, "tax_id")?
                 .ok_or_else(|| Error::invariant(format!("repartition line {rep_id} has no tax")))?,
-            refund: text(&get(&documents)).as_deref() == Some("refund"),
-            factor: amount(&get(&factors), "factor_percent")?,
-            account: id(&get(&accounts), "account_id")?,
-            sequence: int(&get(&sequences)),
+            refund,
+            factor: amount(nth(&factors, i, "factor_percent")?, "factor_percent")?,
+            account: id(nth(&accounts, i, "account_id")?, "account_id")?,
+            sequence: int(nth(&sequences, i, "sequence")?, "sequence")?,
         });
     }
     repartitions.sort_by_key(|r| (r.tax, r.sequence, r.id));
@@ -431,10 +512,62 @@ fn distribute<'a>(
 /// A user error naming what to configure when a journal, account or tax is missing or not yet
 /// supported; the errors of the line writes.
 pub async fn sync_lines(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Result<()> {
+    sync(tx, env, move_ids, false).await
+}
+
+/// [`sync_lines`] for draft invoices whose accounting date changed: the product and tax lines of
+/// an invoice in another currency than its company's get their amount in currency written again
+/// even when it is unchanged, so the line write converts each balance at the new date
+/// (`moves/line.rs`, the write override); the receivable/payable line then balances the new sums.
+/// Invoices in their company's currency are synced as by [`sync_lines`].
+///
+/// # Errors
+///
+/// As [`sync_lines`]; a currency without a rate at the new date is refused by the line write.
+pub async fn sync_lines_redated(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Result<()> {
+    sync(tx, env, move_ids, true).await
+}
+
+/// The invoices whose currency is not their company's.
+async fn foreign_invoices(
+    tx: &mut Transaction,
+    env: &Env,
+    invoices: &[Invoice],
+) -> Result<BTreeSet<i64>> {
+    let wanted: BTreeSet<i64> = invoices.iter().map(|i| i.company).collect();
+    let companies = env.records("res.company")?.browse(wanted.iter().copied())?;
+    let cells = companies.cells(tx, "currency_id").await?;
+    let mut currencies = BTreeMap::new();
+    for (i, company) in companies.ids().into_iter().enumerate() {
+        let currency = id(nth(&cells, i, "company currency")?, "currency_id")?
+            .ok_or_else(|| Error::invariant(format!("company {company} has no currency")))?;
+        currencies.insert(company, currency);
+    }
+    let mut foreign = BTreeSet::new();
+    for invoice in invoices {
+        let currency = currencies.get(&invoice.company).ok_or_else(|| {
+            Error::invariant(format!(
+                "the currency of company {} was not read",
+                invoice.company
+            ))
+        })?;
+        if invoice.currency != *currency {
+            foreign.insert(invoice.id);
+        }
+    }
+    Ok(foreign)
+}
+
+async fn sync(tx: &mut Transaction, env: &Env, move_ids: &[i64], redated: bool) -> Result<()> {
     let invoices = load_invoices(tx, env, move_ids).await?;
     if invoices.is_empty() {
         return Ok(());
     }
+    let reconverted = if redated {
+        foreign_invoices(tx, env, &invoices).await?
+    } else {
+        BTreeSet::new()
+    };
     check_journals(tx, env, &invoices).await?;
     let increments = load_increments(tx, env, &invoices).await?;
     let lines = load_lines(tx, env, &invoices).await?;
@@ -451,6 +584,7 @@ pub async fn sync_lines(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Re
     for invoice in &invoices {
         let sign = direction_sign(&invoice.move_type);
         let refund = is_refund(&invoice.move_type);
+        let reconvert = reconverted.contains(&invoice.id);
         let increment = increments
             .get(&invoice.currency)
             .ok_or_else(|| Error::invariant("an invoice currency has no loaded rounding"))?;
@@ -478,7 +612,7 @@ pub async fn sync_lines(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Re
             untaxed = total(untaxed, result.total_excluded)?;
             let mut update = RawVals::new();
             let amount_currency = sign * result.total_excluded;
-            amounts_in(&mut update, line, invoice, amount_currency);
+            amounts_in(&mut update, line, invoice, amount_currency, reconvert);
             if line.subtotal != result.total_excluded {
                 update.insert(
                     "price_subtotal".into(),
@@ -506,7 +640,9 @@ pub async fn sync_lines(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Re
                 let label = taxes
                     .get(&tax.tax_id)
                     .map(|(_, label)| label.clone())
-                    .unwrap_or_else(|| "".into());
+                    .ok_or_else(|| {
+                        Error::invariant(format!("tax {} was not loaded", tax.tax_id))
+                    })?;
                 let own_reps = repartitions
                     .iter()
                     .filter(|r| r.tax == tax.tax_id && r.refund == refund);
@@ -536,7 +672,7 @@ pub async fn sync_lines(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Re
                 Some(line) => {
                     kept.insert(line.id);
                     let mut update = RawVals::new();
-                    amounts_in(&mut update, line, invoice, amount_currency);
+                    amounts_in(&mut update, line, invoice, amount_currency, reconvert);
                     if line.partner != invoice.partner {
                         update.insert(
                             "partner_id".into(),
@@ -573,19 +709,22 @@ pub async fn sync_lines(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Re
         items.create(tx, std::mem::take(&mut creates)).await?;
     }
     sync_terms(tx, env, &items, &lines, &totals).await?;
-    // the header totals, written past the entry's write override (they trigger no sync)
+    // the header totals, written past the entry's write override (they trigger no sync); a
+    // header whose stored values already match is not written
     let moves = env.records("account.move")?;
     for (invoice, untaxed, tax) in &totals {
         let amount_total = total(*untaxed, *tax)?;
+        let due = due_date(invoice).filter(|due| invoice.due != Some(*due));
+        if due.is_none() && header_matches(&invoice.stored, *untaxed, *tax, amount_total) {
+            continue;
+        }
         let mut vals = RawVals::new()
             .set_cell("amount_untaxed", Cell::Decimal(*untaxed))
             .set_cell("amount_tax", Cell::Decimal(*tax))
             .set_cell("amount_total", Cell::Decimal(amount_total))
             .set_cell("amount_residual", Cell::Decimal(amount_total))
-            .set_cell("payment_state", Cell::Str("not_paid".into()));
-        if let Some(due) = due_date(invoice)
-            && invoice.due != Some(due)
-        {
+            .set_cell("payment_state", Cell::Str(UNPAID.into()));
+        if let Some(due) = due {
             vals.insert("invoice_date_due".into(), Cell::Date(due));
         }
         moves.browse([invoice.id])?.write_base(tx, vals).await?;
@@ -593,15 +732,36 @@ pub async fn sync_lines(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Re
     Ok(())
 }
 
+/// The payment state of every invoice until payments exist.
+const UNPAID: &str = "not_paid";
+
+/// True when the stored header already holds the values the sync would write: the three totals,
+/// the amount due (the total until payments exist) and the payment state.
+fn header_matches(stored: &Totals, untaxed: Decimal, tax: Decimal, amount_total: Decimal) -> bool {
+    stored.untaxed == Some(untaxed)
+        && stored.tax == Some(tax)
+        && stored.total == Some(amount_total)
+        && stored.residual == Some(amount_total)
+        && stored.payment_state.as_deref() == Some(UNPAID)
+}
+
 /// Puts the amount in currency into `update` when it or the line's currency differs from the
 /// invoice's; a currency change writes both, so the line write converts the balance at the new
-/// currency's rate (a line keeps its currency otherwise, `moves/line.rs` create).
-fn amounts_in(update: &mut RawVals, line: &Line, invoice: &Invoice, amount_currency: Decimal) {
+/// currency's rate (a line keeps its currency otherwise, `moves/line.rs` create). With
+/// `reconvert` the amount is written even when unchanged, so the line write converts the balance
+/// again at the entry's present date.
+fn amounts_in(
+    update: &mut RawVals,
+    line: &Line,
+    invoice: &Invoice,
+    amount_currency: Decimal,
+    reconvert: bool,
+) {
     let currency_changed = line.currency != Some(invoice.currency);
     if currency_changed {
         update.insert("currency_id".into(), Cell::Id(invoice.currency));
     }
-    if currency_changed || line.amount_currency != amount_currency {
+    if reconvert || currency_changed || line.amount_currency != amount_currency {
         update.insert("amount_currency".into(), Cell::Decimal(amount_currency));
     }
 }
@@ -620,9 +780,13 @@ fn due_date(invoice: &Invoice) -> Option<Date> {
 /// One receivable (customer documents) or payable (vendor documents) line per invoice that
 /// balances the entry in both currencies; none when the entry is already zero (
 /// partial: one installment, no payment terms). Its account is the one an existing line carries
-/// when it is of the right type, else the company's first account of that type in chart order
+/// when it is of the right type. Otherwise the candidates are the accounts of that type shared
+/// with the invoice company or one of its parent companies
 /// (step 4; the partner properties of
-/// steps 2-3 do not exist yet), else a refusal naming what to create.
+/// steps 2-3 do not exist yet): none is a refusal naming what to create, a single one is used,
+/// and among several the one whose code the company chose in its Accounting settings
+/// ([`settings`]) is used; several without a valid choice are refused listing their codes, never
+/// picked by order.
 async fn sync_terms(
     tx: &mut Transaction,
     env: &Env,
@@ -666,11 +830,14 @@ async fn sync_terms(
         .collect();
     let account_model = env.records("account.account")?;
     let known = account_model.browse(term_accounts.iter().copied())?;
-    let types: BTreeMap<i64, Option<Arc<str>>> = known
-        .ids()
-        .into_iter()
-        .zip(known.cells(tx, "account_type").await?.iter().map(text))
-        .collect();
+    let cells = known.cells(tx, "account_type").await?;
+    let mut types: BTreeMap<i64, Option<Arc<str>>> = BTreeMap::new();
+    for (i, account) in known.ids().into_iter().enumerate() {
+        types.insert(
+            account,
+            text(nth(&cells, i, "account type")?, "account_type")?,
+        );
+    }
     let mut fallback: BTreeMap<(i64, &'static str), i64> = BTreeMap::new();
     let mut creates = Vec::new();
     let mut deletes = Vec::new();
@@ -698,31 +865,7 @@ async fn sync_terms(
             None => match fallback.get(&(invoice.company, wanted)) {
                 Some(account) => *account,
                 None => {
-                    let found = account_model
-                        .search(
-                            tx,
-                            &Domain::and([
-                                Domain::condition("account_type", Operator::Eq, wanted)?,
-                                Domain::condition(
-                                    "company_ids",
-                                    Operator::In,
-                                    vec![invoice.company],
-                                )?,
-                            ]),
-                        )
-                        .await?;
-                    let account = found.ids().first().copied().ok_or_else(|| {
-                        let kind = if wanted == "asset_receivable" {
-                            "receivable"
-                        } else {
-                            "payable"
-                        };
-                        Error::user(format!(
-                            "Company {} has no {kind} account: create one in Accounting, \
-                             Configuration, Chart of Accounts before saving this invoice.",
-                            invoice.company
-                        ))
-                    })?;
+                    let account = fallback_account(tx, env, invoice.company, wanted).await?;
                     fallback.insert((invoice.company, wanted), account);
                     account
                 }
@@ -769,6 +912,128 @@ async fn sync_terms(
         items.create(tx, creates).await?;
     }
     Ok(())
+}
+
+/// The receivable or payable account (`wanted` is the account type) of an invoice of `company`
+/// that has none yet: see [`sync_terms`].
+async fn fallback_account(
+    tx: &mut Transaction,
+    env: &Env,
+    company: i64,
+    wanted: &'static str,
+) -> Result<i64> {
+    let path = env
+        .records("res.company")?
+        .browse([company])?
+        .cell(tx, "parent_path")
+        .await?;
+    let companies = company_with_parents(company, text(&path, "parent_path")?.as_deref())?;
+    let found = env
+        .records("account.account")?
+        .search(
+            tx,
+            &Domain::and([
+                Domain::condition("account_type", Operator::Eq, wanted)?,
+                Domain::condition("company_ids", Operator::In, companies)?,
+            ]),
+        )
+        .await?;
+    let found_ids = found.ids();
+    if found_ids.len() < 2 {
+        // none or one: nothing to choose, so no setting is read
+        let candidates: Vec<(i64, Option<Arc<str>>)> =
+            found_ids.into_iter().map(|id| (id, None)).collect();
+        return choose_account(wanted, company, &candidates, None);
+    }
+    // an account's code is the one of the active company's root company (`ledger/account.rs`)
+    let codes = env
+        .with_company(company)?
+        .records("account.account")?
+        .browse(found_ids.iter().copied())?
+        .cells(tx, "code")
+        .await?;
+    let mut candidates = Vec::with_capacity(found_ids.len());
+    for (i, account) in found_ids.into_iter().enumerate() {
+        candidates.push((account, text(nth(&codes, i, "account code")?, "code")?));
+    }
+    let configured = settings::configured_code(tx, company, wanted).await?;
+    choose_account(wanted, company, &candidates, configured.as_deref())
+}
+
+/// `company` and its parent companies, from its `parent_path` (`1/4/9/` for company 9 under 4
+/// under 1); a company without a path has no parent.
+fn company_with_parents(company: i64, path: Option<&str>) -> Result<Vec<i64>> {
+    let Some(path) = path.filter(|p| !p.is_empty()) else {
+        return Ok(vec![company]);
+    };
+    let unreadable = || {
+        Error::invariant(format!(
+            "the parent path {path:?} of company {company} is not a list of company ids ending \
+             with the company"
+        ))
+    };
+    let mut companies = Vec::new();
+    for part in path.strip_suffix('/').unwrap_or(path).split('/') {
+        companies.push(part.parse::<i64>().map_err(|_| unreadable())?);
+    }
+    if companies.last() != Some(&company) {
+        return Err(unreadable());
+    }
+    Ok(companies)
+}
+
+/// Chooses the receivable or payable account (`wanted` is the account type) among `candidates`
+/// (account id and code): the only one, else the one whose code is `configured`. No candidate and
+/// several candidates without a valid choice are refused with what to do; an account is never
+/// picked by its position among several.
+fn choose_account(
+    wanted: &str,
+    company: i64,
+    candidates: &[(i64, Option<Arc<str>>)],
+    configured: Option<&str>,
+) -> Result<i64> {
+    let choice = settings::choice_of(wanted)?;
+    let kind = choice.kind;
+    match candidates {
+        [] => Err(Error::user(format!(
+            "Company {company} has no {kind} account: create one in Accounting, Configuration, \
+             Chart of Accounts before saving this invoice."
+        ))),
+        [(only, _)] => Ok(*only),
+        several => {
+            let configured = configured.filter(|code| !code.is_empty());
+            let matching: Vec<i64> = several
+                .iter()
+                .filter(|(_, code)| code.is_some() && code.as_deref() == configured)
+                .map(|(id, _)| *id)
+                .collect();
+            if let [one] = matching.as_slice() {
+                return Ok(*one);
+            }
+            let codes = several
+                .iter()
+                .map(|(id, code)| match code {
+                    Some(code) => code.to_string(),
+                    None => format!("account {id} without a code"),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let problem = match configured {
+                None => "none is chosen".to_owned(),
+                Some(code) if matching.is_empty() => {
+                    format!("the chosen code {code} is not one of them")
+                }
+                Some(code) => format!("the chosen code {code} is the code of more than one"),
+            };
+            Err(Error::user(format!(
+                "Company {company} has several {kind} accounts ({codes}) and {problem}: enter the \
+                 code of the one to use in the Accounting settings, block \"{block}\", \
+                 \"{label}\".",
+                block = settings::BLOCK,
+                label = choice.label,
+            )))
+        }
+    }
 }
 
 #[cfg(test)]

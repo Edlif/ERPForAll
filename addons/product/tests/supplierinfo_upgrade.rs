@@ -99,3 +99,33 @@ async fn migration_names_bad_rows_and_rolls_back_its_column() {
     let rows = tx.query("SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid = 'product_supplierinfo'::regclass AND attname = 'uom_id' AND NOT attisdropped)", &[]).await.unwrap();
     assert!(!rows[0].get::<_, bool>(0));
 }
+
+/// Vendor price rows without a lead time get the default of one day, others keep theirs; a table
+/// without the column is left alone (the column comes with the schema sync).
+#[tokio::test]
+async fn migration_gives_rows_without_a_lead_time_one_day() {
+    let h = support::base_harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let from = erp_sdk::migrations::SemverVersion::new(1, 5, 0);
+    tx.batch("CREATE TEMP TABLE product_supplierinfo(id bigint PRIMARY KEY);")
+        .await
+        .unwrap();
+    erp_addon_product::migrations::migrate_supplier_delay(&mut tx, &from)
+        .await
+        .unwrap();
+    tx.batch(
+        "ALTER TABLE product_supplierinfo ADD COLUMN delay integer;
+        INSERT INTO product_supplierinfo VALUES (1, NULL), (2, 5), (3, 0);",
+    )
+    .await
+    .unwrap();
+    erp_addon_product::migrations::migrate_supplier_delay(&mut tx, &from)
+        .await
+        .unwrap();
+    let rows = tx
+        .query("SELECT delay FROM product_supplierinfo ORDER BY id", &[])
+        .await
+        .unwrap();
+    let delays: Vec<i32> = rows.iter().map(|r| r.get(0)).collect();
+    assert_eq!(delays, [1, 5, 0]);
+}

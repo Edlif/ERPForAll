@@ -116,7 +116,7 @@ mod picking_flow;
 
 pub use quant_engine::{
     QuantBalance, QuantChange, QuantError, QuantFilter, QuantKey, apply_quant_changes,
-    available_quantity, gather_quants,
+    apply_quant_changes_in_chunks, available_quantity, gather_quants,
 };
 
 /// Required SQL-object expectations for native registry/module composition.

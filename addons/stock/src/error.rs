@@ -20,13 +20,15 @@ pub enum StockError {
     CompanyChangeForbidden,
     /// Location warehouse membership is maintained from the tree and warehouse roots.
     LocationOwnershipDerived,
-    /// The negative-stock switch cannot be turned on while the location holds negative quants
-    /// (1); correct them first.
+    /// The negative-stock switch cannot be turned on while the location holds negative quants or
+    /// keys with more reserved than on hand (1); correct them first.
     ForbidNegativeBlocked {
         /// The location whose policy row was written.
         location_id: i64,
         /// Quants of that exact location with a negative on-hand.
         negative: i64,
+        /// Other quants of that location with more reserved than on hand.
+        over: i64,
     },
     /// A tracking change would leave lot or serial rows the new mode cannot hold (6).
     TrackingChangeBlocked {
@@ -227,10 +229,12 @@ impl fmt::Display for StockError {
             Self::ForbidNegativeBlocked {
                 location_id,
                 negative,
+                over,
             } => write!(
                 f,
                 "Negative stock cannot be forbidden at location {location_id}: {negative} stock \
-                 balances there are below zero. Correct them first."
+                 balances there are below zero and {over} other balances have more reserved than \
+                 on hand. Correct them first."
             ),
             Self::TrackingChangeBlocked { product, count } => write!(
                 f,

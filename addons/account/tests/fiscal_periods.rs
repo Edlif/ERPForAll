@@ -592,7 +592,7 @@ async fn lock_runs_are_two_step_idempotent_and_superseded_by_generation() {
     company(&h, "New branch", Some(root)).await;
     let mut tx = h.begin().await.unwrap();
     let error = PeriodSet::of(&mut tx, jan).await.unwrap_err();
-    assert_refused(&error, ErrorKind::Missing, "ensure_periods");
+    assert_refused(&error, ErrorKind::Missing, "has no fiscal period");
 }
 
 #[tokio::test]
@@ -670,7 +670,7 @@ async fn writers_ask_the_period_row_by_class() {
     let error = require_open_periods(&mut tx, WriteClass::Accounting, &rows[4..])
         .await
         .unwrap_err();
-    assert_refused(&error, ErrorKind::Missing, "ensure_periods");
+    assert_refused(&error, ErrorKind::Missing, "No fiscal period");
     tx.rollback().await.unwrap();
     drop(tx);
 

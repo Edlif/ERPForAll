@@ -8,8 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use erp_addon_account::invoice::TAX_CHILDREN_TASK;
-use erp_addon_account::tax::compute::{self, AmountType, BaseLine, KERNEL_TASK, TaxDef, TaxKind};
+use erp_addon_account::tax::compute::{self, AmountType, BaseLine, TaxDef, TaxKind};
 use erp_addon_base::money::{CURRENCY_ROUNDING_MODE, RoundingTable, convert};
 use erp_addon_product::{SellerInfo, SellerQuery};
 use erp_addon_uom::conversion::{price_exact, quantity_rounded};
@@ -19,9 +18,6 @@ use erp_sdk::money::{Increment, RoundingMode};
 use erp_sdk::prelude::*;
 
 use crate::order::refuse_context_defaults;
-
-/// The task that fills the received quantity and lets a buyer edit it.
-pub const RECEIPT_QTY_TASK: &str = "a later release";
 
 /// Fields only this module writes: the amounts, the quantity in the product unit and the vendor
 /// price the line was priced from.
@@ -39,9 +35,13 @@ pub(crate) const RECEIVED: [&str; 2] = ["qty_received", "qty_received_method"];
 /// Related fields of the order that only its buttons set; a write through the line would reach the order.
 const ORDER_OPERATION: [&str; 2] = ["state", "date_approve"];
 
+/// The stored copies of the order's company and vendor: the company rule of the line reads the
+/// first, so neither is ever written through a line; the order's fields are the only source.
+const ORDER_COPIES: [&str; 2] = ["company_id", "partner_id"];
+
 /// A change of these fields prices a line again unless its price was set by hand
 /// (the `technical_price_unit` guard at `:547`).
-const REPRICE: [&str; 2] = ["product_qty", "uom_id"];
+const REPRICE: [&str; 3] = ["product_qty", "uom_id", "product_id"];
 
 const MICROS_PER_DAY: i64 = 86_400_000_000;
 
@@ -52,7 +52,7 @@ const MICROS_PER_DAY: i64 = 86_400_000_000;
     description = "Purchase Order Line",
     order = "order_id, sequence, id",
     check_company_auto = true,
-    company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
+    company_access = direct(field = "company_id", branch = "exact", empty = "deny", parent = "order_id"),
 )]
 pub struct PurchaseOrderLine {
     /// The order the line belongs to; deleting the order deletes its lines.
@@ -174,6 +174,7 @@ pub struct PurchaseOrderLine {
         comodel = "res.company",
         related = "order_id.company_id",
         store = true,
+        copy = false,
         index = true,
         string = "Company"
     )]
@@ -187,6 +188,7 @@ pub struct PurchaseOrderLine {
         comodel = "res.partner",
         related = "order_id.partner_id",
         store = true,
+        copy = false,
         index = "btree_not_null",
         string = "Partner"
     )]
@@ -247,21 +249,24 @@ impl PurchaseOrderLine {
         refuse_context_defaults(&env, &COMPUTED, "purchase order line")?;
         refuse_context_defaults(&env, &RECEIVED, "purchase order line")?;
         refuse_context_defaults(&env, &ORDER_OPERATION, "purchase order line")?;
+        refuse_context_defaults(&env, &ORDER_COPIES, "purchase order line")?;
         let mut order_ids = BTreeSet::new();
         for vals in &vals_list {
-            refuse_line_fields(vals)?;
+            refuse_line_fields(vals, false)?;
             order_ids.insert(id_of(vals.get("order_id"), "order_id")?.ok_or_else(|| {
                 Error::validation("A purchase order line needs its order (order_id).")
             })?);
         }
         let heads = order_heads(tx, &env, &order_ids).await?;
         refuse_closed(&heads, &order_ids, "add lines to", false)?;
+        let before = approved_totals(tx, &env, &heads).await?;
         for vals in &mut vals_list {
             let order = id_of(vals.get("order_id"), "order_id")?.unwrap_or_default();
             fill_line(tx, &env, &heads[&order], vals).await?;
         }
         let lines = sup.call(tx, this.as_records(), (vals_list,)).await?;
         sync_lines(tx, &env, &lines).await?;
+        refuse_unapproved_raise(tx, &env, &heads, &before).await?;
         Ok(lines)
     }
 
@@ -275,7 +280,7 @@ impl PurchaseOrderLine {
         vals: RawVals,
         sup: Super,
     ) -> Result<()> {
-        refuse_line_fields(&vals)?;
+        refuse_line_fields(&vals, true)?;
         if vals.contains("order_id") {
             return Err(Error::validation(
                 "A purchase order line cannot move to another order; delete it and add a new one.",
@@ -290,13 +295,26 @@ impl PurchaseOrderLine {
         let order_ids: BTreeSet<i64> = orders.values().copied().collect();
         let heads = order_heads(tx, &env, &order_ids).await?;
         refuse_closed(&heads, &order_ids, "change lines of", false)?;
-        let reprice = !vals.contains("price_unit") && REPRICE.iter().any(|f| vals.contains(f));
+        let written: BTreeSet<String> = vals
+            .iter()
+            .map(|(name, _)| name)
+            .chain(vals.iter_commands().map(|(name, _)| name))
+            .map(str::to_owned)
+            .collect();
+        let reprice =
+            !written.contains("price_unit") && REPRICE.iter().any(|f| written.contains(*f));
         let manual = if reprice {
             manual_prices(tx, &lines).await?
         } else {
             BTreeSet::new()
         };
+        let before = approved_totals(tx, &env, &heads).await?;
         sup.call(tx, &lines, (vals,)).await?;
+        if written.contains("product_id") {
+            for id in lines.ids() {
+                refill_for_product(tx, &env, &heads[&orders[&id]], id, &written).await?;
+            }
+        }
         if reprice {
             for id in lines.ids() {
                 if !manual.contains(&id) {
@@ -304,7 +322,8 @@ impl PurchaseOrderLine {
                 }
             }
         }
-        sync_lines(tx, &env, &lines).await
+        sync_lines(tx, &env, &lines).await?;
+        refuse_unapproved_raise(tx, &env, &heads, &before).await
     }
 
     /// Lines of confirmed, cancelled or locked orders stay; the order totals follow.
@@ -325,6 +344,163 @@ impl PurchaseOrderLine {
         sup.call(tx, &lines, ()).await?;
         sync_orders(tx, &env, &order_ids).await
     }
+}
+
+/// The totals, in the order currency, of the approved orders of `heads`, before a line change.
+/// The order currency of an approved order is frozen, so these totals compare like with like.
+async fn approved_totals(
+    tx: &mut Transaction,
+    env: &Env,
+    heads: &BTreeMap<i64, OrderHead>,
+) -> Result<BTreeMap<i64, Decimal>> {
+    let approved: Vec<i64> = heads
+        .iter()
+        .filter(|(_, head)| head.state == "purchase")
+        .map(|(id, _)| *id)
+        .collect();
+    if approved.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let orders = env
+        .records("purchase.order")?
+        .browse(approved.iter().copied())?;
+    let cells = orders.cells(tx, "amount_total").await?;
+    orders
+        .ids()
+        .into_iter()
+        .zip(cells.iter())
+        .map(|(id, cell)| Ok((id, amount(cell, "amount_total")?)))
+        .collect()
+}
+
+/// A change of lines may not take the total of an approved order above what the caller may
+/// approve: the approval read the total as it was, so a raise past the limit needs a user who
+/// may approve it (V11). A raise is a higher total in the order currency; the question
+/// itself converts into the company currency. A lower total, and a raise inside the limit, pass.
+async fn refuse_unapproved_raise(
+    tx: &mut Transaction,
+    env: &Env,
+    heads: &BTreeMap<i64, OrderHead>,
+    before: &BTreeMap<i64, Decimal>,
+) -> Result<()> {
+    if before.is_empty() {
+        return Ok(());
+    }
+    let orders = env
+        .records("purchase.order")?
+        .browse(before.keys().copied())?;
+    let after = orders.cells(tx, "amount_total").await?;
+    let raised: Vec<i64> = before
+        .iter()
+        .zip(after.iter())
+        .map(|((id, old), cell)| Ok((*id, amount(cell, "amount_total")? > *old)))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter_map(|(id, raised)| raised.then_some(id))
+        .collect();
+    if raised.is_empty() {
+        return Ok(());
+    }
+    // one answer per order, in id order, as the approval question gives them
+    let allowed: Vec<bool> = orders
+        .browse(raised.iter().copied())?
+        .call(tx, "_approval_allowed", ())
+        .await?;
+    let refused: Vec<String> = raised
+        .iter()
+        .zip(allowed)
+        .filter(|(_, ok)| !ok)
+        .filter_map(|(id, _)| heads.get(id).map(|h| h.name.clone()))
+        .collect();
+    if refused.is_empty() {
+        return Ok(());
+    }
+    Err(Error::access(format!(
+        "These purchase orders are approved, and this change takes their total above what you may \
+         approve; ask a purchase administrator to make it: {}.",
+        refused.join(", ")
+    )))
+}
+
+/// After a new product on an existing line: unit, vendor taxes and description of the new product,
+/// each unless the same write gave it (the price follows through `reprice_line`, unless it was
+/// set by hand).
+async fn refill_for_product(
+    tx: &mut Transaction,
+    env: &Env,
+    head: &OrderHead,
+    id: i64,
+    written: &BTreeSet<String>,
+) -> Result<()> {
+    let line = env.records("purchase.order.line")?.browse([id])?;
+    let Some(product) = id_of(Some(&line.cell(tx, "product_id").await?), "product_id")? else {
+        return Ok(());
+    };
+    let company_env = env.with_company(head.company)?;
+    let record = company_env.records("product.product")?.browse([product])?;
+    let mut set = RawVals::new();
+    if !written.contains("uom_id") {
+        let unit = id_of(Some(&record.cell(tx, "uom_id").await?), "uom_id")?
+            .ok_or_else(|| Error::invariant(format!("product {product} has no unit")))?;
+        set = set.set_cell("uom_id", Cell::Id(unit));
+    }
+    if !written.contains("name") {
+        set = set.set_cell(
+            "name",
+            description(tx, &record)
+                .await?
+                .map_or(Cell::Null, Cell::Str),
+        );
+    }
+    if !written.contains("tax_ids") {
+        let taxes = vendor_taxes(tx, &company_env, &record, head.company).await?;
+        set = set.set_commands("tax_ids", [Command::Set(taxes)]);
+    }
+    // the vendor price row and discount of the former product are no longer this line's; a line
+    // priced again takes the new ones, a hand-priced line has none
+    set = set.set_cell("selected_seller_id", Cell::Null);
+    if !written.contains("discount") {
+        set = set.set_cell("discount", Cell::Decimal(Decimal::ZERO));
+    }
+    line.write_base(tx, set).await
+}
+
+/// The lines of `orders` priced again from their vendor (the order's vendor changed), unless a
+/// person set the price; then the amounts and totals follow.
+pub(crate) async fn reprice_orders(
+    tx: &mut Transaction,
+    env: &Env,
+    orders: &BTreeSet<i64>,
+) -> Result<()> {
+    let ids: Vec<i64> = orders.iter().copied().collect();
+    let lines = env
+        .sudo(true)
+        .records("purchase.order.line")?
+        .search(tx, &Domain::condition("order_id", Operator::In, ids)?)
+        .await?;
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let owners = line_orders(tx, &lines).await?;
+    let heads = order_heads(tx, env, orders).await?;
+    let manual = manual_prices(tx, &lines).await?;
+    for id in lines.ids() {
+        if manual.contains(&id) {
+            // a hand-priced line keeps its price, not the former vendor's row and discount
+            env.records("purchase.order.line")?
+                .browse([id])?
+                .write_base(
+                    tx,
+                    RawVals::new()
+                        .set_cell("selected_seller_id", Cell::Null)
+                        .set_cell("discount", Cell::Decimal(Decimal::ZERO)),
+                )
+                .await?;
+        } else {
+            reprice_line(tx, env, &heads[&owners[&id]], id).await?;
+        }
+    }
+    sync_lines(tx, env, &lines).await
 }
 
 /// What a line reads of its order.
@@ -385,7 +561,20 @@ fn value_id(value: Option<&Value>, field: &str) -> Result<i64> {
 }
 
 /// Refuses the fields only this module or a later slice writes, by name.
-fn refuse_line_fields(vals: &RawVals) -> Result<()> {
+fn refuse_line_fields(vals: &RawVals, on_write: bool) -> Result<()> {
+    if let Some(field) = ORDER_COPIES.iter().find(|f| vals.contains(f)) {
+        return Err(Error::validation(format!(
+            "The field {field} of a purchase order line is a copy of the one of its order and \
+             cannot be written on the line; change it on the order."
+        )));
+    }
+    // the line form sends the last price with a new line; a later write never sets it
+    if on_write && vals.contains("technical_price_unit") {
+        return Err(Error::validation(
+            "The field technical_price_unit of a purchase order line follows its price and cannot \
+             be written; change the unit price instead.",
+        ));
+    }
     if let Some(field) = COMPUTED.iter().find(|f| vals.contains(f)) {
         return Err(Error::validation(format!(
             "The field {field} of a purchase order line is computed from the line and its order, \
@@ -400,8 +589,8 @@ fn refuse_line_fields(vals: &RawVals) -> Result<()> {
     }
     if let Some(field) = RECEIVED.iter().find(|f| vals.contains(f)) {
         return Err(Error::user(format!(
-            "The received quantity of a purchase order line ({field}) is filled by receipts, \
-             which come with task {RECEIPT_QTY_TASK}."
+            "The received quantity of a purchase order line ({field}) is filled by receipts; \
+             receiving goods is not available yet, so it cannot be written."
         )));
     }
     Ok(())
@@ -526,8 +715,8 @@ async fn seller(
     quantity: Decimal,
     unit: i64,
 ) -> Result<Option<SellerInfo>> {
-    let date = Date::context_today_at(env.tz(), head.date_order)
-        .map_err(|e| Error::internal(e.message().to_owned()))?;
+    // the UTC day of the deadline, whoever asks: a stored price never depends on the reader
+    let date = head.date_order.date();
     let query = SellerQuery::default()
         .with_partner(head.partner)?
         .with_quantity(Some(quantity.abs()))
@@ -572,9 +761,9 @@ async fn price_of(
                     match v.get("delay") {
                         Some(Value::Int(days)) => *days,
                         _ => {
-                            return Err(Error::validation(format!(
-                                "The vendor price {} of this product has no lead time; give it a \
-                                 number of days.",
+                            // the column is required, so no row reaches here without one
+                            return Err(Error::invariant(format!(
+                                "vendor price {} has no lead time",
                                 value_id(v.get("supplierinfo"), "supplierinfo")?
                             )));
                         }
@@ -583,7 +772,14 @@ async fn price_of(
             }
             None => {
                 let record = company_env.records("product.product")?.browse([product])?;
-                let cost = amount(&record.cell(tx, "standard_price").await?, "standard_price")?;
+                // the cost hook, so a valuation addon supplies it per product
+                let costs: Vec<Decimal> = record.call(tx, "_get_standard_price", ()).await?;
+                let [cost] = costs.as_slice() else {
+                    return Err(Error::programming(
+                        "_get_standard_price must return one value per product.",
+                    ));
+                };
+                let cost = *cost;
                 let from_unit = id_of(Some(&record.cell(tx, "uom_id").await?), "uom_id")?
                     .ok_or_else(|| Error::invariant(format!("product {product} has no unit")))?;
                 // the reference's cost currency is the product company's or the active company's
@@ -607,8 +803,7 @@ async fn price_of(
     let in_currency = if currency == head.currency {
         in_unit
     } else {
-        let at = Date::context_today_at(env.tz(), head.date_order)
-            .map_err(|e| Error::internal(e.message().to_owned()))?;
+        let at = head.date_order.date();
         let rec = |id: i64| {
             RecId::from_real(id).ok_or_else(|| Error::invariant(format!("record id {id}")))
         };
@@ -779,9 +974,8 @@ async fn reprice_line(tx: &mut Transaction, env: &Env, head: &OrderHead, id: i64
     .await
 }
 
-/// The taxes of `ids` as the tax computation takes them. A group of taxes waits for
-/// [`TAX_CHILDREN_TASK`] and a tax with a negative factor (reverse charge) for [`KERNEL_TASK`],
-/// both refused as on invoices; other unsupported kinds are refused by the computation.
+/// The taxes of `ids` as the tax computation takes them. A group of taxes and a tax with
+/// a negative factor (reverse charge) are not supported yet and refused as on invoices; other unsupported kinds are refused by the computation.
 async fn load_taxes(
     tx: &mut Transaction,
     env: &Env,
@@ -823,8 +1017,8 @@ async fn load_taxes(
         let kind = match cell("amount_type")? {
             Cell::Str(kind) if kind.as_ref() == "group" => {
                 return Err(Error::user(format!(
-                    "Tax {} is a group of taxes: groups need their child taxes, which come \
-                     with task {TAX_CHILDREN_TASK}.",
+                    "Tax {} is a group of taxes: purchase lines do not support groups of \
+                     taxes yet; use their child taxes on the line.",
                     name()?
                 )));
             }
@@ -833,8 +1027,8 @@ async fn load_taxes(
         };
         if flag("has_negative_factor")? {
             return Err(Error::user(format!(
-                "Tax {} has a negative distribution (reverse charge), which comes with task \
-                 {KERNEL_TASK}.",
+                "Tax {} has a negative distribution (reverse charge), which purchase lines do \
+                 not support yet.",
                 name()?
             )));
         }
@@ -924,8 +1118,16 @@ async fn sync_lines(tx: &mut Transaction, env: &Env, lines: &Records) -> Result<
         let taxes: Vec<TaxDef> = match get("tax_ids", i) {
             Cell::Ids(taxes) => taxes
                 .iter()
-                .filter_map(|t| t.as_real().and_then(|t| defs.get(&t.get())).cloned())
-                .collect(),
+                .filter_map(|t| t.as_real())
+                .map(|t| {
+                    defs.get(&t.get()).cloned().ok_or_else(|| {
+                        Error::invariant(format!(
+                            "tax {} of purchase order line {id} was not loaded",
+                            t.get()
+                        ))
+                    })
+                })
+                .collect::<Result<_>>()?,
             _ => Vec::new(),
         };
         let quantity = amount(&get("product_qty", i), "product_qty")?;
@@ -936,7 +1138,10 @@ async fn sync_lines(tx: &mut Transaction, env: &Env, lines: &Records) -> Result<
             taxes: &taxes,
             increment: table.get(currency)?.increment(),
         })?;
-        let tax = result.total_included - result.total_excluded;
+        let tax = result
+            .total_included
+            .checked_sub(result.total_excluded)
+            .ok_or_else(out_of_range)?;
         let in_product_unit = product_quantity(
             tx,
             &sudo,
@@ -1000,10 +1205,13 @@ async fn product_quantity(
     )?)
 }
 
+fn out_of_range() -> Error {
+    Error::validation("An amount of the purchase order is out of range.")
+}
+
 /// Writes the untaxed amount, taxes, total, total in the company currency and earliest planned
 /// date of `orders` from their lines. Taxes are rounded
-/// per line, the only rounding the tax computation has (the company choice comes with
-/// `erp_addon_account::tax::compute::ROUNDING_TASK`).
+/// per line, the only rounding the tax computation has.
 pub(crate) async fn sync_orders(
     tx: &mut Transaction,
     env: &Env,
@@ -1036,8 +1244,17 @@ pub(crate) async fn sync_orders(
         let entry = sums
             .entry(order)
             .or_insert((Decimal::ZERO, Decimal::ZERO, None));
-        entry.0 += amount(subtotals.get(i).unwrap_or(&Cell::Null), "price_subtotal")?;
-        entry.1 += amount(taxes.get(i).unwrap_or(&Cell::Null), "price_tax")?;
+        entry.0 = entry
+            .0
+            .checked_add(amount(
+                subtotals.get(i).unwrap_or(&Cell::Null),
+                "price_subtotal",
+            )?)
+            .ok_or_else(out_of_range)?;
+        entry.1 = entry
+            .1
+            .checked_add(amount(taxes.get(i).unwrap_or(&Cell::Null), "price_tax")?)
+            .ok_or_else(out_of_range)?;
         if let Some(Cell::DateTime(at)) = dates.get(i) {
             entry.2 = Some(entry.2.map_or(*at, |seen: DateTime| seen.min(*at)));
         }
@@ -1050,7 +1267,7 @@ pub(crate) async fn sync_orders(
     let deadlines = records.cells(tx, "date_order").await?;
     for (i, id) in ids.iter().enumerate() {
         let (untaxed, tax, earliest) = sums[id];
-        let total = untaxed + tax;
+        let total = untaxed.checked_add(tax).ok_or_else(out_of_range)?;
         let company = id_of(companies.get(i), "company_id")?.and_then(RecId::from_real);
         let currency = id_of(currencies.get(i), "currency_id")?.and_then(RecId::from_real);
         let (Some(company), Some(currency)) = (company, currency) else {
@@ -1103,6 +1320,8 @@ pub(crate) async fn in_company_currency(
     if company_currency == currency {
         return Ok(total);
     }
+    // the UTC day of the deadline (what the reference's conversion gets from the datetime), never
+    // the reader's day: the stored total and the approval question must not change with the reader
     let date = deadline.map_or_else(Date::today, |at| at.date());
     convert(env, tx, total, currency, company_currency, company, date).await
 }

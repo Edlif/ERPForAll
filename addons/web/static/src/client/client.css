@@ -2875,9 +2875,12 @@ dialog, .client-block-feedback { box-shadow: var(--shadow-dialog); }
 @media (min-width: 641px) {
   .record-form:not(.settings-form) .form-group-grid:not(:has(> .form-group)) { grid-template-columns: repeat(var(--form-columns, 1), fit-content(var(--form-label-cap)) minmax(0, 1fr)); column-gap: 12px; }
   .record-form:not(.settings-form) .form-group-grid:not(:has(> .form-group)) > .field-label:not(:has(textarea), .html-editor, .form-title-field, .form-title-heading *) { grid-column: span 2; grid-template-columns: subgrid; column-gap: 12px; }
-  /* Async preference widgets keep a wrapper until choices arrive; it owns the same label/value tracks. */
-  .record-form:not(.settings-form) .form-group-grid:not(:has(> .form-group)) > .preference-choice { display: grid; grid-column: span 2; grid-template-columns: subgrid; }
-  .record-form:not(.settings-form) .preference-choice > .field-label { grid-column: 1 / -1; grid-template-columns: subgrid; }
+  /*
+    A widget that keeps a wrapper around its row (async preference widgets until choices arrive, the monetary field for its
+   currency) owns the same label/value tracks.
+   */
+  .record-form:not(.settings-form) .form-group-grid:not(:has(> .form-group)) > :is(.preference-choice, .field-monetary) { display: grid; grid-column: span 2; grid-template-columns: subgrid; }
+  .record-form:not(.settings-form) :is(.preference-choice, .field-monetary) > .field-label { grid-column: 1 / -1; grid-template-columns: subgrid; }
   .record-form:not(.settings-form) .form-group-grid > .field-label:has(textarea) { grid-column: 1 / -1; }
   .record-form:not(.settings-form) .form-group-grid > .form-notebook, .record-form:not(.settings-form) .form-group-grid > .form-separator { grid-column: 1 / -1; }
 }

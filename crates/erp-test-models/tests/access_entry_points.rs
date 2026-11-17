@@ -1041,6 +1041,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "reads the fiscal calendar settings (year end, horizon) of a root company for period creation; the framework reads its own configuration, and a user whose entry needs a period needs no settings group; the values are bounded and only named in refusals (a later release)",
     ),
     (
+        "account/invoice/settings.rs::configured_code",
+        1,
+        "reads one company setting, the code of the default receivable or payable account an invoice of that company takes; the framework reads its own configuration, and a user who writes an invoice needs no settings group; only the configured code leaves the read",
+    ),
+    (
         "account/journal/dashboard.rs::journals",
         1,
         "reads only `currency_id` of the companies of the journals the caller's own search returned, to give each dashboard card the currency of its amounts; a user who may read a journal may see its company's currency, and no company row is returned",
@@ -1709,6 +1714,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "purchase/line.rs::resync_orders",
         1,
         "after the base write of orders the caller wrote (write access checked) with a changed currency, deadline or company, finds the ids of all lines of those orders and hands them to `sync_lines`; only ids leave the search and nothing is returned",
+    ),
+    (
+        "purchase/line.rs::reprice_orders",
+        1,
+        "after the base write of orders the caller wrote (write access checked) with a new vendor, finds the ids of all lines of those orders and, with the same elevated environment, reads their order, unit price and last price to tell the lines no one priced by hand; those lines are priced again and the others lose their vendor price row and discount, both with `write_base` on caller-environment records; only ids leave the search and nothing is returned",
     ),
     (
         "purchase/line.rs::orders_without_product",

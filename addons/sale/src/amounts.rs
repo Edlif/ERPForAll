@@ -15,14 +15,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use erp_addon_account::invoice::TAX_CHILDREN_TASK;
-use erp_addon_account::tax::compute::{self, AmountType, BaseLine, KERNEL_TASK, TaxDef, TaxKind};
+use erp_addon_account::tax::compute::{self, AmountType, BaseLine, TaxDef, TaxKind};
 use erp_addon_base::money::{CURRENCY_ROUNDING_MODE, RoundingTable, convert};
 use erp_addon_product::ProductPricelist;
 use erp_addon_uom::conversion::price_exact;
 use erp_addon_uom::models::load_unit;
 use erp_sdk::Command;
-use erp_sdk::money::Increment;
+use erp_sdk::money::{Increment, RoundingMode};
 use erp_sdk::prelude::*;
 
 /// Fields of a line only this module writes; `currency_id` is the order's currency.
@@ -75,7 +74,7 @@ pub(crate) fn refuse_derived(
     Ok(())
 }
 
-fn id_of(cell: &Cell, field: &str) -> Result<Option<i64>> {
+pub(crate) fn id_of(cell: &Cell, field: &str) -> Result<Option<i64>> {
     match cell {
         Cell::Null | Cell::Bool(false) => Ok(None),
         Cell::Id(id) => Ok(Some(*id)),
@@ -208,6 +207,21 @@ pub(crate) async fn price_of(
         "currency_id",
     )?
     .ok_or_else(|| Error::invariant(format!("company {} has no currency", head.company)))?;
+    // a pricelist rule's minimum is in the product's unit: the line's quantity is converted first
+    let product_unit = id_of(&record.cell(tx, "uom_id").await?, "uom_id")?
+        .ok_or_else(|| Error::invariant(format!("product {product} has no unit")))?;
+    let source = load_unit(&company_env, tx, product_unit).await?;
+    let target = load_unit(&company_env, tx, unit).await?;
+    // rounded at the Product Unit precision, as a quantity in another unit always is
+    let unit_digits =
+        erp_addon_base::decimal_precision::precision_get(&company_env, tx, "Product Unit").await?;
+    let quantity = erp_addon_uom::conversion::quantity_rounded(
+        &target,
+        &source,
+        quantity,
+        &Increment::from_places(unit_digits)?,
+        RoundingMode::AwayFromZero,
+    )?;
     let price = match head.pricelist {
         Some(pricelist) => {
             let set = RecordSet::<ProductPricelist>::try_from(
@@ -263,13 +277,9 @@ pub(crate) async fn price_of(
             }
         }
     };
-    let product_unit = id_of(&record.cell(tx, "uom_id").await?, "uom_id")?
-        .ok_or_else(|| Error::invariant(format!("product {product} has no unit")))?;
     let digits =
         erp_addon_base::decimal_precision::precision_get(&company_env, tx, "Product Price").await?;
     let precision = Increment::from_places(digits)?;
-    let source = load_unit(&company_env, tx, product_unit).await?;
-    let target = load_unit(&company_env, tx, unit).await?;
     Ok(price_exact(&source, &target, price)?.quantize(&precision, CURRENCY_ROUNDING_MODE)?)
 }
 
@@ -372,10 +382,8 @@ pub(crate) async fn fill_line(
     if matches!(vals.get("display_type"), Some(Cell::Str(_))) {
         return Ok(());
     }
-    let product = match vals.get("product_id") {
-        Some(cell) => id_of(cell, "product_id")?,
-        None => None,
-    };
+    let product = crate::order::given_id(env, vals, "product_id")?.map(|id| id.get());
+    // only an absent key takes the product's taxes: a given set, the empty one too, is kept
     if !vals.contains("tax_ids") && vals.commands("tax_ids").is_none() {
         let taxes = taxes_of(tx, env, head, product).await?;
         vals.insert_commands("tax_ids".into(), vec![Command::Set(taxes)]);
@@ -567,8 +575,8 @@ async fn load_taxes(
         let kind = match cell("amount_type")? {
             Cell::Str(kind) if kind.as_ref() == "group" => {
                 return Err(Error::user(format!(
-                    "Tax {name} is a group of taxes: groups need their child taxes, which come \
-                     with task {TAX_CHILDREN_TASK}."
+                    "Tax {name} is a group of taxes: groups need their child taxes, which are not \
+                     supported on sales order lines yet."
                 )));
             }
             Cell::Str(kind) => AmountType::parse(&kind)?,
@@ -576,8 +584,8 @@ async fn load_taxes(
         };
         if flag("has_negative_factor")? {
             return Err(Error::user(format!(
-                "Tax {name} has a negative distribution (reverse charge), which comes with task \
-                 {KERNEL_TASK}."
+                "Tax {name} has a negative distribution (reverse charge), which is not \
+                 supported on sales order lines yet."
             )));
         }
         let sequence = match cell("sequence")? {
@@ -651,8 +659,12 @@ pub(crate) async fn sync_lines(tx: &mut Transaction, env: &Env, lines: &Records)
             .ok_or_else(|| Error::invariant(format!("sales order {order} was not read")))?;
         let taxes: Vec<TaxDef> = ids_of(&get("tax_ids", i))
             .into_iter()
-            .filter_map(|t| defs.get(&t).cloned())
-            .collect();
+            .map(|t| {
+                defs.get(&t).cloned().ok_or_else(|| {
+                    Error::invariant(format!("tax {t} of sales order line {id} was not loaded"))
+                })
+            })
+            .collect::<Result<_>>()?;
         let result = compute::compute(&BaseLine {
             price_unit: number(&get("price_unit", i), "price_unit")?,
             quantity: number(&get("product_uom_qty", i), "product_uom_qty")?,

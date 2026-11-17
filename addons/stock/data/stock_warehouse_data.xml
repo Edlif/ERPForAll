@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <!-- At install every company gets its warehouse with its locations, operation types and their
-     numbering; later companies get theirs when they are created, an upgrade by the stock 1.8 step. -->
+     numbering; later companies get theirs when they are created. Not noupdate: every upgrade of
+     Inventory runs it again, so a company committed without one (by a node of an older version
+     during an install or an upgrade) gets its warehouse at the next upgrade; a company that has
+     one is left alone. -->
 <odoo>
-  <data noupdate="1">
-    <function model="res.company" name="_stock_create_missing_warehouses"/>
-  </data>
+  <function model="res.company" name="_stock_create_missing_warehouses"/>
 </odoo>

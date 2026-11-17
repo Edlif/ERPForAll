@@ -12,7 +12,7 @@ use erp_sdk::{
     audit::{AccountLockDateChanged, AuthEvent},
 };
 
-const ACTIVATION: &str = "Hard lock activation is unavailable: a later release must verify the maintenance drain, entry checks and activation audit first.";
+const ACTIVATION: &str = "Hard lock activation is not available yet: the maintenance drain, entry checks and activation audit must be verified first.";
 /// A company-date patch. Unmentioned fields stay unchanged; `None` explicitly clears a soft date.
 #[derive(Debug, Clone, Default)]
 pub struct LockPatch {

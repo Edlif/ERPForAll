@@ -34,12 +34,13 @@ pub struct StockWarehouse {
     /// Archived warehouses keep their topology for history.
     #[field(boolean, default = true)]
     pub active: bool,
-    /// Owning company.
+    /// Owning company; indexed for the per-company lookups and the company delete check.
     #[field(
         many2one,
         comodel = "res.company",
         required = true,
         readonly = true,
+        index = true,
         string = "Company"
     )]
     pub company_id: Option<RecId>,

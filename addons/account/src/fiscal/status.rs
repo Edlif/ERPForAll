@@ -297,8 +297,8 @@ impl PeriodSet {
             let id: Option<i64> = row.try_get(3).map_err(db)?;
             let id = id.ok_or_else(|| {
                 Error::missing(format!(
-                    "company {branch} has no fiscal period {}..{}; create the periods of its root \
-                     company with ensure_periods first",
+                    "company {branch} has no fiscal period {}..{} yet: periods are created when an \
+                     entry of that period is posted",
                     set.date_from, set.date_to
                 ))
             })?;

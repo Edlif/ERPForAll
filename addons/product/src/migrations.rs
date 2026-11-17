@@ -220,3 +220,32 @@ async fn security_identity(tx: &mut Transaction, name: &str, model: &str) -> Res
 pub async fn migrate_barcode_claims(tx: &mut Transaction, _from: &SemverVersion) -> Result<()> {
     crate::barcode::backfill(tx).await
 }
+
+/// Give vendor price rows that have no lead time the default of one day before the lead time
+/// becomes a required column, so the purchase pricing never meets a row without one.
+///
+/// # Errors
+/// Database errors propagate; the enclosing module-upgrade transaction rolls back.
+#[erp_sdk::migration(addon = "product", version = "1.6", stage = pre)]
+pub async fn migrate_supplier_delay(tx: &mut Transaction, _from: &SemverVersion) -> Result<()> {
+    let has_column: bool = tx
+        .query(
+            "SELECT EXISTS (SELECT 1 FROM pg_attribute \
+             WHERE attrelid = to_regclass('product_supplierinfo') \
+               AND attname = 'delay' AND NOT attisdropped)",
+            &[],
+        )
+        .await?
+        .first()
+        .ok_or_else(|| Error::programming("Lead time migration column probe returned no row."))?
+        .try_get(0)
+        .map_err(|e| Error::db(format!("Lead time migration column probe: {e}")))?;
+    if has_column {
+        tx.execute(
+            "UPDATE product_supplierinfo SET delay = 1 WHERE delay IS NULL",
+            &[],
+        )
+        .await?;
+    }
+    Ok(())
+}

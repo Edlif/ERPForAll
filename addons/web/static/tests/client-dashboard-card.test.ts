@@ -154,7 +154,7 @@ test("a long chart labels at most six points, counted from the last, as short da
     value.chart.points = days.map(label => ({ label, value: "0", tone: "neutral" }));
   })).env);
   const ticks = [...node.querySelectorAll<HTMLElement>(".dashboard-card-chart-axis span")];
-  expect(ticks.map(item => item.textContent)).toEqual(["23 Oct", "28 Oct", "2 Nov", "7 Nov", "12 Nov", "17 Nov"]);
+  expect(ticks.map(item => item.textContent)).toEqual(["Oct 23", "Oct 28", "Nov 2", "Nov 7", "Nov 12", "Nov 17"]);
   expect(ticks.map(item => item.style.gridColumn)).toEqual(["5", "10", "15", "20", "25", "30"]);
   expect(ticks.at(-1)!.style.justifySelf).toBe("end");
   // every point stays in the text alternative, with its full label
@@ -163,10 +163,20 @@ test("a long chart labels at most six points, counted from the last, as short da
 });
 
 test("axis labels read ISO days and months as short dates and leave other labels alone", () => {
-  expect(axisLabel("2026-11-17")).toBe("17 Nov");
+  expect(axisLabel("2026-11-17")).toBe("Nov 17");
   expect(axisLabel("2025-11")).toBe("Nov 25");
   expect(axisLabel("Overdue")).toBe("Overdue");
   expect(axisLabel("2026-13")).toBe("2026-13");
+});
+
+test("the day label orders day and month by the page language", () => {
+  const lang = document.documentElement.lang;
+  try {
+    document.documentElement.lang = "en-GB";
+    expect(axisLabel("2026-11-17")).toMatch(/^17 Nov/);
+    document.documentElement.lang = "en-US";
+    expect(axisLabel("2026-11-17")).toMatch(/^Nov 17/);
+  } finally { document.documentElement.lang = lang; }
 });
 
 test("the line chart draws one line through every point, with the same text alternative", () => {

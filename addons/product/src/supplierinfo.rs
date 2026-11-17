@@ -109,7 +109,7 @@ pub struct ProductSupplierinfo {
     pub date_end: Option<Date>,
 
     /// Delivery lead time in calendar days.
-    #[field(integer, default = 1, string = "Lead Time")]
+    #[field(integer, required = true, default = 1, string = "Lead Time")]
     pub delay: i32,
 
     /// Restricting company.

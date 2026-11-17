@@ -3,7 +3,8 @@
 //! successful post numbers the entries, and numbering reads the declared settings (fiscal calendar,
 //! lock wait), which need the installed groups. The collected refusals, re-dating into the first
 //! open date (fiscal-year and tax locks), the reversal-only policy, what a posted entry and its
-//! items may still change, and item changes racing a posting.
+//! items may still change, item changes racing a posting, the numbers of invoices and credit notes,
+//! a draft named by hand, and an invoice whose line was changed without its header.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -14,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use erp_addon_account::fiscal::calendar::FiscalYearEnd;
+use erp_addon_account::fiscal::calendar::{FiscalYearEnd, next_day, previous_day};
 use erp_addon_account::fiscal::ensure_periods_with;
 use erp_addon_account::fiscal::settings::FiscalCalendar;
 use erp_modules::system::{InitOptions, ModuleSystem};
@@ -491,16 +492,13 @@ async fn posting_redates_body() {
         dates.iter().all(|c| *c == Cell::Date(d(2024, 2, 29))),
         "{dates:?}"
     );
-    // a date without a fiscal period is refused naming the period generator
+    // a date whose period does not exist yet posts: posting creates the period it needs
     let outside = moves(&tx, company)
         .create(&mut tx, vec![balanced(&l, d(2024, 6, 1), 4)])
         .await
         .unwrap();
-    let error = try_call(&outside, &mut tx, "action_post")
-        .await
-        .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Missing, "{}", error.message());
-    assert_eq!(cell(&outside, &mut tx, "state").await, text("draft"));
+    try_call(&outside, &mut tx, "action_post").await.unwrap();
+    assert_eq!(cell(&outside, &mut tx, "state").await, text("posted"));
     tx.rollback().await.unwrap();
     drop(tx);
     drop(orm);
@@ -746,6 +744,408 @@ async fn context_defaults_body() {
     tx.rollback().await.unwrap();
 }
 
+/// A new entry's form gets the company currency from `default_get`, before anything is saved.
+#[test]
+fn a_new_entry_form_shows_the_company_currency() {
+    big_stack(default_currency_body);
+}
+
+async fn default_currency_body() {
+    let (_db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    let expected: i64 = tx
+        .query(
+            "SELECT currency_id::int8 FROM res_company WHERE id = $1",
+            &[&company],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let defaults = moves(&tx, company)
+        .default_get(&mut tx, &["currency_id"])
+        .await
+        .unwrap();
+    assert_eq!(defaults.get("currency_id"), Some(&Value::Int(expected)));
+    tx.rollback().await.unwrap();
+}
+
+/// A tax of `rate` percent for `use_` ('sale' or 'purchase'), written directly as in `sales`.
+async fn plain_tax(tx: &mut Transaction, company: i64, name: &str, rate: i64, use_: &str) -> i64 {
+    let account = account(
+        tx,
+        company,
+        &format!("26{rate}{}", use_.len()),
+        "liability_current",
+    )
+    .await;
+    let country: i64 = tx
+        .query("SELECT id::int8 FROM res_country ORDER BY id LIMIT 1", &[])
+        .await
+        .unwrap()[0]
+        .get(0);
+    let group: i64 = tx
+        .query(
+            "SELECT id::int8 FROM account_tax_group WHERE company_id = $1 ORDER BY id LIMIT 1",
+            &[&company],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let tax: i64 = tx
+        .query(
+            "INSERT INTO account_tax (name, type_tax_use, amount_type, active, company_id, \
+             root_company_id, sequence, amount, include_base_amount, is_base_affected, tax_group_id, \
+             country_id, repartition_serial, analytic) \
+             VALUES (jsonb_build_object('en_US', $4::text), $5::text, 'percent', true, $1, $1, 1, \
+             $6, false, true, $2, $3, 0, false) RETURNING id::int8",
+            &[&company, &group, &country, &name, &use_, &Decimal::from(rate)],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    tx.query(
+        "INSERT INTO account_tax_repartition_line (factor_percent, repartition_type, document_type, \
+         account_id, tax_id, company_id, sequence, use_in_tax_closing) VALUES \
+         (100, 'base', 'invoice', NULL, $1, $2, 1, false), (100, 'tax', 'invoice', $3, $1, $2, 2, true), \
+         (100, 'base', 'refund', NULL, $1, $2, 1, false), (100, 'tax', 'refund', $3, $1, $2, 2, true)",
+        &[&tax, &company, &account],
+    )
+    .await
+    .unwrap();
+    tax
+}
+
+/// A line of `product` (none: a free-text line) whose tax set is left out (`None`) or sent as given.
+fn line_of(product: Option<i64>, taxes: Option<&[i64]>) -> Command {
+    let mut vals = RawVals::new()
+        .set_cell("name", text("Line"))
+        .set_cell("quantity", num("1"))
+        .set_cell("price_unit", num("100"));
+    if let Some(product) = product {
+        vals = vals.set_cell("product_id", Cell::Id(product));
+    }
+    if let Some(taxes) = taxes {
+        vals = vals.set_commands(
+            "tax_ids",
+            [Command::set(
+                taxes.iter().map(|t| RecId::from_real(*t).unwrap()),
+            )],
+        );
+    }
+    Command::create(vals)
+}
+
+/// does not choose any; no fiscal position mapping)
+#[test]
+fn a_product_line_that_chooses_no_taxes_takes_the_products() {
+    big_stack(product_line_taxes_body);
+}
+
+async fn product_line_taxes_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    let s = sales(&mut tx, company).await;
+    let expense = account(&mut tx, company, "600000", "expense").await;
+    account(&mut tx, company, "211000", "liability_payable").await;
+    journal(&mut tx, company, "BILL", "purchase", Some(expense)).await;
+    let vendor_tax = plain_tax(&mut tx, company, "Purchase 8%", 8, "purchase").await;
+    let other_sale = plain_tax(&mut tx, company, "Other sale 5%", 5, "sale").await;
+    let other_purchase = plain_tax(&mut tx, company, "Other purchase 5%", 5, "purchase").await;
+    let product = tx
+        .env()
+        .with_company(company)
+        .unwrap()
+        .records("product.product")
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("Taxed product"))
+                    .set_commands(
+                        "taxes_id",
+                        [Command::set([RecId::from_real(s.tax).unwrap()])],
+                    )
+                    .set_commands(
+                        "supplier_taxes_id",
+                        [Command::set([RecId::from_real(vendor_tax).unwrap()])],
+                    ),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    let product_b = tx
+        .env()
+        .with_company(company)
+        .unwrap()
+        .records("product.product")
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("Other taxed product"))
+                    .set_commands(
+                        "taxes_id",
+                        [Command::set([RecId::from_real(other_sale).unwrap()])],
+                    )
+                    .set_commands(
+                        "supplier_taxes_id",
+                        [Command::set([RecId::from_real(other_purchase).unwrap()])],
+                    ),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    // (type, an explicit tax of that side, the product's rate on that side, the other product's)
+    for (move_type, explicit, product_rate, other_rate) in [
+        ("out_invoice", other_sale, 15, 5),
+        ("out_refund", other_sale, 15, 5),
+        ("in_invoice", other_purchase, 8, 5),
+        ("in_refund", other_purchase, 8, 5),
+    ] {
+        let cases: [(Command, i64); 4] = [
+            // no tax_ids at all: the product's taxes of that side
+            (line_of(Some(product), None), product_rate),
+            // a given set is kept as given, the empty one included
+            (line_of(Some(product), Some(&[])), 0),
+            (line_of(Some(product), Some(&[explicit])), 5),
+            // no product: no taxes
+            (line_of(None, None), 0),
+        ];
+        for (line, percent) in cases {
+            let vals = RawVals::new()
+                .set_cell("move_type", text(move_type))
+                .set_cell("partner_id", Cell::Id(s.customer))
+                .set_cell("invoice_date", Cell::Date(Date::today()))
+                .set_commands("invoice_line_ids", vec![line]);
+            let entry = moves(&tx, company)
+                .create(&mut tx, vec![vals])
+                .await
+                .unwrap();
+            assert_eq!(
+                cell(&entry, &mut tx, "amount_untaxed").await,
+                num("100"),
+                "{move_type}"
+            );
+            let tax = Cell::Decimal(Decimal::from(percent));
+            assert_eq!(
+                cell(&entry, &mut tx, "amount_tax").await,
+                tax,
+                "{move_type} {percent}"
+            );
+            // a duplicate keeps the lines' taxes as they were, also a line made taxless
+            let total = cell(&entry, &mut tx, "amount_total").await;
+            let copied = entry.copy(&mut tx, None).await.unwrap();
+            assert_eq!(
+                cell(&copied, &mut tx, "amount_tax").await,
+                tax,
+                "copy {move_type}"
+            );
+            assert_eq!(
+                cell(&copied, &mut tx, "amount_total").await,
+                total,
+                "copy {move_type}"
+            );
+        }
+        // changing the product of an existing line takes the new product's taxes
+        let vals = RawVals::new()
+            .set_cell("move_type", text(move_type))
+            .set_cell("partner_id", Cell::Id(s.customer))
+            .set_cell("invoice_date", Cell::Date(Date::today()))
+            .set_commands("invoice_line_ids", vec![line_of(Some(product), None)]);
+        let entry = moves(&tx, company)
+            .create(&mut tx, vec![vals])
+            .await
+            .unwrap();
+        let line = entry
+            .related(&mut tx, "invoice_line_ids")
+            .await
+            .unwrap()
+            .rec_ids()[0];
+        entry
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "invoice_line_ids",
+                    [Command::update(
+                        line,
+                        RawVals::new().set_cell("product_id", Cell::Id(product_b)),
+                    )],
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            cell(&entry, &mut tx, "amount_tax").await,
+            Cell::Decimal(Decimal::from(other_rate)),
+            "product change {move_type}"
+        );
+    }
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+async fn period_count(tx: &mut Transaction, company: i64, month: Date) -> i64 {
+    let (year, number, _) = month.ymd();
+    let from = d(year, number, 1);
+    tx.query(
+        "SELECT count(*)::int8 FROM account_fiscal_period \
+         WHERE company_id = $1 AND kind = 'regular' AND date_from = $2",
+        &[&company, &from],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+/// On a database without any fiscal period, posting an invoice of this month and one of last month
+/// creates the periods they need, once each; a date beyond the horizon setting is refused in plain
+/// words naming the setting. The test never calls `ensure_periods`.
+#[test]
+fn posting_creates_the_periods_it_needs() {
+    big_stack(posting_creates_periods_body);
+}
+
+async fn posting_creates_periods_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    let s = sales(&mut tx, company).await;
+    let today = Date::today();
+    let (year, month, _) = today.ymd();
+    let this_month = d(year, month, 1);
+    let last_month = if month == 1 {
+        d(year - 1, 12, 1)
+    } else {
+        d(year, month - 1, 1)
+    };
+    assert_eq!(period_count(&mut tx, company, this_month).await, 0);
+    assert_eq!(period_count(&mut tx, company, last_month).await, 0);
+    let model = moves(&tx, company);
+    let now = model
+        .create(&mut tx, vec![invoice(&s, today)])
+        .await
+        .unwrap();
+    let before = model
+        .create(&mut tx, vec![invoice(&s, last_month)])
+        .await
+        .unwrap();
+    try_call(&now, &mut tx, "action_post").await.unwrap();
+    try_call(&before, &mut tx, "action_post").await.unwrap();
+    assert_eq!(cell(&now, &mut tx, "state").await, text("posted"));
+    assert_eq!(cell(&before, &mut tx, "state").await, text("posted"));
+    assert_eq!(period_count(&mut tx, company, this_month).await, 1);
+    assert_eq!(period_count(&mut tx, company, last_month).await, 1);
+    // a second entry of the same month finds its period and adds none
+    let again = model
+        .create(&mut tx, vec![invoice(&s, today)])
+        .await
+        .unwrap();
+    try_call(&again, &mut tx, "action_post").await.unwrap();
+    assert_eq!(period_count(&mut tx, company, this_month).await, 1);
+    // an entry two years back creates its own month only, not the months between
+    let old = model
+        .create(&mut tx, vec![invoice(&s, d(year - 2, month, 15))])
+        .await
+        .unwrap();
+    try_call(&old, &mut tx, "action_post").await.unwrap();
+    let total: i64 = tx
+        .query(
+            "SELECT count(*)::int8 FROM account_fiscal_period WHERE company_id = $1",
+            &[&company],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(
+        total, 3,
+        "this month, last month and the month two years back"
+    );
+    // far beyond the horizon: refused, naming the setting and not a function
+    let far = model
+        .create(&mut tx, vec![invoice(&s, d(year + 5, 1, 15))])
+        .await
+        .unwrap();
+    let error = try_call(&far, &mut tx, "action_post").await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{}", error.message());
+    assert!(
+        error.message().contains("fiscal_period_horizon_months"),
+        "{}",
+        error.message()
+    );
+    assert!(
+        !error.message().contains("ensure_periods"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(cell(&far, &mut tx, "state").await, text("draft"));
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// Two transactions posting entries of the same new month at the same time both succeed (the
+/// loser of the creation race is retried by the unit of work) and the period exists once.
+#[test]
+fn concurrent_posts_of_a_new_month_both_succeed() {
+    big_stack(concurrent_posts_body);
+}
+
+async fn concurrent_posts_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    let s = sales(&mut tx, company).await;
+    let income = account(&mut tx, company, "400100", "income").await;
+    let second = journal(&mut tx, company, "INV2", "sale", Some(income)).await;
+    let today = Date::today();
+    let model = moves(&tx, company);
+    let a = model
+        .create(&mut tx, vec![invoice(&s, today)])
+        .await
+        .unwrap();
+    let b = model
+        .create(
+            &mut tx,
+            vec![invoice(&s, today).set_cell("journal_id", Cell::Id(second))],
+        )
+        .await
+        .unwrap();
+    let (a, b) = (a.ids()[0], b.ids()[0]);
+    tx.commit().await.unwrap();
+    let post = |id: i64| {
+        let orm = orm.clone();
+        async move {
+            orm.run(SUPERUSER_ID, Context::new(), async |tx| {
+                let records = tx
+                    .env()
+                    .with_company(company)?
+                    .records("account.move")?
+                    .browse([id])?;
+                records.call::<(), ()>(tx, "action_post", ()).await
+            })
+            .await
+        }
+    };
+    let (first, other) = tokio::join!(post(a), post(b));
+    first.unwrap();
+    other.unwrap();
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let (year, month, _) = today.ymd();
+    assert_eq!(period_count(&mut tx, company, d(year, month, 1)).await, 1);
+    tx.rollback().await.unwrap();
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
 #[test]
 fn posting_runs_as_many_statements_for_one_entry_as_for_five() {
     big_stack(posting_statements_body);
@@ -864,10 +1264,14 @@ async fn sales(tx: &mut Transaction, company: i64) -> Sales {
 
 /// A customer invoice of one 100.00 line with the 15 % tax, dated `on`.
 fn invoice(s: &Sales, on: Date) -> RawVals {
+    document(s, "out_invoice").set_cell("invoice_date", Cell::Date(on))
+}
+
+/// A customer document of `move_type` with one 100.00 line with the 15 % tax and no invoice date.
+fn document(s: &Sales, move_type: &str) -> RawVals {
     RawVals::new()
-        .set_cell("move_type", text("out_invoice"))
+        .set_cell("move_type", text(move_type))
         .set_cell("partner_id", Cell::Id(s.customer))
-        .set_cell("invoice_date", Cell::Date(on))
         .set_commands(
             "invoice_line_ids",
             vec![Command::create(
@@ -1175,6 +1579,316 @@ async fn concurrent_items_body() {
     check.rollback().await.unwrap();
     drop(check);
     drop(node_b);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// The amounts of the items of `entry` per display type, in the company currency.
+async fn balances(tx: &mut Transaction, entry: i64) -> Vec<(String, Decimal)> {
+    tx.flush().await.unwrap();
+    tx.query(
+        "SELECT display_type::text, balance::text FROM account_move_line \
+         WHERE move_id = $1 ORDER BY display_type",
+        &[&entry],
+    )
+    .await
+    .unwrap()
+    .iter()
+    .map(|row| {
+        (
+            row.get::<_, String>(0),
+            row.get::<_, String>(1).parse::<Decimal>().unwrap(),
+        )
+    })
+    .collect()
+}
+
+/// take it too until the journal keeps a credit note chain, then `R` before the code and a counter
+/// of their own)
+#[test]
+fn invoices_and_credit_notes_are_numbered_in_their_chains() {
+    big_stack(document_numbers_body);
+}
+
+async fn document_numbers_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.rollback().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let s = sales(&mut tx, company).await;
+    let credit_note =
+        |on: Date| document(&s, "out_refund").set_cell("invoice_date", Cell::Date(on));
+    let first = moves(&tx, company)
+        .create(&mut tx, vec![invoice(&s, d(2024, 2, 10))])
+        .await
+        .unwrap();
+    try_call(&first, &mut tx, "action_post").await.unwrap();
+    assert_eq!(cell(&first, &mut tx, "state").await, text("posted"));
+    assert_eq!(
+        cell(&first, &mut tx, "name").await,
+        text("INV/2024/02/0001")
+    );
+    assert_eq!(
+        cell(&first, &mut tx, "date").await,
+        Cell::Date(d(2024, 2, 10))
+    );
+    assert_eq!(cell(&first, &mut tx, "amount_total").await, num("115"));
+    let states = lines_of(&first, &mut tx)
+        .await
+        .cells(&mut tx, "parent_state")
+        .await
+        .unwrap();
+    assert_eq!(states.len(), 3, "product, tax and receivable items");
+    assert!(states.iter().all(|s| *s == text("posted")), "{states:?}");
+    // the journal keeps no credit note chain: the credit note takes the next invoice number
+    let shared = moves(&tx, company)
+        .create(&mut tx, vec![credit_note(d(2024, 2, 12))])
+        .await
+        .unwrap();
+    try_call(&shared, &mut tx, "action_post").await.unwrap();
+    assert_eq!(
+        cell(&shared, &mut tx, "name").await,
+        text("INV/2024/02/0002")
+    );
+    // with its own chain a credit note starts at one behind the R, and invoices go on counting
+    let journal: i64 = tx
+        .query(
+            "SELECT id::int8 FROM account_journal WHERE company_id = $1 AND code = 'INV'",
+            &[&company],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let journal = tx
+        .env()
+        .records("account.journal")
+        .unwrap()
+        .browse([journal])
+        .unwrap();
+    try_write(
+        &journal,
+        &mut tx,
+        RawVals::new().set_cell("refund_sequence", Cell::Bool(true)),
+    )
+    .await
+    .unwrap();
+    let own = moves(&tx, company)
+        .create(&mut tx, vec![credit_note(d(2024, 2, 14))])
+        .await
+        .unwrap();
+    try_call(&own, &mut tx, "action_post").await.unwrap();
+    assert_eq!(cell(&own, &mut tx, "name").await, text("RINV/2024/02/0001"));
+    let next = moves(&tx, company)
+        .create(&mut tx, vec![invoice(&s, d(2024, 2, 20))])
+        .await
+        .unwrap();
+    try_call(&next, &mut tx, "action_post").await.unwrap();
+    assert_eq!(cell(&next, &mut tx, "name").await, text("INV/2024/02/0003"));
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// it is posted through `action_post`, and its accounting date, due date and number follow)
+#[test]
+fn an_undated_customer_invoice_is_posted_on_today() {
+    big_stack(undated_invoice_body);
+}
+
+async fn undated_invoice_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    let today = tx.env().context_today().unwrap();
+    tx.rollback().await.unwrap();
+    // the periods around today, so a run across midnight still finds its period
+    ensure_periods_with(
+        &orm,
+        BeginOptions::new(SUPERUSER_ID),
+        &FiscalCalendar::new(FiscalYearEnd::new(31, 12).unwrap(), 12).unwrap(),
+        company,
+        previous_day(today),
+        next_day(today),
+    )
+    .await
+    .unwrap();
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let s = sales(&mut tx, company).await;
+    let undated = moves(&tx, company)
+        .create(&mut tx, vec![document(&s, "out_invoice")])
+        .await
+        .unwrap();
+    try_call(&undated, &mut tx, "action_post").await.unwrap();
+    let today = tx.env().context_today().unwrap();
+    assert_eq!(cell(&undated, &mut tx, "state").await, text("posted"));
+    for field in ["invoice_date", "date", "invoice_date_due"] {
+        assert_eq!(
+            cell(&undated, &mut tx, field).await,
+            Cell::Date(today),
+            "{field}"
+        );
+    }
+    let (year, month, _) = today.ymd();
+    assert_eq!(
+        cell(&undated, &mut tx, "name").await,
+        text(&format!("INV/{year}/{month:02}/0001"))
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// A price written on an invoice line directly runs no sync; posting rebuilds the tax line, the
+/// receivable line and the totals from the product lines before it checks and posts the invoice.
+#[test]
+fn posting_rebuilds_an_invoice_whose_line_changed_alone() {
+    big_stack(posting_rebuilds_body);
+}
+
+async fn posting_rebuilds_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.rollback().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let s = sales(&mut tx, company).await;
+    let created = moves(&tx, company)
+        .create(&mut tx, vec![invoice(&s, d(2024, 2, 10))])
+        .await
+        .unwrap();
+    let product_line = created
+        .related(&mut tx, "invoice_line_ids")
+        .await
+        .unwrap()
+        .ids()[0];
+    let item = tx
+        .env()
+        .records("account.move.line")
+        .unwrap()
+        .browse([product_line])
+        .unwrap();
+    try_write(
+        &item,
+        &mut tx,
+        RawVals::new().set_cell("price_unit", num("200")),
+    )
+    .await
+    .unwrap();
+    try_call(&created, &mut tx, "action_post").await.unwrap();
+    assert_eq!(cell(&created, &mut tx, "state").await, text("posted"));
+    assert_eq!(cell(&created, &mut tx, "amount_untaxed").await, num("200"));
+    assert_eq!(cell(&created, &mut tx, "amount_tax").await, num("30"));
+    assert_eq!(cell(&created, &mut tx, "amount_total").await, num("230"));
+    assert_eq!(
+        balances(&mut tx, created.ids()[0]).await,
+        [
+            ("payment_term".to_owned(), Decimal::from(230)),
+            ("product".to_owned(), Decimal::from(-200)),
+            ("tax".to_owned(), Decimal::from(-30)),
+        ]
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// A draft named by hand is not posted under that name; once the name is cleared it takes the
+/// journal's number. A batch in which one entry is refused after the collected checks passed (its
+/// date is beyond the fiscal-period horizon) posts nothing.
+#[test]
+fn named_drafts_unbalanced_invoice_lines_and_a_refused_batch() {
+    big_stack(named_draft_body);
+}
+
+async fn named_draft_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.rollback().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let l = ledger(&mut tx, company).await;
+    let named = moves(&tx, company)
+        .create(
+            &mut tx,
+            vec![balanced(&l, d(2024, 1, 10), 5).set_cell("name", text("MISC/2024/01/0001"))],
+        )
+        .await
+        .unwrap();
+    let error = try_call(&named, &mut tx, "action_post").await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError, "{}", error.message());
+    assert!(
+        error.message().contains("written by hand")
+            && error.message().contains("MISC/2024/01/0001"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(cell(&named, &mut tx, "state").await, text("draft"));
+    try_write(&named, &mut tx, RawVals::new().set_cell("name", Cell::Null))
+        .await
+        .unwrap();
+    try_call(&named, &mut tx, "action_post").await.unwrap();
+    assert_eq!(
+        cell(&named, &mut tx, "name").await,
+        text("MISC/2024/01/0001")
+    );
+
+    // an invoice-line command on a plain entry adds a journal item: the entry must still balance
+    let plain = moves(&tx, company)
+        .create(&mut tx, vec![balanced(&l, d(2024, 1, 12), 7)])
+        .await
+        .unwrap();
+    let error = try_write(
+        &plain,
+        &mut tx,
+        RawVals::new().set_commands("invoice_line_ids", vec![line(l.bank, 2, 0)]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError, "{}", error.message());
+    assert!(
+        error.message().contains("Debits and credits must be equal"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(balances(&mut tx, plain.ids()[0]).await.len(), 2);
+
+    // the second entry of the batch is dated beyond the fiscal-period horizon (a month whose period
+    // is merely missing is created by the post, so only a real refusal leaves the batch draft)
+    let (this_year, _, _) = Date::today().ymd();
+    let batch = moves(&tx, company)
+        .create(
+            &mut tx,
+            vec![
+                balanced(&l, d(2024, 2, 10), 3),
+                balanced(&l, d(this_year + 5, 6, 10), 4),
+            ],
+        )
+        .await
+        .unwrap();
+    let error = try_call(&batch, &mut tx, "action_post").await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{}", error.message());
+    assert!(
+        error.message().contains("fiscal_period_horizon_months"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(
+        batch.cells(&mut tx, "state").await.unwrap(),
+        [text("draft"), text("draft")]
+    );
+    assert_eq!(
+        batch.cells(&mut tx, "name").await.unwrap(),
+        [Cell::Null, Cell::Null]
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
     drop(orm);
     db.cleanup().await.unwrap();
 }

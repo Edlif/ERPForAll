@@ -22,6 +22,54 @@
     </field>
   </record>
 
+  <!-- The product lines of an invoice: what was sold or bought, never the debit and credit of the journal item. -->
+  <record id="view_invoice_line_list" model="ir.ui.view">
+    <field name="name">account.move.line.invoice.list</field>
+    <field name="model">account.move.line</field>
+    <field name="priority" eval="20"/>
+    <field name="arch" type="xml">
+      <list>
+        <field name="product_id"/>
+        <field name="name"/>
+        <field name="account_id"/>
+        <field name="quantity"/>
+        <field name="product_uom_id"/>
+        <field name="price_unit"/>
+        <field name="discount"/>
+        <field name="tax_ids" widget="many2many_tags"/>
+        <field name="currency_id" invisible="1"/>
+        <field name="price_subtotal"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_invoice_line_form" model="ir.ui.view">
+    <field name="name">account.move.line.invoice.form</field>
+    <field name="model">account.move.line</field>
+    <field name="priority" eval="20"/>
+    <field name="arch" type="xml">
+      <form string="Invoice Line">
+        <sheet>
+          <group>
+            <group>
+              <field name="product_id"/>
+              <field name="name"/>
+              <field name="account_id"/>
+            </group>
+            <group>
+              <field name="quantity"/>
+              <field name="product_uom_id"/>
+              <field name="price_unit"/>
+              <field name="discount"/>
+              <field name="tax_ids" widget="many2many_tags"/>
+              <field name="currency_id" invisible="1"/>
+              <field name="price_subtotal" readonly="1"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
   <record id="view_invoice_form" model="ir.ui.view">
     <field name="name">account.move.invoice.form</field>
     <field name="model">account.move</field>
@@ -41,11 +89,13 @@
           </div>
           <group>
             <group>
-              <field name="partner_id" readonly="state != 'draft'"/>
+              <field name="partner_id" string="Customer" readonly="state != 'draft'" invisible="move_type not in ('out_invoice', 'out_refund')"/>
+              <field name="partner_id" string="Vendor" readonly="state != 'draft'" invisible="move_type not in ('in_invoice', 'in_refund')"/>
               <field name="ref" readonly="state != 'draft'"/>
             </group>
             <group>
-              <field name="invoice_date" readonly="state != 'draft'"/>
+              <field name="invoice_date" string="Invoice Date" readonly="state != 'draft'" invisible="move_type not in ('out_invoice', 'out_refund')"/>
+              <field name="invoice_date" string="Bill Date" readonly="state != 'draft'" invisible="move_type not in ('in_invoice', 'in_refund')"/>
               <field name="invoice_date_due" readonly="state != 'draft'"/>
               <field name="journal_id" readonly="state != 'draft'"/>
               <field name="currency_id" readonly="state != 'draft'"/>
@@ -53,8 +103,8 @@
           </group>
           <notebook>
             <page string="Invoice Lines" name="invoice_lines">
-              <!-- Lines show with the line model's default list and form (account_move_views.xml). -->
-              <field name="invoice_line_ids" readonly="state != 'draft'"/>
+              <field name="invoice_line_ids" readonly="state != 'draft'"
+                     context="{'list_view_ref': 'account.view_invoice_line_list', 'form_view_ref': 'account.view_invoice_line_form'}"/>
               <group name="totals">
                 <group/>
                 <group string="Totals">
@@ -62,12 +112,21 @@
                   <field name="amount_tax"/>
                   <field name="amount_total"/>
                   <field name="amount_residual"/>
-                  <field name="payment_state"/>
                 </group>
               </group>
             </page>
             <page string="Journal Items" name="journal_items">
               <field name="line_ids" readonly="1"/>
+            </page>
+            <page string="Other Info" name="other_info">
+              <group>
+                <group>
+                  <field name="payment_state"/>
+                </group>
+                <group>
+                  <field name="company_id" readonly="1"/>
+                </group>
+              </group>
             </page>
           </notebook>
         </sheet>

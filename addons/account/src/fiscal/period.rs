@@ -188,9 +188,8 @@ pub struct AccountFiscalPeriod {
     pub hard_locked_at: Option<DateTime>,
 }
 
-const REFUSED: &str = "Fiscal periods are created by ensure_periods and change only through the \
-                       lock operations (account fiscal period API); they cannot be created, edited \
-                       or deleted directly.";
+const REFUSED: &str = "Fiscal periods are created when an entry is posted and change only through \
+                       the lock operations; they cannot be created, edited or deleted directly.";
 
 #[methods(AccountFiscalPeriod, addon = "account")]
 impl AccountFiscalPeriod {

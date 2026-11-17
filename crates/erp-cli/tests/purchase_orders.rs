@@ -252,7 +252,7 @@ fn purchase_installs_with_groups_access_sequence_and_settings() {
             OrderPolicy::read(&mut tx, main).await.unwrap(),
             OrderPolicy {
                 two_step: false,
-                amount: AMOUNT_DEFAULT,
+                amount: dec(&AMOUNT_DEFAULT.to_string()),
                 lock: false
             }
         );
@@ -1102,7 +1102,7 @@ fn order_lines_price_taxes_and_totals() {
             )
             .await,
             ErrorKind::UserError,
-            &["a later release"],
+            &["not available yet"],
         );
         refused(
             write(
@@ -1809,7 +1809,7 @@ fn a_company_change_converts_the_approval_total() {
                 .set_cell("currency_id", Cell::Id(eur)),
         )
         .await;
-        // one euro buys ten dollars in the euro company
+        // one dollar buys ten euros in the euro company
         for (currency, rate) in [(eur, "1"), (usd, "0.1")] {
             create(
                 &mut tx,
@@ -1819,6 +1819,27 @@ fn a_company_change_converts_the_approval_total() {
                     .set_cell("currency_id", Cell::Id(currency))
                     .set_cell("company_id", Cell::Id(euro))
                     .set_cell("name", Cell::Date(Date::from_ymd(2020, 1, 1).unwrap()))
+                    .set_cell("rate", Cell::Decimal(dec(rate))),
+            )
+            .await;
+        }
+        // older rates; a rate counts from the day after its date, so 31 May 2019 is told apart from 1 June
+        for (currency, rate, year, month, day) in [
+            (eur, "1", 2018, 1, 1),
+            (usd, "0.5", 2018, 1, 1),
+            (usd, "0.25", 2019, 5, 31),
+        ] {
+            create(
+                &mut tx,
+                &env.with_company(euro).unwrap(),
+                "res.currency.rate",
+                RawVals::new()
+                    .set_cell("currency_id", Cell::Id(currency))
+                    .set_cell("company_id", Cell::Id(euro))
+                    .set_cell(
+                        "name",
+                        Cell::Date(Date::from_ymd(year, month, day).unwrap()),
+                    )
                     .set_cell("rate", Cell::Decimal(dec(rate))),
             )
             .await;
@@ -1871,7 +1892,20 @@ fn a_company_change_converts_the_approval_total() {
         )
         .await;
         assert_eq!(num(&mut tx, &draft, "amount_total_cc").await, dec("11"));
+        // a draft with lines keeps its company: their taxes and prices belong to it
+        refused(
+            write(
+                &mut tx,
+                &draft,
+                RawVals::new().set_cell("company_id", Cell::Id(euro)),
+            )
+            .await,
+            ErrorKind::Validation,
+            &["has lines"],
+        );
         // 11 dollars under the dollar company's rules; 110 euros, above the euro company's 50
+        let old_line = lines_of(&mut tx, &both, &draft).await.remove(0);
+        old_line.unlink(&mut tx).await.unwrap();
         write(
             &mut tx,
             &draft,
@@ -1879,10 +1913,885 @@ fn a_company_change_converts_the_approval_total() {
         )
         .await
         .unwrap();
+        lines(&tx, &both)
+            .create(
+                &mut tx,
+                vec![
+                    line_vals(crate_product)
+                        .set_cell("order_id", Cell::Id(draft.ids()[0]))
+                        .set_cell("price_unit", Cell::Decimal(dec("11"))),
+                ],
+            )
+            .await
+            .unwrap();
         assert_eq!(num(&mut tx, &draft, "amount_total").await, dec("11"));
         assert_eq!(num(&mut tx, &draft, "amount_total_cc").await, dec("110"));
         act(&mut tx, &draft, "button_confirm").await.unwrap();
         assert_eq!(state(&mut tx, &draft).await, "to approve");
+        // the stored total converts at the UTC day of the deadline, whoever saves it: 20:00 UTC on
+        // 31 May 2019 is 1 June in Jakarta, but the rate dated 31 May does not count before 31 May
+        // itself, so every reader gets two euros to the dollar (22), not four (44)
+        let late_may = DateTime::parse_odoo("2019-05-31 20:00:00").unwrap();
+        for zone in [Some("Asia/Jakarta"), None] {
+            let (model_orders, model_lines) = match zone {
+                Some(zone) => (
+                    orders(&tx, &both).with_context([("tz", Value::str(zone))]),
+                    lines(&tx, &both).with_context([("tz", Value::str(zone))]),
+                ),
+                None => (orders(&tx, &both), lines(&tx, &both)),
+            };
+            let header = || {
+                RawVals::new()
+                    .set_cell("partner_id", Cell::Id(vendor))
+                    .set_cell("company_id", Cell::Id(euro))
+                    .set_cell("currency_id", Cell::Id(usd))
+                    .set_cell("date_order", Cell::DateTime(late_may))
+            };
+            let line = || line_vals(crate_product).set_cell("price_unit", Cell::Decimal(dec("11")));
+            // lines created apart from the order
+            let apart = model_orders.create(&mut tx, vec![header()]).await.unwrap();
+            model_lines
+                .create(
+                    &mut tx,
+                    vec![line().set_cell("order_id", Cell::Id(apart.ids()[0]))],
+                )
+                .await
+                .unwrap();
+            assert_eq!(num(&mut tx, &apart, "amount_total_cc").await, dec("22"));
+            // lines created with the order, the way the form saves it
+            let one_call = model_orders
+                .create(
+                    &mut tx,
+                    vec![header().set_commands("order_line", [Command::Create(line())])],
+                )
+                .await
+                .unwrap();
+            assert_eq!(num(&mut tx, &one_call, "amount_total_cc").await, dec("22"));
+        }
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// Run `unlink` on `records` in a savepoint, so a refusal leaves the transaction usable.
+async fn try_unlink(tx: &mut Transaction, records: &Records) -> erp_sdk::Result<()> {
+    let records = records.clone();
+    tx.savepoint(async move |tx| records.unlink(tx).await).await
+}
+
+#[test]
+fn a_caller_without_the_right_is_refused_before_an_order_is_read() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let system = xmlid(&mut tx, "base", "group_system").await;
+        let employee = xmlid(&mut tx, "base", "group_user").await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        user(&mut tx, "purchase-admin", &[system], &[main]).await;
+        let buyer = user(&mut tx, "buyer", &[buyer_group], &[main]).await;
+        let clerk = user(&mut tx, "clerk", &[employee], &[main]).await;
+        let k = catalog(&mut tx, main).await;
+        tx.install_audit_schema().await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let c = [main];
+        let header = || RawVals::new().set_cell("partner_id", Cell::Id(k.vendor));
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let cancelled = order(&mut tx, &c, header()).await;
+        act(&mut tx, &cancelled, "button_cancel").await.unwrap();
+        let draft = order(&mut tx, &c, header()).await;
+        let names = [name(&mut tx, &cancelled).await, name(&mut tx, &draft).await];
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(clerk).await.unwrap();
+        let model = orders(&tx, &c);
+        let cancelled = model.browse(cancelled.ids()).unwrap();
+        let draft = model.browse(draft.ids()).unwrap();
+        // each refusal is the access refusal and shows no number or state of the order
+        let mut errors = vec![
+            write(
+                &mut tx,
+                &cancelled,
+                RawVals::new().set_cell("origin", text("x")),
+            )
+            .await
+            .unwrap_err(),
+            try_unlink(&mut tx, &draft).await.unwrap_err(),
+            try_create(&mut tx, &model, header()).await.unwrap_err(),
+        ];
+        errors.push(
+            write(
+                &mut tx,
+                &draft,
+                RawVals::new().set_cell("origin", text("x")),
+            )
+            .await
+            .unwrap_err(),
+        );
+        for error in &errors {
+            assert_eq!(error.kind(), ErrorKind::Access, "{error:?}");
+            for number in &names {
+                assert!(!error.message().contains(number), "{error:?}");
+            }
+            assert!(!error.message().contains("cancel"), "{error:?}");
+        }
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn a_line_never_writes_the_copies_of_its_order() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let system = xmlid(&mut tx, "base", "group_system").await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        user(&mut tx, "purchase-admin", &[system], &[main]).await;
+        let buyer = user(&mut tx, "buyer", &[buyer_group], &[main]).await;
+        let k = catalog(&mut tx, main).await;
+        tx.install_audit_schema().await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let c = [main];
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let po = order(
+            &mut tx,
+            &c,
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(k.vendor))
+                .set_commands("order_line", [Command::Create(line_vals(k.bolt))]),
+        )
+        .await;
+        let line = lines_of(&mut tx, &c, &po).await.remove(0);
+        for (field, value) in [
+            ("company_id", Cell::Id(main)),
+            ("partner_id", Cell::Id(k.vendor)),
+            ("technical_price_unit", Cell::Decimal(dec("1"))),
+        ] {
+            refused(
+                write(
+                    &mut tx,
+                    &line,
+                    RawVals::new().set_cell(field, value.clone()),
+                )
+                .await,
+                ErrorKind::Validation,
+                &[field],
+            );
+            refused(
+                write(
+                    &mut tx,
+                    &po,
+                    RawVals::new().set_commands(
+                        "order_line",
+                        [Command::Update(
+                            RecId::from_real(line.ids()[0]).unwrap(),
+                            RawVals::new().set_cell(field, value),
+                        )],
+                    ),
+                )
+                .await,
+                ErrorKind::Validation,
+                &[field],
+            );
+        }
+        let order_id = Cell::Id(po.ids()[0]);
+        for field in ["company_id", "partner_id"] {
+            let value = Cell::Id(if field == "company_id" {
+                main
+            } else {
+                k.vendor
+            });
+            let plain = lines(&tx, &c);
+            refused(
+                try_create(
+                    &mut tx,
+                    &plain,
+                    line_vals(k.bolt)
+                        .set_cell("order_id", order_id.clone())
+                        .set_cell(field, value),
+                )
+                .await,
+                ErrorKind::Validation,
+                &[field],
+            );
+            let model = if field == "company_id" {
+                lines(&tx, &c).with_context([("default_company_id", Value::Int(main))])
+            } else {
+                lines(&tx, &c).with_context([("default_partner_id", Value::Int(k.vendor))])
+            };
+            refused(
+                try_create(
+                    &mut tx,
+                    &model,
+                    line_vals(k.bolt).set_cell("order_id", order_id.clone()),
+                )
+                .await,
+                ErrorKind::Validation,
+                &[field],
+            );
+        }
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn lines_of_an_approved_order_keep_the_approval_limit() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let system = xmlid(&mut tx, "base", "group_system").await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        let manager_group = xmlid(&mut tx, "purchase", "group_purchase_manager").await;
+        let admin = user(&mut tx, "purchase-admin", &[system], &[main]).await;
+        let buyer = user(&mut tx, "buyer", &[buyer_group], &[main]).await;
+        let manager = user(&mut tx, "purchase-manager", &[manager_group], &[main]).await;
+        let k = catalog(&mut tx, main).await;
+        tx.install_audit_schema().await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(admin).await.unwrap();
+        set(
+            &mut tx,
+            main,
+            vec![
+                (APPROVAL_SETTING, Value::str("two_step")),
+                (AMOUNT_SETTING, Value::Float(100.0)),
+            ],
+        )
+        .await;
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let c = [main];
+        let header = || RawVals::new().set_cell("partner_id", Cell::Id(k.vendor));
+        // an approved order of one bolt (2.75 with tax), under the limit
+        let mut tx = orm.begin(manager).await.unwrap();
+        let approved = order(
+            &mut tx,
+            &c,
+            header().set_commands("order_line", [Command::Create(line_vals(k.bolt))]),
+        )
+        .await;
+        act(&mut tx, &approved, "button_confirm").await.unwrap();
+        assert_eq!(state(&mut tx, &approved).await, "purchase");
+        let approved_id = approved.ids()[0];
+        let approved_name = name(&mut tx, &approved).await;
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let approved = orders(&tx, &c).browse([approved_id]).unwrap();
+        let line = lines_of(&mut tx, &c, &approved).await.remove(0);
+        let quantity =
+            |value: &str| RawVals::new().set_cell("product_qty", Cell::Decimal(dec(value)));
+        // a raise past the limit (1000 bolts, 2750) is refused by name, in the line and the order
+        refused(
+            write(&mut tx, &line, quantity("1000")).await,
+            ErrorKind::Access,
+            &[approved_name.as_str()],
+        );
+        refused(
+            write(
+                &mut tx,
+                &line,
+                RawVals::new().set_cell("price_unit", Cell::Decimal(dec("1000"))),
+            )
+            .await,
+            ErrorKind::Access,
+            &[approved_name.as_str()],
+        );
+        let line_model = lines(&tx, &c);
+        refused(
+            try_create(
+                &mut tx,
+                &line_model,
+                line_vals(k.bolt)
+                    .set_cell("order_id", Cell::Id(approved_id))
+                    .set_cell("product_qty", Cell::Decimal(dec("1000"))),
+            )
+            .await,
+            ErrorKind::Access,
+            &[approved_name.as_str()],
+        );
+        assert_eq!(num(&mut tx, &line, "product_qty").await, dec("1"));
+        assert_eq!(num(&mut tx, &approved, "amount_total").await, dec("2.75"));
+        // a raise inside the limit (10 bolts, 27.5) and a lower total pass
+        write(&mut tx, &line, quantity("10")).await.unwrap();
+        assert_eq!(num(&mut tx, &approved, "amount_total").await, dec("27.5"));
+        write(&mut tx, &line, quantity("2")).await.unwrap();
+        // an order waiting for approval stays editable
+        let waiting = order(
+            &mut tx,
+            &c,
+            header().set_commands(
+                "order_line",
+                [Command::Create(
+                    line_vals(k.bolt).set_cell("product_qty", Cell::Decimal(dec("1000"))),
+                )],
+            ),
+        )
+        .await;
+        act(&mut tx, &waiting, "button_confirm").await.unwrap();
+        assert_eq!(state(&mut tx, &waiting).await, "to approve");
+        let waiting_line = lines_of(&mut tx, &c, &waiting).await.remove(0);
+        write(&mut tx, &waiting_line, quantity("2000"))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        // an approver may raise it; the deadline of an approved order is refused, locked or not
+        let mut tx = orm.begin(manager).await.unwrap();
+        let approved = orders(&tx, &c).browse([approved_id]).unwrap();
+        let line = lines_of(&mut tx, &c, &approved).await.remove(0);
+        write(&mut tx, &line, quantity("1000")).await.unwrap();
+        assert_eq!(num(&mut tx, &approved, "amount_total").await, dec("2750"));
+        let before = cell(&mut tx, &approved, "date_order").await;
+        let later = Cell::DateTime(DateTime::parse_odoo("2030-01-01 10:00:00").unwrap());
+        refused(
+            write(
+                &mut tx,
+                &approved,
+                RawVals::new().set_cell("date_order", later.clone()),
+            )
+            .await,
+            ErrorKind::Validation,
+            &["date_order", approved_name.as_str()],
+        );
+        act(&mut tx, &approved, "button_lock").await.unwrap();
+        refused(
+            write(
+                &mut tx,
+                &approved,
+                RawVals::new().set_cell("date_order", Cell::DateTime(DateTime::now())),
+            )
+            .await,
+            ErrorKind::Validation,
+            &["date_order", approved_name.as_str()],
+        );
+        assert_eq!(cell(&mut tx, &approved, "date_order").await, before);
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn a_new_product_or_vendor_prices_the_line_again() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let system = xmlid(&mut tx, "base", "group_system").await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        user(&mut tx, "purchase-admin", &[system], &[main]).await;
+        let buyer = user(&mut tx, "buyer", &[buyer_group], &[main]).await;
+        let k = catalog(&mut tx, main).await;
+        let env = tx.env().with_company(main).unwrap();
+        let second = env
+            .records("res.partner")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("name", text("Second vendor"))],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        env.records("product.supplierinfo")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("partner_id", Cell::Id(second))
+                        .set_cell("product_id", Cell::Id(k.nut))
+                        .set_cell("min_qty", Cell::Decimal(dec("0")))
+                        .set_cell("price", Cell::Decimal(dec("7")))
+                        .set_cell("delay", Cell::Int(1)),
+                ],
+            )
+            .await
+            .unwrap();
+        tx.install_audit_schema().await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let c = [main];
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let in_order = |commands: Vec<RawVals>| {
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(k.vendor))
+                .set_commands(
+                    "order_line",
+                    commands
+                        .into_iter()
+                        .map(Command::Create)
+                        .collect::<Vec<_>>(),
+                )
+        };
+        // a nut priced by the vendor (4), a bolt, a fresh bolt and a fresh nut
+        let po = order(
+            &mut tx,
+            &c,
+            in_order(vec![
+                line_vals(k.nut),
+                line_vals(k.bolt),
+                line_vals(k.bolt),
+                line_vals(k.nut),
+            ]),
+        )
+        .await;
+        let found = lines_of(&mut tx, &c, &po).await;
+        let (priced, hand, fresh_bolt, fresh_nut) = (&found[0], &found[1], &found[2], &found[3]);
+        assert_eq!(num(&mut tx, priced, "price_unit").await, dec("4"));
+        let product = |id: i64| RawVals::new().set_cell("product_id", Cell::Id(id));
+        // the nut line becomes a bolt: everything of the new product, nothing of the nut
+        write(&mut tx, priced, product(k.bolt)).await.unwrap();
+        assert_eq!(
+            shown(&mut tx, priced).await,
+            shown(&mut tx, fresh_bolt).await
+        );
+        assert_eq!(
+            cell(&mut tx, priced, "selected_seller_id").await,
+            cell(&mut tx, fresh_bolt, "selected_seller_id").await
+        );
+        // a price set by hand stays on a new product; unit, taxes and description follow it
+        write(
+            &mut tx,
+            hand,
+            RawVals::new().set_cell("price_unit", Cell::Decimal(dec("9"))),
+        )
+        .await
+        .unwrap();
+        write(&mut tx, hand, product(k.nut)).await.unwrap();
+        assert_eq!(num(&mut tx, hand, "price_unit").await, dec("9"));
+        assert_eq!(
+            cell(&mut tx, hand, "tax_ids").await,
+            cell(&mut tx, fresh_nut, "tax_ids").await
+        );
+        assert_eq!(
+            cell(&mut tx, hand, "name").await,
+            cell(&mut tx, fresh_nut, "name").await
+        );
+        // a new vendor on the draft prices the lines again; the typed price stays
+        let second_order = order(
+            &mut tx,
+            &c,
+            in_order(vec![line_vals(k.nut), line_vals(k.nut)]),
+        )
+        .await;
+        let found = lines_of(&mut tx, &c, &second_order).await;
+        assert_eq!(num(&mut tx, &found[0], "price_unit").await, dec("4"));
+        write(
+            &mut tx,
+            &found[1],
+            RawVals::new().set_cell("price_unit", Cell::Decimal(dec("9"))),
+        )
+        .await
+        .unwrap();
+        write(
+            &mut tx,
+            &second_order,
+            RawVals::new().set_cell("partner_id", Cell::Id(second)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(num(&mut tx, &found[0], "price_unit").await, dec("7"));
+        assert_eq!(num(&mut tx, &found[1], "price_unit").await, dec("9"));
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn an_approved_order_in_a_foreign_currency_keeps_its_limit() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let unit = xmlid(&mut tx, "uom", "product_uom_unit").await;
+        let usd = xmlid(&mut tx, "base", "USD").await;
+        let eur = xmlid(&mut tx, "base", "EUR").await;
+        let system = xmlid(&mut tx, "base", "group_system").await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        let manager_group = xmlid(&mut tx, "purchase", "group_purchase_manager").await;
+        let env = tx.env().clone();
+        env.records("res.currency")
+            .unwrap()
+            .browse([eur])
+            .unwrap()
+            .write(&mut tx, RawVals::new().set_cell("active", Cell::Bool(true)))
+            .await
+            .unwrap();
+        let create = async |tx: &mut Transaction, env: &Env, model: &str, vals: RawVals| -> i64 {
+            env.records(model)
+                .unwrap()
+                .create(tx, vec![vals])
+                .await
+                .unwrap()
+                .ids()[0]
+        };
+        let euro = create(
+            &mut tx,
+            &env,
+            "res.company",
+            RawVals::new()
+                .set_cell("name", text("Euro company"))
+                .set_cell("currency_id", Cell::Id(eur)),
+        )
+        .await;
+        let rate = async |tx: &mut Transaction, currency: i64, value: &str, day: Date| {
+            create(
+                tx,
+                &env.with_company(euro).unwrap(),
+                "res.currency.rate",
+                RawVals::new()
+                    .set_cell("currency_id", Cell::Id(currency))
+                    .set_cell("company_id", Cell::Id(euro))
+                    .set_cell("name", Cell::Date(day))
+                    .set_cell("rate", Cell::Decimal(dec(value))),
+            )
+            .await;
+        };
+        let day = |y, m, d| Date::from_ymd(y, m, d).unwrap();
+        // one dollar buys two euros from 2018
+        rate(&mut tx, eur, "1", day(2018, 1, 1)).await;
+        rate(&mut tx, usd, "0.5", day(2018, 1, 1)).await;
+        let admin = user(&mut tx, "purchase-admin", &[system], &[main, euro]).await;
+        let buyer = user(&mut tx, "buyer", &[buyer_group], &[main, euro]).await;
+        let manager = user(&mut tx, "purchase-manager", &[manager_group], &[main, euro]).await;
+        let vendor = create(
+            &mut tx,
+            &env,
+            "res.partner",
+            RawVals::new().set_cell("name", text("Vendor")),
+        )
+        .await;
+        let crate_product = create(
+            &mut tx,
+            &env.with_company(main).unwrap(),
+            "product.product",
+            RawVals::new()
+                .set_cell("name", text("Crate"))
+                .set_cell("standard_price", Cell::Decimal(dec("10")))
+                .set_cell("uom_id", Cell::Id(unit)),
+        )
+        .await;
+        tx.install_audit_schema().await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(admin).await.unwrap();
+        set(
+            &mut tx,
+            euro,
+            vec![
+                (APPROVAL_SETTING, Value::str("two_step")),
+                (AMOUNT_SETTING, Value::Float(100.0)),
+            ],
+        )
+        .await;
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        // an approved order of 10 dollars (20 euros, under the limit of 100)
+        let both = [main, euro];
+        let mut tx = orm.begin(manager).await.unwrap();
+        let approved = order(
+            &mut tx,
+            &both,
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(vendor))
+                .set_cell("company_id", Cell::Id(euro))
+                .set_cell("currency_id", Cell::Id(usd))
+                .set_cell(
+                    "date_order",
+                    Cell::DateTime(DateTime::parse_odoo("2019-05-31 12:00:00").unwrap()),
+                )
+                .set_commands(
+                    "order_line",
+                    [Command::Create(
+                        line_vals(crate_product).set_cell("price_unit", Cell::Decimal(dec("10"))),
+                    )],
+                ),
+        )
+        .await;
+        act(&mut tx, &approved, "button_confirm").await.unwrap();
+        assert_eq!(state(&mut tx, &approved).await, "purchase");
+        assert_eq!(num(&mut tx, &approved, "amount_total_cc").await, dec("20"));
+        let approved_id = approved.ids()[0];
+        let approved_name = name(&mut tx, &approved).await;
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        // the rate falls after the order was saved: ten euros to the dollar from 2019
+        let mut tx = orm.begin(admin).await.unwrap();
+        let env = tx.env().clone();
+        create(
+            &mut tx,
+            &env.with_company(euro).unwrap(),
+            "res.currency.rate",
+            RawVals::new()
+                .set_cell("currency_id", Cell::Id(usd))
+                .set_cell("company_id", Cell::Id(euro))
+                .set_cell("name", Cell::Date(day(2019, 1, 1)))
+                .set_cell("rate", Cell::Decimal(dec("0.1"))),
+        )
+        .await;
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let approved = orders(&tx, &both).browse([approved_id]).unwrap();
+        let line = lines_of(&mut tx, &both, &approved).await.remove(0);
+        // the deadline cannot be moved to a day with another rate
+        refused(
+            write(
+                &mut tx,
+                &approved,
+                RawVals::new().set_cell(
+                    "date_order",
+                    Cell::DateTime(DateTime::parse_odoo("2018-06-01 12:00:00").unwrap()),
+                ),
+            )
+            .await,
+            ErrorKind::Validation,
+            &["date_order", approved_name.as_str()],
+        );
+        // a change that keeps the total in the order currency is no raise, though the rate moved
+        write(
+            &mut tx,
+            &line,
+            RawVals::new().set_cell("name", text("Wooden crate")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(num(&mut tx, &approved, "amount_total").await, dec("10"));
+        assert_eq!(num(&mut tx, &approved, "amount_total_cc").await, dec("100"));
+        // a real raise is asked for the limit at the rate of the deadline's day (300 euros for a price of 30)
+        refused(
+            write(
+                &mut tx,
+                &line,
+                RawVals::new().set_cell("price_unit", Cell::Decimal(dec("30"))),
+            )
+            .await,
+            ErrorKind::Access,
+            &[approved_name.as_str()],
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn context_defaults_empty_tax_sets_and_a_tax_without_a_sequence() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let system = xmlid(&mut tx, "base", "group_system").await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        let eur = xmlid(&mut tx, "base", "EUR").await;
+        user(&mut tx, "purchase-admin", &[system], &[main]).await;
+        let buyer = user(&mut tx, "buyer", &[buyer_group], &[main]).await;
+        let k = catalog(&mut tx, main).await;
+        tx.install_audit_schema().await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let c = [main];
+        let mut tx = orm.begin(buyer).await.unwrap();
+        // the context keys are taken, not ignored
+        let at = DateTime::parse_odoo("2031-02-03 04:05:06").unwrap();
+        let model = orders(&tx, &c).with_context([
+            ("default_date_order", Value::DateTime(at)),
+            ("default_currency_id", Value::Int(eur)),
+            ("default_user_id", Value::Int(buyer.get())),
+        ]);
+        let created = model
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("partner_id", Cell::Id(k.vendor))],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            cell(&mut tx, &created, "date_order").await,
+            Cell::DateTime(at)
+        );
+        assert_eq!(cell(&mut tx, &created, "currency_id").await, Cell::Id(eur));
+        assert_eq!(
+            cell(&mut tx, &created, "user_id").await,
+            Cell::Id(buyer.get())
+        );
+        let wrong = orders(&tx, &c).with_context([("default_currency_id", Value::str("EUR"))]);
+        refused(
+            try_create(
+                &mut tx,
+                &wrong,
+                RawVals::new().set_cell("partner_id", Cell::Id(k.vendor)),
+            )
+            .await,
+            ErrorKind::Validation,
+            &["default_currency_id"],
+        );
+
+        // an empty tax set that was given is kept; a line created without the key takes the product's taxes
+        let po = order(
+            &mut tx,
+            &c,
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(k.vendor))
+                .set_commands(
+                    "order_line",
+                    [
+                        Command::Create(line_vals(k.bolt)),
+                        Command::Create(
+                            line_vals(k.bolt).set_commands("tax_ids", [Command::Set(vec![])]),
+                        ),
+                    ],
+                ),
+        )
+        .await;
+        let found = lines_of(&mut tx, &c, &po).await;
+        assert_eq!(num(&mut tx, &found[0], "price_tax").await, dec("0.25"));
+        assert_eq!(num(&mut tx, &found[1], "price_tax").await, dec("0"));
+        let copied = po.copy(&mut tx, None).await.unwrap();
+        let copies = lines_of(&mut tx, &c, &copied).await;
+        assert_eq!(num(&mut tx, &copies[0], "price_tax").await, dec("0.25"));
+        assert_eq!(num(&mut tx, &copies[1], "price_tax").await, dec("0"));
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        // a tax without a sequence is refused by name
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        tx.execute("UPDATE account_tax SET sequence = NULL", &[])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let plain = orders(&tx, &c);
+        refused(
+            try_create(
+                &mut tx,
+                &plain,
+                RawVals::new()
+                    .set_cell("partner_id", Cell::Id(k.vendor))
+                    .set_commands("order_line", [Command::Create(line_vals(k.bolt))]),
+            )
+            .await,
+            ErrorKind::Validation,
+            &["no sequence"],
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn a_hand_priced_line_loses_the_row_and_discount_of_the_former_product_or_vendor() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let system = xmlid(&mut tx, "base", "group_system").await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        user(&mut tx, "purchase-admin", &[system], &[main]).await;
+        let buyer = user(&mut tx, "buyer", &[buyer_group], &[main]).await;
+        let k = catalog(&mut tx, main).await;
+        let env = tx.env().with_company(main).unwrap();
+        let second = env
+            .records("res.partner")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("name", text("Second vendor"))],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        tx.install_audit_schema().await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let c = [main];
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let twelve = || line_vals(k.nut).set_cell("product_qty", Cell::Decimal(dec("12")));
+        let po = order(
+            &mut tx,
+            &c,
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(k.vendor))
+                .set_commands(
+                    "order_line",
+                    [Command::Create(twelve()), Command::Create(twelve())],
+                ),
+        )
+        .await;
+        let found = lines_of(&mut tx, &c, &po).await;
+        // twelve nuts: the vendor price of 3 with 10 % off, and its row
+        assert_eq!(num(&mut tx, &found[0], "discount").await, dec("10"));
+        assert_ne!(
+            cell(&mut tx, &found[0], "selected_seller_id").await,
+            Cell::Null
+        );
+        let by_hand =
+            |price: &str| RawVals::new().set_cell("price_unit", Cell::Decimal(dec(price)));
+        // a new product, with a price given in the same write
+        write(
+            &mut tx,
+            &found[0],
+            by_hand("9").set_cell("product_id", Cell::Id(k.bolt)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(num(&mut tx, &found[0], "price_unit").await, dec("9"));
+        assert_eq!(num(&mut tx, &found[0], "discount").await, dec("0"));
+        assert_eq!(
+            cell(&mut tx, &found[0], "selected_seller_id").await,
+            Cell::Null
+        );
+        // a new vendor on the order, the other line priced by hand
+        write(&mut tx, &found[1], by_hand("9")).await.unwrap();
+        write(
+            &mut tx,
+            &po,
+            RawVals::new().set_cell("partner_id", Cell::Id(second)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(num(&mut tx, &found[1], "price_unit").await, dec("9"));
+        assert_eq!(num(&mut tx, &found[1], "discount").await, dec("0"));
+        assert_eq!(
+            cell(&mut tx, &found[1], "selected_seller_id").await,
+            Cell::Null
+        );
         tx.rollback().await.unwrap();
         drop(tx);
         db.cleanup().await.unwrap();

@@ -179,7 +179,7 @@ async fn hard_lock_activation_is_explicitly_unavailable() {
     assert_eq!(error.kind(), ErrorKind::UserError);
     assert_eq!(
         error.message(),
-        "Hard lock activation is unavailable: a later release must verify the maintenance drain, entry checks and activation audit first."
+        "Hard lock activation is not available yet: the maintenance drain, entry checks and activation audit must be verified first."
     );
     tx.rollback().await.unwrap();
     drop(tx);

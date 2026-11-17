@@ -3,7 +3,9 @@
 //! product lines (`invoice_line_ids`); after every create and every relevant write of a draft
 //! invoice [`sync_lines`] rebuilds the rest of `line_ids` from them: one tax line per tax
 //! repartition line and account, one receivable or payable line that balances the entry, and the
-//! header totals. Posting checks live in [`post`] and are called by the posting service.
+//! header totals. A change of the accounting date of a draft runs [`sync_lines_redated`], which
+//! also converts the balances of a foreign-currency invoice again at the new date. Posting checks
+//! live in [`post`] and are called by the posting service.
 //!
 //! Not in this cut (each refused or left visible, never guessed): receipts, payment terms
 //! (the due date is the invoice date unless set by hand), product account mappings
@@ -12,9 +14,10 @@
 
 mod onchange;
 pub mod post;
+mod settings;
 mod sync;
 
-pub use sync::sync_lines;
+pub use sync::{sync_lines, sync_lines_redated};
 
 use erp_sdk::Command;
 use erp_sdk::prelude::*;
@@ -23,12 +26,6 @@ use crate::moves::id_cell;
 
 /// The move types this module treats as invoices.
 pub const INVOICE_TYPES: [&str; 4] = ["out_invoice", "out_refund", "in_invoice", "in_refund"];
-
-/// The task that adds product income and expense accounts.
-pub const ACCOUNT_MAPPING_TASK: &str = "a later release";
-
-/// The task that adds groups of taxes with their children.
-pub const TAX_CHILDREN_TASK: &str = "a later release";
 
 /// Fields whose change on a draft invoice rebuilds its tax, receivable/payable and total values.
 const SYNC_FIELDS: [&str; 8] = [
@@ -128,6 +125,27 @@ pub(crate) async fn prepare_create(
     fill_line_accounts(tx, env, vals, journal).await
 }
 
+/// Fills the taxes of the new product lines of a draft invoice, after the entry defaults have
+/// decided its company (so the taxes are those of the company the entry gets). Does nothing for
+/// other entries.
+pub(crate) async fn fill_create_taxes(
+    tx: &mut Transaction,
+    env: &Env,
+    vals: &mut RawVals,
+) -> Result<()> {
+    let Some(kind) = text_of(vals.get("move_type")).filter(|t| is_invoice(t)) else {
+        return Ok(());
+    };
+    let Some(company) = id_cell(vals.get("company_id"), "company_id")? else {
+        return Ok(());
+    };
+    let context = TaxContext {
+        company,
+        sale: is_sale(&kind),
+    };
+    fill_taxes(tx, env, vals, &context).await
+}
+
 /// Prepares a write of draft entries: fills the account of new product lines and the accounting
 /// date from the invoice date. True when the write touches invoices in a way that needs
 /// [`sync_lines`] afterwards.
@@ -169,6 +187,10 @@ pub(crate) async fn prepare_write(
             }
         };
         fill_line_accounts(tx, records.env(), vals, journal).await?;
+    }
+    if needs_taxes(vals) {
+        let context = write_tax_context(tx, records, vals).await?;
+        fill_taxes(tx, records.env(), vals, &context).await?;
     }
     Ok(true)
 }
@@ -216,8 +238,205 @@ async fn invoice_journal(
     })
 }
 
+/// What decides the default taxes of a line: the entry's company and whether it is a sale
+/// document (customer taxes) or a purchase document (vendor taxes).
+pub(crate) struct TaxContext {
+    company: i64,
+    sale: bool,
+}
+
+const LINE_FIELDS: [&str; 2] = ["line_ids", "invoice_line_ids"];
+
+/// A line command that sets or changes the product without giving `tax_ids`.
+fn takes_product_taxes(line: &RawVals) -> bool {
+    !line.contains("tax_ids")
+        && line.commands("tax_ids").is_none()
+        && matches!(line.get("product_id"), Some(Cell::Id(_)))
+}
+
+fn needs_taxes(vals: &RawVals) -> bool {
+    LINE_FIELDS.iter().any(|f| {
+        vals.commands(f).is_some_and(|cmds| {
+            cmds.iter().any(|c| match c {
+                Command::Create(line) | Command::Update(_, line) => takes_product_taxes(line),
+                _ => false,
+            })
+        })
+    })
+}
+
+/// The type and company of the invoice a write changes: the given ones, else the record's (one
+/// invoice at a time).
+async fn write_tax_context(
+    tx: &mut Transaction,
+    records: &Records,
+    vals: &RawVals,
+) -> Result<TaxContext> {
+    let types = match text_of(vals.get("move_type")) {
+        Some(kind) => vec![kind],
+        None => records
+            .cells(tx, "move_type")
+            .await?
+            .iter()
+            .filter_map(|c| text_of(Some(c)))
+            .collect(),
+    };
+    let companies = match id_cell(vals.get("company_id"), "company_id")? {
+        Some(company) => vec![company],
+        None => {
+            let mut found = Vec::new();
+            for cell in records.cells(tx, "company_id").await? {
+                found.extend(id_cell(Some(&cell), "company_id")?);
+            }
+            found.sort_unstable();
+            found.dedup();
+            found
+        }
+    };
+    let (Some(kind), [company]) = (types.first(), companies.as_slice()) else {
+        return Err(Error::user("Change the lines of one invoice at a time."));
+    };
+    Ok(TaxContext {
+        company: *company,
+        sale: is_sale(kind),
+    })
+}
+
+/// The tax context of the invoice(s) the journal items `lines` belong to: `None` when none is an
+/// invoice line.
+///
+/// # Errors
+///
+/// A user error when the lines belong to invoices of different companies or sides.
+pub(crate) async fn line_tax_context(
+    tx: &mut Transaction,
+    lines: &Records,
+) -> Result<Option<TaxContext>> {
+    let entries = lines.cells(tx, "move_id").await?;
+    let ids: Vec<RecId> = entries
+        .iter()
+        .filter_map(|cell| match cell {
+            Cell::Id(id) => RecId::from_real(*id),
+            _ => None,
+        })
+        .collect();
+    let moves = lines.env().records("account.move")?.browse_ids(ids);
+    let kinds = moves.cells(tx, "move_type").await?;
+    let companies = moves.cells(tx, "company_id").await?;
+    let mut found: Vec<(i64, bool)> = Vec::new();
+    for (kind, company) in kinds.iter().zip(&companies) {
+        let Some(kind) = text_of(Some(kind)).filter(|k| is_invoice(k)) else {
+            continue;
+        };
+        let company = id_cell(Some(company), "company_id")?
+            .ok_or_else(|| Error::invariant("an invoice has no company"))?;
+        found.push((company, is_sale(&kind)));
+    }
+    found.sort_unstable();
+    found.dedup();
+    match found.as_slice() {
+        [] => Ok(None),
+        [(company, sale)] => Ok(Some(TaxContext {
+            company: *company,
+            sale: *sale,
+        })),
+        _ => Err(Error::user(
+            "Change the product of the lines of one invoice at a time.",
+        )),
+    }
+}
+
+/// A line that names a product and gives no `tax_ids` takes the product's taxes of the entry's
+/// company: a new line, and an existing line whose product is changed (the
+/// former product's taxes would not fit). A given set, the empty one included, is kept as given;
+/// a line without a product takes none. Shortcut: no fiscal position mapping, because an invoice
+/// has no fiscal position field yet.
+async fn fill_taxes(
+    tx: &mut Transaction,
+    env: &Env,
+    vals: &mut RawVals,
+    context: &TaxContext,
+) -> Result<()> {
+    for field in LINE_FIELDS {
+        let Some(mut commands) = vals.remove_commands(field) else {
+            continue;
+        };
+        for command in &mut commands {
+            match command {
+                Command::Create(line) if is_product_line(line) => {
+                    fill_line_taxes(tx, env, line, context).await?;
+                }
+                Command::Update(_, line) => fill_line_taxes(tx, env, line, context).await?,
+                _ => {}
+            }
+        }
+        vals.insert_commands(field.into(), commands);
+    }
+    Ok(())
+}
+
+fn is_product_line(line: &RawVals) -> bool {
+    match line.get("display_type") {
+        None | Some(Cell::Null) => true,
+        Some(Cell::Str(kind)) => kind.as_ref() == "product",
+        Some(_) => false,
+    }
+}
+
+pub(crate) async fn fill_line_taxes(
+    tx: &mut Transaction,
+    env: &Env,
+    line: &mut RawVals,
+    context: &TaxContext,
+) -> Result<()> {
+    if !takes_product_taxes(line) {
+        return Ok(());
+    }
+    let Some(product) = id_cell(line.get("product_id"), "product_id")? else {
+        return Ok(());
+    };
+    let company_env = env.with_company(context.company)?;
+    let field = if context.sale {
+        "taxes_id"
+    } else {
+        "supplier_taxes_id"
+    };
+    let proposed: Vec<i64> = match company_env
+        .records("product.product")?
+        .browse([product])?
+        .cell(tx, field)
+        .await?
+    {
+        Cell::Ids(ids) => ids
+            .iter()
+            .filter_map(|id| id.as_real().map(|id| id.get()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let taxes: Vec<RecId> = if proposed.is_empty() {
+        Vec::new()
+    } else {
+        company_env
+            .records("account.tax")?
+            .search(
+                tx,
+                &Domain::and([
+                    Domain::condition("id", Operator::In, proposed)?,
+                    Domain::condition("company_id", Operator::ParentOf, context.company)?,
+                ]),
+            )
+            .await?
+            .ids()
+            .into_iter()
+            .filter_map(RecId::from_real)
+            .collect()
+    };
+    line.insert_commands("tax_ids".into(), vec![Command::Set(taxes)]);
+    Ok(())
+}
+
 /// New product lines without an account take the journal's default account (
-/// partial: product accounts come with [`ACCOUNT_MAPPING_TASK`]); without one the save is refused
+/// partial: product accounts are not available yet); without one the save is refused
 /// with what to configure.
 async fn fill_line_accounts(
     tx: &mut Transaction,
@@ -258,8 +477,8 @@ async fn fill_line_accounts(
             let account = account.ok_or_else(|| {
                 Error::user(format!(
                     "Choose an account on each invoice line, or give journal {journal} a default \
-                     account in Accounting, Configuration, Journals (product accounts come with \
-                     task {ACCOUNT_MAPPING_TASK})."
+                     account in Accounting, Configuration, Journals (accounts set on products are not \
+                     available yet)."
                 ))
             })?;
             line.insert("account_id".into(), Cell::Id(account));

@@ -27,6 +27,9 @@ pub struct ProductTemplateSale {
         compute = "_compute_invoice_policy",
         store = true,
         readonly = false,
+        // the static default lets the schema fill the rows of a populated table at install;
+        // `default_get` replaces it with the company's policy for new products
+        default = "order",
         required = true,
         string = "Invoicing Policy"
     )]
@@ -85,7 +88,7 @@ async fn new_product_policy(tx: &mut Transaction, env: &Env) -> Result<String> {
 impl ProductTemplateSale {
     /// The policy of a new product as its default: the field is required and its compute runs
     /// after the INSERT, so a product created without a policy (also as the template of a new
-    /// variant) gets it before; a `default_invoice_policy` context key still wins.
+    /// variant) gets it before; a `default_invoice_policy` context key still wins over the company's.
     #[method(override)]
     async fn default_get(
         this: &RecordSet<ProductTemplate>,
@@ -95,7 +98,10 @@ impl ProductTemplateSale {
     ) -> Result<ValueMap> {
         let mut values: ValueMap = sup.call(tx, this.as_records(), (names.clone(),)).await?;
         let field = ProductTemplateSale::INVOICE_POLICY.name();
-        if names.iter().any(|name| name == field) && !values.contains_key(field) {
+        // shortcut: an ir.default for this field loses to the company policy, upgrade when the
+        // schema can fill a required computed column on a populated table
+        let given = this.env().context().contains(&format!("default_{field}"));
+        if names.iter().any(|name| name == field) && !given {
             let policy = new_product_policy(tx, this.env()).await?;
             values.insert(field.to_owned(), Value::Str(policy.into()));
         }

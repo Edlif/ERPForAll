@@ -438,8 +438,7 @@ fn refuse_line_inputs(vals: &RawVals) -> Result<()> {
     refuse_state(vals, "parent_state")?;
     if matches!(vals.get("is_storno"), Some(Cell::Bool(true))) {
         return Err(Error::validation(
-            "Storno journal items need the company's storno setting, which comes with the next part \
-             of task a later release.",
+            "Storno journal items need the company's storno setting, which is not available yet.",
         ));
     }
     Ok(())
@@ -656,6 +655,14 @@ impl AccountMoveLine {
     ) -> Result<()> {
         refuse_line_inputs(&vals)?;
         let env = this.env().clone();
+        // a new product on an invoice line takes that product's taxes unless the write gives some
+        if matches!(vals.get("product_id"), Some(Cell::Id(_)))
+            && !vals.contains("tax_ids")
+            && vals.commands("tax_ids").is_none()
+            && let Some(context) = crate::invoice::line_tax_context(tx, this.as_records()).await?
+        {
+            crate::invoice::fill_line_taxes(tx, &env, &mut vals, &context).await?;
+        }
         let skip = skip_balance_check(&env)?;
         let entries = this.mapped(tx, AccountMoveLine::MOVE_ID).await?;
         let mut move_ids: Vec<i64> = entries

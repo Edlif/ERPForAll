@@ -2021,8 +2021,8 @@ export class HumanApp {
           nextDispose = graph.dispose;
           stagedDisposers.push(nextDispose);
         } else {
-          await attachSubviews(description, view, async relation =>
-            describeViews(await this.viewDescriptions(relation, [[null, "list"], [null, "form"]], {}, context), relation, this.registry));
+          await attachSubviews(description, view, async (relation, refs) =>
+            describeViews(await this.viewDescriptions(relation, [[null, "list"], [null, "form"]], {}, refs ? { ...context, ...refs } : context), relation, this.registry));
           const canEdit = view.canEdit !== false && !isFalsy(context["edit"]);
           const formViewMeta = (!canEdit && route.id) ? {
             ...view,
@@ -3657,8 +3657,8 @@ export class HumanApp {
     if (!this.live(binding)) return;
     const view = description.views.get("form");
     if (!view || view.mode !== "record") throw new ClientError("unsupported", "A wizard requires a record form.");
-    await attachSubviews(description, view, async relation => describeViews(await this.rpc.call(relation, "get_views", {
-      views: [[null, "list"], [null, "form"]], wire_major: 1, options: { mobile: false }, context
+    await attachSubviews(description, view, async (relation, refs) => describeViews(await this.rpc.call(relation, "get_views", {
+      views: [[null, "list"], [null, "form"]], wire_major: 1, options: { mobile: false }, context: refs ? { ...context, ...refs } : context
     }), relation, this.registry));
     if (!this.live(binding)) return;
     const state = new RecordState(this.rpc, result.model, view.fields, context);

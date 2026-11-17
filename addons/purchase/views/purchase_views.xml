@@ -17,6 +17,7 @@
         <field name="price_unit"/>
         <field name="discount"/>
         <field name="tax_ids" widget="many2many_tags"/>
+        <field name="currency_id" invisible="1"/>
         <field name="price_subtotal"/>
         <field name="qty_received"/>
       </list>

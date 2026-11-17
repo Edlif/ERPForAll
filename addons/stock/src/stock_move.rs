@@ -97,6 +97,12 @@ fn now(_ctx: &DefaultContext) -> Value {
             "CHECK (open_line_version >= 0)",
             "The open line version of a stock move cannot be negative."
         ),
+        // the done statement sets both; a writer outside it cannot leave a done move undated
+        (
+            "_done_has_time",
+            "CHECK (state <> 'done' OR done_at IS NOT NULL)",
+            "A done stock move must have its completion time."
+        ),
         // the exact text of `erp_addon_uom::stock::product_quantity_sql` for these columns (pinned by
         // the schema test): exact integer division with ties away from zero, so it never
         // double-rounds near a tie as `round(qty * factor / factor, digits)` does
@@ -333,7 +339,13 @@ pub struct StockMove {
     )]
     pub state: Option<Arc<str>>,
     /// Picked (indicative only).
-    #[field(boolean, default = false, copy = false, string = "Picked")]
+    #[field(
+        boolean,
+        required = true,
+        default = false,
+        copy = false,
+        string = "Picked"
+    )]
     pub picked: bool,
     /// Unit cost recorded at confirmation, company currency, product unit.
     #[field(float, digits = 0, copy = false, string = "Unit Price")]
@@ -355,7 +367,7 @@ pub struct StockMove {
     )]
     pub procure_method: Option<Arc<str>>,
     /// Scrap move.
-    #[field(boolean, readonly = true)]
+    #[field(boolean, required = true, default = false, readonly = true)]
     pub is_scrap: bool,
     /// References of the move (the other side of `stock_reference_move_rel`).
     #[field(

@@ -169,7 +169,8 @@ impl StockCompany {
         .await
     }
 
-    /// Module data loader only, at install: every company without a warehouse gets one.
+    /// Module data loader only, at install and at every upgrade of Inventory: every company
+    /// without a warehouse gets one, and a company that has one is left alone.
     #[method]
     #[data_callable(model)]
     async fn _stock_create_missing_warehouses(

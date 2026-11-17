@@ -100,8 +100,8 @@ export function editRelation(options: RelationEditorOptions): Promise<RelationCh
     const description = describeViews(raw, options.model, registry), view = description.views.get("form");
     if (!view || view.mode !== "record") throw new ClientError("unsupported", "The relation editor requires a record form.");
     rejectCommands(view.nodes);
-    await attachSubviews(description, view, async relation => {
-      const child = describeViews(await rpc.call(relation, "get_views", { wire_major: 1, views: [[null, "list"], [null, "form"]], options: { mobile: window.innerWidth < 640 }, context }), relation, registry);
+    await attachSubviews(description, view, async (relation, refs) => {
+      const child = describeViews(await rpc.call(relation, "get_views", { wire_major: 1, views: [[null, "list"], [null, "form"]], options: { mobile: window.innerWidth < 640 }, context: refs ? { ...context, ...refs } : context }), relation, registry);
       const childForm = child.views.get("form"); if (childForm) rejectCommands(childForm.nodes);
       return child;
     });

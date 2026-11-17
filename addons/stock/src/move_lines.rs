@@ -38,7 +38,7 @@ use crate::move_counters::{cell_id, lock_move_roots, notify_pickings};
 use crate::move_units::{
     LINE_SNAPSHOT_FIELDS, LINE_UNIT_INPUTS, Target, fill_create_for, write_groups_for,
 };
-use crate::quant_engine::{QuantChange, QuantKey, apply_quant_changes};
+use crate::quant_engine::{QuantChange, QuantKey, apply_quant_changes_in_chunks};
 
 /// Line columns whose change moves the line's reservation (its quantity or its quant key).
 const RESERVATION_FIELDS: [&str; 6] = [
@@ -165,6 +165,9 @@ fn label(tx: &Transaction, field: &str) -> Result<String> {
         .ok_or_else(|| Error::internal(format!("stock.move.line has no field '{field}'")))
 }
 
+/// The line fields of lots and serial rows, refused until lots exist.
+const LOT_FIELDS: [&str; 3] = ["lot_id", "lot_name", "child_mode"];
+
 /// A lot, a lot name or serial rows named with a value: refused until lots exist.
 fn refuse_lots(vals: &RawVals) -> Result<()> {
     let named = |field: &str| match vals.get(field) {
@@ -172,7 +175,22 @@ fn refuse_lots(vals: &RawVals) -> Result<()> {
         Some(Cell::Str(text)) => !text.is_empty(),
         Some(_) => true,
     };
-    if ["lot_id", "lot_name", "child_mode"].into_iter().any(named) {
+    if LOT_FIELDS.into_iter().any(named) {
+        return Err(StockError::LotsNotAvailable.into());
+    }
+    Ok(())
+}
+
+/// The same refusal for the `default_<field>` context keys a create applies after the values were
+/// read here: a key with a value names a lot as the value would.
+fn refuse_lot_defaults(env: &Env) -> Result<()> {
+    let context = env.context();
+    let named = |field: &str| match context.get(&format!("default_{field}")) {
+        None | Some(Value::False | Value::Bool(false)) => false,
+        Some(Value::Str(text)) => !text.is_empty(),
+        Some(_) => true,
+    };
+    if LOT_FIELDS.into_iter().any(named) {
         return Err(StockError::LotsNotAvailable.into());
     }
     Ok(())
@@ -222,8 +240,9 @@ pub(crate) async fn reservation_changes(
     Ok(())
 }
 
-/// Apply netted reserved deltas in one engine call (nothing when every net is zero); `probed`
-/// marks them as an allocation chosen without a lock, floored at the on-hand.
+/// Apply netted reserved deltas (nothing when every net is zero), in one engine call or, above its
+/// bound, in ascending chunks; `probed` marks them as an allocation chosen without a lock (
+/// D2), floored at the on-hand.
 pub(crate) async fn apply_reserved(
     tx: &mut Transaction,
     nets: HashMap<QuantKey, Decimal>,
@@ -237,12 +256,13 @@ pub(crate) async fn apply_reserved(
             if probed { change.as_probed() } else { change }
         })
         .collect();
-    apply_quant_changes(tx, &changes).await.map(drop)
+    apply_quant_changes_in_chunks(tx, &changes).await.map(drop)
 }
 
-/// While a reservation unit inserts its lines through the ORM, or a validation or cancellation
-/// deletes them, the line create and unlink leave the reservation and the move settlement to that
-/// unit, which makes one engine call for all of them.
+/// While a reservation unit inserts its lines through the ORM, a validation or cancellation deletes
+/// them, or a line write of several snapshot groups writes each group, the line create, write and
+/// unlink leave the reservation and the move settlement to that unit, which makes one engine call
+/// for all of them.
 #[derive(Default)]
 pub(crate) struct DeferSettle {
     pub(crate) active: bool,
@@ -336,6 +356,7 @@ pub(crate) async fn create_lines(
     }
     // a caller without the right gets the access error before any refusal of the values
     records.check_access(tx, Operation::Create).await?;
+    refuse_lot_defaults(records.env())?;
     let mut moves = BTreeSet::new();
     for vals in &vals_list {
         refuse_lots(vals)?;
@@ -347,6 +368,13 @@ pub(crate) async fn create_lines(
     }
     tx.flush().await?;
     let moves: Vec<i64> = moves.into_iter().collect();
+    // the caller-named moves pass the record check before the statements below lock and read them
+    records
+        .env()
+        .records("stock.move")?
+        .browse(moves.iter().copied())?
+        .check_access(tx, Operation::Read)
+        .await?;
     let roots = lock_move_roots(tx, &moves, &[]).await?;
     let rows = read_moves(tx, &moves).await?;
     for vals in &mut vals_list {
@@ -433,20 +461,43 @@ pub(crate) async fn write_lines(
     if !unit && !RESERVATION_FIELDS.iter().any(|f| vals.contains(f)) {
         return sup.call(tx, records, (vals,)).await;
     }
+    // a group write of a multi-group write below: the outer write holds the locks, gave the
+    // reservations back and takes them again in its one engine call
+    let deferred = tx.extension::<DeferSettle>().active;
     let moves = line_moves(tx, &ids).await?;
-    let roots = lock_move_roots(tx, &moves, &[]).await?;
     let mut nets = HashMap::new();
-    reservation_changes(tx, &ids, Decimal::NEGATIVE_ONE, &mut nets).await?;
+    let roots = if deferred {
+        Vec::new()
+    } else {
+        let roots = lock_move_roots(tx, &moves, &[]).await?;
+        reservation_changes(tx, &ids, Decimal::NEGATIVE_ONE, &mut nets).await?;
+        roots
+    };
     let vals = if unit {
         let mut groups = write_groups_for(Target::Line, records, tx, &vals).await?;
         if groups.len() > 1 {
-            // shortcut: lines needing different snapshots are written one group at a time, each
-            // its own engine call (keys below a held one are refused by the engine's lock order);
-            // a single statement for mixed groups needs a writer below the ORM write
+            // lines needing different snapshots are written one group at a time (each its own
+            // statement), with the reservation and the settlement left to this write: one engine
+            // call for all groups
+            tx.extension::<DeferSettle>().active = true;
+            let mut result = Ok(());
             for (group, group_vals) in groups {
-                records.browse(group)?.write(tx, group_vals).await?;
+                result = match records.browse(group) {
+                    Ok(group) => group.write(tx, group_vals).await,
+                    Err(error) => Err(error),
+                };
+                if result.is_err() {
+                    break;
+                }
             }
-            return Ok(());
+            tx.extension::<DeferSettle>().active = deferred;
+            result?;
+            tx.flush().await?;
+            if deferred {
+                return Ok(());
+            }
+            reservation_changes(tx, &ids, Decimal::ONE, &mut nets).await?;
+            return settle(records, tx, &moves, &roots, nets, false).await;
         }
         match groups.pop() {
             Some((_, group_vals)) => group_vals,
@@ -457,6 +508,9 @@ pub(crate) async fn write_lines(
     };
     sup.call(tx, records, (vals,)).await?;
     tx.flush().await?;
+    if deferred {
+        return Ok(());
+    }
     reservation_changes(tx, &ids, Decimal::ONE, &mut nets).await?;
     settle(records, tx, &moves, &roots, nets, false).await
 }

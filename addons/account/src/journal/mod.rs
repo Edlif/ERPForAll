@@ -31,9 +31,6 @@ fn numbered_per_year(journal_type: &str) -> bool {
 /// The refusal of the unique key on (company, code).
 const CODE_UNIQUE: &str = "Each journal code can be used once per company.";
 
-/// The task that creates a liquidity journal's default account from the company's code prefix.
-pub const DEFAULT_ACCOUNT_TASK: &str = "a later release";
-
 /// `account.journal.group`: a ledger, a named group of journals.
 /// The reference keeps one list for the database (no company); so does this model.
 #[model(
@@ -455,7 +452,7 @@ impl AccountJournal {
     /// The default account's type must suit the journal. A
     /// bank, cash or credit card journal has a default account, on create and on every later
     /// change of its type or account, until the account is created for it
-    /// ([`DEFAULT_ACCOUNT_TASK`]).
+    /// (automatic creation is not available yet).
     #[constrains("type", "default_account_id")]
     async fn _check_default_account_type(
         this: &RecordSet<AccountJournal>,
@@ -470,7 +467,7 @@ impl AccountJournal {
                 None if is_liquidity(journal_type) => {
                     return Err(Error::validation(format!(
                         "A {journal_type} journal needs a default account: select a liquidity \
-                         account. Creating it automatically comes with task {DEFAULT_ACCOUNT_TASK}."
+                         account. Creating it automatically is not available yet."
                     )));
                 }
                 None => {}

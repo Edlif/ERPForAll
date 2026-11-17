@@ -84,8 +84,8 @@ erp_sdk::setting_declarations!(settings);
 pub struct OrderPolicy {
     /// A manager approves orders whose total is not under [`Self::amount`].
     pub two_step: bool,
-    /// The minimum amount in the company currency.
-    pub amount: f64,
+    /// The minimum amount in the company currency (exact: compared with exact totals).
+    pub amount: Decimal,
     /// Approval locks the order.
     pub lock: bool,
 }
@@ -122,14 +122,17 @@ impl OrderPolicy {
         };
         let approval = value(APPROVAL_SETTING)?;
         let lock = value(LOCK_SETTING)?;
+        let bounds = || {
+            Error::validation(format!(
+                "{AMOUNT_SETTING} must be a number from {AMOUNT_FLOOR} to {AMOUNT_HARD}."
+            ))
+        };
         let amount = value(AMOUNT_SETTING)?
             .as_f64()
             .filter(|a| (AMOUNT_FLOOR..=AMOUNT_HARD).contains(a))
-            .ok_or_else(|| {
-                Error::validation(format!(
-                    "{AMOUNT_SETTING} must be a number from {AMOUNT_FLOOR} to {AMOUNT_HARD}."
-                ))
-            })?;
+            // the shortest text of the stored number is the number the administrator typed
+            .and_then(|a| a.to_string().parse::<Decimal>().ok())
+            .ok_or_else(bounds)?;
         Ok(Self {
             two_step: match approval.as_str() {
                 Some("one_step") => false,
@@ -148,7 +151,7 @@ impl OrderPolicy {
     /// Whether an order of this company with `total` (already in the company currency) is
     /// approved by the confirming user: one step, a total under the amount, or a manager.
     #[must_use]
-    pub fn approves(&self, total: f64, is_manager: bool) -> bool {
+    pub fn approves(&self, total: Decimal, is_manager: bool) -> bool {
         !self.two_step || total < self.amount || is_manager
     }
 }
@@ -177,24 +180,27 @@ mod tests {
 
     #[test]
     fn approval_rule() {
+        let d = |text: &str| text.parse::<Decimal>().unwrap();
         let one = OrderPolicy {
             two_step: false,
-            amount: 0.0,
+            amount: d("0"),
             lock: false,
         };
-        assert!(one.approves(1e9, false));
+        assert!(one.approves(d("1000000000"), false));
         let two = OrderPolicy {
             two_step: true,
-            amount: 0.0,
+            amount: d("0"),
             lock: false,
         };
-        assert!(!two.approves(0.0, false));
-        assert!(two.approves(0.0, true));
+        assert!(!two.approves(d("0"), false));
+        assert!(two.approves(d("0"), true));
         let two = OrderPolicy {
-            amount: 5_000.0,
+            amount: d("5000"),
             ..two
         };
-        assert!(two.approves(4_999.99, false));
-        assert!(!two.approves(5_000.0, false));
+        assert!(two.approves(d("4999.99"), false));
+        // a total one cent under the limit is under it, which no float sum can promise
+        assert!(two.approves(d("4999.999999999999999"), false));
+        assert!(!two.approves(d("5000"), false));
     }
 }

@@ -69,12 +69,28 @@ export function linePolicy(subview: Subview, line: Line): Field[] {
   const present = new Set(occurrences.map(field => field.name));
   return combineFields([...occurrences, ...lineFields(subview).filter(field => !present.has(field.name))]);
 }
+/** The fields a user edited on a line that is not created yet, by line key. A new line's many2many that is empty and was
+ *  never edited is not sent, so the server fills it (a product's taxes on an order or invoice line); one the user emptied is
+ *  sent as the empty set and stays empty. Without this the server could not tell the two apart (review 2026-11-17: a
+ *  server-side guess taxed duplicated lines again). */
+const touchedNewLines = new Map<string, Set<string>>();
+export function touchNewLine(key: string, fields: Iterable<string>): void {
+  const touched = touchedNewLines.get(key) ?? new Set<string>();
+  for (const name of fields) touched.add(name);
+  touchedNewLines.set(key, touched);
+}
+function untouchedEmptyRelation(field: Field, line: Line): boolean {
+  const value = line[field.name], key = line["__key"];
+  return field.kind === "many2many" && (value === false || Array.isArray(value) && value.length === 0)
+    && !(typeof key === "string" && touchedNewLines.get(key)?.has(field.name));
+}
 function lineVals(subview: Subview, line: Line, changed: readonly string[] | null): Record<string, unknown> {
   const vals: Record<string, unknown> = {};
   for (const field of linePolicy(subview, line)) {
     if (field.required && !field.readonly && !field.invisible && field.kind !== "boolean" && (line[field.name] === false || line[field.name] === null || line[field.name] === undefined || line[field.name] === "" || Array.isArray(line[field.name]) && (line[field.name] as unknown[]).length === 0)) throw new ClientError("validation", `${field.label} is required.`);
     if (field.name === "id" || field.readonly && !field.forceSave || field.kind === "one2many" || !Object.hasOwn(line, field.name)) continue;
     if (changed && !changed.includes(field.name)) continue;
+    if (!changed && untouchedEmptyRelation(field, line)) continue;
     // a size read with `bin_size` is not content: the stored file stays as it is
     if (field.kind === "binary" && isBinarySize(line[field.name])) continue;
     vals[field.name] = writableValue(field, line[field.name]);

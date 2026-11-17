@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use erp_addon_base::ResPartner;
 use erp_addon_mail::{MailActivityMixin, MailThread};
 use erp_sdk::prelude::*;
-use erp_sdk::{Inherits, Model, ValueMap};
+use erp_sdk::{Inherits, Model, Operation, ValueMap};
 
 /// The code of the sequence record orders draw their number from (`sale/data/ir_sequence_data.xml:4-10`).
 pub const SEQUENCE_CODE: &str = "sale.order";
@@ -386,17 +386,70 @@ pub(crate) async fn headers(tx: &mut Transaction, records: &Records) -> Result<V
     let names = set.mapped(tx, SaleOrder::NAME).await?;
     let states = set.mapped(tx, SaleOrder::STATE).await?;
     let locked = set.mapped(tx, SaleOrder::LOCKED).await?;
-    Ok(records
+    let mut heads = Vec::with_capacity(names.len());
+    for (id, ((name, state), locked)) in records
         .rec_ids()
         .iter()
         .zip(names.into_iter().zip(states).zip(locked))
-        .map(|(id, ((name, state), locked))| Header {
+    {
+        // a stored order always has a state; reading none as a draft would let a damaged row be edited
+        let state =
+            state.ok_or_else(|| Error::invariant(format!("sales order {id:?} has no state")))?;
+        heads.push(Header {
             id: *id,
             name: name.as_deref().unwrap_or(PLACEHOLDER).to_owned(),
-            state: state.as_deref().unwrap_or("draft").to_owned(),
+            state: state.to_string(),
             locked,
-        })
-        .collect())
+        });
+    }
+    Ok(heads)
+}
+
+/// Refuses a pricelist change that changes the currency of an order that has lines: the lines
+/// keep the prices of the old currency and the addon has no update-prices operation yet. Within
+/// one currency the lines keep hand-set prices and the others are priced again.
+async fn refuse_pricelist_currency(
+    tx: &mut Transaction,
+    orders: &RecordSet<SaleOrder>,
+    vals: &RawVals,
+) -> Result<()> {
+    let env = orders.env().clone();
+    let new_pricelist = match vals.get("pricelist_id") {
+        Some(Cell::Id(id)) => Some(*id),
+        _ => None,
+    };
+    let old = orders.mapped(tx, SaleOrder::CURRENCY_ID).await?;
+    let companies = orders.mapped(tx, SaleOrder::COMPANY_ID).await?;
+    let headers = headers(tx, orders.as_records()).await?;
+    for (index, order) in headers.iter().enumerate() {
+        let new = match new_pricelist {
+            Some(id) => {
+                env.records("product.pricelist")?
+                    .browse([id])?
+                    .cell(tx, "currency_id")
+                    .await?
+            }
+            None => match companies.get(index).copied().flatten() {
+                Some(company) => {
+                    env.records("res.company")?
+                        .browse([company.get()])?
+                        .cell(tx, "currency_id")
+                        .await?
+                }
+                None => continue,
+            },
+        };
+        if old.get(index).copied().flatten().map(RecId::get)
+            != crate::amounts::id_of(&new, "currency_id")?
+            && has_lines(tx, order.id).await?
+        {
+            return Err(Error::validation(format!(
+                "The sales order {} has lines priced in its current currency, and the new pricelist is in another one. Prices cannot be updated to a new currency yet: remove the lines first, or make a new quotation with that pricelist.",
+                order.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Whether the order `order` has a line of any kind.
@@ -875,6 +928,24 @@ impl SaleOrder {
             .with(SaleOrder::ORDER_LINE))
     }
 
+    /// The values a new quotation form starts with: the active company, unless given.
+    #[method(override)]
+    async fn default_get(
+        this: &RecordSet<SaleOrder>,
+        tx: &mut Transaction,
+        names: Vec<String>,
+        sup: Super,
+    ) -> Result<ValueMap> {
+        let mut values: ValueMap = sup.call(tx, this.as_records(), (names.clone(),)).await?;
+        if names.iter().any(|n| n == "company_id")
+            && !values.contains_key("company_id")
+            && let Some(company) = this.env().company_id()?
+        {
+            values.insert("company_id".into(), Value::Int(company));
+        }
+        Ok(values)
+    }
+
     /// An order is born a draft and unlocked; it takes the current company when none is given, the
     /// next number of its company's sequence when it has no name, and its customer's invoice and
     /// delivery addresses when none are given (B2,
@@ -886,6 +957,10 @@ impl SaleOrder {
         sup: Super,
     ) -> Result<Records> {
         let env = this.env().clone();
+        // the number is drawn below: the caller's create right is checked before anything is consumed
+        this.as_records()
+            .check_access(tx, Operation::Create)
+            .await?;
         refuse_context_defaults(&env, "sales order", CREATE_REFUSED)?;
         for vals in &vals_list {
             refuse_operation_fields(tx, vals, CREATE_REFUSED)?;
@@ -918,10 +993,12 @@ impl SaleOrder {
                         ));
                     }
                 };
-                let date = match vals.get("date_order") {
-                    Some(Cell::DateTime(date)) => Some(date.date()),
-                    _ => None,
+                // the user's date, the one the prices of the order use
+                let at = match vals.get("date_order") {
+                    Some(Cell::DateTime(date)) => *date,
+                    _ => DateTime::now(),
                 };
+                let date = Some(crate::amounts::order_day(&env, at)?);
                 let number = crate::numbering::next_number(tx, this.env(), company, date).await?;
                 vals.insert("name".into(), Cell::Str(number.into()));
             }
@@ -1016,6 +1093,31 @@ impl SaleOrder {
                     )));
                 }
             }
+            // the form's read-only rules are the server's rules, refused by name
+            let frozen: &[&str] = if order.state == "sale" {
+                &["date_order", "validity_date", "fiscal_position_id"]
+            } else {
+                &[]
+            };
+            let locked_only: &[&str] = if order.locked {
+                &["user_id", "team_id"]
+            } else {
+                &[]
+            };
+            let refused: Vec<String> = frozen
+                .iter()
+                .chain(locked_only)
+                .filter(|name| written.contains(**name))
+                .map(|name| label(tx, name))
+                .collect::<Result<_>>()?;
+            if !refused.is_empty() {
+                return Err(Error::validation(format!(
+                    "The sales order {} is {}. These fields cannot be changed: {}.",
+                    order.name,
+                    if order.locked { "locked" } else { "confirmed" },
+                    refused.join(", ")
+                )));
+            }
             if order.state == "sale" && written.contains("pricelist_id") {
                 return Err(Error::user(format!(
                     "The pricelist of the sales order {} cannot be changed after it is confirmed.",
@@ -1023,11 +1125,38 @@ impl SaleOrder {
                 )));
             }
         }
+        // the addon has no update-prices operation: a pricelist in another currency would leave
+        // every line priced in the old one, so a quotation with lines refuses it
+        if written.contains("pricelist_id") {
+            refuse_pricelist_currency(tx, this, &vals).await?;
+        }
         let recurrency = ["pricelist_id", "company_id"]
             .iter()
             .any(|field| written.contains(field));
         let ids: BTreeSet<i64> = records.ids().into_iter().collect();
+        // a new pricelist prices the lines again, except those priced by hand
+        let order_lines = if written.contains("pricelist_id") {
+            let lines = this
+                .env()
+                .records("sale.order.line")?
+                .search(
+                    tx,
+                    &Domain::condition(
+                        "order_id",
+                        Operator::In,
+                        ids.iter().copied().collect::<Vec<_>>(),
+                    )?,
+                )
+                .await?;
+            let manual = crate::amounts::manual_prices(tx, &lines).await?;
+            Some((lines, manual))
+        } else {
+            None
+        };
         sup.call(tx, records, (vals,)).await?;
+        if let Some((lines, manual)) = order_lines {
+            crate::amounts::reprice(tx, this.env(), &lines, &manual, true, false).await?;
+        }
         if recurrency {
             // a new currency rounds every line and total again
             crate::amounts::resync_orders(tx, this.env(), &ids).await?;

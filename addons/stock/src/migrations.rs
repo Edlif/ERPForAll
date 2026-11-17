@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stock upgrade steps: missing reservation lead times keep their former zero (1.1); the stock unit
 //! policy moves from the Settings store to its declared system parameters (1.5);
-//! every company without a warehouse gets one (1.8).
+//! every company without a warehouse gets one (1.8); the move flags become two-valued and a done
+//! move has its completion time (1.9).
 use erp_sdk::migrations::SemverVersion;
 use erp_sdk::prelude::*;
 
@@ -136,9 +137,45 @@ async fn quant_policy_parameters(tx: &mut Transaction, _from: &SemverVersion) ->
 /// as install and company creation. All upgrade stages share one REPEATABLE READ transaction: a
 /// warehouse an older node commits during the upgrade is not in its snapshot, so that company
 /// ends with the user's warehouse and the generated one, or, when both carry the same name or
-/// short name, the uniqueness check stops the whole upgrade and it can be run again.
+/// short name, the uniqueness check stops the whole upgrade and it can be run again. A company an
+/// older node commits during the upgrade is not in the snapshot either and stays without a
+/// warehouse; the repair is the next upgrade of Inventory, whose data step
+/// (`res.company._stock_create_missing_warehouses`, not `noupdate`) runs on every upgrade, 1.9
+/// included, and creates what is missing and nothing else.
 #[erp_sdk::migration(addon = "stock", version = "1.8", stage = post)]
 async fn company_warehouses(tx: &mut Transaction, _from: &SemverVersion) -> Result<()> {
     let env = tx.env();
     crate::warehouse_setup::provision_missing(tx, &env).await
+}
+
+/// Before the 1.9 schema makes `is_scrap` and `picked` required and a done move carry its
+/// completion time: a move written before either flag had a default stores `false` (what every
+/// reader took a missing flag for), and a done move without a completion time takes its done
+/// date. Runs before the schema step, so the NOT NULL and the check meet no old row.
+#[erp_sdk::migration(addon = "stock", version = "1.9", stage = pre)]
+async fn move_flags_and_done_times(tx: &mut Transaction, _from: &SemverVersion) -> Result<()> {
+    let rows = tx
+        .query("SELECT to_regclass('stock_move') IS NOT NULL", &[])
+        .await?;
+    let exists: bool = rows
+        .first()
+        .ok_or_else(|| Error::internal("Stock move migration probe returned no row."))?
+        .try_get(0)
+        .map_err(|e| Error::db("Stock move migration probe failed.").with_source(e))?;
+    if !exists {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE stock_move SET is_scrap = COALESCE(is_scrap, false), \
+         picked = COALESCE(picked, false) WHERE is_scrap IS NULL OR picked IS NULL",
+        &[],
+    )
+    .await?;
+    tx.execute(
+        "UPDATE stock_move SET done_at = COALESCE(date, write_date, (now() AT TIME ZONE 'UTC')) \
+         WHERE state = 'done' AND done_at IS NULL",
+        &[],
+    )
+    .await?;
+    Ok(())
 }

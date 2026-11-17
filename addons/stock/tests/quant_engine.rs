@@ -9,12 +9,12 @@
     reason = "tests"
 )]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use erp_addon_stock::{
-    QuantBalance, QuantChange, QuantFilter, QuantKey, apply_quant_changes, available_quantity,
-    gather_quants,
+    QuantBalance, QuantChange, QuantFilter, QuantKey, apply_quant_changes,
+    apply_quant_changes_in_chunks, available_quantity, gather_quants,
 };
 use erp_sdk::ErrorKind;
 use erp_sdk::prelude::*;
@@ -2097,6 +2097,249 @@ async fn releases_lower_the_reserved_counter() {
         "{error:?}"
     );
     assert_eq!(stored(&mut tx, fresh).await, None);
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// Cycle 28 review, the mark only on a crossing: L's key is below zero and committed (its call
+/// marked L). B's snapshot predates a second decrease E of that key; E writes no mark, so B's lock
+/// passes and B is refused by name on the balance its snapshot shows, without a retry.
+#[tokio::test]
+async fn a_switch_behind_a_second_decrease_is_refused_without_a_retry() {
+    let f = fixture().await;
+    let key = f.key(f.p, f.l);
+    let mut tx = f.h.begin().await.unwrap();
+    apply(&mut tx, &[change(key, "-2", "0")]).await;
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut b = f.h.begin().await.unwrap();
+    b.query("SELECT 1", &[]).await.unwrap();
+    let mut e = f.h.begin().await.unwrap();
+    apply(&mut e, &[change(key, "-1", "0")]).await;
+    e.commit().await.unwrap();
+    drop(e);
+    let error = switch_on(&mut b, f.l)
+        .await
+        .expect_err("the switch passed over a negative balance");
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert!(
+        error.message().contains(&format!("location {}", f.l))
+            && error.message().contains("1 stock balances"),
+        "{error:?}"
+    );
+    b.rollback().await.unwrap();
+    drop(b);
+    assert!(!committed_flag(&f).await);
+    f.h.cleanup().await.unwrap();
+}
+
+/// snapshot and before its lock; the correction as a move line is not covered)
+/// An over-reservation at an unflagged location takes the key's free quantity below zero: it marks
+/// L, so B's lock fails with `40001`, and the switch is refused by name while the key stays
+/// over-reserved.
+#[tokio::test]
+async fn a_switch_behind_a_committed_over_reservation_is_retried_and_refused() {
+    let f = fixture().await;
+    let key = f.key(f.p, f.l);
+    let mut b = f.h.begin().await.unwrap();
+    b.query("SELECT 1", &[]).await.unwrap();
+    let mut e = f.h.begin().await.unwrap();
+    apply(&mut e, &[change(key, "1", "2")]).await;
+    e.commit().await.unwrap();
+    drop(e);
+    let error = switch_on(&mut b, f.l)
+        .await
+        .expect_err("the switch counted on a snapshot without the over-reservation");
+    assert_eq!(error.sqlstate(), Some("40001"), "{error:?}");
+    b.rollback().await.unwrap();
+    drop(b);
+    let mut tx = f.h.begin().await.unwrap();
+    let error = switch_on(&mut tx, f.l)
+        .await
+        .expect_err("the switch passed over an over-reserved key");
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert!(
+        error.message().contains("0 stock balances")
+            && error
+                .message()
+                .contains("1 other balances have more reserved than on hand"),
+        "{error:?}"
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    assert!(!committed_flag(&f).await);
+    f.h.cleanup().await.unwrap();
+}
+
+/// Wait until `flag` is set by the other session.
+async fn until(flag: &AtomicBool) {
+    let started = Instant::now();
+    while !flag.load(Ordering::SeqCst) {
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the other session did not get there"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Two units at L each take a first key below zero while the other holds L's policy row `FOR
+/// SHARE`: both marks wait for the other, PostgreSQL ends the deadlock with `40P01` in one of them,
+/// that unit is retried, and both changes are applied once.
+#[tokio::test]
+async fn two_units_going_below_zero_at_one_location_deadlock_and_are_retried() {
+    let f = fixture().await;
+    let a1 = f.key(f.p, f.l).lot_id(Some(f.lot_a));
+    let a2 = f.key(f.p, f.l).lot_id(Some(f.lot_b));
+    let b1 = f.key(f.q, f.l).lot_id(Some(f.lot_z));
+    let b2 = f.key(f.q, f.l);
+    let (a_held, b_held) = (AtomicBool::new(false), AtomicBool::new(false));
+    let (a_tries, b_tries) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let failures = std::sync::Mutex::new(Vec::new());
+    let note = |result: Result<Vec<QuantBalance>>| {
+        if let Err(error) = &result {
+            failures
+                .lock()
+                .unwrap()
+                .push(error.sqlstate().map(str::to_owned));
+        }
+        result
+    };
+    let a = f.h.run(async |tx| {
+        let first = a_tries.fetch_add(1, Ordering::SeqCst) == 0;
+        note(apply_quant_changes(tx, &[change(a1, "1", "0")]).await)?;
+        if first {
+            a_held.store(true, Ordering::SeqCst);
+            until(&b_held).await;
+        }
+        note(apply_quant_changes(tx, &[change(a2, "-1", "0")]).await)
+    });
+    let b = f.h.run(async |tx| {
+        let first = b_tries.fetch_add(1, Ordering::SeqCst) == 0;
+        if first {
+            until(&a_held).await;
+        }
+        note(apply_quant_changes(tx, &[change(b1, "1", "0")]).await)?;
+        if first {
+            b_held.store(true, Ordering::SeqCst);
+            // the other unit waits for its mark behind this unit's share lock
+            until_a_session_waits(&f.h).await;
+        }
+        note(apply_quant_changes(tx, &[change(b2, "-1", "0")]).await)
+    });
+    let (a, b) = tokio::join!(a, b);
+    a.unwrap();
+    b.unwrap();
+    let failures = failures.into_inner().unwrap();
+    assert!(
+        failures.iter().any(|s| s.as_deref() == Some("40P01")),
+        "{failures:?}"
+    );
+    assert!(a_tries.load(Ordering::SeqCst) + b_tries.load(Ordering::SeqCst) > 2);
+    let mut tx = f.h.begin().await.unwrap();
+    assert_eq!(stored(&mut tx, a1).await, Some(("1".into(), "0".into())));
+    assert_eq!(stored(&mut tx, a2).await, Some(("-1".into(), "0".into())));
+    assert_eq!(stored(&mut tx, b1).await, Some(("1".into(), "0".into())));
+    assert_eq!(stored(&mut tx, b2).await, Some(("-1".into(), "0".into())));
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// The mark's row count is checked: a location whose policy row is gone (only possible past the
+/// table's own guard, switched off here in the test transaction) is a mismatch, never a call that
+/// silently writes no mark.
+#[tokio::test]
+async fn a_mark_without_its_policy_row_is_a_mismatch() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    tx.batch("ALTER TABLE stock_location_policy DISABLE TRIGGER USER")
+        .await
+        .unwrap();
+    tx.execute(
+        "DELETE FROM stock_location_policy WHERE location_id = $1",
+        &[&f.l],
+    )
+    .await
+    .unwrap();
+    let error = refused(&mut tx, &[change(f.key(f.p, f.l), "-1", "0")]).await;
+    assert_eq!(error.kind(), ErrorKind::Programming, "{error:?}");
+    assert!(
+        error
+            .message()
+            .contains("0 location policies marked for 1 locations"),
+        "{error:?}"
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// Step (b) writes the balance, the incoming date and the write audit of a kept key in one row
+/// version: one updated row per key and call.
+#[tokio::test]
+async fn a_kept_key_gets_one_row_version_per_call() {
+    let f = fixture().await;
+    let key = f.key(f.p, f.l);
+    let mut tx = f.h.begin().await.unwrap();
+    apply(&mut tx, &[change(key, "5", "0")]).await;
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut tx = f.h.begin().await.unwrap();
+    apply(&mut tx, &[change(key, "-1", "0")]).await;
+    let updated: i64 = tx
+        .query(
+            "SELECT n_tup_upd FROM pg_stat_xact_user_tables WHERE relname = 'stock_quant'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(updated, 1);
+    assert_eq!(stored(&mut tx, key).await, Some(("4".into(), "0".into())));
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+/// Database review: a unit over more keys than one engine call takes is applied in ascending chunks;
+/// when a later chunk is refused (a key at a location that forbids negative stock, above the 2,000
+/// keys of the first chunk), the first chunk's balances are undone too and the transaction goes on.
+#[tokio::test]
+async fn a_refused_later_chunk_undoes_the_earlier_chunks() {
+    let f = fixture().await;
+    let (low, high) = (f.l.min(f.x), f.l.max(f.x));
+    let mut tx = f.h.begin().await.unwrap();
+    let packages = tx
+        .env()
+        .records("stock.package")
+        .unwrap()
+        .create(
+            &mut tx,
+            (0..2000)
+                .map(|n| RawVals::new().set_cell("name", text(&format!("PK-{n}"))))
+                .collect(),
+        )
+        .await
+        .unwrap()
+        .ids();
+    forbid_negative_at(&mut tx, high).await;
+    let first = f.key(f.p, low).package_id(Some(packages[0]));
+    let mut changes: Vec<QuantChange> = packages
+        .iter()
+        .map(|package| change(f.key(f.p, low).package_id(Some(*package)), "1", "0"))
+        .collect();
+    changes.push(change(f.key(f.p, high), "-1", "0"));
+    let error = apply_quant_changes_in_chunks(&mut tx, &changes)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert_eq!(stored(&mut tx, first).await, None);
+    assert_eq!(quant_rows(&mut tx, f.p).await, 0);
+    // the transaction goes on, and the undone chunk's keys are not held
+    apply(&mut tx, &[change(first, "1", "0")]).await;
+    assert_eq!(stored(&mut tx, first).await, Some(("1".into(), "0".into())));
     tx.rollback().await.unwrap();
     drop(tx);
     f.h.cleanup().await.unwrap();

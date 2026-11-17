@@ -18,8 +18,9 @@ mod line;
 mod post;
 
 pub use line::AccountMoveLine;
-pub use post::{POSTER_GROUP, REVERSAL_TASK, cancel_moves, post_moves, reset_moves};
+pub use post::{POSTER_GROUP, cancel_moves, post_moves, reset_moves};
 
+use erp_sdk::ValueMap;
 use erp_sdk::prelude::*;
 
 /// The context key that skips the balance check of drafts (`check_move_validity`).
@@ -126,11 +127,11 @@ pub struct AccountMove {
     /// Invoice or bill date; a customer document confirmed without one takes today.
     #[field(date, copy = false, string = "Invoice/Bill Date")]
     pub invoice_date: Option<Date>,
-    /// Due date: the invoice date unless set by hand, until payment terms exist (task).
+    /// Due date: the invoice date unless set by hand, until payment terms exist.
     #[field(
         date,
         string = "Due Date",
-        help = "The invoice date unless set by hand; payment terms (a later release) will compute it."
+        help = "The invoice date unless set by hand; payment terms are not available yet."
     )]
     pub invoice_date_due: Option<Date>,
     /// The lines a user edits on an invoice: products, sections and notes (the tax and
@@ -178,7 +179,7 @@ pub struct AccountMove {
         readonly = true,
         copy = false,
         string = "Amount Due",
-        help = "Equals the total until payments and reconciliation exist (a later release)."
+        help = "Equals the total until payments and reconciliation are available."
     )]
     pub amount_residual: Decimal,
     /// Payment status.
@@ -196,13 +197,47 @@ pub struct AccountMove {
         copy = false,
         default = "not_paid",
         string = "Payment Status",
-        help = "Not Paid on every invoice until payments exist (a later release)."
+        help = "Not Paid on every invoice until payments are available."
     )]
     pub payment_state: Option<Arc<str>>,
 }
 
 #[methods(AccountMove, addon = "account")]
 impl AccountMove {
+    /// A new entry shows its currency before it is saved: the journal's currency when the
+    /// context names a journal, else the company's, the same order `create` derives it in.
+    #[method(override)]
+    async fn default_get(
+        this: &RecordSet<AccountMove>,
+        tx: &mut Transaction,
+        names: Vec<String>,
+        sup: Super,
+    ) -> Result<ValueMap> {
+        let mut values: ValueMap = sup.call(tx, this.as_records(), (names.clone(),)).await?;
+        if names.iter().any(|n| n == "currency_id") && !values.contains_key("currency_id") {
+            let env = this.env();
+            let mut currency = None;
+            if let Some(Value::Int(journal)) = env.context().get("default_journal_id") {
+                let journal = env.records("account.journal")?.browse([journal])?;
+                currency = id_cell(Some(&journal.cell(tx, "currency_id").await?), "currency_id")?;
+            }
+            if currency.is_none() {
+                let company = match env.context().get("default_company_id") {
+                    Some(Value::Int(company)) => Some(company),
+                    _ => env.company_id()?,
+                };
+                if let Some(company) = company {
+                    let company = env.records("res.company")?.browse([company])?;
+                    currency =
+                        id_cell(Some(&company.cell(tx, "currency_id").await?), "currency_id")?;
+                }
+            }
+            if let Some(currency) = currency {
+                values.insert("currency_id".to_owned(), Value::Int(currency));
+            }
+        }
+        Ok(values)
+    }
     /// Fills the defaults of a draft and checks the balance of the new
     /// entries once, after their lines.
     #[method(override)]
@@ -219,6 +254,7 @@ impl AccountMove {
             refuse_state(vals, "state")?;
             crate::invoice::prepare_create(tx, &env, vals).await?;
             fill_defaults(tx, &env, vals).await?;
+            crate::invoice::fill_create_taxes(tx, &env, vals).await?;
         }
         let records = unchecked(this.as_records());
         let created = sup.call(tx, &records, (vals_list,)).await?;
@@ -230,7 +266,9 @@ impl AccountMove {
     }
 
     /// A journal change of a never-posted draft clears its number; line commands
-    /// are checked for balance once, after all of them ran. On a posted or cancelled entry only
+    /// (`line_ids` and `invoice_line_ids`) are checked for balance once, after all of them ran. A
+    /// draft invoice whose accounting date changes has its foreign-currency balances converted
+    /// again at the new date. On a posted or cancelled entry only
     /// [`post::POSTED_MOVE_WRITABLE`] may be written; a written state is refused there too, since
     /// the state changes only through Post, Reset to Draft and Cancel.
     #[method(override)]
@@ -245,8 +283,12 @@ impl AccountMove {
         if vals.contains("journal_id") && !vals.contains("name") {
             vals.insert("name".into(), Cell::Null);
         }
-        let lines_changed = vals.commands("line_ids").is_some();
+        // invoice lines are journal items too: on a plain entry no sync balances them
+        let lines_changed =
+            vals.commands("line_ids").is_some() || vals.commands("invoice_line_ids").is_some();
         let sync = crate::invoice::prepare_write(tx, this.as_records(), &mut vals).await?;
+        // a new accounting date (given, or carried by the invoice date above) is a new rate date
+        let redated = vals.contains("date");
         // on the final values: the invoice date above may have added the accounting date
         let closed = post::closed_fields(&vals, &post::POSTED_MOVE_WRITABLE);
         if !closed.is_empty() {
@@ -254,7 +296,9 @@ impl AccountMove {
             post::refuse_closed_entries(tx, &this.ids(), &what).await?;
         }
         sup.call(tx, &unchecked(this.as_records()), (vals,)).await?;
-        if sync {
+        if sync && redated {
+            crate::invoice::sync_lines_redated(tx, this.env(), &this.ids()).await?;
+        } else if sync {
             crate::invoice::sync_lines(tx, this.env(), &this.ids()).await?;
         }
         if lines_changed && !skip {

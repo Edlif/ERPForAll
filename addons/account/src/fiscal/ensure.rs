@@ -96,6 +96,20 @@ pub(crate) async fn require_company_access(tx: &mut Transaction, companies: &[i6
     require_held(tx, &env, companies, false).await
 }
 
+/// [`require_company_access`] against the environment `env` of a caller that is not the
+/// transaction's own.
+///
+/// # Errors
+///
+/// As [`require_company_access`].
+pub(crate) async fn require_company_access_in(
+    tx: &mut Transaction,
+    env: &Env,
+    companies: &[i64],
+) -> Result<()> {
+    require_held(tx, env, companies, false).await
+}
+
 /// Outside superuser mode of `env`, every company of `companies` must be one of the caller's
 /// active companies or an ancestor of one: the companies whose records a `branch = "ancestor"`
 /// company rule admits, as the journal's.
@@ -265,6 +279,66 @@ async fn ensure(
     }
 }
 
+/// Create, inside the caller's unit of work, the regular periods that contain the dates of its
+/// `(company, date)` rows (and only those, not the months between them), for the root company and
+/// every company of its tree: the step a writer takes before it asks [`super::period_admission`],
+/// so a period that is merely missing never refuses the write (a post of the first entry of a
+/// month). Companies are checked against `env`, the environment the caller authorised with. The
+/// periods exist for the rest of the unit and are committed with it.
+///
+/// What a caller sees when two units create the same new month at the same time: the unit runs at
+/// `REPEATABLE READ`, the second one waits for the first one's commit on the root company row and
+/// then fails with a serialization failure. Inside a retried unit of work (`Orm::run`, as the RPC
+/// layer runs every call) the retry finds the period and posts; a caller that runs the unit
+/// itself without a retry sees that failure and runs the post again. A date beyond the horizon is
+/// refused naming [`HORIZON_SETTING`]; the lock dates still decide a period's status. Returns how
+/// many periods it created.
+///
+/// # Errors
+///
+/// As [`ensure_periods`].
+pub(crate) async fn ensure_for_rows(
+    tx: &mut Transaction,
+    env: &Env,
+    rows: &[(i64, Date)],
+) -> Result<u64> {
+    let mut dates: std::collections::BTreeMap<i64, std::collections::BTreeSet<Date>> =
+        std::collections::BTreeMap::new();
+    for &(company, date) in rows {
+        dates.entry(company).or_default().insert(date);
+    }
+    let mut calendars: std::collections::BTreeMap<i64, FiscalCalendar> =
+        std::collections::BTreeMap::new();
+    let mut created = 0;
+    for (company, days) in dates {
+        require_company_access_in(tx, env, &[company]).await?;
+        let (root, tree) = company_tree(tx, company).await?;
+        let calendar = match calendars.get(&root) {
+            Some(calendar) => *calendar,
+            None => {
+                let read = FiscalCalendar::read(tx, root).await?;
+                calendars.insert(root, read);
+                read
+            }
+        };
+        let mut periods = std::collections::BTreeMap::new();
+        for day in days {
+            for period in periods_in_horizon(&calendar, day, day)? {
+                periods.insert(period.date_from, period);
+            }
+        }
+        let periods: Vec<PeriodRange> = periods.into_values().collect();
+        if periods.len() > MAX_PERIODS_PER_CALL {
+            return Err(Error::validation(format!(
+                "The entries span {} fiscal periods; post them in smaller batches.",
+                periods.len()
+            )));
+        }
+        created += insert(tx, root, &tree, &periods).await?;
+    }
+    Ok(created)
+}
+
 /// `error`, naming a failed rollback after it rather than replacing it.
 fn keep_first(error: Error, rollback: Result<()>) -> Error {
     match rollback {
@@ -281,8 +355,9 @@ fn periods_in_horizon(
     let horizon = add_months(Date::today(), calendar.horizon_months())?;
     if date_to > horizon {
         return Err(Error::validation(format!(
-            "fiscal periods can be created up to {horizon}, {} months ahead (setting \
-             {HORIZON_SETTING}); {date_to} is later",
+            "{date_to} is later than {horizon}, the furthest date fiscal periods are created for \
+             ({} months ahead). An administrator can raise the setting {HORIZON_SETTING}, or \
+             the entry can be dated earlier.",
             calendar.horizon_months()
         )));
     }

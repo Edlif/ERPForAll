@@ -44,8 +44,8 @@ pub async fn seed(tx: &mut Transaction) {
         INSERT INTO product_product(id,product_tmpl_id) VALUES (101,101),(102,102);
         INSERT INTO stock_location(id,name,usage) VALUES (101,'Internal','internal'),(102,'Customer','customer');
         INSERT INTO stock_lot(id,name,product_id) VALUES (101,'L1',101),(102,'L2',102);
-        INSERT INTO stock_move(id,date,state,procure_method,quantity,open_line_version,company_id,product_id,uom_id,location_id,location_dest_id,product_uom_qty,product_qty,quantity_product_uom,uom_factor,product_uom_factor,product_unit_digits)
-          VALUES(101,'2026-01-01','draft','make_to_stock',1,0,101,101,101,101,102,1,1,1,1,1,2);
+        INSERT INTO stock_move(id,date,state,procure_method,quantity,open_line_version,company_id,product_id,uom_id,location_id,location_dest_id,product_uom_qty,product_qty,quantity_product_uom,uom_factor,product_uom_factor,product_unit_digits,is_scrap,picked)
+          VALUES(101,'2026-01-01','draft','make_to_stock',1,0,101,101,101,101,102,1,1,1,1,1,2,false,false);
         INSERT INTO stock_move_line(id,membership,active,correction_seq,child_mode,picked,move_id,company_id,product_id,uom_id,location_id,location_dest_id,quantity,quantity_product_uom,uom_factor,product_uom_factor,product_unit_digits)
           VALUES(101,'open',true,0,false,false,101,101,101,101,101,102,1,1,1,1,2);").await.unwrap();
 }

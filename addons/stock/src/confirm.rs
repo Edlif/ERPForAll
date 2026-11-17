@@ -26,7 +26,7 @@ use erp_sdk::prelude::*;
 use crate::error::StockError;
 use crate::move_counters::{cell_id, lock_move_roots, notify_pickings};
 use crate::picking::StockPicking;
-use crate::reservation::{assign_moves, open_moves};
+use crate::reservation::{assign_moves, open_moves, picking_moves};
 use crate::stock_move::StockMove;
 
 /// What a new move takes from its transfer when it does not name it.
@@ -235,14 +235,21 @@ impl StockPicking {
     }
 
     /// A transfer with no open move is refused by name.
+    ///
+    /// One lock step and one engine call (4): the transfers and all their
+    /// moves are locked ascending before the confirmation, which reserves nothing itself; the one
+    /// reservation call covers the confirmed drafts too.
     #[method]
     #[rpc(effect = write)]
     pub async fn action_assign(this: &RecordSet<StockPicking>, tx: &mut Transaction) -> Result<()> {
         let records = this.as_records();
         records.check_access(tx, Operation::Write).await?;
         tx.flush().await?;
-        let drafts = draft_moves(tx, &records.ids()).await?;
-        confirm_moves(records, tx, &drafts, true).await?;
+        let ids = records.ids();
+        let all = picking_moves(tx, &ids).await?;
+        lock_move_roots(tx, &all, &ids).await?;
+        let drafts = draft_moves(tx, &ids).await?;
+        confirm_moves(records, tx, &drafts, false).await?;
         let moves = open_moves(records, tx).await?;
         if moves.is_empty() {
             return Err(StockError::NothingToAssign.into());

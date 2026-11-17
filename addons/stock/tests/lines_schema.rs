@@ -2281,3 +2281,91 @@ async fn parent_cascade_and_stale_policy_delete_cannot_leave_a_gap() {
     drop(check);
     f.h.cleanup().await.unwrap();
 }
+
+/// A done move or line keeps what it moved for every writer, the stock engine's own raw
+/// statements included, and a done move has its completion time (database backstop of the done
+/// rules; a later correction opens exactly what it needs).
+#[tokio::test]
+async fn done_rows_keep_what_they_moved_at_the_database() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let error = refused(
+        &mut tx,
+        &format!(
+            "UPDATE stock_move SET state = 'done' WHERE id = {} RETURNING id",
+            f.second_move
+        ),
+    )
+    .await;
+    assert_violation(
+        &error,
+        "23514",
+        "stock_move_done_has_time",
+        "A done stock move must have its completion time.",
+    );
+    let fixed = "A done stock move or move line cannot change what it moved.";
+    tx.batch(&format!(
+        "UPDATE stock_move SET state = 'done', done_at = '2026-01-02 03:04:05' WHERE id = {}",
+        f.mv
+    ))
+    .await
+    .unwrap();
+    for set in [
+        "state = 'cancel'",
+        "quantity = 1, quantity_product_uom = 1",
+        "product_uom_qty = 1, product_qty = 1",
+    ] {
+        guard_refusal(
+            &mut tx,
+            &format!(
+                "UPDATE stock_move SET {set} WHERE id IN ({}, {})",
+                f.mv, f.second_move
+            ),
+            "ERP05",
+            "stock_done_row_fixed",
+            ErrorKind::Validation,
+            fixed,
+        )
+        .await;
+    }
+    // what did not move stock stays writable, and an open move with a done time is not done
+    tx.batch(&format!(
+        "UPDATE stock_move SET priority = '1' WHERE id = {mv}; \
+         UPDATE stock_move SET done_at = '2026-01-02 03:04:05' WHERE id = {second}; \
+         UPDATE stock_move SET state = 'cancel' WHERE id = {second}",
+        mv = f.mv,
+        second = f.second_move
+    ))
+    .await
+    .unwrap();
+
+    let line = insert(
+        &mut tx,
+        &line_sql(&f, f.mv, &[("done_at", "now()"), ("membership", "'done'")]),
+    )
+    .await
+    .unwrap();
+    for set in [
+        "membership = 'open'",
+        "quantity = 1, quantity_product_uom = 1",
+        "picked = true",
+    ] {
+        guard_refusal(
+            &mut tx,
+            &format!("UPDATE stock_move_line SET {set} WHERE id = {line}"),
+            "ERP05",
+            "stock_done_row_fixed",
+            ErrorKind::Validation,
+            fixed,
+        )
+        .await;
+    }
+    tx.batch(&format!(
+        "UPDATE stock_move_line SET write_date = now() WHERE id = {line}"
+    ))
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}

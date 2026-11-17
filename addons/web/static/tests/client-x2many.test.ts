@@ -2,7 +2,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createFieldControl } from "../src/client/fields.js";
 import { describeViews, type Description, type Field, type Subview, type View } from "../src/client/metadata.js";
-import { RecordState, lineCommands, specification } from "../src/client/record.js";
+import { RecordState, lineCommands, specification, touchNewLine } from "../src/client/record.js";
 import { fieldWidgets } from "../src/client/registry.js";
 import { RpcClient } from "../src/client/transport.js";
 import { PopoverService } from "../src/client/popover.js";
@@ -52,6 +52,24 @@ function render(value: unknown, change = vi.fn(), rpc = rpcWith(() => ({})), tar
   document.body.append(handle.node);
   return { node: handle.node, change };
 }
+
+test("a new line sends an emptied many2many as the empty set and leaves an untouched empty one to the server", () => {
+  const taxes = field("tax_ids", "many2many", { label: "Taxes", relation: "account.tax" });
+  const lines: Subview = { model: "library.book", list: [title, taxes], form: undefined, fields: new Map([[title.name, title], [taxes.name, taxes]]) };
+  const owner = field("book_ids", "one2many", { label: "Books", relation: "library.book", relationField: "author_id", subview: lines });
+  touchNewLine("line_emptied", ["tax_ids"]);
+  expect(lineCommands(owner, [
+    { title: "Untouched", tax_ids: [], __key: "line_untouched" },
+    { title: "Emptied", tax_ids: [], __key: "line_emptied" },
+    { title: "Chosen", tax_ids: [{ id: 7 }], __key: "line_chosen" },
+    { id: 4, title: "Stored", tax_ids: [], __changed: ["tax_ids"] }
+  ], [{ id: 4, title: "Stored", tax_ids: [{ id: 7 }] }])).toEqual([
+    [0, 0, { title: "Untouched" }],
+    [0, 0, { title: "Emptied", tax_ids: [[6, 0, []]] }],
+    [0, 0, { title: "Chosen", tax_ids: [[6, 0, [7]]] }],
+    [1, 4, { tax_ids: [[6, 0, []]] }]
+  ]);
+});
 
 test("one2many lines become create, update and delete commands against the stored lines", () => {
   const stored = [{ id: 1, title: "Kept" }, { id: 2, title: "Edited" }, { id: 3, title: "Removed" }];
@@ -155,6 +173,16 @@ test("one2many metadata requires its inverse, and the comodel views hide it", as
   expect(view.fields[0]!.subview!.list.map(f => f.name)).toEqual(["title"]);
   expect(description.fields.get("book_ids")!.subview).toBeUndefined();
   expect(view.fields[0]!.subview).toBeDefined();
+
+  // a field that names a list for its lines asks the comodel's views with it; two fields on one comodel are two requests
+  const str = (value: string) => ({ kind: "literal" as const, value: { kind: "str" as const, value } });
+  const named = { ...view.fields[0]!, name: "draft_book_ids", subview: undefined, options: { context: { schema: 1, nodes: [str("list_view_ref"), str("library.view_draft_book_list"), { kind: "dict" as const, items: [[0, 1]] as [number, number][] }] } } };
+  const plain = { ...view.fields[0]!, subview: undefined }, asked: unknown[] = [];
+  const short: Description = { ...comodel, views: new Map([["list", { type: "list", mode: "record", nodes: [], fields: [title] }], ["form", formView]]) };
+  await attachSubviews(description, { ...view, nodes: [], fields: [plain, named] }, async (relation, refs) => { asked.push([relation, refs]); return refs ? short : comodel; });
+  expect(asked).toEqual([["library.book", undefined], ["library.book", { list_view_ref: "library.view_draft_book_list" }]]);
+  expect((named as Field).subview).toBeDefined();
+  expect((named as Field).subview).not.toBe((plain as Field).subview);
 
   const failing = describeViews(raw("author_id"), "library.author", "r1");
   await attachSubviews(failing, failing.views.get("form")!, async () => { throw new Error("Access denied to library.book."); });

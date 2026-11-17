@@ -23,7 +23,8 @@ const STOCK_MATRIX: &[(&str, [&str; 3])] = &[
     ("stock.location.policy", ["r", "r", "crud"]),
     ("stock.lot", ["", "crud", "crud"]),
     ("stock.lot.name.scope", ["", "", ""]),
-    ("stock.move", ["", "cru", "crud"]),
+    // lead 2026-11-17: the operator deletes a transfer with its moves; the move guards still refuse done ones
+    ("stock.move", ["", "crud", "crud"]),
     ("stock.move.line", ["", "crud", "crud"]),
     // L6': corrections are written by the correction engine only; serial positions by the engine
     ("stock.move.line.correction", ["", "r", "r"]),
@@ -1081,11 +1082,11 @@ fn stock_security_transactional_company_and_line_mutations() {
             }
             tx.rollback().await.unwrap();
         }
-        // Operators edit and remove their own open line although they cannot delete the move.
+        // Operators edit and remove their own open line, and may delete the move.
         let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
         let (mv, line, _, _) = fixtures[0];
         assert!(
-            !tx.env()
+            tx.env()
                 .records("stock.move")
                 .unwrap()
                 .browse([mv])
@@ -1118,6 +1119,417 @@ fn stock_security_transactional_company_and_line_mutations() {
         );
         tx.rollback().await.unwrap();
         drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// The state of the database sequence behind an operation type's numbering, as the owner reads it.
+async fn numbering_state(orm: &Orm, picking_type: i64) -> (i64, bool) {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let sequence: i64 = tx
+        .query(
+            "SELECT sequence_id FROM stock_picking_type WHERE id = $1",
+            &[&picking_type],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let row = tx
+        .query(
+            &format!("SELECT last_value, is_called FROM ir_sequence_{sequence:03}"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .remove(0);
+    tx.rollback().await.unwrap();
+    (row.get(0), row.get(1))
+}
+
+/// A transfer create checks the caller's create right and reads its operation type as the caller
+/// before a reference number is drawn, so a refused create uses up no number; the Inventory user
+/// deletes a transfer together with its moves.
+#[test]
+fn stock_security_transfer_create_and_delete_follow_the_callers_rights() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let installed = install(&db).await;
+        let users = roles(&installed).await;
+        let a = xid(&installed, "base", "main_company").await;
+        let unit = xid(&installed, "uom", "product_uom_unit").await;
+        let mut setup = installed.begin(SUPERUSER_ID).await.unwrap();
+        let currency = setup
+            .env()
+            .records("res.company")
+            .unwrap()
+            .browse([a])
+            .unwrap()
+            .cell(&mut setup, "currency_id")
+            .await
+            .unwrap();
+        let b = setup
+            .env()
+            .with_company(a)
+            .unwrap()
+            .records("res.company")
+            .unwrap()
+            .create(
+                &mut setup,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Foreign numbering company".into()))
+                        .set_cell("currency_id", currency),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let product = create(
+            &mut setup,
+            "product.product",
+            RawVals::new().set_cell("name", Cell::Str("Transfer rights widget".into())),
+        )
+        .await;
+        let location = create(
+            &mut setup,
+            "stock.location",
+            RawVals::new().set_cell("name", Cell::Str("Transfer rights stock".into())),
+        )
+        .await;
+        let mut types = Vec::new();
+        for (company, prefix) in [(a, "FLOWA/"), (b, "FLOWB/")] {
+            let vals = RawVals::new()
+                .set_cell("name", Cell::Str(format!("{prefix} receipts").into()))
+                .set_cell("code", Cell::Str("incoming".into()))
+                .set_cell("company_id", Cell::Id(company))
+                .set_cell("sequence_code", Cell::Str(prefix.into()))
+                .set_cell("default_location_src_id", Cell::Id(location))
+                .set_cell("default_location_dest_id", Cell::Id(location));
+            types.push(create(&mut setup, "stock.picking.type", vals).await);
+        }
+        let picking = create(
+            &mut setup,
+            "stock.picking",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Deleted by the operator".into()))
+                .set_cell("company_id", Cell::Id(a))
+                .set_cell("picking_type_id", Cell::Id(types[0]))
+                .set_cell("location_id", Cell::Id(location))
+                .set_cell("location_dest_id", Cell::Id(location)),
+        )
+        .await;
+        let mv = create(
+            &mut setup,
+            "stock.move",
+            operation_vals(a, product, unit, location)
+                .set_cell("product_qty", Cell::Decimal(Decimal::ZERO))
+                .set_cell("picking_id", Cell::Id(picking)),
+        )
+        .await;
+        setup.commit().await.unwrap();
+        drop(setup);
+        let orm = secure(&db, &installed).await;
+        let own = numbering_state(&orm, types[0]).await;
+        let foreign = numbering_state(&orm, types[1]).await;
+        let typed = |picking_type: i64| {
+            vec![RawVals::new().set_cell("picking_type_id", Cell::Id(picking_type))]
+        };
+
+        // an internal user without an Inventory role is refused before any number is drawn
+        let mut tx = orm.begin(UserId::new(users[1]).unwrap()).await.unwrap();
+        let error = tx
+            .env()
+            .with_company(a)
+            .unwrap()
+            .records("stock.picking")
+            .unwrap()
+            .create(&mut tx, typed(types[0]))
+            .await
+            .unwrap_err();
+        assert_model_denial(&orm, "stock.picking", Operation::Create, &error).await;
+        tx.rollback().await.unwrap();
+        drop(tx);
+        assert_eq!(numbering_state(&orm, types[0]).await, own);
+
+        // the operator cannot use another company's type, and draws none of its numbers
+        let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
+        let error = tx
+            .env()
+            .with_company(a)
+            .unwrap()
+            .records("stock.picking")
+            .unwrap()
+            .create(&mut tx, typed(types[1]))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Access, "{error:?}");
+        tx.rollback().await.unwrap();
+        drop(tx);
+        assert_eq!(numbering_state(&orm, types[1]).await, foreign);
+
+        // with their own company's type the reference is drawn as the operator
+        let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
+        let env = tx.env().with_company(a).unwrap();
+        let created = env
+            .records("stock.picking")
+            .unwrap()
+            .create(&mut tx, typed(types[0]))
+            .await
+            .unwrap();
+        let name = created.cell(&mut tx, "name").await.unwrap();
+        assert!(
+            matches!(&name, Cell::Str(name) if name.starts_with("FLOWA/")),
+            "{name:?}"
+        );
+        // and deletes a transfer that has moves, the moves with it
+        env.records("stock.picking")
+            .unwrap()
+            .browse([picking])
+            .unwrap()
+            .unlink(&mut tx)
+            .await
+            .unwrap();
+        let left: i64 = tx
+            .query("SELECT count(*) FROM stock_move WHERE id = $1", &[&mv])
+            .await
+            .unwrap()[0]
+            .get(0);
+        assert_eq!(left, 0);
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// Security review: an Inventory user deletes moves under the rule the transfer route follows. A
+/// confirmed move another move takes from is refused by name, and the destination keeps its state and
+/// its link; a draft move goes with its line, whose reservation is given back; the cancelled move of a
+/// done transfer goes; a done move is refused.
+#[test]
+fn stock_security_move_delete_keeps_chains_and_takes_lines() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let installed = install(&db).await;
+        let users = roles(&installed).await;
+        let a = xid(&installed, "base", "main_company").await;
+        let unit = xid(&installed, "uom", "product_uom_unit").await;
+        let mut setup = installed.begin(SUPERUSER_ID).await.unwrap();
+        let template = create(
+            &mut setup,
+            "product.template",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Move delete widget".into()))
+                .set_cell("is_storable", Cell::Bool(true)),
+        )
+        .await;
+        let product: i64 = setup
+            .query(
+                "SELECT id FROM product_product WHERE product_tmpl_id = $1",
+                &[&template],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let location = create(
+            &mut setup,
+            "stock.location",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Move delete stock".into()))
+                .set_cell("usage", Cell::Str("internal".into())),
+        )
+        .await;
+        let picking_type = create(
+            &mut setup,
+            "stock.picking.type",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Move delete receipts".into()))
+                .set_cell("code", Cell::Str("incoming".into()))
+                .set_cell("company_id", Cell::Id(a))
+                .set_cell("sequence_code", Cell::Str("MDEL/".into()))
+                .set_cell("default_location_src_id", Cell::Id(location))
+                .set_cell("default_location_dest_id", Cell::Id(location)),
+        )
+        .await;
+        let picking = create(
+            &mut setup,
+            "stock.picking",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Done with a cancelled move".into()))
+                .set_cell("company_id", Cell::Id(a))
+                .set_cell("picking_type_id", Cell::Id(picking_type))
+                .set_cell("location_id", Cell::Id(location))
+                .set_cell("location_dest_id", Cell::Id(location)),
+        )
+        .await;
+        let mut moves = Vec::new();
+        for in_picking in [false, false, false, true, true] {
+            let vals = operation_vals(a, product, unit, location)
+                .set_cell("product_qty", Cell::Decimal(Decimal::ZERO));
+            let vals = if in_picking {
+                vals.set_cell("picking_id", Cell::Id(picking))
+            } else {
+                vals
+            };
+            moves.push(create(&mut setup, "stock.move", vals).await);
+        }
+        let (origin, dest, draft, done, cancelled) =
+            (moves[0], moves[1], moves[2], moves[3], moves[4]);
+        let model = setup.env().records("stock.move").unwrap();
+        model
+            .browse([dest])
+            .unwrap()
+            .write(
+                &mut setup,
+                RawVals::new().set_commands(
+                    "move_orig_ids",
+                    vec![Command::Link(RecId::from_real(origin).unwrap())],
+                ),
+            )
+            .await
+            .unwrap();
+        // Fixture only: quants are engine-owned and cannot be created by the ORM.
+        setup
+            .execute(
+                "INSERT INTO stock_quant (company_id, product_id, location_id, quantity, \
+                 reserved_quantity, in_date) VALUES ($1, $2, $3, 1, 0, now())",
+                &[&a, &product, &location],
+            )
+            .await
+            .unwrap();
+        let line = create(
+            &mut setup,
+            "stock.move.line",
+            operation_vals(a, product, unit, location)
+                .set_cell("move_id", Cell::Id(draft))
+                .set_cell("quantity", Cell::Decimal(Decimal::ONE))
+                .set_cell("quantity_product_uom", Cell::Decimal(Decimal::ONE)),
+        )
+        .await;
+        setup.flush().await.unwrap();
+        // Fixture only: the states a flow would reach, set as the engine sets them.
+        for (mv, state) in [
+            (origin, "confirmed"),
+            (dest, "waiting"),
+            (done, "done"),
+            (cancelled, "cancel"),
+        ] {
+            setup
+                .execute(
+                    "UPDATE stock_move SET state = $2::text, done_at = CASE WHEN $2::text = 'done' \
+                     THEN now() AT TIME ZONE 'UTC' END WHERE id = $1",
+                    &[&mv, &state],
+                )
+                .await
+                .unwrap();
+        }
+        setup.invalidate_model("stock.move", None).await.unwrap();
+        setup.invalidate_model("stock.picking", None).await.unwrap();
+        setup.commit().await.unwrap();
+        drop(setup);
+        let reserved = async |orm: &Orm| -> Decimal {
+            let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+            let total: Decimal = tx
+                .query(
+                    "SELECT COALESCE(sum(reserved_quantity), 0) FROM stock_quant \
+                     WHERE product_id = $1",
+                    &[&product],
+                )
+                .await
+                .unwrap()[0]
+                .get(0);
+            tx.rollback().await.unwrap();
+            total
+        };
+        let orm = secure(&db, &installed).await;
+        assert_eq!(reserved(&orm).await, Decimal::ONE);
+        let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
+        let picking_state: String = tx
+            .query("SELECT state FROM stock_picking WHERE id = $1", &[&picking])
+            .await
+            .unwrap()[0]
+            .get(0);
+        assert_eq!(picking_state, "done");
+        let moves_of = tx
+            .env()
+            .with_company(a)
+            .unwrap()
+            .records("stock.move")
+            .unwrap();
+
+        // a move another move takes from: refused by name, nothing changes
+        let error = moves_of
+            .browse([origin])
+            .unwrap()
+            .unlink(&mut tx)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UserError, "{error:?}");
+        assert!(
+            error.message().contains("linked to another operation"),
+            "{error:?}"
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
+        let row = tx
+            .query(
+                "SELECT d.state, (SELECT count(*) FROM stock_move_move_rel r \
+                 WHERE r.move_orig_id = $1 AND r.move_dest_id = $2) \
+                 FROM stock_move d WHERE d.id = $2",
+                &[&origin, &dest],
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            (row.get::<_, String>(0), row.get::<_, i64>(1)),
+            ("waiting".to_owned(), 1)
+        );
+        let moves_of = tx
+            .env()
+            .with_company(a)
+            .unwrap()
+            .records("stock.move")
+            .unwrap();
+
+        // a done move is refused as before
+        let error = moves_of
+            .browse([done])
+            .unwrap()
+            .unlink(&mut tx)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UserError, "{error:?}");
+        tx.rollback().await.unwrap();
+        drop(tx);
+
+        // a draft move goes with its line, and the cancelled move of the done transfer goes
+        let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
+        let moves_of = tx
+            .env()
+            .with_company(a)
+            .unwrap()
+            .records("stock.move")
+            .unwrap();
+        moves_of
+            .browse([draft, cancelled])
+            .unwrap()
+            .unlink(&mut tx)
+            .await
+            .unwrap();
+        let left: i64 = tx
+            .query(
+                "SELECT (SELECT count(*) FROM stock_move WHERE id = ANY($1)) \
+                 + (SELECT count(*) FROM stock_move_line WHERE id = $2)",
+                &[&vec![draft, cancelled], &line],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        assert_eq!(left, 0);
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert_eq!(reserved(&orm).await, Decimal::ZERO);
         db.cleanup().await.unwrap();
     });
 }

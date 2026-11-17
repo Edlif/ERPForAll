@@ -184,7 +184,7 @@ fn barcode_prefix(code: &str) -> String {
 
 /// The caller's `default_<field>` context keys belong to the warehouse, never to the records
 /// generated for it.
-fn without_defaults(env: &Env) -> Env {
+pub(crate) fn without_defaults(env: &Env) -> Env {
     let mut context = env.context().clone();
     let keys: Vec<String> = context
         .extra()
@@ -453,7 +453,11 @@ fn type_roles(g: &Generated, multi_locations: bool) -> Result<[TypeRole; 8]> {
 
 /// Create the eight operation types of every generated warehouse in one create (each with its
 /// own standard sequence, topology ADR A1), then record the generated identities and link the
-/// warehouses and the receipt and delivery returns in set-based statements.
+/// warehouses and the receipt and delivery returns in set-based statements. The types' insert and
+/// the identity updates are set-based; each type still costs its access check, one `ir.sequence`
+/// insert and one `CREATE SEQUENCE`, whose lock entry is held until the transaction ends. An
+/// upgrade that provisions many companies at once therefore needs `max_locks_per_transaction`
+/// room for eight sequences per company (not measured).
 pub(crate) async fn create_operation_types(
     records: &Records,
     tx: &mut Transaction,
@@ -632,8 +636,9 @@ pub(crate) async fn create_operation_types(
 }
 
 /// Give each of `companies` its warehouse with the generated topology, in one batched create.
-/// Install, the stock 1.8 upgrade and company creation call this; the caller decides the
-/// environment (company creation elevates, see `res_company`).
+/// Install, every stock upgrade and company creation call this; the caller decides the
+/// environment (company creation elevates, see `res_company`). The caller's `default_<field>`
+/// context keys belong to the caller's own record, never to a generated warehouse.
 pub(crate) async fn provision(tx: &mut Transaction, env: &Env, companies: &[i64]) -> Result<()> {
     if companies.is_empty() {
         return Ok(());
@@ -642,7 +647,10 @@ pub(crate) async fn provision(tx: &mut Transaction, env: &Env, companies: &[i64]
         .iter()
         .map(|company| RawVals::new().set_cell("company_id", Cell::Id(*company)))
         .collect();
-    env.records("stock.warehouse")?.create(tx, vals).await?;
+    without_defaults(env)
+        .records("stock.warehouse")?
+        .create(tx, vals)
+        .await?;
     Ok(())
 }
 

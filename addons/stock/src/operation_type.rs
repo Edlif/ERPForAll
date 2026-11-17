@@ -130,7 +130,9 @@ async fn locations(
                         .await?;
                     if found.is_empty() {
                         return Err(Error::user(
-                            "No warehouse is available for the operation type company; create a warehouse for it first.",
+                            "No warehouse is available for the operation type company; create a warehouse for \
+                             it first, or upgrade the Inventory app, which gives every company without \
+                             a warehouse its own.",
                         ));
                     }
                     cache.company_warehouses.insert(company, found.ids()[0]);

@@ -3,10 +3,10 @@ import { actionButton, button, el } from "./dom.js";
 import { renderFormLayout } from "./form-layout.js";
 import { icon } from "./icons.js";
 import { array, integer, object, type Description, type Field, type Node, type Subview, type View } from "./metadata.js";
-import { lineFields, linePolicy, newLineKey, type Line } from "./record.js";
+import { lineFields, linePolicy, newLineKey, touchNewLine, type Line } from "./record.js";
 import { effectiveNodes } from "./field-modifiers.js";
 import { CurrencyDisplayCache } from "./field-currency.js";
-import { relationQuery } from "./field-relations.js";
+import { constantRelationContext, relationQuery } from "./field-relations.js";
 import { resolveFieldWidget, registerFieldWidget, type WidgetEnvironment, type WidgetHandle, type WidgetDraft } from "./registry.js";
 import { ClientError } from "./transport.js";
 import { resizeColumns } from "./columns.js";
@@ -18,6 +18,15 @@ const subListWidths = new WeakMap<Subview, Map<string, number>>();
  *  one2many keeps the name-only list. */
 export const SUBVIEW_DEPTH = 3;
 
+/** The views a one2many names for its lines in its constant context (`list_view_ref`, `form_view_ref`), merged into the
+ *  context of the comodel's view request: two fields on one comodel (invoice lines and journal items) show different columns. */
+export type ViewRefs = Readonly<Record<string, string>>;
+function viewRefs(field: Field): ViewRefs | undefined {
+  const context = constantRelationContext(field), refs: Record<string, string> = {};
+  for (const key of ["list_view_ref", "form_view_ref"]) { const value = context?.[key]; if (typeof value === "string" && value) refs[key] = value; }
+  return Object.keys(refs).length ? refs : undefined;
+}
+
 /**
  *  One request per comodel; a comodel
  *  that cannot be described leaves its fields with `subviewError`, which the widget shows.
@@ -26,13 +35,13 @@ export const SUBVIEW_DEPTH = 3;
  *  already on the chain (`res.partner` lines inside a partner): such a one2many keeps the
  *  name-only list, and the read specification stays finite. 
  */
-export async function attachSubviews(description: Description, view: View, load: (model: string) => Promise<Description>,
+export async function attachSubviews(description: Description, view: View, load: (model: string, refs?: ViewRefs) => Promise<Description>,
   chain: ReadonlySet<string> = new Set([description.model]), byModel = new Map<string, Promise<Description>>(), depth = 0): Promise<void> {
   for (const field of view.fields) {
     if (field.kind !== "one2many" || field.relation === null) continue;
-    const relation = field.relation;
-    let comodel = byModel.get(relation);
-    if (!comodel) { comodel = load(relation); byModel.set(relation, comodel); }
+    const relation = field.relation, refs = viewRefs(field), key = refs ? `${relation} ${JSON.stringify(refs)}` : relation;
+    let comodel = byModel.get(key);
+    if (!comodel) { comodel = load(relation, refs); byModel.set(key, comodel); }
     let subview: Subview | undefined, error: string | undefined;
     try {
       const target = await comodel;
@@ -265,9 +274,10 @@ async function openLine(environment: WidgetEnvironment, items: readonly Line[], 
     if (absent) { body.reportValidity(); throw new ClientError("validation", `${absent.label} is required.`); }
     if (!body.reportValidity()) throw new ClientError("validation", "Correct the invalid line fields before saving.");
     committed = true;
-    if (current === null) working = [...working, { ...values, __key: newLineKey() }];
+    if (current === null) { const key = newLineKey(); touchNewLine(key, changed); working = [...working, { ...values, __key: key }]; }
     else {
       const old = working[current]!;
+      if (old["id"] === undefined && typeof old["__key"] === "string") touchNewLine(old["__key"], changed);
       const before = old["__changed"] === undefined ? [] : array(old["__changed"], "changed line fields");
       const line: Line = { ...old, ...values };
       if (old["id"] !== undefined && changed.size) line["__changed"] = [...new Set([...before, ...changed])];

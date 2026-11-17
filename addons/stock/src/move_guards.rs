@@ -39,7 +39,7 @@ use crate::move_counters::{
     COUNTED_MOVE_FIELDS, DERIVED_FIELDS, STATE_INPUT_FIELDS, cell_id, lock_move_roots,
     lock_pickings, notify_pickings, pickings_of,
 };
-use crate::move_lines::{create_lines, unlink_lines, write_lines};
+use crate::move_lines::{create_lines, recompute_states, unlink_lines, write_lines};
 use crate::move_relations::{
     apply_deadlines, deadline_plan, inherit_references, member_pickings, rebuild_references,
 };
@@ -55,6 +55,20 @@ const MOVE_FIELDS: [&str; 2] = ["done_at", "open_line_version"];
 /// quantity follows the quantity through the unit snapshot check ([`crate::move_units`]).
 const LINE_DERIVED: [&str; 2] = ["state", "quantity"];
 const LINE_FIELDS: [&str; 3] = ["done_at", "membership", "correction_seq"];
+/// Move columns the move's state follows from besides its lines.
+const STATE_INPUTS: [&str; 2] = ["product_uom_qty", "procure_method"];
+
+/// A move of `$1` that is neither a draft nor cancelled and has an origin or a destination.
+const LINKED_OPEN: &str = "SELECT m.id FROM stock_move m WHERE m.id = ANY($1) \
+     AND m.state NOT IN ('draft', 'cancel') AND EXISTS (SELECT 1 FROM stock_move_move_rel r \
+     WHERE r.move_orig_id = m.id OR r.move_dest_id = m.id) LIMIT 1";
+
+/// Every line of the moves `$1` (a line keeps its move: the key is `restrict`).
+const MOVE_LINES: &str = "SELECT id FROM stock_move_line WHERE move_id = ANY($1) ORDER BY id";
+/// The lines of the moves `$1` take their move's transfer (2 I1).
+const LINES_FOLLOW: &str = "UPDATE stock_move_line l SET picking_id = m.picking_id \
+     FROM stock_move m WHERE m.id = l.move_id AND m.id = ANY($1) \
+     AND l.picking_id IS DISTINCT FROM m.picking_id RETURNING l.id";
 
 fn label(tx: &Transaction, model: &str, field: &str) -> Result<String> {
     tx.registry()
@@ -198,6 +212,8 @@ impl StockMove {
         sup: Super,
     ) -> Result<Records> {
         let records = this.as_records();
+        // before any refusal of the values: a caller without the right learns nothing from them
+        records.check_access(tx, Operation::Create).await?;
         check_create(
             records,
             tx,
@@ -227,7 +243,6 @@ impl StockMove {
             roots.push(id);
         }
         if !roots.is_empty() {
-            records.check_access(tx, Operation::Create).await?;
             lock_pickings(tx, &roots).await?;
         }
         let created = sup.call(tx, records, (vals_list,)).await?;
@@ -244,7 +259,9 @@ impl StockMove {
     /// The done time, the open-line version, the status and the quantity come from the engine;
     /// refused by name after the write access check. A write naming a counted column (demand,
     /// scrap flag, supply method, transfer) locks the old and new transfers, then the moves, writes, flushes and
-    /// notifies the counters of those transfers. A deadline write first locks the transfers, then
+    /// notifies the counters of those transfers. A demand or supply-method write recomputes the
+    /// moves' states from their quantities; a transfer write carries the
+    /// moves' lines to the new transfer. A deadline write first locks the transfers, then
     /// the moves, of every move its shift may reach.
     #[method(override)]
     async fn write(
@@ -317,8 +334,29 @@ impl StockMove {
         } else {
             Vec::new()
         };
+        let restate = STATE_INPUTS.iter().any(|f| vals.contains(f));
         sup.call(tx, records, (vals,)).await?;
         tx.flush().await?;
+        if restate {
+            recompute_states(tx, &ids).await?;
+            records.modified_external(tx, &["state"]).await?;
+        }
+        if relinked {
+            let lines: Vec<i64> = tx
+                .query(LINES_FOLLOW, &[&ids])
+                .await?
+                .iter()
+                .map(|row| row.try_get(0))
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|e| {
+                    Error::db("The lines of a moved stock move could not be read.").with_source(e)
+                })?;
+            if !lines.is_empty() {
+                // a relational source cannot be notified externally yet: drop the cached value
+                tx.invalidate_model("stock.move.line", Some(&["picking_id"]))
+                    .await?;
+            }
+        }
         if counted {
             notify_pickings(records, tx, &roots).await?;
         }
@@ -335,7 +373,9 @@ impl StockMove {
     }
 
     /// Deleting moves locks their transfers, then the moves, and notifies the counters the delete
-    /// changed.
+    /// changed. A done move, and a move linked to another one that is not a draft or cancelled, is
+    /// refused by name; the lines of a move that may go are deleted
+    /// first through the line model, which gives their reservations back.
     #[method(override)]
     async fn unlink(this: &RecordSet<StockMove>, tx: &mut Transaction, sup: Super) -> Result<()> {
         let records = this.as_records();
@@ -345,7 +385,31 @@ impl StockMove {
         records.check_access(tx, Operation::Unlink).await?;
         check_unlink(records, tx, "stock.move").await?;
         tx.flush().await?;
-        let roots = lock_move_roots(tx, &records.ids(), &[]).await?;
+        let ids = records.ids();
+        let roots = lock_move_roots(tx, &ids, &[]).await?;
+        if !tx.query(LINKED_OPEN, &[&ids]).await?.is_empty() {
+            return Err(Error::user(
+                "A stock move linked to another operation can only be deleted as a draft or once \
+                 cancelled.",
+            ));
+        }
+        let lines = tx
+            .query(MOVE_LINES, &[&ids])
+            .await?
+            .iter()
+            .map(|row| row.try_get(0))
+            .collect::<std::result::Result<Vec<i64>, _>>()
+            .map_err(|e| {
+                Error::db("The lines of a deleted stock move could not be read.").with_source(e)
+            })?;
+        if !lines.is_empty() {
+            records
+                .env()
+                .records("stock.move.line")?
+                .browse(lines)?
+                .unlink(tx)
+                .await?;
+        }
         sup.call(tx, records, ()).await?;
         tx.flush().await?;
         notify_pickings(records, tx, &roots).await?;
@@ -386,6 +450,8 @@ impl StockPicking {
         sup: Super,
     ) -> Result<Records> {
         let records = this.as_records();
+        // before the type defaults: no reference number is drawn for a create that is refused
+        records.check_access(tx, Operation::Create).await?;
         check_create(
             records,
             tx,

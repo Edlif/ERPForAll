@@ -36,9 +36,10 @@
 //! the key locations' policy rows: a negative-stock switch committed after this transaction's snapshot
 //! fails the lock with `40001`, so the forbid decision is never taken on a stale flag, and the switch's
 //! own `FOR UPDATE NOWAIT` on the policy row is refused while an engine call holds it. A call that
-//! leaves a key below zero (a decrease at a location without the switch) also writes a new version
-//! of that location's policy row ([`MARK_NEGATIVE`]), so a switch whose snapshot predates the call's
-//! commit fails its lock with `40001` instead of counting negative balances it cannot see.
+//! takes a key's free quantity from zero or above to below zero (a decrease or an over-reservation
+//! at a location without the switch) also writes a new version of that location's policy row
+//! ([`MARK_NEGATIVE`]), so a switch whose snapshot predates the call's commit fails its lock with
+//! `40001` instead of counting on balances it cannot see.
 //!
 //! **Access.** The engine reads and writes the quant table directly, as the reference's `sudo()` does:
 //! it checks no model access and no record rule. It is for the stock transitions (move validation,
@@ -57,17 +58,27 @@ use erp_sdk::delta::{
 };
 use erp_sdk::prelude::*;
 
-/// The balances `$2`, `$3` of the locked rows `$1` (step (b)).
+/// Step (b): the balances `$2`, `$3`, the incoming date `$4` (now when null) and the write audit
+/// `$5` of the locked rows `$1`, in one row version per key; returns each row's incoming date.
 const WRITE_BALANCES: &str = "UPDATE stock_quant q SET quantity = b.quantity, \
-       reserved_quantity = b.reserved \
-     FROM unnest($1::int8[], $2::numeric[], $3::numeric[]) AS b(id, quantity, reserved) \
-     WHERE q.id = b.id";
+       reserved_quantity = b.reserved, in_date = COALESCE(b.in_date, (now() AT TIME ZONE 'UTC')), \
+       write_uid = $5, write_date = (now() AT TIME ZONE 'UTC') \
+     FROM unnest($1::int8[], $2::numeric[], $3::numeric[], $4::timestamp[]) \
+          AS b(id, quantity, reserved, in_date) \
+     WHERE q.id = b.id RETURNING q.id, q.in_date";
 /// A new version of the policy rows of the locations `$1` (ascending, one row each) without changing
-/// a value: the mark of a call that left a key there below zero. A switch whose snapshot predates the
-/// mark's commit fails its `FOR UPDATE` with `40001` (`REPEATABLE READ`), so it never counts on a
-/// snapshot that misses the negative balance; the row versions written by `FOR SHARE` alone do not
-/// do that. The call already holds the rows `FOR SHARE` from its validation read; another call
-/// holding them too is waited for, and a deadlock between two marking calls is retried (`40P01`).
+/// a value: the mark of a call that took a key there from a free quantity (on hand minus reserved)
+/// at or above zero to one below zero, by a decrease or by an over-reservation. A switch whose
+/// snapshot predates the mark's commit fails its `FOR UPDATE` with `40001` (`REPEATABLE READ`), so it
+/// never counts on a snapshot that misses the balance; the row versions written by `FOR SHARE` alone
+/// do not do that. A key that was below zero already was marked by the call that took it there, and
+/// a switch either sees that balance in its snapshot or fails on that mark, so a further change of it
+/// writes nothing. The call already holds the rows `FOR SHARE` from its validation read: the mark
+/// waits for every other transaction holding them until that transaction ends (a long co-holder ends
+/// the wait with the unit's `lock_timeout`, `55P03`, which is not retried); two marking calls at one
+/// location, or a marking call and a call that waits for one of its keys, deadlock and one of them
+/// is retried (`40P01`). Once the mark commits, every engine call at the location whose snapshot is
+/// older fails its validation read with `40001` and is retried, whatever product it changes.
 const MARK_NEGATIVE: &str = "WITH o AS (SELECT id FROM stock_location_policy \
        WHERE location_id = ANY($1) ORDER BY location_id FOR NO KEY UPDATE) \
      UPDATE stock_location_policy p SET forbid_negative = p.forbid_negative FROM o WHERE p.id = o.id";
@@ -831,25 +842,18 @@ SELECT i.ord, q.id, FALSE, q.quantity, q.reserved_quantity, q.in_date, q.invento
    AND q.package_id IS NOT DISTINCT FROM i.package_id AND q.owner_id IS NOT DISTINCT FROM i.owner_id \
  ORDER BY 1";
 
-/// Step (c): the incoming date and write audit of every kept key, and the deletion of keys that ended
-/// at zero without count state (5, D1.6). The delete re-checks the zero predicate on the
-/// row; a key it does not delete is a mismatch.
-const FINISH_KEYS: &str = "\
-WITH i AS (SELECT * FROM unnest($1::int8[], $2::timestamp[], $3::bool[]) AS i(id, in_date, drop_key)), \
-d AS (DELETE FROM stock_quant q USING i WHERE q.id = i.id AND i.drop_key \
-        AND q.quantity = 0 AND q.reserved_quantity = 0 \
-        AND COALESCE(q.inventory_quantity, 0) = 0 AND q.user_id IS NULL \
-      RETURNING q.id), \
-u AS (UPDATE stock_quant q SET in_date = COALESCE(i.in_date, (now() AT TIME ZONE 'UTC')), \
-        write_uid = $4, write_date = (now() AT TIME ZONE 'UTC') \
-        FROM i WHERE q.id = i.id AND NOT i.drop_key RETURNING q.id, q.in_date) \
-SELECT d.id, COALESCE(i.in_date, (now() AT TIME ZONE 'UTC')), TRUE FROM d JOIN i ON i.id = d.id \
-UNION ALL SELECT u.id, u.in_date, FALSE FROM u";
+/// Step (c): the deletion of the keys `$1` that ended at zero without count state (5,
+/// D1.6). The delete re-checks the zero predicate on the row; a key it does not delete is a mismatch.
+const DROP_KEYS: &str = "DELETE FROM stock_quant q USING unnest($1::int8[]) AS i(id) \
+     WHERE q.id = i.id AND q.quantity = 0 AND q.reserved_quantity = 0 \
+       AND COALESCE(q.inventory_quantity, 0) = 0 AND q.user_id IS NULL RETURNING q.id";
 
 /// One key of a batch with what step (a) locked and what (a') decided.
 struct Planned {
     key: QuantKey,
     id: i64,
+    /// On hand minus reserved of the locked row, before the change.
+    free_before: Decimal,
     quantity: Decimal,
     reserved_quantity: Decimal,
     in_date: Option<DateTime>,
@@ -862,17 +866,19 @@ struct Planned {
 /// production) are dropped, their effect is in the ledger only (1); keys whose nets are
 /// both zero are dropped. The rest are locked in key order in one statement (a zero row is inserted
 /// for a new key), their new values are computed from the locked rows and refused before any write
-/// when the reserved counter would go below zero, then written by id on the locked rows, and finally given their incoming date, or deleted when they ended at zero with no count
-/// state. Negative on-hand is allowed (the reference's default) except at a location whose policy row
+/// when the reserved counter would go below zero, then written by id with their incoming date on the
+/// locked rows, and deleted when they ended at zero with no count state. Negative on-hand is allowed (the reference's default) except at a location whose policy row
 /// forbids it: a change that lowers such a key below zero is refused with
 /// [`QuantError::NegativeStockForbidden`] before any write.
 ///
 /// Incoming date of a key: the oldest of its own date (while its on-hand is positive) and the dates
 /// the changes carry, else now.
 ///
-/// Returns the balances of the stored keys, in lock order. Statements: one validation read and the
-/// three of D1.3, whatever the batch size, and one more when the call leaves a key below zero; the
-/// work runs in a savepoint, so a refusal leaves nothing behind. The batch is bounded by the delta limits (2,000 distinct keys, 32,000 changes).
+/// Returns the balances of the stored keys, in lock order. Statements: one validation read, the lock
+/// and the write of D1.3, whatever the batch size, the deletion when a key ends at zero, and the
+/// mark when the call takes a key's free quantity below zero; the work runs in a savepoint, so a
+/// refusal leaves nothing behind. The batch is bounded by the delta limits (2,000 distinct keys,
+/// 32,000 changes); [`apply_quant_changes_in_chunks`] splits a larger unit.
 ///
 /// # Errors
 ///
@@ -921,6 +927,52 @@ pub async fn apply_quant_changes(
         .await;
     tx.invalidate_model("stock.quant", None).await?;
     result
+}
+
+/// The distinct keys and the changes one engine call admits: the delta limits it refuses above
+/// (`DeltaLimits::default()` in `erp-sql`, `delta.rs`).
+const CALL_KEYS: usize = 2_000;
+const CALL_CHANGES: usize = 32_000;
+
+/// [`apply_quant_changes`] for a unit of work whose changes may exceed one call's bound (a large
+/// validation or cancellation): the changes are sorted by the canonical key order and applied in
+/// ascending chunks of at most 2,000 distinct keys and 32,000 changes, every change of one key in the
+/// same chunk, so each later call names only keys above the ones the earlier calls hold (
+/// D1.4). One call when they fit. More than one chunk run in one savepoint: a refusal in a later
+/// chunk undoes the earlier chunks too, so the call is all or nothing like a single one.
+///
+/// # Errors
+///
+/// Those of [`apply_quant_changes`]; a single key with more than 32,000 changes is refused by it as
+/// ResourceExhausted.
+pub async fn apply_quant_changes_in_chunks(
+    tx: &mut Transaction,
+    changes: &[QuantChange],
+) -> Result<Vec<QuantBalance>> {
+    let mut sorted = changes.to_vec();
+    sorted.sort_by(|a, b| order(&a.key).cmp(&order(&b.key)));
+    let mut chunks: Vec<Vec<QuantChange>> = Vec::new();
+    let (mut chunk, mut keys) = (Vec::new(), 0);
+    for run in sorted.chunk_by(|a, b| a.key == b.key) {
+        if !chunk.is_empty() && (keys == CALL_KEYS || chunk.len() + run.len() > CALL_CHANGES) {
+            chunks.push(std::mem::take(&mut chunk));
+            keys = 0;
+        }
+        chunk.extend_from_slice(run);
+        keys += 1;
+    }
+    if chunks.is_empty() {
+        return apply_quant_changes(tx, &chunk).await;
+    }
+    chunks.push(chunk);
+    tx.savepoint(async |tx| {
+        let mut balances = Vec::new();
+        for chunk in &chunks {
+            balances.extend(apply_quant_changes(tx, chunk).await?);
+        }
+        Ok(balances)
+    })
+    .await
 }
 
 async fn apply_in_savepoint(
@@ -1113,6 +1165,7 @@ async fn apply_in_savepoint(
         planned.push(Planned {
             key,
             id,
+            free_before: quantity - reserved,
             quantity: new_quantity,
             reserved_quantity: new_reserved,
             in_date,
@@ -1123,61 +1176,79 @@ async fn apply_in_savepoint(
         });
     }
 
-    // (a'') the mark of the locations where this call leaves a key below zero (see MARK_NEGATIVE)
+    // (a'') the mark of the locations where this call takes a key's free quantity from zero or above
+    // to below zero (see MARK_NEGATIVE); every stored key's location has its policy row
     let mut marked: Vec<i64> = planned
         .iter()
-        .zip(&deltas)
-        .filter(|(plan, (dq, _))| *dq < Decimal::ZERO && plan.quantity < Decimal::ZERO)
-        .map(|(plan, _)| plan.key.location_id)
+        .filter(|plan| plan.free_before >= Decimal::ZERO && plan.quantity < plan.reserved_quantity)
+        .map(|plan| plan.key.location_id)
         .collect();
     marked.sort_unstable();
     marked.dedup();
     if !marked.is_empty() {
-        tx.execute(MARK_NEGATIVE, &[&marked]).await?;
+        let rows = tx.execute(MARK_NEGATIVE, &[&marked]).await?;
+        if usize::try_from(rows).ok() != Some(marked.len()) {
+            return Err(mismatch(format!(
+                "{rows} location policies marked for {} locations",
+                marked.len()
+            )));
+        }
     }
 
     // (b) every key exists and is locked since (a), and (a') checked every outcome: the planned
-    // balances are written by id. An upsert carries the delta as its proposed row, which
-    // PostgreSQL checks against the table's CHECKs before it resolves the conflict, so a release
-    // (a negative reserved delta) could never pass `_reserved_nonneg`; that CHECK stays the
-    // backstop of (a').
+    // balances, incoming dates and write audit are written by id. An upsert carries the delta as its
+    // proposed row, which PostgreSQL checks against the table's CHECKs before it resolves the
+    // conflict, so a release (a negative reserved delta) could never pass `_reserved_nonneg`; that
+    // CHECK stays the backstop of (a').
     let ids: Vec<i64> = planned.iter().map(|p| p.id).collect();
     let quantities: Vec<Decimal> = planned.iter().map(|p| p.quantity).collect();
     let reserved: Vec<Decimal> = planned.iter().map(|p| p.reserved_quantity).collect();
+    let in_dates: Vec<Option<DateTime>> = planned.iter().map(|p| p.in_date).collect();
     let written = tx
-        .execute(WRITE_BALANCES, &[&ids, &quantities, &reserved])
+        .query(
+            WRITE_BALANCES,
+            &[&ids, &quantities, &reserved, &in_dates, &uid],
+        )
         .await?;
-    if usize::try_from(written).ok() != Some(planned.len()) {
+    let mut written_dates: HashMap<i64, DateTime> = HashMap::with_capacity(written.len());
+    for row in &written {
+        written_dates.insert(
+            row.try_get(0).map_err(decode)?,
+            row.try_get(1).map_err(decode)?,
+        );
+    }
+    if written_dates.len() != planned.len() {
         return Err(mismatch(format!(
-            "{written} rows written for {} keys",
+            "{} rows written for {} keys",
+            written_dates.len(),
             planned.len()
         )));
     }
 
-    // (c) incoming dates and zero-key deletion
-    let in_dates: Vec<Option<DateTime>> = planned.iter().map(|p| p.in_date).collect();
-    let drops: Vec<bool> = planned.iter().map(|p| p.drop_key).collect();
-    let finished = tx
-        .query(FINISH_KEYS, &[&ids, &in_dates, &drops, &uid])
-        .await?;
-    let mut outcome: HashMap<i64, (DateTime, bool)> = HashMap::with_capacity(finished.len());
-    for row in &finished {
-        let id: i64 = row.try_get(0).map_err(decode)?;
-        let in_date: DateTime = row.try_get(1).map_err(decode)?;
-        let dropped: bool = row.try_get(2).map_err(decode)?;
-        outcome.insert(id, (in_date, dropped));
+    // (c) zero-key deletion
+    let drops: Vec<i64> = planned
+        .iter()
+        .filter(|p| p.drop_key)
+        .map(|p| p.id)
+        .collect();
+    let mut dropped: HashSet<i64> = HashSet::with_capacity(drops.len());
+    if !drops.is_empty() {
+        for row in tx.query(DROP_KEYS, &[&drops]).await? {
+            dropped.insert(row.try_get(0).map_err(decode)?);
+        }
     }
     let balances = planned
         .into_iter()
         .map(|plan| {
-            let Some((in_date, dropped)) = outcome.get(&plan.id).copied() else {
-                return Err(mismatch(format!("row {} was not finished", plan.id)));
+            let Some(in_date) = written_dates.get(&plan.id).copied() else {
+                return Err(mismatch(format!("row {} was not written", plan.id)));
             };
-            if dropped != plan.drop_key {
+            let gone = dropped.contains(&plan.id);
+            if gone != plan.drop_key {
                 return Err(mismatch(format!("row {} was not deleted as zero", plan.id)));
             }
             Ok(QuantBalance {
-                id: (!dropped).then_some(plan.id),
+                id: (!gone).then_some(plan.id),
                 key: plan.key,
                 quantity: plan.quantity,
                 reserved_quantity: plan.reserved_quantity,

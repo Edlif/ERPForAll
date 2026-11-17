@@ -585,14 +585,14 @@ fn stat(
     action: &str,
     domain: Json,
     tone: &str,
-) -> Option<Json> {
+) -> Json {
     let tone = if sum.count == 0 { "neutral" } else { tone };
     let (amount_value, currency) = if money {
         (amount(sum.amount), json!(journal.currency))
     } else {
         (Json::Null, Json::Null)
     };
-    Some(json!({
+    json!({
         "label": label,
         "count": sum.count,
         "amount": amount_value,
@@ -601,7 +601,7 @@ fn stat(
         "domain": domain,
         "context": {},
         "tone": tone,
-    }))
+    })
 }
 
 fn button(journal: &Journal) -> Json {
@@ -728,7 +728,7 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                     .collect();
                 json!({"type": "bar", "label": chart_label, "points": points})
             };
-            (stats.into_iter().flatten().collect::<Vec<_>>(), chart)
+            (stats.to_vec(), chart)
         }
         Kind::Bank | Kind::Cash | Kind::Credit => {
             let pair = journal.default_account.map(|a| (a, journal.company));
@@ -775,7 +775,7 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                 }
                 json!({"type": "line", "label": labels::BALANCE, "points": points})
             };
-            (stats.into_iter().collect(), chart)
+            (vec![stats], chart)
         }
         Kind::General => {
             let drafts = Sum {
@@ -791,7 +791,7 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                 drafts_domain,
                 "warning",
             );
-            (stats.into_iter().collect(), Json::Null)
+            (vec![stats], Json::Null)
         }
     };
     Ok(json!({"v": 1, "buttons": [button(journal)], "stats": stats, "chart": chart}))
@@ -879,8 +879,7 @@ mod tests {
             "a.b",
             json!([]),
             "danger",
-        )
-        .unwrap();
+        );
         assert_eq!(empty["count"], 0);
         assert_eq!(empty["amount"], "0");
         assert_eq!(empty["tone"], "neutral");
@@ -896,8 +895,7 @@ mod tests {
             "a.b",
             json!([]),
             "danger",
-        )
-        .unwrap();
+        );
         assert_eq!(shown["count"], 2);
         assert_eq!(shown["amount"], "5");
         assert_eq!(shown["currency_id"], 3);
@@ -909,8 +907,7 @@ mod tests {
             "a.b",
             json!([]),
             "warning",
-        )
-        .unwrap();
+        );
         assert!(plain["amount"].is_null() && plain["currency_id"].is_null());
     }
 }

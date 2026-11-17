@@ -62,6 +62,29 @@ async fn catalog(tx: &mut Transaction, env: &Env) -> (i64, i64, i64) {
     (vendor, template, variant)
 }
 
+/// A vendor price always has a lead time: an empty one is refused, never read as "none".
+#[tokio::test]
+async fn supplier_lead_time_is_required() {
+    let (h, company) = fixture().await;
+    let mut tx = h.begin().await.unwrap();
+    let env = tx.env().with_company(company).unwrap();
+    let (vendor, template, _) = catalog(&mut tx, &env).await;
+    let suppliers = env.records("product.supplierinfo").unwrap();
+    let vals = RawVals::new()
+        .set_cell("partner_id", Cell::Id(vendor))
+        .set_cell("product_tmpl_id", Cell::Id(template))
+        .set_cell("delay", Cell::Null);
+    let error = tx
+        .savepoint(async move |tx| suppliers.create(tx, vec![vals]).await)
+        .await
+        .unwrap_err();
+    let message = error.message();
+    assert!(
+        message.contains("delay") || message.contains("Lead Time"),
+        "{error:?}"
+    );
+}
+
 #[tokio::test]
 async fn supplier_defaults_and_explicit_values() {
     let (h, company) = fixture().await;

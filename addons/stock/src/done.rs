@@ -12,7 +12,8 @@
 //! its reservation at the source, takes its quantity off the source and adds it at the destination;
 //! the moves become done with the completion time and the transfer gets its done date. Adopted:
 //! those rules. Modified:
-//! - **one engine call** for the whole call: the reservation releases of the done and deleted lines
+//! - **one engine call** for the whole call (above the engine's bound, ascending chunks in one
+//!   savepoint): the reservation releases of the done and deleted lines
 //!   and the on-hand changes of the done lines are netted per quant key and applied in the engine's
 //!   key order, after the transfers and then the moves are locked. A location that
 //!   forbids negative stock refuses the call by name and nothing of it is written;
@@ -55,7 +56,8 @@ use crate::error::StockError;
 use crate::move_counters::{cell_id, lock_move_roots, lock_pickings, notify_pickings};
 use crate::move_lines::{DeferSettle, LINE_DERIVED_MOVE_FIELDS, reservation_changes, sync_moves};
 use crate::picking::StockPicking;
-use crate::quant_engine::{QuantChange, QuantKey, apply_quant_changes};
+use crate::quant_engine::{QuantChange, QuantKey, apply_quant_changes_in_chunks};
+use crate::warehouse_setup::without_defaults;
 
 /// The fields a done move may still change: descriptions, ordering and chain links, nothing that
 /// moves stock. The one allow-list of done moves.
@@ -109,13 +111,19 @@ const LINE_EFFECTS: &str = "SELECT l.company_id, l.product_id, l.location_id, l.
      JOIN product_template pt ON pt.id = pp.product_tmpl_id \
      WHERE l.id = ANY($1) AND pt.is_storable AND l.quantity_product_uom <> 0";
 
+// The done marks keep a done time a row already has (the done-time guard refuses changing one) and
+// stamp the write audit with the validating user `$2`.
 const LINES_DONE: &str = "UPDATE stock_move_line SET membership = 'done', picked = true, \
-       done_at = (now() AT TIME ZONE 'UTC') WHERE id = ANY($1)";
-const MOVES_CANCEL: &str = "UPDATE stock_move SET state = 'cancel' WHERE id = ANY($1)";
+       done_at = COALESCE(done_at, (now() AT TIME ZONE 'UTC')), \
+       write_uid = $2, write_date = (now() AT TIME ZONE 'UTC') WHERE id = ANY($1)";
+/// The moves validation cancels (no quantity, no demand); the cancel action has its own statement.
+const MOVES_CANCEL_EMPTY: &str = "UPDATE stock_move SET state = 'cancel', \
+       write_uid = $2, write_date = (now() AT TIME ZONE 'UTC') WHERE id = ANY($1)";
 const MOVES_DONE: &str = "UPDATE stock_move SET state = 'done', picked = true, \
-       date = (now() AT TIME ZONE 'UTC'), done_at = (now() AT TIME ZONE 'UTC') WHERE id = ANY($1)";
+       date = (now() AT TIME ZONE 'UTC'), done_at = COALESCE(done_at, (now() AT TIME ZONE 'UTC')), \
+       write_uid = $2, write_date = (now() AT TIME ZONE 'UTC') WHERE id = ANY($1)";
 const PICKINGS_DONE: &str = "UPDATE stock_picking SET date_done = (now() AT TIME ZONE 'UTC'), \
-       priority = '0' WHERE id = ANY($1)";
+       priority = '0', write_uid = $2, write_date = (now() AT TIME ZONE 'UTC') WHERE id = ANY($1)";
 
 const DONE_MOVES: &str = "SELECT count(*) FROM stock_move WHERE id = ANY($1) AND state = 'done'";
 const DONE_PICKINGS: &str =
@@ -263,14 +271,20 @@ pub(crate) async fn check_unlink(
     Ok(())
 }
 
+/// The zero-quantity open lines of the moves `$1`: validation deletes them anyway, and one of them
+/// could hold the open-line key the demand line takes.
+const ZERO_LINES: &str = "SELECT id FROM stock_move_line \
+     WHERE move_id = ANY($1) AND membership = 'open' AND quantity = 0 ORDER BY id";
+
 /// The moves of `$1` without quantity and with a positive demand.
 const UNFILLED: &str = "SELECT id, product_uom_qty FROM stock_move \
      WHERE id = ANY($1) AND quantity = 0 AND product_uom_qty > 0 \
        AND state NOT IN ('done', 'cancel') ORDER BY id";
 
 /// Give each of `moves` without quantity one line for its demand at its own locations, inserted
-/// through the line model without a reservation (the validating unit moves it at once), and set the
-/// moves' quantities. Returns the new lines.
+/// through the line model without a reservation (the validating unit moves it at once) and without
+/// the caller's `default_*` context, and set the moves' quantities. The moves' zero-quantity lines
+/// are deleted first. Returns the new lines.
 async fn fill_demand(
     records: &Records,
     tx: &mut Transaction,
@@ -291,9 +305,22 @@ async fn fill_demand(
     if vals_list.is_empty() {
         return Ok(BTreeSet::new());
     }
-    let model = records.env().records("stock.move.line")?;
+    let mut zero = Vec::new();
+    for row in tx.query(ZERO_LINES, &[&filled]).await? {
+        zero.push(row.try_get::<_, i64>(0).map_err(decode)?);
+    }
+    let model = without_defaults(records.env()).records("stock.move.line")?;
+    let zero = model.browse(zero)?;
     tx.extension::<DeferSettle>().active = true;
-    let result = model.create(tx, vals_list).await;
+    let deleted = if zero.is_empty() {
+        Ok(())
+    } else {
+        zero.unlink(tx).await
+    };
+    let result = match deleted {
+        Ok(()) => model.create(tx, vals_list).await,
+        Err(error) => Err(error),
+    };
     tx.extension::<DeferSettle>().active = false;
     let created = result?.ids();
     tx.flush().await?;
@@ -480,9 +507,11 @@ pub(crate) async fn validate(records: &Records, tx: &mut Transaction) -> Result<
             }
         })
         .collect();
-    apply_quant_changes(tx, &changes).await?;
+    // in ascending key chunks under the engine's bound, so a large validation is not refused
+    apply_quant_changes_in_chunks(tx, &changes).await?;
 
     let env = records.env();
+    let uid = env.uid();
     if !deleted.is_empty() {
         let lines = env.records("stock.move.line")?.browse(deleted)?;
         tx.extension::<DeferSettle>().active = true;
@@ -491,29 +520,31 @@ pub(crate) async fn validate(records: &Records, tx: &mut Transaction) -> Result<
         result?;
     }
     if !done_lines.is_empty() {
-        tx.execute(LINES_DONE, &[&done_lines]).await?;
+        tx.execute(LINES_DONE, &[&done_lines, &uid]).await?;
         env.records("stock.move.line")?
             .browse(done_lines)?
-            .modified_external(tx, &["membership", "picked", "done_at"])
+            .modified_external(tx, &["membership", "picked", "done_at", "write_date"])
             .await?;
     }
     sync_moves(tx, &move_ids).await?;
     if !cancel_moves.is_empty() {
-        tx.execute(MOVES_CANCEL, &[&cancel_moves]).await?;
+        tx.execute(MOVES_CANCEL_EMPTY, &[&cancel_moves, &uid])
+            .await?;
     }
     if !done_moves.is_empty() {
-        tx.execute(MOVES_DONE, &[&done_moves]).await?;
+        tx.execute(MOVES_DONE, &[&done_moves, &uid]).await?;
     }
-    tx.execute(PICKINGS_DONE, &[&todo_pickings]).await?;
+    tx.execute(PICKINGS_DONE, &[&todo_pickings, &uid]).await?;
+    // `write_uid` is not notified: an external change of a relational field is not supported yet
     let mut fields: Vec<&str> = LINE_DERIVED_MOVE_FIELDS.to_vec();
-    fields.extend(["picked", "date", "done_at"]);
+    fields.extend(["picked", "date", "done_at", "write_date"]);
     env.records("stock.move")?
         .browse(move_ids)?
         .modified_external(tx, &fields)
         .await?;
     env.records("stock.picking")?
         .browse(todo_pickings)?
-        .modified_external(tx, &["date_done", "priority"])
+        .modified_external(tx, &["date_done", "priority", "write_date"])
         .await?;
     notify_pickings(records, tx, &roots).await
 }

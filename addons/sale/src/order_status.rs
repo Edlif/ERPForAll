@@ -190,6 +190,18 @@ impl SaleOrder {
     ) -> Result<()> {
         let records = this.as_records();
         records.lock_for_update(tx, false).await?;
+        let refused: Vec<String> = headers(tx, records)
+            .await?
+            .iter()
+            .filter(|order| order.state != "sale")
+            .map(|order| order.describe())
+            .collect();
+        if !refused.is_empty() {
+            return Err(Error::user(format!(
+                "Only a confirmed sales order can have its invoicing reopened: {}.",
+                refused.join(", ")
+            )));
+        }
         records
             .write_base(
                 tx,

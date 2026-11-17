@@ -13,7 +13,7 @@
 use erp_addon_stock::{QuantChange, QuantKey, apply_quant_changes};
 use erp_sdk::ErrorKind;
 use erp_sdk::prelude::*;
-use erp_testkit::Harness;
+use erp_testkit::{DomainPolicy, Harness, Otherwise};
 
 erp_sdk::addon!(name = "test_stock_move_flow", depends = ["stock"]);
 
@@ -112,7 +112,13 @@ async fn location(tx: &mut Transaction, name: &str, usage: &str) -> i64 {
 }
 
 async fn fixture() -> Fixture {
-    let h = Harness::builder([
+    fixture_with(None).await
+}
+
+/// The fixture under a record policy for the ordinary users of a test (the superuser of the
+/// fixture's own transactions is not held to it).
+async fn fixture_with(policy: Option<DomainPolicy>) -> Fixture {
+    let mut builder = Harness::builder([
         &erp_addon_base::ADDON,
         &erp_addon_web::ADDON,
         &erp_addon_barcodes::ADDON,
@@ -123,10 +129,11 @@ async fn fixture() -> Fixture {
         &ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
-    .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
-    .build()
-    .await
-    .unwrap();
+    .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true));
+    if let Some(policy) = policy {
+        builder = builder.policy(policy);
+    }
+    let h = builder.build().await.unwrap();
     let mut tx = h.begin().await.unwrap();
     tx.batch(include_str!("../../uom/src/guard_sql.sql"))
         .await
@@ -710,11 +717,15 @@ async fn partial_and_empty_availability_and_a_later_top_up() {
     assert_eq!(state, "confirmed");
     assert_eq!(f.quant_rows(&mut tx, f.p).await, 0);
     tx.rollback().await.unwrap();
+    // an ended transaction keeps its pool connection until it is dropped (a shadowed binding is
+    // not): drop each one before the next begin, or a pool of 4 runs dry
+    drop(tx);
 
-    // shortcut: stock and transfer share one transaction because a fifth transaction here timed
-    // out waiting for a pool connection (pool of 4, cause not found); split it again once fixed
     let mut tx = f.h.begin().await.unwrap();
     f.stock(&mut tx, f.p, "4").await;
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut tx = f.h.begin().await.unwrap();
     let (picking, mv) = f.delivery(&mut tx, f.p, "10").await;
     f.call(&mut tx, picking, "action_assign").await.unwrap();
     assert_eq!(lines_of(&mut tx, mv).await, vec![(dec("4"), f.l)]);
@@ -722,10 +733,12 @@ async fn partial_and_empty_availability_and_a_later_top_up() {
     assert_eq!(state, "partially_available");
     assert_eq!(picking_state(&mut tx, picking).await, "assigned");
     tx.commit().await.unwrap();
+    drop(tx);
 
     let mut tx = f.h.begin().await.unwrap();
     f.stock(&mut tx, f.p, "6").await;
     tx.commit().await.unwrap();
+    drop(tx);
     let mut tx = f.h.begin().await.unwrap();
     f.call(&mut tx, picking, "action_assign").await.unwrap();
     assert_eq!(lines_of(&mut tx, mv).await, vec![(dec("10"), f.l)]);
@@ -820,9 +833,12 @@ async fn unreserve_releases_unpicked_lines_only() {
         (dec("3"), "partially_available")
     );
 
-    tx.execute("UPDATE stock_move SET state = 'done' WHERE id = $1", &[&mv])
-        .await
-        .unwrap();
+    tx.execute(
+        "UPDATE stock_move SET state = 'done', done_at = (now() AT TIME ZONE 'UTC') WHERE id = $1",
+        &[&mv],
+    )
+    .await
+    .unwrap();
     tx.invalidate_model("stock.move", None).await.unwrap();
     let error = f.call(&mut tx, picking, "do_unreserve").await.unwrap_err();
     user_error(&error, "cannot be unreserved");
@@ -1489,12 +1505,16 @@ async fn a_draft_validation_takes_no_stock_reserved_for_another_transfer_at_a_fl
 #[tokio::test]
 async fn two_sessions_validating_one_transfer_move_the_stock_once() {
     let f = fixture().await;
-    // shortcut: setup shares one transaction because a fifth transaction here timed out waiting
-    // for a pool connection (pool of 4, cause not found); split it again once that is fixed
+    // each ended transaction is dropped before the next begin: it keeps its pool connection until
+    // then, and a pool of 4 runs dry otherwise
     let mut tx = f.h.begin().await.unwrap();
     f.stock(&mut tx, f.p, "10").await;
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut tx = f.h.begin().await.unwrap();
     let (picking, _) = f.ready_delivery(&mut tx, f.p, "5").await;
     tx.commit().await.unwrap();
+    drop(tx);
 
     // the late session's snapshot is taken before the first one validates
     let mut late = f.h.begin().await.unwrap();
@@ -1502,10 +1522,12 @@ async fn two_sessions_validating_one_transfer_move_the_stock_once() {
     let mut tx = f.h.begin().await.unwrap();
     f.validate(&mut tx, picking).await.unwrap();
     tx.commit().await.unwrap();
+    drop(tx);
     let error = f.validate(&mut late, picking).await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Concurrency, "{error:?}");
     assert_eq!(error.sqlstate(), Some("40001"), "{error:?}");
     late.rollback().await.unwrap();
+    drop(late);
 
     let mut tx = f.h.begin().await.unwrap();
     let error = f.validate(&mut tx, picking).await.unwrap_err();
@@ -1992,4 +2014,599 @@ async fn deleting_a_transfer_cancels_and_deletes_its_moves() {
         .unwrap()[0]
         .get(0);
     assert_eq!(left, 0);
+}
+
+/// Deleting transfers locks all of them in ascending order before anything else (as
+/// validation and cancel do): a delete waiting for the first transfer holds none of the later
+/// ones, here one with only cancelled moves before one with an open move.
+#[tokio::test]
+async fn deleting_transfers_locks_them_in_order_first() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let (first, _) = f.draft_delivery(&mut tx, f.consumable, "1").await;
+    f.call(&mut tx, first, "action_cancel").await.unwrap();
+    let (second, _) = f.draft_delivery(&mut tx, f.consumable, "1").await;
+    tx.commit().await.unwrap();
+    drop(tx);
+    assert!(first < second);
+
+    let mut holder = f.h.begin().await.unwrap();
+    holder
+        .query(
+            "SELECT id FROM stock_picking WHERE id = $1 FOR UPDATE",
+            &[&first],
+        )
+        .await
+        .unwrap();
+    let mut deleter = f.h.begin().await.unwrap();
+    let both = [first, second];
+    let delete = f.unlink_as(&mut deleter, "stock.picking", &both);
+    let probe = async {
+        let mut waits = 0;
+        loop {
+            let waiting: i64 = holder
+                .query(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                    &[],
+                )
+                .await
+                .unwrap()[0]
+                .get(0);
+            if waiting > 0 {
+                break;
+            }
+            waits += 1;
+            assert!(
+                waits < 100_000,
+                "the delete never waited for the first transfer"
+            );
+        }
+        let free = holder
+            .savepoint(async |tx| {
+                tx.query(
+                    "SELECT id FROM stock_picking WHERE id = $1 FOR UPDATE NOWAIT",
+                    &[&second],
+                )
+                .await
+            })
+            .await
+            .map(drop);
+        holder.rollback().await.unwrap();
+        free
+    };
+    let (deleted, free) = futures_util::join!(delete, probe);
+    free.expect("the later transfer is held while the delete waits for the first one");
+    deleted.unwrap();
+    deleter.commit().await.unwrap();
+    drop(deleter);
+    drop(holder);
+}
+
+/// A type without numbering refuses an unnamed transfer by name (the reference would keep `/`,
+/// and the company's second such transfer would only meet the reference key).
+#[tokio::test]
+async fn an_unnumbered_type_refuses_an_unnamed_transfer_by_name() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let env = f.env(&tx);
+    for vals in [
+        RawVals::new().set_cell("picking_type_id", Cell::Id(f.receipt_type)),
+        RawVals::new()
+            .set_cell("picking_type_id", Cell::Id(f.receipt_type))
+            .set_cell("name", text("/")),
+    ] {
+        let error = tx
+            .savepoint(async |tx| env.records("stock.picking")?.create(tx, vec![vals]).await)
+            .await
+            .unwrap_err();
+        user_error(&error, "set its Sequence Prefix");
+    }
+    // a reference given by the caller is kept
+    let named = f.picking(&mut tx, f.receipt_type, f.vendor, f.l).await;
+    assert!(picking_row(&mut tx, named).await.0.starts_with('T'));
+}
+
+/// A demand or supply-method write recomputes the move's state from its quantity.
+#[tokio::test]
+async fn a_demand_or_supply_method_write_recomputes_the_move_state() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    f.stock(&mut tx, f.p, "10").await;
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut tx = f.h.begin().await.unwrap();
+    let (picking, mv) = f.ready_delivery(&mut tx, f.p, "6").await;
+    assert_eq!(move_row(&mut tx, mv).await.2, "assigned");
+    let demand = |qty: &str| RawVals::new().set_cell("product_uom_qty", Cell::Decimal(dec(qty)));
+    for (qty, state) in [
+        ("8", "partially_available"),
+        ("6", "assigned"),
+        ("4", "assigned"),
+    ] {
+        f.write_as(&mut tx, "stock.move", &[mv], demand(qty), false)
+            .await
+            .unwrap();
+        assert_eq!(move_row(&mut tx, mv).await.2, state, "demand {qty}");
+    }
+    assert_eq!(picking_state(&mut tx, picking).await, "assigned");
+    // a confirmed move without a reservation waits once it is supplied by order, and not after
+    let manual = f.picking(&mut tx, f.manual_type, f.l, f.customer).await;
+    let confirmed = f
+        .move_in(&mut tx, Some(manual), f.p, f.l, f.customer, "2")
+        .await;
+    f.confirm(&mut tx, manual).await;
+    assert_eq!(move_row(&mut tx, confirmed).await.2, "confirmed");
+    let method = |value: &str| RawVals::new().set_cell("procure_method", text(value));
+    for (value, state) in [("make_to_order", "waiting"), ("make_to_stock", "confirmed")] {
+        f.write_as(&mut tx, "stock.move", &[confirmed], method(value), false)
+            .await
+            .unwrap();
+        assert_eq!(move_row(&mut tx, confirmed).await.2, state, "{value}");
+    }
+}
+
+/// A move moved to another transfer takes its lines along (2 I1: a line's transfer is
+/// its move's).
+#[tokio::test]
+async fn a_move_moved_to_another_transfer_takes_its_lines() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let (from, mv) = f.draft_delivery(&mut tx, f.consumable, "3").await;
+    let (to, _) = f.draft_delivery(&mut tx, f.consumable, "1").await;
+    let lines = f.add_lines(&mut tx, vec![line(mv, "2")]).await.unwrap();
+    f.write_as(
+        &mut tx,
+        "stock.move",
+        &[mv],
+        RawVals::new().set_cell("picking_id", Cell::Id(to)),
+        false,
+    )
+    .await
+    .unwrap();
+    let rows = tx
+        .query(
+            "SELECT picking_id FROM stock_move_line WHERE id = ANY($1)",
+            &[&lines],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<_, Option<i64>>(0), Some(to));
+    let env = f.env(&tx);
+    let cached = env
+        .records("stock.move.line")
+        .unwrap()
+        .browse(lines)
+        .unwrap()
+        .cell(&mut tx, "picking_id")
+        .await
+        .unwrap();
+    assert_eq!(cached, Cell::Id(to));
+    assert_ne!(from, to);
+}
+
+/// The number of quant engine calls that stand in this transaction (the engine's own call log).
+async fn engine_calls(tx: &mut Transaction) -> usize {
+    let calls: String = tx
+        .query(
+            "SELECT COALESCE(current_setting('erp.stock_quant_calls', true), '')",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    calls.matches(':').count()
+}
+
+/// `action` on the transfers `pickings` in one call, with `context` added.
+async fn call_on(
+    f: &Fixture,
+    tx: &mut Transaction,
+    pickings: &[i64],
+    action: &'static str,
+    context: Vec<(&'static str, Value)>,
+) -> Result<()> {
+    let records = f
+        .env(tx)
+        .records("stock.picking")?
+        .browse(pickings.iter().copied())?
+        .with_context(context);
+    tx.savepoint(async move |tx| records.call::<(), ()>(tx, action, ()).await)
+        .await
+}
+
+/// Cycle 27 review: Check availability over a draft transfer whose type reserves at confirmation
+/// and a confirmed one used to make two engine calls (the confirmation's, then the assignment's)
+/// and to lock in two steps; the confirmed transfer's lower key was then refused by the engine's
+/// lock order. One lock step and one engine call now, and both moves are reserved.
+#[tokio::test]
+async fn check_availability_of_a_draft_and_a_confirmed_transfer_makes_one_engine_call() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let q = product(&mut tx, f.company, "Q", true).await;
+    f.stock(&mut tx, f.p, "5").await;
+    f.stock(&mut tx, q, "5").await;
+    tx.commit().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    let (confirmed, confirmed_move) = f.delivery(&mut tx, f.p, "2").await;
+    let draft = f.picking(&mut tx, f.delivery_type, f.l, f.customer).await;
+    let draft_move = f
+        .move_in(&mut tx, Some(draft), q, f.l, f.customer, "3")
+        .await;
+    let before = engine_calls(&mut tx).await;
+    call_on(
+        &f,
+        &mut tx,
+        &[confirmed, draft],
+        "action_assign",
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(engine_calls(&mut tx).await - before, 1);
+    assert_eq!(move_row(&mut tx, confirmed_move).await.2, "assigned");
+    assert_eq!(move_row(&mut tx, draft_move).await.2, "assigned");
+    assert_eq!(f.quant(&mut tx, f.p).await, Some((dec("5"), dec("2"))));
+    assert_eq!(f.quant(&mut tx, q).await, Some((dec("5"), dec("3"))));
+}
+
+/// Cycle 27 review: a line write whose lines need two unit snapshots (units and dozens) wrote each
+/// group as its own nested write with its own engine call. It is one engine call now.
+#[tokio::test]
+async fn a_line_write_over_two_units_makes_one_engine_call() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let (_, mv) = f.delivery(&mut tx, f.p, "30").await;
+    let ids = f
+        .add_lines(
+            &mut tx,
+            vec![
+                line(mv, "3"),
+                line(mv, "1").set_cell("uom_id", Cell::Id(f.dozen)),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.quant(&mut tx, f.p).await,
+        Some((Decimal::ZERO, dec("15")))
+    );
+    let before = engine_calls(&mut tx).await;
+    f.write_lines(
+        &mut tx,
+        &ids,
+        RawVals::new().set_cell("quantity", Cell::Decimal(dec("2"))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(engine_calls(&mut tx).await - before, 1);
+    assert_eq!(
+        f.quant(&mut tx, f.p).await,
+        Some((Decimal::ZERO, dec("26")))
+    );
+    assert_eq!(move_row(&mut tx, mv).await.0, dec("26"));
+}
+
+/// Cycle 27 review: the lot fields given as `default_<field>` context keys name a lot as the values
+/// do, and are refused the same way on a line create.
+#[tokio::test]
+async fn lot_context_defaults_are_refused_on_a_line_create() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let (_, mv) = f.delivery(&mut tx, f.p, "3").await;
+    for (key, value) in [
+        ("default_lot_name", Value::Str("A1".into())),
+        ("default_lot_id", Value::Int(1)),
+        ("default_child_mode", Value::Bool(true)),
+    ] {
+        let lines = f
+            .env(&tx)
+            .records("stock.move.line")
+            .unwrap()
+            .with_context([(key, value)]);
+        let error = tx
+            .savepoint(async |tx| lines.create(tx, vec![line(mv, "1")]).await.map(drop))
+            .await
+            .unwrap_err();
+        user_error(&error, "leave them empty");
+    }
+    // an empty default names nothing
+    let lines = f
+        .env(&tx)
+        .records("stock.move.line")
+        .unwrap()
+        .with_context([("default_lot_name", Value::Str("".into()))]);
+    lines.create(&mut tx, vec![line(mv, "1")]).await.unwrap();
+}
+
+/// Cycle 27 review: the caller's `default_*` context of Check availability does not reach the
+/// reservation lines it creates.
+#[tokio::test]
+async fn reservation_lines_ignore_the_callers_context_defaults() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    f.stock(&mut tx, f.p, "5").await;
+    tx.commit().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    let package = create(
+        &mut tx,
+        "stock.package",
+        RawVals::new().set_cell("name", text("PK-CONTEXT")),
+    )
+    .await;
+    let (picking, mv) = f.delivery(&mut tx, f.p, "2").await;
+    call_on(
+        &f,
+        &mut tx,
+        &[picking],
+        "action_assign",
+        vec![("default_result_package_id", Value::Int(package))],
+    )
+    .await
+    .unwrap();
+    let packages: Vec<Option<i64>> = tx
+        .query(
+            "SELECT result_package_id FROM stock_move_line WHERE move_id = $1",
+            &[&mv],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(packages, vec![None]);
+}
+
+/// Security review: a line create reads the moves it names through the record check before the
+/// raw statements lock and read them; a move the caller may not read is refused by name.
+#[tokio::test]
+async fn a_line_create_checks_the_named_moves_before_reading_them() {
+    let policy = DomainPolicy::builder(Otherwise::Allow)
+        .deny("stock.move", erp_sdk::Operation::Read)
+        .build()
+        .unwrap();
+    let f = fixture_with(Some(policy)).await;
+    let mut tx = f.h.begin().await.unwrap();
+    let (_, mv) = f.delivery(&mut tx, f.p, "3").await;
+    tx.query(
+        "INSERT INTO res_users (id, name, login, active, company_id) \
+         VALUES (7, 'Clerk', 'clerk', true, $1)",
+        &[&f.company],
+    )
+    .await
+    .unwrap();
+    tx.query(
+        "INSERT INTO res_company_users_rel (user_id, cid) VALUES (7, $1)",
+        &[&f.company],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = f.h.begin_as(7).await.unwrap();
+    let error = f.add_lines(&mut tx, vec![line(mv, "1")]).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Access, "{error:?}");
+    assert!(error.message().contains("stock.move"), "{error:?}");
+    tx.rollback().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    assert!(lines_of(&mut tx, mv).await.is_empty());
+}
+
+/// Database review: one engine call takes at most 2,000 distinct keys. A delivery of one move with
+/// 2,001 lines from distinct packages has 2,001 source keys; validation applies them in two
+/// ascending calls in the same transaction instead of failing.
+#[tokio::test]
+async fn a_validation_over_more_keys_than_one_engine_call_takes_is_applied_in_chunks() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let packages = tx
+        .env()
+        .records("stock.package")
+        .unwrap()
+        .create(
+            &mut tx,
+            (0..2001)
+                .map(|n| RawVals::new().set_cell("name", text(&format!("PK-{n}"))))
+                .collect(),
+        )
+        .await
+        .unwrap()
+        .ids();
+    let (picking, mv) = f.delivery(&mut tx, f.p, "2001").await;
+    // one create: its reservations are applied in chunks too
+    f.add_lines(
+        &mut tx,
+        packages
+            .iter()
+            .map(|package| line(mv, "1").set_cell("package_id", Cell::Id(*package)))
+            .collect(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(engine_calls(&mut tx).await, 2);
+    tx.commit().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    f.validate(&mut tx, picking).await.unwrap();
+    assert_eq!(engine_calls(&mut tx).await, 2);
+    assert_eq!(move_done(&mut tx, mv).await.0, "done");
+    for package in [packages[0], packages[2000]] {
+        let row = tx
+            .query(
+                "SELECT quantity, reserved_quantity FROM stock_quant \
+                 WHERE product_id = $1 AND location_id = $2 AND package_id = $3",
+                &[&f.p, &f.l, &package],
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            (row.get::<_, Decimal>(0), row.get::<_, Decimal>(1)),
+            (dec("-1"), Decimal::ZERO)
+        );
+    }
+}
+
+/// Database review: Check availability over stock in more packages than one engine call takes
+/// reserves every key in ascending chunks, and Unreserve gives them back the same way.
+#[tokio::test]
+async fn a_reservation_and_an_unreserve_over_more_keys_than_one_engine_call_takes_are_chunked() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let packages = tx
+        .env()
+        .records("stock.package")
+        .unwrap()
+        .create(
+            &mut tx,
+            (0..2001)
+                .map(|n| RawVals::new().set_cell("name", text(&format!("PK-{n}"))))
+                .collect(),
+        )
+        .await
+        .unwrap()
+        .ids();
+    let key = |package: i64| QuantKey::new(f.company, f.p, f.l).package_id(Some(package));
+    let on_hand: Vec<QuantChange> = packages
+        .iter()
+        .map(|package| QuantChange::new(key(*package), Decimal::ONE, Decimal::ZERO))
+        .collect();
+    erp_addon_stock::apply_quant_changes_in_chunks(&mut tx, &on_hand)
+        .await
+        .unwrap();
+    let (picking, mv) = f.delivery(&mut tx, f.p, "2001").await;
+    tx.commit().await.unwrap();
+    let reserved = async |tx: &mut Transaction| -> Vec<Decimal> {
+        let mut out = Vec::new();
+        for package in [packages[0], packages[2000]] {
+            let row = tx
+                .query(
+                    "SELECT reserved_quantity FROM stock_quant \
+                     WHERE product_id = $1 AND location_id = $2 AND package_id = $3",
+                    &[&f.p, &f.l, &package],
+                )
+                .await
+                .unwrap()
+                .remove(0);
+            out.push(row.get::<_, Decimal>(0));
+        }
+        out
+    };
+    let mut tx = f.h.begin().await.unwrap();
+    f.call(&mut tx, picking, "action_assign").await.unwrap();
+    assert_eq!(engine_calls(&mut tx).await, 2);
+    assert_eq!(reserved(&mut tx).await, vec![Decimal::ONE, Decimal::ONE]);
+    assert_eq!(move_row(&mut tx, mv).await.2, "assigned");
+    tx.commit().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    f.call(&mut tx, picking, "do_unreserve").await.unwrap();
+    assert_eq!(engine_calls(&mut tx).await, 2);
+    assert_eq!(reserved(&mut tx).await, vec![Decimal::ZERO, Decimal::ZERO]);
+}
+
+/// Database review: cancelling gives back the reservations of more keys than one engine call takes
+/// (2,001 lines from distinct packages) in ascending calls instead of failing.
+#[tokio::test]
+async fn a_cancel_over_more_keys_than_one_engine_call_takes_is_applied_in_chunks() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let packages = tx
+        .env()
+        .records("stock.package")
+        .unwrap()
+        .create(
+            &mut tx,
+            (0..2001)
+                .map(|n| RawVals::new().set_cell("name", text(&format!("PK-{n}"))))
+                .collect(),
+        )
+        .await
+        .unwrap()
+        .ids();
+    let (picking, mv) = f.delivery(&mut tx, f.p, "2001").await;
+    for part in packages.chunks(1000) {
+        f.add_lines(
+            &mut tx,
+            part.iter()
+                .map(|package| line(mv, "1").set_cell("package_id", Cell::Id(*package)))
+                .collect(),
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut tx = f.h.begin().await.unwrap();
+    f.call(&mut tx, picking, "action_cancel").await.unwrap();
+    assert!(engine_calls(&mut tx).await >= 2);
+    assert_eq!(move_done(&mut tx, mv).await.0, "cancel");
+    assert!(lines_of(&mut tx, mv).await.is_empty());
+    let held: i64 = tx
+        .query(
+            "SELECT count(*) FROM stock_quant \
+             WHERE product_id = $1 AND package_id = ANY($2) AND reserved_quantity <> 0",
+            &[&f.p, &packages],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(held, 0);
+}
+
+/// Database review: the done marks keep a done time a row already has (the done-time guard refused
+/// the whole validation before) and stamp the write audit of lines, moves and the transfer.
+#[tokio::test]
+async fn validation_keeps_a_set_done_time_and_stamps_its_writes() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let (picking, mv) = f.delivery(&mut tx, f.p, "2").await;
+    f.add_lines(&mut tx, vec![line(mv, "2")]).await.unwrap();
+    tx.execute(
+        "UPDATE stock_move_line SET done_at = '2026-01-01 00:00:00' WHERE move_id = $1",
+        &[&mv],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "UPDATE stock_move SET done_at = '2026-01-01 00:00:00' WHERE id = $1",
+        &[&mv],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    f.validate(&mut tx, picking).await.unwrap();
+    let row = tx
+        .query(
+            "SELECT l.done_at::text, m.done_at::text, \
+                    l.write_date = (now() AT TIME ZONE 'UTC'), \
+                    m.write_date = (now() AT TIME ZONE 'UTC'), \
+                    p.write_date = (now() AT TIME ZONE 'UTC') \
+               FROM stock_move_line l JOIN stock_move m ON m.id = l.move_id \
+               JOIN stock_picking p ON p.id = m.picking_id WHERE m.id = $1",
+            &[&mv],
+        )
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(row.get::<_, String>(0), "2026-01-01 00:00:00");
+    assert_eq!(row.get::<_, String>(1), "2026-01-01 00:00:00");
+    assert!(row.get::<_, bool>(2) && row.get::<_, bool>(3) && row.get::<_, bool>(4));
+    assert_eq!(move_done(&mut tx, mv).await.0, "done");
+}
+
+/// Database review: a draft move without quantity that has a zero-quantity line of the demand
+/// line's key used to fail its validation on the open-line key; the zero line is deleted first.
+#[tokio::test]
+async fn a_draft_move_with_an_empty_line_is_validated_with_its_demand() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let picking = f.picking(&mut tx, f.receipt_type, f.vendor, f.l).await;
+    let mv = f
+        .move_in(&mut tx, Some(picking), f.p, f.vendor, f.l, "4")
+        .await;
+    f.add_lines(&mut tx, vec![line(mv, "0")]).await.unwrap();
+    f.validate(&mut tx, picking).await.unwrap();
+    assert_eq!(move_done(&mut tx, mv).await.0, "done");
+    assert_eq!(lines_of(&mut tx, mv).await.len(), 1);
+    assert_eq!(f.quant(&mut tx, f.p).await, Some((dec("4"), Decimal::ZERO)));
 }

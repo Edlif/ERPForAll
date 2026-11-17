@@ -84,8 +84,8 @@ impl PeriodVerdict {
         match self {
             Self::Open { period_id } => Ok(period_id),
             Self::NoPeriod { company_id, date } => Err(Error::missing(format!(
-                "No fiscal period for company {company_id} on {date}; create it with \
-                 ensure_periods and try again."
+                "No fiscal period exists yet for company {company_id} on {date}; it is created when an \
+                 entry of that date is posted."
             ))),
             Self::FiscalLock { name, date_to, .. } => Err(Error::validation(format!(
                 "The fiscal period {name} is closed by the fiscal-year lock (up to {date_to}); \

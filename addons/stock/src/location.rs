@@ -378,8 +378,8 @@ impl StockLocationPolicy {
     /// A write of the switch first locks its policy rows without waiting. An open quant engine call
     /// at the location holds the row `FOR SHARE`, so the lock fails with `55P03`, answered as a
     /// retryable `40001`, and the retry's count sees the engine's balance once it committed. An engine
-    /// call that left a key below zero and committed after this transaction's snapshot wrote a new
-    /// version of the row (the engine's negative mark), so the lock fails with `40001` as well. An engine
+    /// call that took a key's free quantity below zero and committed after this transaction's
+    /// snapshot wrote a new version of the row (the engine's negative mark), so the lock fails with `40001` as well. An engine
     /// call behind the switch waits on the row and fails with `40001` once the switch committed, so it
     /// decides on the new flag. Policy rows are created only with their location (the insertion
     /// trigger), so no create can race an engine call.
@@ -402,11 +402,12 @@ impl StockLocationPolicy {
         sup.call(tx, this.as_records(), (vals,)).await
     }
 
-    /// Switching the guard on is refused while the location holds a negative quant (1).
-    /// The write locked the policy rows first (see `write`), so every negative balance an engine call
-    /// left at the location is either in this snapshot or failed that lock. A balance an engine call
-    /// raised back from below zero after the snapshot still counts: the switch is refused and passes
-    /// on the next attempt.
+    /// Switching the guard on is refused while the location holds a negative quant or a key with more
+    /// reserved than on hand (1, D6.7). The write locked the policy rows first (see
+    /// `write`), so every such balance an engine call left at the location is either in this
+    /// snapshot or failed that lock (the engine marks the policy row when it takes a key's free
+    /// quantity below zero). A balance an engine call raised back after the snapshot still counts:
+    /// the switch is refused and passes on the next attempt.
     #[constrains("forbid_negative")]
     async fn _check_forbid_negative_blocked(
         this: &RecordSet<StockLocationPolicy>,
@@ -425,19 +426,22 @@ impl StockLocationPolicy {
                 .get();
             let rows = tx
                 .query(
-                    "SELECT count(*) FROM stock_quant WHERE location_id = $1 AND quantity < 0",
+                    "SELECT count(*) FILTER (WHERE quantity < 0), \
+                            count(*) FILTER (WHERE quantity >= 0 AND reserved_quantity > quantity) \
+                       FROM stock_quant WHERE location_id = $1",
                     &[&location],
                 )
                 .await?;
-            let negative: i64 = rows
+            let row = rows
                 .first()
-                .ok_or_else(|| Error::internal("the negative quant count returned no row"))?
-                .try_get(0)
-                .map_err(|e| Error::internal(e.to_string()))?;
-            if negative > 0 {
+                .ok_or_else(|| Error::internal("the negative quant count returned no row"))?;
+            let negative: i64 = row.try_get(0).map_err(|e| Error::internal(e.to_string()))?;
+            let over: i64 = row.try_get(1).map_err(|e| Error::internal(e.to_string()))?;
+            if negative > 0 || over > 0 {
                 return Err(StockError::ForbidNegativeBlocked {
                     location_id: location,
                     negative,
+                    over,
                 }
                 .into());
             }

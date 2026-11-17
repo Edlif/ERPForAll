@@ -4,7 +4,7 @@
 //! division taxes, groups of taxes (replaced by their children at the group's place), price
 //! included taxes, taxes that affect the base of later ones, the evaluation order by sequence then
 //! id, and rounding per line on the document currency increment (HalfAwayFromZero, no
-//! binary floats). Python code taxes and the special modes are refused naming [`KERNEL_TASK`].
+//! binary floats). Python code taxes and the special modes are refused in plain words.
 //! The company has no "round globally" choice yet; that mode comes with [`ROUNDING_TASK`].
 //!
 //! How it evaluates, in our words: the taxes are flattened and sorted, then grouped into batches
@@ -17,10 +17,6 @@
 use erp_addon_base::money::CURRENCY_ROUNDING_MODE;
 use erp_sdk::money::Increment;
 use erp_sdk::prelude::*;
-
-/// The task that adds the remaining tax kernel features (Python code taxes, special modes,
-/// reverse charge).
-pub const KERNEL_TASK: &str = "a later release";
 
 /// The task that adds the company's "round globally" choice.
 pub const ROUNDING_TASK: &str = "a later release";
@@ -69,15 +65,14 @@ impl AmountType {
     ///
     /// # Errors
     ///
-    /// A user error naming [`KERNEL_TASK`] for any other key.
+    /// A user error for any other key.
     pub fn parse(key: &str) -> Result<Self> {
         match key {
             "percent" => Ok(Self::Percent),
             "fixed" => Ok(Self::Fixed),
             "division" => Ok(Self::Division),
             other => Err(Error::user(format!(
-                "Taxes of the kind {other:?} cannot be computed yet: they come with task \
-                 {KERNEL_TASK}. Use a percentage, fixed or percentage-of-price tax."
+                "Taxes of the kind {other:?} cannot be computed yet: they are not available yet. Use a percentage, fixed or percentage-of-price tax."
             ))),
         }
     }
@@ -665,9 +660,10 @@ mod tests {
     }
 
     #[test]
-    fn other_amount_types_name_the_kernel_task() {
+    fn other_amount_types_are_refused_in_plain_words() {
         let err = AmountType::parse("code").unwrap_err();
-        assert!(err.to_string().contains(KERNEL_TASK), "{err}");
+        assert!(!err.to_string().contains("M6."), "{err}");
+        assert!(err.to_string().contains("not available yet"), "{err}");
         assert_eq!(AmountType::parse("division").unwrap(), AmountType::Division);
     }
 }

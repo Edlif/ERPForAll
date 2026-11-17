@@ -564,6 +564,16 @@ fn quantity(vals: &RawVals) -> Result<Option<Decimal>> {
     }
 }
 
+/// Whether a create gives the line a description: an empty or null text (what the client sends for
+/// an emptied field) is not one.
+fn named(env: &Env, vals: &RawVals) -> bool {
+    match vals.get("name") {
+        Some(Cell::Str(name)) => !name.trim().is_empty(),
+        Some(_) => false,
+        None => env.context().contains("default_name"),
+    }
+}
+
 #[methods(SaleOrderLine, addon = "sale")]
 impl SaleOrderLine {
     /// The product's name, for lines that have a product.
@@ -753,9 +763,14 @@ impl SaleOrderLine {
         for (index, (((state, kind), policy), ((ordered, delivered), invoiced))) in rows.enumerate()
         {
             let open = state.as_deref() == Some("sale") && kind.is_none();
+            let left = |base: Decimal| {
+                base.checked_sub(invoiced).ok_or_else(|| {
+                    Error::validation("A sales order line quantity is out of range.")
+                })
+            };
             let quantity = match (open, policy.as_deref()) {
-                (true, Some("delivery")) => delivered - invoiced,
-                (true, _) => ordered - invoiced,
+                (true, Some("delivery")) => left(delivered)?,
+                (true, _) => left(ordered)?,
                 (false, _) => Decimal::ZERO,
             };
             out.set(index, SaleOrderLine::QTY_TO_INVOICE, quantity)?;
@@ -946,6 +961,11 @@ impl SaleOrderLine {
                 continue;
             }
             let Some(product) = given_id(&env, vals, "product_id")? else {
+                if !named(&env, vals) {
+                    return Err(Error::validation(
+                        "A line needs a product or a description.",
+                    ));
+                }
                 continue;
             };
             if !given(&env, vals, "product_uom_id")
@@ -953,7 +973,7 @@ impl SaleOrderLine {
             {
                 vals.insert("product_uom_id".into(), Cell::Id(unit.get()));
             }
-            if !given(&env, vals, "name")
+            if !named(&env, vals)
                 && let Some(name) = names.get(&product).cloned().flatten()
             {
                 vals.insert("name".into(), Cell::Str(name));

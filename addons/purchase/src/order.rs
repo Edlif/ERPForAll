@@ -7,14 +7,16 @@
 //! `_approval_allowed`, `_approve`, `_action_cancel`, `_mark_rfqs_as_sent` and `_protected_fields`:
 //! methods other addons override, not callable over RPC.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use erp_sdk::prelude::*;
 use erp_sdk::sequence::draw_by_code;
 use erp_sdk::{CompanyId, Operation, ValueMap};
 
 use crate::MANAGER_GROUP;
-use crate::line::{amount, in_company_currency, orders_without_product, resync_orders};
+use crate::line::{
+    amount, in_company_currency, orders_without_product, reprice_orders, resync_orders,
+};
 use crate::settings::OrderPolicy;
 
 /// The code of the order numbering sequence (default data `seq_purchase_order`).
@@ -23,7 +25,9 @@ pub const SEQUENCE_CODE: &str = "purchase.order";
 /// The number a caller gives to ask for the next one, as the reference's default does.
 pub const NEW_NAME: &str = "New";
 
-pub const CONFIRMED_FIELDS: [&str; 3] = ["partner_id", "currency_id", "company_id"];
+/// The deadline too: it
+/// sets the day the company-currency total converts at, which the approval question reads.
+pub const CONFIRMED_FIELDS: [&str; 4] = ["partner_id", "currency_id", "company_id", "date_order"];
 
 /// Fields only the operations write (5).
 const OPERATION_FIELDS: [&str; 3] = ["state", "locked", "date_approve"];
@@ -261,6 +265,10 @@ impl PurchaseOrder {
         sup: Super,
     ) -> Result<Records> {
         let env = this.env().clone();
+        // the create right first: the number is drawn from a shared counter below
+        this.as_records()
+            .check_access(tx, Operation::Create)
+            .await?;
         refuse_context_defaults(&env, &OPERATION_FIELDS, "purchase order")?;
         refuse_context_defaults(&env, &AMOUNT_FIELDS, "purchase order")?;
         // The lines of the `order_line` commands are created under this context too.
@@ -283,6 +291,10 @@ impl PurchaseOrder {
         vals: RawVals,
         sup: Super,
     ) -> Result<()> {
+        // the write right first: what follows reads numbers and states of the caller's ids
+        if !this.as_records().is_empty() {
+            this.as_records().check_access(tx, Operation::Write).await?;
+        }
         refuse_fields(&vals, &WRITE_REFUSED)?;
         refuse_fields(&vals, &AMOUNT_FIELDS)?;
         let resync = RESYNC_FIELDS.iter().any(|f| vals.contains(f));
@@ -296,11 +308,20 @@ impl PurchaseOrder {
             let protected: Vec<String> =
                 this.as_records().call(tx, "_protected_fields", ()).await?;
             refuse_frozen(tx, &this.ids(), &written, &protected).await?;
+            if let Some(company) = vals.get("company_id") {
+                refuse_company_change(tx, &this.ids(), id_cell(Some(company), "company_id")?)
+                    .await?;
+            }
         }
         sup.call(tx, this.as_records(), (vals,)).await?;
-        if resync && !this.as_records().is_empty() {
-            let env = this.env().clone();
-            resync_orders(tx, &env, &this.ids().into_iter().collect()).await?;
+        let env = this.env().clone();
+        let orders: BTreeSet<i64> = this.ids().into_iter().collect();
+        // a new vendor prices the lines again, as the reference's price computation reads it
+        if written.iter().any(|f| f.as_str() == "partner_id") && !orders.is_empty() {
+            reprice_orders(tx, &env, &orders).await?;
+        }
+        if resync && !orders.is_empty() {
+            resync_orders(tx, &env, &orders).await?;
         }
         Ok(())
     }
@@ -313,6 +334,9 @@ impl PurchaseOrder {
         sup: Super,
     ) -> Result<()> {
         if !this.as_records().is_empty() {
+            this.as_records()
+                .check_access(tx, Operation::Unlink)
+                .await?;
             let heads = lock_heads(tx, this.as_records()).await?;
             let open = labels(&heads, |h| h.state != "cancel");
             if !open.is_empty() {
@@ -709,7 +733,7 @@ async fn totals_in_company_currency(
     tx: &mut Transaction,
     env: &Env,
     heads: &[Head],
-) -> Result<Vec<f64>> {
+) -> Result<Vec<Decimal>> {
     let orders = env
         .records("purchase.order")?
         .browse(heads.iter().map(|h| h.id))?;
@@ -734,11 +758,7 @@ async fn totals_in_company_currency(
         let company_env = env.with_company(head.company)?;
         let converted =
             in_company_currency(tx, &company_env, total, currency, company, deadline).await?;
-        out.push(
-            f64::try_from(converted).map_err(|e| {
-                Error::invariant(format!("order {} total {converted}: {e}", head.id))
-            })?,
-        );
+        out.push(converted);
     }
     Ok(out)
 }
@@ -814,6 +834,42 @@ async fn refuse_frozen(
     )))
 }
 
+/// Refuses a move to another company while the order has lines: their taxes and prices belong to
+/// the company they were made for, and are not made again for the new one (V10). A
+/// confirmed order is refused by `refuse_frozen`.
+async fn refuse_company_change(
+    tx: &mut Transaction,
+    ids: &[i64],
+    new_company: Option<i64>,
+) -> Result<()> {
+    let mut ids = ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    let heads = read_heads(tx, &ids).await?;
+    for head in heads.iter().filter(|h| Some(h.company) != new_company) {
+        let rows = tx
+            .query(
+                "SELECT EXISTS (SELECT 1 FROM purchase_order_line WHERE order_id = $1)",
+                &[&head.id],
+            )
+            .await?;
+        let has_lines: bool = rows
+            .first()
+            .ok_or_else(|| Error::internal("The lines of a purchase order could not be counted."))?
+            .try_get(0)
+            .map_err(db)?;
+        if has_lines {
+            return Err(Error::validation(format!(
+                "The purchase order {} has lines, whose taxes and prices belong to its company, so \
+                 it cannot move to another company. Remove the lines first, or make the order in \
+                 the other company.",
+                head.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn id_cell(cell: Option<&Cell>, field: &str) -> Result<Option<i64>> {
     match cell {
         None | Some(Cell::Null | Cell::Bool(false)) => Ok(None),
@@ -825,10 +881,40 @@ fn id_cell(cell: Option<&Cell>, field: &str) -> Result<Option<i64>> {
     }
 }
 
+/// A `default_<field>` context key for the company, currency, buyer or deadline is the value of a
+/// new order that is given none: this create reads those values before the base would apply the
+/// key, so it takes the key itself and never ignores it.
+fn adopt_context_defaults(env: &Env, vals: &mut RawVals) -> Result<()> {
+    for field in ["company_id", "currency_id", "user_id", "date_order"] {
+        if vals.contains(field) {
+            continue;
+        }
+        let key = format!("default_{field}");
+        let cell = match env.context().get(&key) {
+            None | Some(Value::False | Value::Bool(false)) => continue,
+            Some(Value::Int(id)) if field != "date_order" => Cell::Id(id),
+            Some(Value::DateTime(at)) if field == "date_order" => Cell::DateTime(at),
+            Some(other) => {
+                return Err(Error::validation(format!(
+                    "{key} takes {}, not {other:?}.",
+                    if field == "date_order" {
+                        "a date and time"
+                    } else {
+                        "a record id"
+                    }
+                )));
+            }
+        };
+        vals.insert(field.into(), cell);
+    }
+    Ok(())
+}
+
 /// Company (the active one), currency (the company's), buyer (the user) and deadline (now) of a
 /// new order, each only when not given (
 /// `:174-177`, `:519-526`), then the number when none is given (`:455-467`,.7).
 async fn fill_defaults(tx: &mut Transaction, env: &Env, vals: &mut RawVals) -> Result<()> {
+    adopt_context_defaults(env, vals)?;
     let company = match id_cell(vals.get("company_id"), "company_id")? {
         Some(company) => company,
         None => {

@@ -12,6 +12,7 @@ pub static MANIFEST: SqlObjectManifest = SqlObjectManifest::new(
     "stock",
     &[
         "done_at_immutable",
+        "done_row_fixed",
         "correction_row_immutable",
         "location_policy_required",
         "fn_done_at",
@@ -64,6 +65,19 @@ object!(
     )
 );
 object!(
+    DONE_ROW_CONDITION,
+    SqlObjectDecl::condition(
+        "stock",
+        "done_row_fixed",
+        SqlConditionDecl::new(
+            "ERP05",
+            "stock_done_row_fixed",
+            "A done stock move or move line cannot change what it moved."
+        )
+        .kind(SqlConditionKind::Validation)
+    )
+);
+object!(
     CORRECTION_CONDITION,
     SqlObjectDecl::condition(
         "stock",
@@ -108,6 +122,30 @@ BEGIN
         RAISE EXCEPTION 'immutable completion time'
             USING ERRCODE = 'ERP01', CONSTRAINT = 'stock_done_at_immutable';
     END IF;
+    -- a done row keeps what it moved; a correction opens exactly what it needs
+    IF TG_TABLE_NAME = 'stock_move' THEN
+        IF EXISTS (
+            SELECT 1 FROM old_rows o JOIN new_rows n ON n.id = o.id
+            WHERE o.done_at IS NOT NULL AND o.state = 'done'
+              AND (n.state IS DISTINCT FROM o.state OR n.quantity IS DISTINCT FROM o.quantity
+                OR n.product_uom_qty IS DISTINCT FROM o.product_uom_qty)
+        ) THEN
+            RAISE EXCEPTION 'fixed done row'
+                USING ERRCODE = 'ERP05', CONSTRAINT = 'stock_done_row_fixed';
+        END IF;
+    ELSIF EXISTS (
+        SELECT 1 FROM old_rows o JOIN new_rows n ON n.id = o.id
+        WHERE o.done_at IS NOT NULL AND o.membership = 'done'
+          AND (n.membership IS DISTINCT FROM o.membership OR n.quantity IS DISTINCT FROM o.quantity
+            OR (n.move_id, n.product_id, n.location_id, n.location_dest_id, n.lot_id, n.lot_name,
+                n.package_id, n.result_package_id, n.owner_id, n.uom_id, n.picked)
+              IS DISTINCT FROM
+               (o.move_id, o.product_id, o.location_id, o.location_dest_id, o.lot_id, o.lot_name,
+                o.package_id, o.result_package_id, o.owner_id, o.uom_id, o.picked))
+    ) THEN
+        RAISE EXCEPTION 'fixed done row'
+            USING ERRCODE = 'ERP05', CONSTRAINT = 'stock_done_row_fixed';
+    END IF;
     RETURN NULL;
 END
 "#
@@ -116,6 +154,10 @@ END
             SqlDep::Object {
                 addon: "stock",
                 key: "done_at_immutable"
+            },
+            SqlDep::Object {
+                addon: "stock",
+                key: "done_row_fixed"
             },
             SqlDep::Model("stock.move"),
             SqlDep::Model("stock.move.line"),

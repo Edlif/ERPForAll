@@ -509,10 +509,10 @@ impl MoveRow {
 const MOVE_INSERT: &str = "INSERT INTO stock_move \
     (company_id, product_id, uom_id, location_id, location_dest_id, date, state, procure_method, \
      open_line_version, product_uom_qty, quantity, product_qty, quantity_product_uom, uom_factor, \
-     product_uom_factor, product_unit_digits) \
+     product_uom_factor, product_unit_digits, is_scrap, picked) \
     VALUES ($1, $2, $3, $4, $5, now(), 'draft', 'make_to_stock', $6, $7::text::numeric, \
      $8::text::numeric, $9::text::numeric, $10::text::numeric, $11::text::numeric, \
-     $12::text::numeric, $13)";
+     $12::text::numeric, $13, false, false)";
 
 async fn insert_move(f: &Fixture, tx: &mut Transaction, row: &MoveRow) -> Result<u64> {
     tx.savepoint(async |tx| {
@@ -822,8 +822,9 @@ async fn picking_columns_defaults_and_indexes() {
     ]) {
         assert!(spec.field(field).unwrap().readonly, "{field} is readonly");
     }
-    // a picking without a name takes its type's next reference, or the "/" placeholder
-    let unnamed = create_picking(
+    // a picking without a name takes its type's next reference; a type without numbering refuses
+    // it by name (the "/" placeholder would only meet the per-company reference key)
+    let error = create_picking(
         &mut tx,
         f.company,
         RawVals::new()
@@ -833,13 +834,9 @@ async fn picking_columns_defaults_and_indexes() {
             .set_cell("location_dest_id", Cell::Id(f.other_location)),
     )
     .await
-    .unwrap();
-    let name: String = tx
-        .query("SELECT name FROM stock_picking WHERE id = $1", &[&unnamed])
-        .await
-        .unwrap()[0]
-        .get(0);
-    assert!(!name.is_empty());
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError, "{error:?}");
+    assert!(error.message().contains("Sequence Prefix"), "{error:?}");
     let id = create_picking(
         &mut tx,
         f.company,
@@ -1121,11 +1118,11 @@ async fn move_columns_defaults_and_indexes() {
         ("partner_id", "bigint", true),
         ("picking_id", "bigint", true),
         ("state", "character varying", false),
-        ("picked", "boolean", true),
+        ("picked", "boolean", false),
         ("price_unit", "numeric", true),
         ("origin", "character varying", true),
         ("procure_method", "character varying", false),
-        ("is_scrap", "boolean", true),
+        ("is_scrap", "boolean", false),
         ("rule_id", "bigint", true),
         ("propagate_cancel", "boolean", true),
         ("picking_type_id", "bigint", true),
@@ -1909,7 +1906,9 @@ async fn engine_state(tx: &mut Transaction, moves: &[i64], state: &str) {
     tx.flush().await.unwrap();
     let mut pickings: Vec<i64> = tx
         .query(
-            "UPDATE stock_move SET state = $2 WHERE id = ANY($1) RETURNING picking_id",
+            "UPDATE stock_move SET state = $2::text, done_at = CASE WHEN $2::text = 'done' \
+             THEN COALESCE(done_at, now() AT TIME ZONE 'UTC') ELSE done_at END \
+             WHERE id = ANY($1) RETURNING picking_id",
             &[&moves, &state],
         )
         .await
@@ -2139,8 +2138,10 @@ async fn move_counters_follow_ordinary_move_mutations() {
     tx.execute(
         "INSERT INTO stock_move (company_id, product_id, uom_id, location_id, location_dest_id, \
             date, state, procure_method, open_line_version, product_uom_qty, quantity, product_qty, \
-            quantity_product_uom, uom_factor, product_uom_factor, product_unit_digits, picking_id) \
-         VALUES ($1, $2, $3, $4, $5, now(), 'waiting', 'make_to_stock', 0, 3, 0, 3, 0, 1, 1, 2, $6)",
+            quantity_product_uom, uom_factor, product_uom_factor, product_unit_digits, picking_id, \
+            is_scrap, picked) \
+         VALUES ($1, $2, $3, $4, $5, now(), 'waiting', 'make_to_stock', 0, 3, 0, 3, 0, 1, 1, 2, $6, \
+            false, false)",
         &[&f.company, &f.product, &f.unit, &f.location, &f.other_location, &a],
     )
     .await

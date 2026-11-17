@@ -44,6 +44,7 @@ use crate::move_lines::{
 };
 use crate::move_units::{product_units, snapshots};
 use crate::picking::StockPicking;
+use crate::warehouse_setup::without_defaults;
 
 /// The moves of `$1` that may reserve, in the order they reserve:
 /// unpicked, confirmed, waiting or partially available.
@@ -384,7 +385,8 @@ pub(crate) async fn assign_moves(
                 vals
             })
             .collect();
-        let model = env.records("stock.move.line")?;
+        // the caller's `default_*` context belongs to the caller's own records, not to these lines
+        let model = without_defaults(env).records("stock.move.line")?;
         tx.extension::<DeferSettle>().active = true;
         let result = model.create(tx, vals_list).await;
         tx.extension::<DeferSettle>().active = false;

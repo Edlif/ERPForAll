@@ -9,13 +9,36 @@ use erp_sdk::prelude::*;
 use super::{is_invoice, is_sale};
 use crate::moves::id_cell;
 
-fn text(cell: &Cell) -> Option<Arc<str>> {
+/// The cell of row `i` of a column read for a set of entries; a column shorter than the set is a
+/// broken read, never an empty value.
+fn nth<'a>(cells: &'a [Cell], i: usize, column: &str) -> Result<&'a Cell> {
+    cells
+        .get(i)
+        .ok_or_else(|| Error::invariant(format!("the {column} column is short")))
+}
+
+fn text(cell: &Cell, field: &str) -> Result<Option<Arc<str>>> {
     match cell {
-        Cell::Str(text) => Some(text.clone()),
-        _ => None,
+        Cell::Null | Cell::Bool(false) => Ok(None),
+        Cell::Str(text) => Ok(Some(text.clone())),
+        other => Err(Error::invariant(format!(
+            "{field} holds {other:?} instead of a text"
+        ))),
     }
 }
 
+/// True when the cell holds a date, false when it is empty.
+fn dated(cell: &Cell, field: &str) -> Result<bool> {
+    match cell {
+        Cell::Null | Cell::Bool(false) => Ok(false),
+        Cell::Date(_) => Ok(true),
+        other => Err(Error::invariant(format!(
+            "{field} holds {other:?} instead of a date"
+        ))),
+    }
+}
+
+/// A stored total; an invoice whose totals were never computed has none, which counts as zero.
 fn decimal(cell: &Cell) -> Result<Decimal> {
     match cell {
         Cell::Null | Cell::Bool(false) => Ok(Decimal::ZERO),
@@ -44,10 +67,15 @@ pub async fn check_postable(tx: &mut Transaction, env: &Env, moves: &[i64]) -> R
     let totals = records.cells(tx, "amount_total").await?;
     let dates = records.cells(tx, "invoice_date").await?;
     let ids = records.ids();
+    // the move type of each entry that is an invoice, by position
+    let mut kinds: Vec<Option<Arc<str>>> = Vec::with_capacity(ids.len());
+    for i in 0..ids.len() {
+        kinds.push(text(nth(&types, i, "move_type")?, "move_type")?.filter(|t| is_invoice(t)));
+    }
     let invoices: Vec<i64> = ids
         .iter()
-        .zip(&types)
-        .filter(|(_, t)| text(t).is_some_and(|t| is_invoice(&t)))
+        .zip(&kinds)
+        .filter(|(_, kind)| kind.is_some())
         .map(|(id, _)| *id)
         .collect();
     if invoices.is_empty() {
@@ -74,12 +102,12 @@ pub async fn check_postable(tx: &mut Transaction, env: &Env, moves: &[i64]) -> R
     };
     let mut problems = Vec::new();
     for (i, id) in ids.iter().enumerate() {
-        let Some(kind) = types.get(i).and_then(text).filter(|t| is_invoice(t)) else {
+        let Some(kind) = kinds.get(i).and_then(Option::as_ref) else {
             continue;
         };
-        let sale = is_sale(&kind);
+        let sale = is_sale(kind);
         let what = if sale { "Invoice" } else { "Bill" };
-        if id_cell(partners.get(i), "partner_id")?.is_none() {
+        if id_cell(Some(nth(&partners, i, "partner_id")?), "partner_id")?.is_none() {
             let who = if sale { "customer" } else { "vendor" };
             problems.push(format!("{what} {id}: choose the {who} before confirming."));
         }
@@ -88,12 +116,12 @@ pub async fn check_postable(tx: &mut Transaction, env: &Env, moves: &[i64]) -> R
                 "{what} {id}: add at least one product line before confirming."
             ));
         }
-        if totals.get(i).map(decimal).transpose()?.unwrap_or_default() < Decimal::ZERO {
+        if decimal(nth(&totals, i, "amount_total")?)? < Decimal::ZERO {
             problems.push(format!(
                 "{what} {id}: the total is negative; record a credit note instead."
             ));
         }
-        if !sale && !matches!(dates.get(i), Some(Cell::Date(_))) {
+        if !sale && !dated(nth(&dates, i, "invoice_date")?, "invoice_date")? {
             problems.push(format!(
                 "{what} {id}: enter the bill date before confirming."
             ));
@@ -121,15 +149,13 @@ pub async fn before_post(tx: &mut Transaction, env: &Env, moves: &[i64]) -> Resu
     let records = env.records("account.move")?.browse(moves.iter().copied())?;
     let types = records.cells(tx, "move_type").await?;
     let dates = records.cells(tx, "invoice_date").await?;
-    let undated: Vec<i64> = records
-        .ids()
-        .into_iter()
-        .zip(types.iter().zip(&dates))
-        .filter(|(_, (kind, date))| {
-            text(kind).is_some_and(|k| is_sale(&k)) && !matches!(date, Cell::Date(_))
-        })
-        .map(|(id, _)| id)
-        .collect();
+    let mut undated = Vec::new();
+    for (i, id) in records.ids().into_iter().enumerate() {
+        let sale = text(nth(&types, i, "move_type")?, "move_type")?.is_some_and(|k| is_sale(&k));
+        if sale && !dated(nth(&dates, i, "invoice_date")?, "invoice_date")? {
+            undated.push(id);
+        }
+    }
     if undated.is_empty() {
         return Ok(());
     }

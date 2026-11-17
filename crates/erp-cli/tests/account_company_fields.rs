@@ -432,7 +432,7 @@ async fn validation_body() {
         )
         .await,
         ErrorKind::UserError,
-        "Chart activation is unavailable until a later release.",
+        "Chart activation is not available yet.",
     );
     assert_eq!(c.cell(&mut tx, "chart_template").await.unwrap(), Cell::Null);
     tx.rollback().await.unwrap();

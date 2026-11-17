@@ -19,7 +19,7 @@ access_stock_storage_category_capacity_employee,Inventory: stock.storage.categor
 access_stock_storage_category_capacity_manager,Inventory: stock.storage.category.capacity (manager),stock.model_stock_storage_category_capacity,stock.group_stock_manager,crud,
 access_stock_picking_user,Inventory: stock.picking (user),stock.model_stock_picking,stock.group_stock_user,crud,
 access_stock_lot_user,Inventory: stock.lot (user),stock.model_stock_lot,stock.group_stock_user,crud,
-access_stock_move_user,Inventory: stock.move (user),stock.model_stock_move,stock.group_stock_user,cru,
+access_stock_move_user,Inventory: stock.move (user),stock.model_stock_move,stock.group_stock_user,crud,
 access_stock_move_manager,Inventory: stock.move (manager),stock.model_stock_move,stock.group_stock_manager,crud,
 access_stock_move_line_user,Inventory: stock.move.line (user),stock.model_stock_move_line,stock.group_stock_user,crud,
 access_stock_move_line_manager,Inventory: stock.move.line (manager),stock.model_stock_move_line,stock.group_stock_manager,crud,

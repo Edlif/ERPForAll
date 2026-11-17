@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use erp_addon_account::journal::settings::{
     ACCOUNT_TYPES, CODE_MAX_LENGTH, JOURNAL_TYPES, account_types_key, prefix_key,
 };
-use erp_addon_account::journal::{AccountJournal, DEFAULT_ACCOUNT_TASK, JournalSequence};
+use erp_addon_account::journal::{AccountJournal, JournalSequence};
 use erp_addon_base::ir_config_setting::{read_values, write_values};
 use erp_modules::system::{InitOptions, ModuleSystem};
 use erp_modules::{AddonIndex, ModuleName};
@@ -588,7 +588,7 @@ async fn journal_and_default_account_agree_on_the_foreign_currency_body() {
 
     // a bank journal needs its default account until the account is created for it
     let no_account = create(&journals, &mut tx, vec![journal_vals("Bank", "bank")]).await;
-    assert_refused(no_account, DEFAULT_ACCOUNT_TASK);
+    assert_refused(no_account, "needs a default account");
 
     // ... also when a journal becomes a bank journal, or a bank journal loses its account
     let general = create(&journals, &mut tx, vec![journal_vals("Misc", "general")])
@@ -600,7 +600,7 @@ async fn journal_and_default_account_agree_on_the_foreign_currency_body() {
         RawVals::new().set_cell("type", text("bank")),
     )
     .await;
-    assert_refused(to_bank, DEFAULT_ACCOUNT_TASK);
+    assert_refused(to_bank, "needs a default account");
 
     let cash = account(&mut tx, main, "101000", "asset_cash", None).await;
     let bank = create(
@@ -623,7 +623,7 @@ async fn journal_and_default_account_agree_on_the_foreign_currency_body() {
         RawVals::new().set_cell("default_account_id", Cell::Null),
     )
     .await;
-    assert_refused(cleared, DEFAULT_ACCOUNT_TASK);
+    assert_refused(cleared, "needs a default account");
     let accounts = records(&tx, main, "account.account");
     let cash_account = accounts.browse(vec![cash]).unwrap();
     assert_eq!(

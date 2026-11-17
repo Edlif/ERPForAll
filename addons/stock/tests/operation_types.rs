@@ -82,7 +82,9 @@ async fn engine_state(tx: &mut Transaction, moves: &[i64], state: &str) {
     tx.flush().await.unwrap();
     let mut pickings: Vec<i64> = tx
         .query(
-            "UPDATE stock_move SET state = $2 WHERE id = ANY($1) RETURNING picking_id",
+            "UPDATE stock_move SET state = $2::text, done_at = CASE WHEN $2::text = 'done' \
+             THEN COALESCE(done_at, now() AT TIME ZONE 'UTC') ELSE done_at END \
+             WHERE id = ANY($1) RETURNING picking_id",
             &[&moves, &state],
         )
         .await
@@ -1368,7 +1370,8 @@ async fn default_prerequisites_fail_by_name_without_orphan_sequences() {
     assert_eq!(error.kind(), ErrorKind::UserError);
     assert_eq!(
         error.message(),
-        "No warehouse is available for the operation type company; create a warehouse for it first."
+        "No warehouse is available for the operation type company; create a warehouse for it \
+         first, or upgrade the Inventory app, which gives every company without a warehouse its own."
     );
     let warehouse = wh(&mut tx, &f).await;
     let error = model

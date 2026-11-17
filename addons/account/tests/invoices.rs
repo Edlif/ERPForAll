@@ -9,6 +9,7 @@
     reason = "tests"
 )]
 use erp_addon_account::invoice::post::{before_post, check_postable};
+use erp_addon_account::invoice::{sync_lines, sync_lines_redated};
 use erp_sdk::prelude::*;
 use erp_sdk::{Command, ErrorKind};
 use erp_testkit::Harness;
@@ -51,6 +52,20 @@ async fn company(tx: &mut Transaction, name: &str) -> i64 {
     let vals = RawVals::new()
         .set_cell("name", text(name))
         .set_cell("currency_id", Cell::Id(currency));
+    tx.env()
+        .records("res.company")
+        .unwrap()
+        .create(tx, vec![vals])
+        .await
+        .unwrap()
+        .ids()[0]
+}
+
+/// A branch of `parent`: it takes its root company's currency.
+async fn branch(tx: &mut Transaction, name: &str, parent: i64) -> i64 {
+    let vals = RawVals::new()
+        .set_cell("name", text(name))
+        .set_cell("parent_id", Cell::Id(parent));
     tx.env()
         .records("res.company")
         .unwrap()
@@ -112,15 +127,16 @@ async fn partner(tx: &mut Transaction, name: &str) -> i64 {
         .ids()[0]
 }
 
-/// A percent tax of `company` with one base and one tax repartition line per document kind,
-/// written directly (the tax rules read settings the harness does not install).
-async fn tax(
+/// A tax of `company` without repartition lines, written directly (the tax rules read settings
+/// the harness does not install). `included` makes its prices tax-included.
+async fn tax_row(
     tx: &mut Transaction,
     company: i64,
     name: &str,
-    rate: &str,
     use_: &str,
-    account: i64,
+    amount_type: &str,
+    amount: &str,
+    included: bool,
 ) -> i64 {
     let country: i64 = match tx
         .query("SELECT id::int8 FROM res_country ORDER BY id LIMIT 1", &[])
@@ -154,27 +170,72 @@ async fn tax(
         .await
         .unwrap()[0]
         .get(0);
-    let id: i64 = tx
-        .query(
-            "INSERT INTO account_tax (name, type_tax_use, amount_type, active, company_id, \
-             root_company_id, sequence, amount, include_base_amount, is_base_affected, tax_group_id, \
-             country_id, repartition_serial, analytic) \
-             VALUES (jsonb_build_object('en_US', $2::text), $3::text, 'percent', true, $1, $1, 1, \
-             $4::text::numeric, false, true, $5, $6, 0, false) RETURNING id::int8",
-            &[&company, &name, &use_, &rate, &group, &country],
-        )
-        .await
-        .unwrap()[0]
-        .get(0);
+    let price_include: Option<&str> = included.then_some("tax_included");
+    tx.query(
+        "INSERT INTO account_tax (name, type_tax_use, amount_type, active, company_id, \
+         root_company_id, sequence, amount, include_base_amount, is_base_affected, tax_group_id, \
+         country_id, repartition_serial, analytic, price_include_override) \
+         VALUES (jsonb_build_object('en_US', $2::text), $3::text, $7::text, true, $1, $1, 1, \
+         $4::text::numeric, false, true, $5, $6, 0, false, $8::text) RETURNING id::int8",
+        &[
+            &company,
+            &name,
+            &use_,
+            &amount,
+            &group,
+            &country,
+            &amount_type,
+            &price_include,
+        ],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+/// The repartition lines of `tax` for one document kind (`invoice` or `refund`): the base line
+/// and one `tax` line per (factor in percent, account) of `parts`, in that order.
+async fn repartition(
+    tx: &mut Transaction,
+    tax: i64,
+    company: i64,
+    document: &str,
+    parts: &[(&str, i64)],
+) {
     tx.query(
         "INSERT INTO account_tax_repartition_line (factor_percent, repartition_type, document_type, \
          account_id, tax_id, company_id, sequence, use_in_tax_closing) VALUES \
-         (100, 'base', 'invoice', NULL, $1, $2, 1, false), (100, 'tax', 'invoice', $3, $1, $2, 2, true), \
-         (100, 'base', 'refund', NULL, $1, $2, 1, false), (100, 'tax', 'refund', $3, $1, $2, 2, true)",
-        &[&id, &company, &account],
+         (100, 'base', $3::text, NULL, $1, $2, 1, false)",
+        &[&tax, &company, &document],
     )
     .await
     .unwrap();
+    for (i, (factor, account)) in parts.iter().enumerate() {
+        let sequence = i32::try_from(i).unwrap() + 2;
+        tx.query(
+            "INSERT INTO account_tax_repartition_line (factor_percent, repartition_type, \
+             document_type, account_id, tax_id, company_id, sequence, use_in_tax_closing) VALUES \
+             ($4::text::numeric, 'tax', $3::text, $5, $1, $2, $6, true)",
+            &[&tax, &company, &document, factor, account, &sequence],
+        )
+        .await
+        .unwrap();
+    }
+}
+
+/// A percent tax of `company` with one base and one tax repartition line per document kind,
+/// both on `account`.
+async fn tax(
+    tx: &mut Transaction,
+    company: i64,
+    name: &str,
+    rate: &str,
+    use_: &str,
+    account: i64,
+) -> i64 {
+    let id = tax_row(tx, company, name, use_, "percent", rate, false).await;
+    repartition(tx, id, company, "invoice", &[("100", account)]).await;
+    repartition(tx, id, company, "refund", &[("100", account)]).await;
     id
 }
 
@@ -844,6 +905,452 @@ async fn a_currency_change_moves_every_amount_line_to_the_new_currency() {
         ]
     );
     assert_eq!(decimal(&entry, &mut tx, "amount_total").await, d("115"));
+    tx.rollback().await.unwrap();
+    h.cleanup().await.unwrap();
+}
+
+/// (display type, amount in currency, balance) of every journal item of `entry`, by display type.
+async fn amounts(entry: &Records, tx: &mut Transaction) -> Vec<(String, Decimal, Decimal)> {
+    tx.flush().await.unwrap();
+    let id = entry.ids()[0];
+    tx.query(
+        "SELECT display_type, amount_currency::text, balance::text FROM account_move_line \
+         WHERE move_id = $1 ORDER BY display_type",
+        &[&id],
+    )
+    .await
+    .unwrap()
+    .iter()
+    .map(|r| {
+        (
+            r.get(0),
+            d(&r.get::<_, String>(1)),
+            d(&r.get::<_, String>(2)),
+        )
+    })
+    .collect()
+}
+
+/// A second currency with one rate of `company` per (date, units per unit of the company
+/// currency) of `rates`; the rate of a date is the latest one dated before it.
+async fn foreign_currency(tx: &mut Transaction, company: i64, rates: &[(&str, &str)]) -> i64 {
+    tx.env()
+        .records("res.currency.rate.type")
+        .unwrap()
+        .create(
+            tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("Spot"))
+                    .set_cell("code", text("spot"))
+                    .set_cell("date_rule", text("strictly_before"))
+                    .set_cell("later_fallback", Cell::Bool(true)),
+            ],
+        )
+        .await
+        .unwrap();
+    let foreign = tx
+        .env()
+        .records("res.currency")
+        .unwrap()
+        .create(
+            tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("XEU"))
+                    .set_cell("symbol", text("XEU"))
+                    .set_cell("rounding", Cell::Decimal(d("0.01")))
+                    .set_cell("active", Cell::Bool(true)),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    let vals: Vec<RawVals> = rates
+        .iter()
+        .map(|(date, rate)| {
+            RawVals::new()
+                .set_cell("currency_id", Cell::Id(foreign))
+                .set_cell("company_id", Cell::Id(company))
+                .set_cell("name", Cell::Date(Date::parse_odoo(date).unwrap()))
+                .set_cell("rate", Cell::Decimal(d(rate)))
+        })
+        .collect();
+    tx.env()
+        .with_company(company)
+        .unwrap()
+        .records("res.currency.rate")
+        .unwrap()
+        .create(tx, vals)
+        .await
+        .unwrap();
+    foreign
+}
+
+/// A customer invoice books its tax on the account of the tax's invoice repartition line, a
+/// customer credit note on the account of its refund repartition line.
+#[tokio::test]
+async fn a_credit_note_books_its_tax_on_the_refund_repartition_account() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let b = books(&mut tx, "Refunds").await;
+    let refund_account = account(&mut tx, b.company, "252000", "liability_current").await;
+    let vat = tax_row(
+        &mut tx, b.company, "VAT 10%", "sale", "percent", "10", false,
+    )
+    .await;
+    repartition(
+        &mut tx,
+        vat,
+        b.company,
+        "invoice",
+        &[("100", b.sale_tax_account)],
+    )
+    .await;
+    repartition(
+        &mut tx,
+        vat,
+        b.company,
+        "refund",
+        &[("100", refund_account)],
+    )
+    .await;
+    for (move_type, tax_account, tax_balance) in [
+        ("out_invoice", b.sale_tax_account, "-10"),
+        ("out_refund", refund_account, "10"),
+    ] {
+        let entry = moves(&tx, b.company)
+            .create(
+                &mut tx,
+                vec![invoice(
+                    move_type,
+                    b.customer,
+                    vec![product_line("1", "100", "0", &[vat])],
+                )],
+            )
+            .await
+            .unwrap();
+        let tax_lines: Vec<(i64, Decimal)> = items(&entry, &mut tx)
+            .await
+            .into_iter()
+            .filter(|r| r.0 == "tax")
+            .map(|r| (r.1, r.2))
+            .collect();
+        assert_eq!(tax_lines, [(tax_account, d(tax_balance))], "{move_type}");
+    }
+    tx.rollback().await.unwrap();
+    h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn included_fixed_and_split_taxes_make_their_tax_lines_and_totals() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let b = books(&mut tx, "Kinds").await;
+    let second = account(&mut tx, b.company, "252000", "liability_current").await;
+    let included = tax_row(
+        &mut tx,
+        b.company,
+        "VAT 15% included",
+        "sale",
+        "percent",
+        "15",
+        true,
+    )
+    .await;
+    let fixed = tax_row(&mut tx, b.company, "Levy 5", "sale", "fixed", "5", false).await;
+    let split = tax_row(
+        &mut tx,
+        b.company,
+        "VAT 15% split",
+        "sale",
+        "percent",
+        "15",
+        false,
+    )
+    .await;
+    for id in [included, fixed] {
+        for document in ["invoice", "refund"] {
+            repartition(
+                &mut tx,
+                id,
+                b.company,
+                document,
+                &[("100", b.sale_tax_account)],
+            )
+            .await;
+        }
+    }
+    for document in ["invoice", "refund"] {
+        repartition(
+            &mut tx,
+            split,
+            b.company,
+            document,
+            &[("50", b.sale_tax_account), ("50", second)],
+        )
+        .await;
+    }
+    // (line, tax lines as (account, balance), product balance, untaxed, tax, total)
+    let cases = [
+        (
+            // 115 with 15 % inside: 100 + 15
+            product_line("1", "115", "0", &[included]),
+            vec![(b.sale_tax_account, d("-15"))],
+            "-100",
+            "100",
+            "15",
+            "115",
+        ),
+        (
+            // 3 units at 50 with 5 per unit: 150 + 15
+            product_line("3", "50", "0", &[fixed]),
+            vec![(b.sale_tax_account, d("-15"))],
+            "-150",
+            "150",
+            "15",
+            "165",
+        ),
+        (
+            // 15 % of 100 in two halves on two accounts
+            product_line("1", "100", "0", &[split]),
+            vec![(b.sale_tax_account, d("-7.5")), (second, d("-7.5"))],
+            "-100",
+            "100",
+            "15",
+            "115",
+        ),
+    ];
+    for (line, mut tax_lines, product, untaxed, tax_amount, total) in cases {
+        let entry = moves(&tx, b.company)
+            .create(
+                &mut tx,
+                vec![invoice("out_invoice", b.customer, vec![line])],
+            )
+            .await
+            .unwrap();
+        let found = items(&entry, &mut tx).await;
+        let mut found_tax: Vec<(i64, Decimal)> = found
+            .iter()
+            .filter(|r| r.0 == "tax")
+            .map(|r| (r.1, r.2))
+            .collect();
+        found_tax.sort();
+        tax_lines.sort();
+        assert_eq!(found_tax, tax_lines, "total {total}");
+        let product_item = found.iter().find(|r| r.0 == "product").unwrap();
+        assert_eq!(
+            (product_item.1, product_item.2),
+            (b.income, d(product)),
+            "total {total}"
+        );
+        let term = found.iter().find(|r| r.0 == "payment_term").unwrap();
+        assert_eq!((term.1, term.2), (b.receivable, d(total)));
+        assert_eq!(decimal(&entry, &mut tx, "amount_untaxed").await, d(untaxed));
+        assert_eq!(decimal(&entry, &mut tx, "amount_tax").await, d(tax_amount));
+        assert_eq!(decimal(&entry, &mut tx, "amount_total").await, d(total));
+    }
+    tx.rollback().await.unwrap();
+    h.cleanup().await.unwrap();
+}
+
+/// The balances of a foreign-currency draft invoice are converted at its accounting date; after
+/// that date changes, the redated sync converts the product, tax and receivable balances again at
+/// the new date's rate and leaves the amounts in currency as they are.
+#[tokio::test]
+async fn a_new_accounting_date_converts_foreign_balances_again() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let b = books(&mut tx, "Redated").await;
+    // two units of the foreign currency per company unit from January, four from June
+    let foreign = foreign_currency(
+        &mut tx,
+        b.company,
+        &[("2026-01-01", "2"), ("2026-06-01", "4")],
+    )
+    .await;
+    let mut vals = invoice(
+        "out_invoice",
+        b.customer,
+        vec![product_line("1", "100", "0", &[b.sale_tax])],
+    );
+    vals.insert(
+        "invoice_date".into(),
+        Cell::Date(Date::parse_odoo("2026-03-10").unwrap()),
+    );
+    let entry = moves(&tx, b.company)
+        .create(&mut tx, vec![vals])
+        .await
+        .unwrap();
+    entry
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("currency_id", Cell::Id(foreign)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        amounts(&entry, &mut tx).await,
+        [
+            ("payment_term".to_owned(), d("115"), d("57.5")),
+            ("product".to_owned(), d("-100"), d("-50")),
+            ("tax".to_owned(), d("-15"), d("-7.5")),
+        ],
+        "at the March date the January rate applies"
+    );
+    let new_date = Date::parse_odoo("2026-07-10").unwrap();
+    entry
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("date", Cell::Date(new_date)),
+        )
+        .await
+        .unwrap();
+    let env = tx.env().with_company(b.company).unwrap();
+    sync_lines_redated(&mut tx, &env, &entry.ids())
+        .await
+        .unwrap();
+    assert_eq!(
+        entry.cell(&mut tx, "date").await.unwrap(),
+        Cell::Date(new_date)
+    );
+    assert_eq!(
+        amounts(&entry, &mut tx).await,
+        [
+            ("payment_term".to_owned(), d("115"), d("28.75")),
+            ("product".to_owned(), d("-100"), d("-25")),
+            ("tax".to_owned(), d("-15"), d("-3.75")),
+        ],
+        "at the July date the June rate applies"
+    );
+    assert_eq!(decimal(&entry, &mut tx, "amount_total").await, d("115"));
+
+    // an invoice in the company currency is not touched by the redated sync
+    let plain = moves(&tx, b.company)
+        .create(
+            &mut tx,
+            vec![invoice(
+                "out_invoice",
+                b.customer,
+                vec![product_line("1", "100", "0", &[b.sale_tax])],
+            )],
+        )
+        .await
+        .unwrap();
+    let before = amounts(&plain, &mut tx).await;
+    sync_lines_redated(&mut tx, &env, &plain.ids())
+        .await
+        .unwrap();
+    assert_eq!(amounts(&plain, &mut tx).await, before);
+    tx.rollback().await.unwrap();
+    h.cleanup().await.unwrap();
+}
+
+/// Whether the stored `write_date` of `entry` is still the marker date set by [`mark_header`].
+async fn header_untouched(entry: &Records, tx: &mut Transaction) -> bool {
+    tx.flush().await.unwrap();
+    let id = entry.ids()[0];
+    tx.query(
+        "SELECT write_date = '2000-01-01'::timestamp FROM account_move WHERE id = $1",
+        &[&id],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+/// Stores a marker `write_date` on `entry`; every write of the header replaces it.
+async fn mark_header(entry: &Records, tx: &mut Transaction) {
+    tx.flush().await.unwrap();
+    let id = entry.ids()[0];
+    tx.query(
+        "UPDATE account_move SET write_date = '2000-01-01'::timestamp WHERE id = $1",
+        &[&id],
+    )
+    .await
+    .unwrap();
+}
+
+/// A sync that changes a total writes the header; a sync of an unchanged invoice does not.
+#[tokio::test]
+async fn syncing_an_unchanged_invoice_does_not_write_its_header() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let b = books(&mut tx, "Unchanged").await;
+    let entry = moves(&tx, b.company)
+        .create(
+            &mut tx,
+            vec![invoice(
+                "out_invoice",
+                b.customer,
+                vec![product_line("1", "100", "0", &[b.sale_tax])],
+            )],
+        )
+        .await
+        .unwrap();
+    let env = tx.env().with_company(b.company).unwrap();
+    // the control: a changed price makes the sync write the header, which replaces the marker
+    entry
+        .related(&mut tx, "invoice_line_ids")
+        .await
+        .unwrap()
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("price_unit", Cell::Decimal(d("200"))),
+        )
+        .await
+        .unwrap();
+    mark_header(&entry, &mut tx).await;
+    sync_lines(&mut tx, &env, &entry.ids()).await.unwrap();
+    assert_eq!(decimal(&entry, &mut tx, "amount_total").await, d("230"));
+    assert!(
+        !header_untouched(&entry, &mut tx).await,
+        "a changed total writes the header"
+    );
+    // nothing changed since: the header is left alone
+    mark_header(&entry, &mut tx).await;
+    sync_lines(&mut tx, &env, &entry.ids()).await.unwrap();
+    assert!(
+        header_untouched(&entry, &mut tx).await,
+        "an unchanged invoice keeps its header"
+    );
+    assert_eq!(decimal(&entry, &mut tx, "amount_total").await, d("230"));
+    tx.rollback().await.unwrap();
+    h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_branch_uses_the_receivable_account_of_its_parent_company() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let parent = company(&mut tx, "Group").await;
+    let receivable = account(&mut tx, parent, "121000", "asset_receivable").await;
+    let child = branch(&mut tx, "Group branch", parent).await;
+    // an account's code belongs to the root company, so the branch books on the group's accounts
+    let income = account(&mut tx, parent, "400100", "income").await;
+    journal(&mut tx, child, "INV", "sale", Some(income)).await;
+    let customer = partner(&mut tx, "Branch customer").await;
+    let entry = moves(&tx, child)
+        .create(
+            &mut tx,
+            vec![invoice(
+                "out_invoice",
+                customer,
+                vec![product_line("1", "10", "0", &[])],
+            )],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        entry.cell(&mut tx, "company_id").await.unwrap(),
+        Cell::Id(child)
+    );
+    let term = items(&entry, &mut tx)
+        .await
+        .into_iter()
+        .find(|r| r.0 == "payment_term")
+        .unwrap();
+    assert_eq!((term.1, term.2), (receivable, d("10")));
     tx.rollback().await.unwrap();
     h.cleanup().await.unwrap();
 }

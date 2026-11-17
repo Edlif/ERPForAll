@@ -67,6 +67,8 @@ pub const ACCOUNT: &[(&str, &[&str])] = &[
          AND d.name LIKE 'view\\_invoice\\_%' ORDER BY d.name",
         &[
             "view_invoice_form=account.move/form",
+            "view_invoice_line_form=account.move.line/form",
+            "view_invoice_line_list=account.move.line/list",
             "view_invoice_list=account.move/list",
             "view_invoice_search=account.move/search",
         ],

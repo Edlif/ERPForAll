@@ -173,6 +173,9 @@ async fn restore_legacy_shape(client: &Client, operations: &[i64]) -> Vec<i64> {
         ALTER TABLE stock_picking_type DROP CONSTRAINT stock_picking_type_reservation_days_method;
         ALTER TABLE stock_picking_type ALTER COLUMN reservation_days_before DROP NOT NULL;
         ALTER TABLE stock_picking_type ALTER COLUMN reservation_days_before_priority DROP NOT NULL;
+        ALTER TABLE stock_move ALTER COLUMN is_scrap DROP NOT NULL;
+        ALTER TABLE stock_move ALTER COLUMN picked DROP NOT NULL;
+        ALTER TABLE stock_move DROP CONSTRAINT stock_move_done_has_time;
         UPDATE ir_module_module SET latest_version='1.0.0' WHERE name='stock';").await.unwrap();
     client.execute("UPDATE stock_picking_type SET reservation_days_before=NULL,reservation_days_before_priority=NULL WHERE id=$1", &[&operations[0]]).await.unwrap();
     client.execute("UPDATE stock_picking_type SET reservation_method='by_date',reservation_days_before=365,reservation_days_before_priority=7 WHERE id=$1", &[&operations[1]]).await.unwrap();
@@ -262,14 +265,17 @@ async fn counted_pickings(orm: &Orm, operation: i64) -> ([i64; 2], [i64; 5]) {
     (pickings, [company, product, unit, internal, vendors])
 }
 
-/// Moves written while no counter trigger exists, as before stock 1.6: the vectors stay zero.
+/// Moves written while no counter trigger exists, as before stock 1.6: the vectors stay zero. As
+/// before 1.9, none stores its picked flag and one no scrap flag (NULL), and a done move outside
+/// any transfer has no completion time.
 async fn legacy_moves(client: &Client, pickings: [i64; 2], refs: [i64; 5]) {
     let [company, product, unit, internal, vendors] = refs;
     for (picking, source, state, qty, scrap) in [
-        (pickings[0], internal, "assigned", 5, false),
-        (pickings[0], internal, "confirmed", 5, false),
-        (pickings[1], vendors, "confirmed", 5, false),
-        (pickings[1], vendors, "cancel", 1, true),
+        (Some(pickings[0]), internal, "assigned", 5, Some(false)),
+        (Some(pickings[0]), internal, "confirmed", 5, None),
+        (Some(pickings[1]), vendors, "confirmed", 5, Some(false)),
+        (Some(pickings[1]), vendors, "cancel", 1, Some(true)),
+        (None, internal, "done", 2, Some(false)),
     ] {
         client.execute(
             "INSERT INTO stock_move (company_id, product_id, uom_id, location_id, location_dest_id, date, state,
@@ -532,6 +538,42 @@ fn stock_upgrade_from_main_1_0_preserves_rows_and_repeats() {
             assert_eq!((row.get::<_, i32>(1), row.get::<_, i32>(2)), expected);
         }
         assert_security(&client, &expected_security).await;
+        // stock 1.9: both move flags are two-valued and required, a done move has its time
+        for sql in [
+            "SELECT count(*) FROM stock_move WHERE is_scrap IS NULL OR picked IS NULL",
+            "SELECT count(*) FROM stock_move WHERE state = 'done' AND done_at IS NULL",
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() \
+             AND table_name = 'stock_move' AND column_name IN ('is_scrap', 'picked') \
+             AND is_nullable = 'YES'",
+        ] {
+            assert_eq!(
+                client.query_one(sql, &[]).await.unwrap().get::<_, i64>(0),
+                0,
+                "{sql}"
+            );
+        }
+        assert_eq!(
+            client
+                .query_one(
+                    "SELECT count(*) FROM stock_move WHERE NOT is_scrap AND NOT picked",
+                    &[]
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            4
+        );
+        assert_eq!(
+            client
+                .query_one(
+                    "SELECT count(*) FROM pg_constraint WHERE conname = 'stock_move_done_has_time'",
+                    &[]
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
         for (picking, state) in pickings.into_iter().zip(["assigned", "assigned"]) {
             let row = client.query_one(VECTOR_SQL, &[&picking]).await.unwrap();
             assert_eq!(
@@ -711,6 +753,36 @@ fn stock_upgrade_from_1_7_gives_each_company_without_one_its_warehouse() {
         tx.rollback().await.unwrap();
         drop(tx);
         drop(repeated);
+        // a company left without one at the current version (committed by an older node during an
+        // upgrade) gets it at the next upgrade of Inventory, whatever its version
+        let current: String = client
+            .query_one(
+                "SELECT latest_version FROM ir_module_module WHERE name = 'stock'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        drop_warehouses(&client).await;
+        client
+            .execute(
+                "UPDATE ir_module_module SET latest_version = $1 WHERE name = 'stock'",
+                &[&current],
+            )
+            .await
+            .unwrap();
+        let again = sys
+            .button_immediate_upgrade(&sys.system_env(Context::new()), &modules)
+            .await
+            .unwrap();
+        assert!(again.post_commit.is_clean(), "{:?}", again.post_commit);
+        let mut tx = again.orm.begin(SUPERUSER_ID).await.unwrap();
+        for company in [main, second] {
+            super::warehouse_setup::warehouse_of(&mut tx, company).await;
+        }
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(again);
         drop(sys);
         drop(client);
         db.cleanup().await.unwrap();

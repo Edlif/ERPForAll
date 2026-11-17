@@ -19,19 +19,23 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use erp_sdk::Operation;
 use erp_sdk::prelude::*;
 use erp_sdk::sequence::draw_by_id;
+use erp_sdk::{Load, Operation};
 
 use crate::error::StockError;
 use crate::move_counters::{cell_id, lock_move_roots, lock_pickings, notify_pickings};
 use crate::move_lines::{DeferSettle, LINE_DERIVED_MOVE_FIELDS, reservation_changes, sync_moves};
 use crate::picking::StockPicking;
-use crate::quant_engine::{QuantChange, apply_quant_changes};
+use crate::quant_engine::{QuantChange, apply_quant_changes_in_chunks};
 
-/// The sequence, default locations and company of the operation types `$1`.
-const TYPE_DEFAULTS: &str = "SELECT id, sequence_id, default_location_src_id, \
-       default_location_dest_id, company_id FROM stock_picking_type WHERE id = ANY($1)";
+/// What a new transfer takes from its operation type, read as the caller.
+const TYPE_DEFAULTS: [&str; 4] = [
+    "sequence_id",
+    "default_location_src_id",
+    "default_location_dest_id",
+    "company_id",
+];
 
 /// The transfers of `$1` with their state and move count.
 const READ_PICKINGS: &str =
@@ -52,8 +56,12 @@ const OPEN_LINES: &str = "SELECT id FROM stock_move_line \
 
 /// A cancelled move is no longer picked and takes from stock.
 const MOVES_CANCEL: &str = "UPDATE stock_move SET state = 'cancel', picked = false, \
-       procure_method = 'make_to_stock' WHERE id = ANY($1)";
-const PICKINGS_LOCK: &str = "UPDATE stock_picking SET is_locked = true WHERE id = ANY($1)";
+       procure_method = 'make_to_stock', write_uid = $2, write_date = (now() AT TIME ZONE 'UTC') \
+     WHERE id = ANY($1)";
+const PICKINGS_LOCK: &str = "UPDATE stock_picking SET is_locked = true, write_uid = $2, \
+       write_date = (now() AT TIME ZONE 'UTC') WHERE id = ANY($1)";
+/// The audit columns the two statements above stamp.
+const AUDIT: [&str; 2] = ["write_uid", "write_date"];
 
 fn decode(e: impl std::error::Error + Send + Sync + 'static) -> Error {
     Error::db("A transfer or its operation type could not be read.").with_source(e)
@@ -69,12 +77,15 @@ fn unnamed(vals: &RawVals) -> bool {
 
 /// Fill each new transfer from its operation type (in the values or as the context default): the
 /// source, destination and company when not given, and the reference from the type's sequence when
-/// the transfer has none. A type without a sequence leaves the reference to the
-/// caller. One read for all types of the call.
+/// the transfer has none. The types are read as the caller, after the caller's
+/// create right on transfers was checked, so no number is drawn for a refused create or a type the
+/// caller cannot see. One read for all types of the call, one draw per unnamed transfer.
 ///
 /// # Errors
 ///
-/// The sequence draw's errors (read access on sequences); read errors.
+/// The read's access errors; a refusal naming the cause for an unnamed transfer whose type has no
+/// numbering (the second one would only meet the per-company reference key); the sequence draw's
+/// errors (read access on sequences).
 pub(crate) async fn fill_from_types(
     records: &Records,
     tx: &mut Transaction,
@@ -103,17 +114,21 @@ pub(crate) async fn fill_from_types(
     if types.is_empty() {
         return Ok(());
     }
+    let id_of = |value: Option<&Value>| match value {
+        Some(Value::Int(id)) => Some(*id),
+        _ => None,
+    };
     let mut rows: HashMap<i64, [Option<i64>; 4]> = HashMap::new();
-    for row in tx.query(TYPE_DEFAULTS, &[&types]).await? {
-        rows.insert(
-            row.try_get(0).map_err(decode)?,
-            [
-                row.try_get(1).map_err(decode)?,
-                row.try_get(2).map_err(decode)?,
-                row.try_get(3).map_err(decode)?,
-                row.try_get(4).map_err(decode)?,
-            ],
-        );
+    for row in records
+        .env()
+        .records("stock.picking.type")?
+        .browse(types)?
+        .read_with(tx, &TYPE_DEFAULTS, Load::Raw)
+        .await?
+    {
+        let id = id_of(row.get("id"))
+            .ok_or_else(|| Error::internal("An operation type was read without its id."))?;
+        rows.insert(id, TYPE_DEFAULTS.map(|field| id_of(row.get(field))));
     }
     for vals in vals_list.iter_mut() {
         // a missing type is left to the foreign key
@@ -133,10 +148,13 @@ pub(crate) async fn fill_from_types(
                 vals.insert(field.into(), Cell::Id(id));
             }
         }
-        if let Some(sequence) = sequence
-            && unnamed(vals)
-            && !default_named
-        {
+        if unnamed(vals) && !default_named {
+            let Some(sequence) = sequence else {
+                return Err(Error::user(
+                    "This operation type has no numbering for its transfers: set its Sequence \
+                     Prefix, or enter the transfer's reference.",
+                ));
+            };
             let name = draw_by_id(tx, records.env(), sequence, None).await?;
             vals.insert("name".into(), Cell::Str(name.into()));
         }
@@ -181,7 +199,7 @@ pub(crate) async fn cancel_moves(
         .filter(|(_, reserved)| !reserved.is_zero())
         .map(|(key, reserved)| QuantChange::new(key, Decimal::ZERO, reserved))
         .collect();
-    apply_quant_changes(tx, &changes).await?;
+    apply_quant_changes_in_chunks(tx, &changes).await?;
     let env = records.env();
     if !lines.is_empty() {
         let lines = env.records("stock.move.line")?.browse(lines)?;
@@ -191,7 +209,8 @@ pub(crate) async fn cancel_moves(
         result?;
     }
     sync_moves(tx, moves).await?;
-    tx.execute(MOVES_CANCEL, &[&moves]).await?;
+    tx.execute(MOVES_CANCEL, &[&moves, &env.uid()]).await?;
+    tx.invalidate_model("stock.move", Some(&AUDIT)).await?;
     env.records("stock.move")?
         .browse(moves.iter().copied())?
         .modified_external(
@@ -215,16 +234,19 @@ async fn picking_moves(tx: &mut Transaction, pickings: &[i64]) -> Result<(Vec<i6
     Ok((all, open))
 }
 
-/// Before a transfer is deleted: its open moves are cancelled, then all its
-/// moves are deleted through the move model (which refuses done ones). The caller checked the
-/// unlink access and refused done transfers.
+/// Before a transfer is deleted: the transfers are locked first (
+/// as validation and cancel do), then their open moves are cancelled and all their moves are
+/// deleted through the move model as the caller (which refuses done ones). The caller checked
+/// the unlink access and refused done transfers.
 ///
 /// # Errors
 ///
 /// The cancellation's and the move deletion's errors.
 pub(crate) async fn delete_moves_of(records: &Records, tx: &mut Transaction) -> Result<()> {
     tx.flush().await?;
-    let (all, open) = picking_moves(tx, &records.ids()).await?;
+    let ids = records.ids();
+    lock_pickings(tx, &ids).await?;
+    let (all, open) = picking_moves(tx, &ids).await?;
     cancel_moves(records, tx, &open).await?;
     if all.is_empty() {
         return Ok(());
@@ -264,7 +286,9 @@ impl StockPicking {
         }
         let (_, open) = picking_moves(tx, &ids).await?;
         cancel_moves(records, tx, &open).await?;
-        tx.execute(PICKINGS_LOCK, &[&ids]).await?;
+        tx.execute(PICKINGS_LOCK, &[&ids, &records.env().uid()])
+            .await?;
+        tx.invalidate_model("stock.picking", Some(&AUDIT)).await?;
         records.modified_external(tx, &["is_locked"]).await
     }
 
