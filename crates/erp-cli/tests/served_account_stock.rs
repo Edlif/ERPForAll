@@ -180,6 +180,19 @@ async fn served_node_offers_and_installs_account_and_stock() {
     // purchase on top of account: its order screens, line sub-views and settings page open too
     assert_eq!(install(&fixture, "purchase"), ["purchase"]);
     assert_actions_open(&fixture, &["account", "stock", "purchase"]).await;
+    // mail on top brings the bridges that give entries, orders and transfers their chatter; every
+    // screen still opens with the chatter in its form
+    assert_eq!(
+        install(&fixture, "mail"),
+        [
+            "account_mail",
+            "mail",
+            "product_mail",
+            "purchase_mail",
+            "stock_mail"
+        ]
+    );
+    assert_actions_open(&fixture, &["account", "stock", "purchase"]).await;
 
     // The request role reads the new tables: through the ORM as the administrator (an
     // accounting manager by `base.group_system`), and by the published table grants.

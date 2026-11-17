@@ -90,7 +90,8 @@ crate::store_topic!(
         .params(THREAD_PARAMS)
         .access(check_thread)
         .needs_groups()
-        .statements(11)
+        // 11, and one for the stored history values of a page that has history messages
+        .statements(12)
 );
 
 crate::store_topic!(
@@ -100,7 +101,8 @@ crate::store_topic!(
         .params(MESSAGES_PARAMS)
         .access(check_messages)
         .needs_groups()
-        .statements(6)
+        // 6, and one for the stored history values of a page that has history messages
+        .statements(7)
         // `around` runs two searches, one per side of the cursor
         .statements_plus(&[("around", 1)])
 );
@@ -193,9 +195,29 @@ impl MailMessageStore {
         }
         let trusted = records.sudo(true);
         let rows = rows_of(tx, &trusted, &store::MESSAGE_PAGE_FIELDS).await?;
+        // the stored history values are closed to every user (`groups = "."`); read here in
+        // superuser mode, for the history messages of the page only (one statement when it has any)
+        let history: Vec<i64> = rows
+            .iter()
+            .filter(|(_, row)| {
+                matches!(row.get("message_type"), Some(Value::Str(t)) if t.as_ref() == "tracking")
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        let stored: BTreeMap<i64, _> = if history.is_empty() {
+            BTreeMap::new()
+        } else {
+            rows_of(tx, &trusted.browse(history)?, &["tracking"])
+                .await?
+                .into_iter()
+                .collect()
+        };
         let message_ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
         message_attachments::stage_of_messages(tx, &message_ids, &mut fields).await?;
         let mut subtypes = BTreeSet::new();
+        // the reader's environment decides which tracked changes are shown
+        let reader = records.env().clone();
+        let mut allowed = BTreeMap::new();
         store::stage_partners(
             tx,
             this.as_records().env(),
@@ -212,7 +234,14 @@ impl MailMessageStore {
                     )));
                 }
             };
-            let (uid, entries) = store::message_entries(*id, row, &model, false)?;
+            let (uid, mut entries) = store::message_entries(*id, row, &model, false)?;
+            if let Some(Value::Json(stored)) = stored.get(id).and_then(|r| r.get("tracking"))
+                && let Some(text) =
+                    crate::tracking::visible_changes(tx, &reader, &model, stored, &mut allowed)
+                        .await?
+            {
+                entries.push(("tracking", Wire::String(text)));
+            }
             if let Some(Value::Int(subtype)) = row.get("subtype_id") {
                 subtypes.insert(*subtype);
             }
@@ -439,7 +468,8 @@ impl Page {
 }
 
 /// The columns the page search fetches with the ids, so the read of the same fields costs no
-/// statement of its own.
+/// statement of its own. `tracking` is not among them: it is closed to the reader, so
+/// `_to_store` reads it in superuser mode (one statement for a page with history messages).
 const PAGE_COLUMNS: [&str; 10] = [
     "body",
     "subject",

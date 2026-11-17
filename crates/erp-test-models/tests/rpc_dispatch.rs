@@ -525,8 +525,12 @@ async fn context_rules() {
         "werkzeug.exceptions.UnprocessableEntity",
         "context key 'install_mode' cannot be set by the caller",
     );
-    // the keys that switch tracking off are the server's: a client cannot silence the change log
-    for key in erp_sdk::TRACKING_DISABLE_KEYS {
+    // the keys that switch tracking off or drop the creation line are the server's: a client
+    // cannot silence the change log
+    for key in erp_sdk::TRACKING_DISABLE_KEYS
+        .into_iter()
+        .chain([erp_sdk::CREATION_LOG_DISABLE_KEY])
+    {
         let r = call(
             &h,
             "/json/2/test_rpc.effects/probe",

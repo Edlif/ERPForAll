@@ -3,7 +3,6 @@
 use erp_sdk::store_wire::{FieldKind, FieldSpec, FieldValue};
 use erp_sdk::{Error, Transaction};
 
-use super::registry::TopicRegistry;
 use super::topic::{
     Audience, SchemaFragment, SchemaPart, StoreTopic, TopicFuture, TopicInput, TopicOutput,
 };
@@ -37,12 +36,19 @@ fn mail_schema(fragment: &mut SchemaFragment) {
 }
 
 fn run_schema<'a>(
-    _tx: &'a mut Transaction,
+    tx: &'a mut Transaction,
     _input: &'a TopicInput<'a>,
     out: &'a mut TopicOutput,
 ) -> TopicFuture<'a> {
     Box::pin(async move {
-        out.data(TopicRegistry::linked()?.schema_document().clone());
+        // the schema the call's answer is encoded against: the parts and the thread models of
+        // this database the caller's audience may know (`TopicRegistry::schema_for_reader`)
+        let served = tx
+            .extension::<super::CallSchema>()
+            .0
+            .clone()
+            .ok_or_else(|| Error::invariant("the schema topic ran outside a store_fetch call"))?;
+        out.data(served.document().clone());
         Ok(())
     })
 }

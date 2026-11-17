@@ -442,6 +442,8 @@ struct World {
     a_secret: i64,
     /// for `doc_r` only
     r_news: i64,
+    /// the store schema served to `pat` (a share caller has its own)
+    share_schema: erp_sdk::store_wire::StoreSchema,
 }
 
 async fn world() -> World {
@@ -676,6 +678,17 @@ async fn world() -> World {
         .await;
     }
     tx.commit().await.unwrap();
+    let share_schema = {
+        let mut tx = orm.begin(UserId::new(pat.uid).unwrap()).await.unwrap();
+        let env = tx.env();
+        let served = erp_addon_mail::store_fetch::TopicRegistry::linked()
+            .unwrap()
+            .schema_for_reader(&mut tx, &env)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        served.schema().clone()
+    };
     let service = RpcService::new(orm.clone(), Host, RpcConfig::default());
     World {
         h,
@@ -696,6 +709,7 @@ async fn world() -> World {
         a_news,
         a_secret,
         r_news,
+        share_schema,
     }
 }
 
@@ -767,16 +781,23 @@ const DOC_R_WRITE_DENIED: &str = "Your access rights do not let you modify 'RPC 
 const ACCESS: &str = "erp.exceptions.AccessError";
 const VALIDATION: &str = "erp.exceptions.ValidationError";
 
-fn decode(payload: &serde_json::Value) -> DecodedPayload {
-    let schema = erp_addon_mail::store::schema().unwrap().clone();
-    let decoder = Decoder::new(WireLimits::default()).with_schema(schema);
-    match decoder
-        .decode_answer(&serde_json::to_vec(payload).unwrap())
+/// `payload` decoded against the internal schema, or the share schema of `pat` for an answer to
+/// a portal caller.
+fn decode(w: &World, payload: &serde_json::Value) -> DecodedPayload {
+    let internal = erp_addon_mail::store_fetch::TopicRegistry::linked()
         .unwrap()
-    {
-        Outcome::Decoded(payload) => payload,
-        other => panic!("the payload did not decode: {other:?}"),
+        .schema_for(w.orm.registry())
+        .unwrap()
+        .schema()
+        .clone();
+    let bytes = serde_json::to_vec(payload).unwrap();
+    for schema in [internal, w.share_schema.clone()] {
+        let decoder = Decoder::new(WireLimits::default()).with_schema(schema);
+        if let Outcome::Decoded(payload) = decoder.decode_answer(&bytes).unwrap() {
+            return payload;
+        }
     }
+    panic!("the payload names neither served schema: {payload}")
 }
 
 fn record<'a>(payload: &'a DecodedPayload, model: &str, id: i64) -> BTreeMap<&'a str, &'a Wire> {
@@ -828,15 +849,17 @@ async fn an_internal_user_posts_text_and_gets_the_message_in_the_store() {
     let message = answer["message_id"].as_i64().unwrap();
     assert_eq!(answer["replayed"], json!(false));
     assert_eq!(ids(&answer["notified_partner_ids"]), vec![w.otto.partner]);
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     assert_eq!(
         payload.generation().as_str(),
         erp_addon_mail::store_fetch::TopicRegistry::linked()
             .unwrap()
+            .schema_for(w.orm.registry())
+            .unwrap()
             .schema()
             .generation()
             .as_str(),
-        "a thread answer carries the generation of the one registry schema"
+        "a thread answer carries the generation of the schema served to its database"
     );
     assert!(
         payload.asof().own().is_some(),
@@ -1189,7 +1212,7 @@ async fn portal_users_post_comments_only() {
     assert_eq!(row.get::<_, i64>(0), w.pat.partner);
     assert_eq!(row.get::<_, String>(1), "comment");
     assert_eq!(row.get::<_, i64>(2), w.comment);
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     assert_eq!(
         record(&payload, "mail.message", message)["author_id"],
         &Wire::Many2One(Some(w.pat.partner as u64))
@@ -1414,7 +1437,7 @@ async fn a_client_uid_replay_returns_the_stored_message() {
     assert_eq!(again["message_id"], first["message_id"]);
     assert_eq!(again["notified_partner_ids"], first["notified_partner_ids"]);
     assert_eq!(messages(&w).await, 1);
-    let payload = decode(&again["store"]);
+    let payload = decode(&w, &again["store"]);
     assert!(
         payload.asof().own().is_none(),
         "a replay writes nothing, its descriptor has no own xid"
@@ -1551,7 +1574,7 @@ async fn following_oneself_needs_read_and_others_need_write() {
         .await);
     let (row_id, subtypes) = follower(&w, DOC_R, w.doc_r, w.ivy.partner).await.unwrap();
     assert_eq!(subtypes, sorted(vec![w.comment, w.r_news]));
-    let payload = decode(&own["store"]);
+    let payload = decode(&w, &own["store"]);
     assert!(payload.asof().own().is_some());
     let fields = record(&payload, "mail.followers", row_id);
     assert_eq!(fields["res_model"], &Wire::String(DOC_R.to_owned()));
@@ -1591,7 +1614,7 @@ async fn following_oneself_needs_read_and_others_need_write() {
         .await
         .unwrap();
     assert_eq!(otto_subtypes, sorted(vec![w.comment, w.a_secret]));
-    record(&decode(&others["store"]), "mail.followers", otto_row);
+    record(&decode(&w, &others["store"]), "mail.followers", otto_row);
     // a subtype of another model is refused
     let response = w
         .call(
@@ -1628,7 +1651,7 @@ async fn following_oneself_needs_read_and_others_need_write() {
         sorted(vec![w.comment, w.a_news]),
         "a portal follower gets the external defaults"
     );
-    record(&decode(&own["store"]), "mail.followers", pat_row);
+    record(&decode(&w, &own["store"]), "mail.followers", pat_row);
     let only_own =
         "Portal users can only follow, unfollow or set the subtypes of their own partner.";
     for partners in [
@@ -1729,7 +1752,7 @@ async fn unfollow_answers_with_delete_markers_and_checks_access() {
             json!({"ids": [w.doc_shared], "partner_ids": [w.ivy.partner, w.otto.partner]}),
         )
         .await);
-    let payload = decode(&removed["store"]);
+    let payload = decode(&w, &removed["store"]);
     let mut deleted: Vec<(String, u64)> = payload
         .deletes()
         .iter()
@@ -1777,8 +1800,8 @@ async fn unfollow_answers_with_delete_markers_and_checks_access() {
             json!({"ids": [w.doc_shared], "partner_ids": [w.pat.partner]}),
         )
         .await);
-    assert_eq!(decode(&own["store"]).deletes().len(), 1);
-    assert_eq!(decode(&own["store"]).deletes()[0].id(), pat_row as u64);
+    assert_eq!(decode(&w, &own["store"]).deletes().len(), 1);
+    assert_eq!(decode(&w, &own["store"]).deletes()[0].id(), pat_row as u64);
     // an internal user without write access removes itself, not others
     ok(&w
         .call(
@@ -1836,7 +1859,7 @@ async fn set_subtypes_and_the_editor_list_accept_valid_subtypes_only() {
         vec![w.comment, w.a_news, w.a_secret, w.note],
         "sequence order, the subtype of the other model left out"
     );
-    let payload = decode(&listed["store"]);
+    let payload = decode(&w, &listed["store"]);
     assert!(
         payload.asof().own().is_none(),
         "a read answer has no own xid"
@@ -1858,7 +1881,7 @@ async fn set_subtypes_and_the_editor_list_accept_valid_subtypes_only() {
         .unwrap();
     assert_eq!(stored, sorted(vec![w.comment, w.a_secret]));
     assert_eq!(
-        record(&decode(&changed["store"]), "mail.followers", row_id)["subtype_ids"],
+        record(&decode(&w, &changed["store"]), "mail.followers", row_id)["subtype_ids"],
         &Wire::X2ManyReplace(stored.iter().map(|id| *id as u64).collect())
     );
     let refusals = [
@@ -1971,7 +1994,7 @@ async fn a_portal_caller_cannot_choose_an_internal_subtype() {
         .await
         .unwrap();
     assert_eq!(stored, vec![w.a_news]);
-    record(&decode(&ok_change["store"]), "mail.followers", row);
+    record(&decode(&w, &ok_change["store"]), "mail.followers", row);
     w.cleanup().await;
 }
 
@@ -2002,7 +2025,7 @@ async fn the_follower_page_is_keyset_and_internal_only() {
     assert_eq!(first_ids.len(), 2);
     assert!(first_ids[0] < first_ids[1], "oldest first");
     assert_eq!(first["next_after"], json!(first_ids[1]));
-    let payload = decode(&first["store"]);
+    let payload = decode(&w, &first["store"]);
     let follower_rows = payload
         .upserts()
         .iter()
@@ -2095,7 +2118,7 @@ async fn two_addons_extending_message_post_are_both_honoured_through_rpc() {
         stored, "ext:hello|b|a",
         "the later addon wraps the earlier one"
     );
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     assert_eq!(
         record(&payload, "mail.message", message)["subject"],
         &Wire::String(stored)
@@ -2190,7 +2213,7 @@ async fn a_portal_author_gets_no_internal_parent_and_cannot_post_silently() {
     // automatic parent: the only message of the record is internal, so there is none
     let first = ok(&post(&w, w.pat, w.doc_shared, json!({"body": "a"})).await);
     let first_id = first["message_id"].as_i64().unwrap();
-    let payload = decode(&first["store"]);
+    let payload = decode(&w, &first["store"]);
     assert_eq!(
         record(&payload, "mail.message", first_id)["parent_id"],
         &Wire::Many2One(None)
@@ -2352,6 +2375,54 @@ fn thread_messages(doc: &str, id: i64, params: serde_json::Value) -> serde_json:
     json!([{"name": "thread.messages", "params": all}])
 }
 
+/// The thread models a `schema` topic answer names, and its generation.
+fn schema_threads(answer: &serde_json::Value) -> (Vec<String>, String) {
+    let document = slot_data(answer, 0);
+    let schema = Decoder::new(WireLimits::default())
+        .decode_schema(document.to_string().as_bytes())
+        .unwrap();
+    let models = schema
+        .models()
+        .map(|(name, _)| name.as_str().to_owned())
+        .filter(|name| name.starts_with("test_rpc_mail."))
+        .collect();
+    assert_eq!(
+        answer["store"]["schema"],
+        json!(schema.generation().as_str()),
+        "the answer and its schema topic carry one generation"
+    );
+    (models, schema.generation().as_str().to_owned())
+}
+
+/// A share caller's schema names only the thread models it may read, under a generation of its
+/// own; an internal user's names every thread model of the database. A portal answer is encoded
+/// against the portal schema.
+#[tokio::test]
+async fn a_portal_caller_gets_the_schema_of_the_thread_models_it_may_read() {
+    let w = world().await;
+    let schema = json!([{"name": "schema"}]);
+    let (internal, internal_generation) =
+        schema_threads(&fetch_ok(&w, w.ivy, schema.clone()).await);
+    assert_eq!(internal, [DOC_A, DOC_P, DOC_R]);
+    let (portal, portal_generation) = schema_threads(&fetch_ok(&w, w.pat, schema).await);
+    assert_eq!(
+        portal,
+        [DOC_A, DOC_P],
+        "the portal group has no access row on {DOC_R}"
+    );
+    assert_ne!(portal_generation, internal_generation);
+    assert_eq!(portal_generation, w.share_schema.generation().as_str());
+    // a thread answer to the portal caller carries the portal generation
+    let answer = fetch_ok(
+        &w,
+        w.pat,
+        json!([{"name": "thread", "params": {"model": DOC_A, "id": w.doc_shared}}]),
+    )
+    .await;
+    assert_eq!(answer["store"]["schema"], json!(portal_generation));
+    w.cleanup().await;
+}
+
 /// The `data` of slot `index`, which must have answered.
 #[track_caller]
 fn slot_data(answer: &serde_json::Value, index: usize) -> &serde_json::Value {
@@ -2458,7 +2529,7 @@ async fn a_thread_answer_carries_the_authors_names_and_omits_an_unreadable_partn
     )
     .await;
     let answer = fetch_ok(&w, w.ivy, thread_messages(DOC_A, w.doc_shared, json!({}))).await;
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     let name = partner_name(&w, w.ivy.partner).await;
     assert_eq!(
         record(&payload, "res.partner", w.ivy.partner)["name"],
@@ -2484,7 +2555,7 @@ async fn a_post_answer_carries_the_author_and_recipient_names() {
             json!({"ids": [w.doc_shared], "post": {"body": "hi", "partner_ids": [w.otto.partner]}}),
         )
         .await;
-    let payload = decode(&ok(&response)["store"]);
+    let payload = decode(&w, &ok(&response)["store"]);
     for partner in [w.ivy.partner, w.otto.partner] {
         assert_eq!(
             record(&payload, "res.partner", partner)["name"],
@@ -2531,7 +2602,7 @@ async fn thread_messages_first_page_is_newest_first_with_store_records() {
     assert!(!listed.contains(&notice));
     assert_eq!(data["has_more_before"], json!(true));
     assert_eq!(data["has_more_after"], json!(false));
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     let messages: Vec<_> = payload
         .upserts()
         .iter()
@@ -2848,7 +2919,7 @@ async fn an_unreadable_thread_is_denied_before_any_message_is_looked_at() {
     // the thread the user may read still answers, and nothing of the secret thread is in the payload
     let shared = slot_data(&answer, 5);
     assert_eq!(message_ids(shared).len(), 2);
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     for id in secret.iter().chain([&own]) {
         assert!(
             !payload
@@ -3095,7 +3166,7 @@ async fn the_thread_topic_answers_facts_first_page_and_followers() {
         json!([f_otto, f_pat, f_hidden, f_ivy])
     );
     assert_eq!(panel["next_after"], json!(null));
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     for (id, partner, subtypes) in [
         (f_otto, w.otto.partner, vec![w.comment, w.a_news]),
         (f_pat, w.pat.partner, vec![w.comment]),
@@ -3142,7 +3213,7 @@ async fn the_thread_topic_answers_facts_first_page_and_followers() {
     assert!(data.get("messages").is_none() && data.get("followers").is_none());
     assert!(data["thread"].get("default_subject").is_none());
     assert!(
-        decode(&bare["store"])
+        decode(&w, &bare["store"])
             .upserts()
             .iter()
             .all(|r| r.model().as_str() != "mail.message")
@@ -3259,7 +3330,7 @@ async fn the_message_and_thread_entries_are_dispatched() {
     )
     .await;
     let answer = fetch_ok(&w, w.ivy, thread_messages(DOC_A, doc, json!({}))).await;
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     // both overrides ran through `sup`, the later one on the result of the earlier one
     assert_eq!(
         record(&payload, "mail.message", hidden)["subject"],
@@ -3336,10 +3407,12 @@ async fn the_budgets_hold_and_one_generation_is_shared() {
     for partner in partners {
         add_follower(&w, DOC_A, doc, partner, &[w.comment]).await;
     }
-    assert_eq!(erp_addon_mail::thread_load::THREAD_TOPIC.budget(), 11);
+    // one statement each above the pages measured here (no history messages): the stored history
+    // values of a page that has them are read on their own (`mail.message.tracking` is closed)
+    assert_eq!(erp_addon_mail::thread_load::THREAD_TOPIC.budget(), 12);
     assert_eq!(
         erp_addon_mail::thread_load::THREAD_MESSAGES_TOPIC.budget(),
-        6
+        7
     );
     let mut seen = Vec::new();
     for who in [w.ivy, w.pat] {
@@ -3637,7 +3710,7 @@ async fn message_post_links_files_and_moves_composer_files_onto_the_record() {
     }
     assert_eq!(before[2].0.as_deref(), Some(DOC_A), "already on the record");
     // the answer's message record lists the files, marked as written by the call
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     let fields = record(&payload, "mail.message", message);
     assert_eq!(
         fields["attachment_ids"],
@@ -3678,7 +3751,7 @@ async fn message_post_links_files_and_moves_composer_files_onto_the_record() {
         w.n("SELECT count(*) FROM message_attachment_rel").await,
         relations
     );
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     assert_eq!(
         record(&payload, "mail.message", plain)["attachment_ids"],
         &Wire::X2ManyReplace(Vec::new())
@@ -3711,7 +3784,7 @@ async fn message_post_links_files_and_moves_composer_files_onto_the_record() {
         Some(COMPOSER),
         "a replayed post does not claim the files it names"
     );
-    let payload = decode(&retry["store"]);
+    let payload = decode(&w, &retry["store"]);
     assert_eq!(
         record(&payload, "mail.message", stored)["attachment_ids"],
         &Wire::X2ManyReplace(vec![kept as u64])
@@ -3942,7 +4015,7 @@ async fn message_pages_carry_the_files_posted_with_them() {
         thread_topic(json!({"model": DOC_A, "id": doc})),
     ] {
         let answer = fetch_ok(&w, w.ivy, request).await;
-        let payload = decode(&answer["store"]);
+        let payload = decode(&w, &answer["store"]);
         assert_eq!(carried(&payload, with_two), vec![f1 as u64, f2 as u64]);
         assert_eq!(carried(&payload, foreign), Vec::<u64>::new());
         assert_eq!(carried(&payload, none), Vec::<u64>::new());
@@ -3973,7 +4046,7 @@ async fn message_pages_carry_the_files_posted_with_them() {
         message_ids(slot_data(&answer, 0)),
         vec![none, foreign, with_two]
     );
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     assert_eq!(carried(&payload, with_two), vec![f1 as u64, f2 as u64]);
     assert!(has_record(&payload, "ir.attachment", f1));
     assert!(
@@ -4090,7 +4163,7 @@ async fn the_attachments_panel_and_the_attachment_count() {
         );
         assert_eq!(data["attachments"]["has_more"], json!(false));
         assert_eq!(data["thread"]["attachment_count"], json!(3));
-        let payload = decode(&answer["store"]);
+        let payload = decode(&w, &answer["store"]);
         for id in [a1, a2, a3] {
             assert!(has_record(&payload, "ir.attachment", id));
         }
@@ -4111,7 +4184,11 @@ async fn the_attachments_panel_and_the_attachment_count() {
     assert_eq!(ids(&data["attachments"]["attachment_ids"]), vec![a3, a2]);
     assert_eq!(data["attachments"]["has_more"], json!(true));
     assert_eq!(data["thread"]["attachment_count"], json!(3));
-    assert!(!has_record(&decode(&answer["store"]), "ir.attachment", a1));
+    assert!(!has_record(
+        &decode(&w, &answer["store"]),
+        "ir.attachment",
+        a1
+    ));
     // without the panel: no data, no fact, no file in the store
     for extra in [
         json!({}),
@@ -4121,7 +4198,7 @@ async fn the_attachments_panel_and_the_attachment_count() {
         let data = slot_data(&answer, 0);
         assert!(data.get("attachments").is_none(), "{data}");
         assert!(data["thread"].get("attachment_count").is_none(), "{data}");
-        let payload = decode(&answer["store"]);
+        let payload = decode(&w, &answer["store"]);
         assert!(!has_record(&payload, "ir.attachment", a3));
     }
     // a record without files: an empty panel and a count of zero
@@ -4456,7 +4533,7 @@ async fn the_client_uploads_posts_and_loads_a_file_through_the_rpc_service() {
         thread_topic(json!({"model": DOC_A, "id": doc, "messages": true, "attachments": true})),
     )
     .await;
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     assert!(has_record(&payload, "ir.attachment", file));
     let fields = record(&payload, "mail.message", message);
     assert_eq!(
@@ -4721,7 +4798,7 @@ async fn staged_mail_posts_are_atomic_and_replays_do_not_consume_again() {
     let answer = ok(&post(&w, w.ivy, w.doc_shared, request.clone()).await);
     let message = answer["message_id"].as_i64().unwrap();
     assert_eq!(linked(&w, message).await.len(), 2);
-    let payload = decode(&answer["store"]);
+    let payload = decode(&w, &answer["store"]);
     assert_eq!(
         record(&payload, "mail.message", message)["attachment_ids"],
         &Wire::X2ManyReplace(

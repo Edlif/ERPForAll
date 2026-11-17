@@ -1585,3 +1585,46 @@ test("inline chatter error is cleared after a subsequent successful action", asy
   chatter.dispose();
 });
 
+
+/// (partial: a store holding an older schema renews it once when an install added the threaded model)
+test("a chatter whose store holds an older schema renews it once and loads a thread model the old schema lacked", async () => {
+  const renewed = { ...JSON.parse(TEST_SCHEMA), schema: "chatter-renewed-s2" } as { models: Record<string, unknown> };
+  renewed.models["sale.order"] = { fields: {} };
+  const answer = (records: Record<string, readonly unknown[]>): string =>
+    answerPayload(10, records).replace("chatter-test-s1", "chatter-renewed-s2");
+  const calls: string[][] = [];
+  const rpc = new RpcClient(async (path, init) => {
+    if (!String(path).endsWith("/mail.store/store_fetch")) throw new Error(`Unexpected path: ${path}`);
+    const topics = (JSON.parse(String(init?.body)) as { topics: { name: string }[] }).topics.map((t) => t.name);
+    calls.push(topics);
+    const thread = {
+      topic: "thread",
+      ok: true,
+      data: { thread: { model: "sale.order", id: 7, can_post: true }, messages: { message_ids: [301], has_more_before: false } },
+    };
+    return new Response(
+      JSON.stringify({
+        store: answer({
+          "res.partner": [{ id: 1, name: "Alice Adams" }],
+          "mail.message": [{ id: 301, body: "<p>Sales Order created</p>", message_type: "notification", date: "2026-11-17 08:00:00", author_id: 1 }],
+        }),
+        topics: topics.includes("schema") ? [{ topic: "schema", ok: true, data: renewed }, thread] : [thread],
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+  }, () => {});
+  const store = new MessagingStore({ reportError: () => {} });
+  store.setSchema(TEST_SCHEMA); // the page saw the schema before the sales addon was installed
+
+  const chatter = new Chatter({ host, model: "sale.order", recordId: 7, rpc, store });
+  await flushAsync();
+
+  // the stale answer, then one renewal with the schema; the thread's own reloads after mounting never ask for it again
+  expect(calls.slice(0, 2)).toEqual([["thread"], ["schema", "thread"]]);
+  expect(calls.slice(2).every((topics) => !topics.includes("schema"))).toBe(true);
+  expect(store.generation).toBe("chatter-renewed-s2");
+  const articles = host.querySelectorAll<HTMLElement>(".erp-mail-feed article.erp-mail-message");
+  expect(articles).toHaveLength(1);
+  expect(articles[0]!.textContent).toContain("Sales Order created");
+  chatter.dispose();
+});

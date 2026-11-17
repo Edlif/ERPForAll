@@ -36,6 +36,10 @@ use crate::records::Records;
 
 pub const TRACKING_DISABLE_KEYS: [&str; 2] = ["tracking_disable", "mail_notrack"];
 
+/// Read by the mail consumer, never by the ORM; server-only like
+/// [`TRACKING_DISABLE_KEYS`], so a caller cannot create a document without its audit line.
+pub const CREATION_LOG_DISABLE_KEY: &str = "mail_create_nolog";
+
 /// The function of a [`PrecommitHook`].
 pub type PrecommitHookFn = for<'a> fn(&'a mut Transaction) -> BoxFuture<'a, Result<()>>;
 
@@ -411,6 +415,65 @@ impl Transaction {
         for id in ids.iter().filter_map(|i| i.as_real()) {
             self.tracking.prepare(depth, spec.id, id);
         }
+    }
+
+    /// Whether a change of `field` on `records` would be tracked: the field is tracked on their
+    /// model and their context does not switch tracking off. A caller that must read the old values
+    /// before its own statement for [`Transaction::track_external`] asks this first, so it pays
+    /// nothing when no installed addon tracks the field. An unknown field is not tracked.
+    pub fn tracks(&self, records: &Records, field: &str) -> bool {
+        let spec = records.spec();
+        !disabled(records)
+            && spec
+                .field_id(field)
+                .is_some_and(|f| spec.tracked.contains(&f))
+    }
+
+    /// Report changes of a tracked field that the caller wrote with its own SQL statement, or that
+    /// a trigger wrote for it (a state flipped in one `UPDATE`): `changes` holds the record id, the
+    /// value before and the value after, as storage cells. They join the changes the flush
+    /// captured and are folded with them (D4): a record created or deleted in the transaction is
+    /// left out (D2), and an old value equal to the new one is no change. Call it after the
+    /// statement, with the values flushed before it. No statement; nothing happens when
+    /// [`Transaction::tracks`] is false, so a caller without a tracking addon installed pays
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// `Programming` for a field the model does not have, or a record id that is not one of
+    /// `records`.
+    pub fn track_external(
+        &mut self,
+        records: &Records,
+        field: &str,
+        changes: impl IntoIterator<Item = (i64, Cell, Cell)>,
+    ) -> Result<()> {
+        let spec = records.spec();
+        let fid = spec.field_id(field).ok_or_else(|| {
+            Error::programming(format!(
+                "track_external: {} has no field {field}",
+                spec.name
+            ))
+        })?;
+        if disabled(records) || !spec.tracked.contains(&fid) {
+            return Ok(());
+        }
+        let model = spec.id;
+        let own: FxHashSet<i64> = records.ids().into_iter().collect();
+        let depth = self.savepoint_depth();
+        for (id, old, new) in changes {
+            let real = RealId::new(id)
+                .filter(|_| own.contains(&id))
+                .ok_or_else(|| {
+                    Error::programming(format!(
+                        "track_external: {id} is not one of the {} records reported",
+                        spec.name
+                    ))
+                })?;
+            self.tracking.prepare(depth, model, real);
+            self.tracking.change(depth, model, real, fid, old, new);
+        }
+        Ok(())
     }
 
     /// Flush, then take the tracked changes of the transaction and clear the log (D4, D7).

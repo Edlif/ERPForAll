@@ -1462,8 +1462,10 @@ const MAX_ACTION_CONTEXT_KEYS: usize = 16;
 const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
 
 /// A window action's own context, admitted only as a literal dictionary of `default_<field>` keys
-/// naming fields of the action's model, each with a text, integer or boolean literal. Everything
-/// else (expressions, `search_default_*`, session keys, other keys) is refused by name.
+/// naming fields of the action's model, each with a text, integer or boolean literal that fits the
+/// field. A field a default cannot set (readonly, computed, related, one2many, many2many, a type
+/// without a literal form here) and everything else (expressions, `search_default_*`, session
+/// keys, other keys) is refused by name.
 fn parse_action_context(
     context: Option<&str>,
     model: &str,
@@ -1500,23 +1502,35 @@ fn parse_action_context(
                 "key '{shown}' is not admitted: only default_<field> keys are."
             )));
         };
-        if !lookup.has_field(model, field) {
+        let Some(target) = lookup.default_target(model, field) else {
             return Err(refuse(format!(
                 "key '{shown}' names no field of '{model}'."
             )));
-        }
+        };
         if !seen.insert(key.as_str()) {
             return Err(refuse(format!("repeats the key '{shown}'.")));
         }
-        match value {
-            Expr::Literal(Literal::Str(_) | Literal::Bool(_)) => {}
+        let literal = match value {
+            Expr::Literal(Literal::Str(text)) => Some(ContextLiteral::Text(text.as_str())),
+            Expr::Literal(Literal::Bool(_)) => Some(ContextLiteral::Boolean),
             Expr::Literal(Literal::Int(number))
-                if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(number) => {}
-            _ => {
-                return Err(refuse(format!(
-                    "value of '{shown}' must be a text, safe integer or boolean literal."
-                )));
+                if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(number) =>
+            {
+                Some(ContextLiteral::Integer(*number))
             }
+            _ => None,
+        };
+        if let Err(why) = default_fits(&target, literal) {
+            return Err(refuse(match why {
+                DefaultMisfit::Field(kind, reason) => {
+                    format!(
+                        "key '{shown}' names the {kind} field '{field}' of '{model}': {reason}."
+                    )
+                }
+                DefaultMisfit::Value(takes) => format!(
+                    "value of '{shown}' must be {takes}: '{field}' of '{model}' takes nothing else."
+                ),
+            }));
         }
     }
     if entries.is_empty() {
@@ -1525,6 +1539,134 @@ fn parse_action_context(
     wire::WireDocument::from_expr(&parsed)
         .map(Some)
         .map_err(|error| refuse(format!("cannot be sent: {error}")))
+}
+
+/// The literal forms a window-action context value can have (integers within the browser's safe
+/// range only).
+#[derive(Clone, Copy)]
+enum ContextLiteral<'a> {
+    Text(&'a str),
+    Boolean,
+    Integer(i64),
+}
+
+/// Why a `default_<field>` entry is refused.
+enum DefaultMisfit {
+    /// The field takes no default from an action context: the field's kind and the reason.
+    Field(&'static str, &'static str),
+    /// The value does not fit the field: what the field takes.
+    Value(&'static str),
+}
+
+/// Whether the literal (`None`: not an admitted literal form at all) fits what the field takes.
+fn default_fits(
+    target: &crate::action_result::DefaultTarget,
+    literal: Option<ContextLiteral<'_>>,
+) -> std::result::Result<(), DefaultMisfit> {
+    use crate::action_result::DefaultTarget as Target;
+    const CANNOT_SET: &str = "a default cannot set it";
+    const NO_LITERAL: &str = "it cannot take a default from an action context";
+    let takes = match target {
+        Target::Related => return Err(DefaultMisfit::Field("related", CANNOT_SET)),
+        Target::Computed => return Err(DefaultMisfit::Field("computed", CANNOT_SET)),
+        Target::Readonly => return Err(DefaultMisfit::Field("readonly", CANNOT_SET)),
+        Target::ToMany(kind) | Target::Unsupported(kind) => {
+            return Err(DefaultMisfit::Field(kind, NO_LITERAL));
+        }
+        Target::Boolean => match literal {
+            Some(ContextLiteral::Boolean) => return Ok(()),
+            _ => "a boolean literal (True or False)",
+        },
+        Target::Integer => match literal {
+            Some(ContextLiteral::Integer(_)) => return Ok(()),
+            _ => "a safe integer literal",
+        },
+        Target::RecordId => match literal {
+            Some(ContextLiteral::Integer(id)) if id > 0 => return Ok(()),
+            _ => "a record id (a positive safe integer literal)",
+        },
+        // The context grammar admits no float literal, so a float or monetary default is a whole
+        // number.
+        Target::Number => match literal {
+            Some(ContextLiteral::Integer(_)) => return Ok(()),
+            _ => "a safe integer literal (no decimal literal is admitted)",
+        },
+        Target::Text => match literal {
+            Some(ContextLiteral::Text(_)) => return Ok(()),
+            _ => "a text literal",
+        },
+        Target::Selection(None) => match literal {
+            Some(ContextLiteral::Text(_)) => return Ok(()),
+            _ => "a text literal (a selection value)",
+        },
+        Target::Selection(Some(values)) => match literal {
+            Some(ContextLiteral::Text(text)) if values.iter().any(|value| value == text) => {
+                return Ok(());
+            }
+            _ => "a text literal that is one of the field's selection values",
+        },
+        // Shape check only for both: digits and separators in place. Whether the day exists is
+        // decided where the default is applied.
+        Target::Date => match literal {
+            Some(ContextLiteral::Text(text)) if has_shape(text, "dddd-dd-dd") => return Ok(()),
+            _ => "a date written as text, for example 2026-01-31",
+        },
+        Target::Datetime => match literal {
+            Some(ContextLiteral::Text(text)) if has_shape(text, "dddd-dd-dd dd:dd:dd") => {
+                return Ok(());
+            }
+            _ => "a date and time written as text, for example 2026-01-31 08:30:00",
+        },
+    };
+    Err(DefaultMisfit::Value(takes))
+}
+
+/// Whether `text` has exactly the bytes of `shape`, where `d` stands for one ASCII digit.
+fn has_shape(text: &str, shape: &str) -> bool {
+    text.len() == shape.len()
+        && text
+            .bytes()
+            .zip(shape.bytes())
+            .all(|(byte, expected)| match expected {
+                b'd' => byte.is_ascii_digit(),
+                other => byte == other,
+            })
+}
+
+/// What a `default_<field>` key of a stored window-action context may give this field. The
+/// refusals come first, the most specific reason first (a related field is usually readonly too).
+fn default_target(field: &FieldSpec) -> crate::action_result::DefaultTarget {
+    use crate::action_result::DefaultTarget as Target;
+    if matches!(
+        field.ty,
+        FieldType::One2many { .. } | FieldType::Many2many { .. }
+    ) {
+        return Target::ToMany(field.ty.type_name());
+    }
+    if field.related.is_some() {
+        return Target::Related;
+    }
+    if field.compute.is_some() {
+        return Target::Computed;
+    }
+    if field.readonly {
+        return Target::Readonly;
+    }
+    match &field.ty {
+        FieldType::Boolean => Target::Boolean,
+        FieldType::Integer => Target::Integer,
+        FieldType::Many2one { .. } => Target::RecordId,
+        FieldType::Float { .. } | FieldType::Monetary { .. } => Target::Number,
+        FieldType::Char { .. } | FieldType::Text | FieldType::Html => Target::Text,
+        FieldType::Selection { values, .. } => Target::Selection(
+            values
+                .as_ref()
+                .map(|values| values.iter().map(|(value, _)| value.clone()).collect()),
+        ),
+        FieldType::Date => Target::Date,
+        FieldType::Datetime => Target::Datetime,
+        other => Target::Unsupported(other.type_name()),
+    }
 }
 
 fn get_i32(row: &BTreeMap<String, Value>, field: &str) -> Result<i32> {
@@ -3226,6 +3368,14 @@ impl crate::action_result::ModelLookup for RegistryLookup<'_> {
             .model(model)
             .is_some_and(|spec| spec.field(field).is_some())
     }
+    fn default_target(
+        &self,
+        model: &str,
+        field: &str,
+    ) -> Option<crate::action_result::DefaultTarget> {
+        let spec = self.0.registry().model(model)?;
+        spec.field(field).map(default_target)
+    }
 }
 
 /// Validate a returned method value into a typed result (/0107). The object method
@@ -4600,7 +4750,45 @@ mod producer_admission_tests {
             model == "t.move"
         }
         fn has_field(&self, model: &str, field: &str) -> bool {
-            model == "t.move" && matches!(field, "move_type" | "journal_id" | "to_check")
+            self.default_target(model, field).is_some()
+        }
+        fn default_target(
+            &self,
+            model: &str,
+            field: &str,
+        ) -> Option<crate::action_result::DefaultTarget> {
+            use crate::action_result::DefaultTarget as Target;
+            if model != "t.move" {
+                return None;
+            }
+            Some(match field {
+                "move_type" => Target::Selection(Some(
+                    [
+                        "entry",
+                        "out_invoice",
+                        "out_refund",
+                        "in_invoice",
+                        "in_refund",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                )),
+                "kind" => Target::Selection(None),
+                "journal_id" => Target::RecordId,
+                "to_check" => Target::Boolean,
+                "sequence" => Target::Integer,
+                "amount" => Target::Number,
+                "ref" => Target::Text,
+                "date" => Target::Date,
+                "posted_at" => Target::Datetime,
+                "state" => Target::Readonly,
+                "amount_total" => Target::Computed,
+                "partner_name" => Target::Related,
+                "line_ids" => Target::ToMany("one2many"),
+                "tag_ids" => Target::ToMany("many2many"),
+                "attachment" => Target::Unsupported("binary"),
+                _ => return None,
+            })
         }
     }
     fn sources(domain: Option<&str>, context: Option<&str>) -> Result<ActionSources> {
@@ -4633,6 +4821,9 @@ mod producer_admission_tests {
             "{'default_move_type': 'out_invoice'}",
             " {'default_journal_id': 5, 'default_to_check': True} ",
             "{'default_journal_id': 9007199254740991}",
+            "{'default_move_type': 'in_refund', 'default_kind': 'anything'}",
+            "{'default_sequence': 3, 'default_amount': 100, 'default_ref': 'INV'}",
+            "{'default_date': '2026-11-17', 'default_posted_at': '2026-11-17 08:30:00'}",
         ] {
             let (_, document) = sources(None, Some(context)).unwrap();
             let document = document.expect("an admitted context is sent");
@@ -4685,7 +4876,7 @@ mod producer_admission_tests {
                 "Window action context keys must be text literals.",
             ),
             (
-                "{'default_move_type': 'a', 'default_move_type': 'b'}",
+                "{'default_move_type': 'entry', 'default_move_type': 'out_invoice'}",
                 "Window action context repeats the key 'default_move_type'.",
             ),
             (
@@ -4725,6 +4916,138 @@ mod producer_admission_tests {
             assert_eq!(error.kind(), ErrorKind::Validation, "{context}");
             assert!(
                 error.message().starts_with(message),
+                "{context}: {}",
+                error.message()
+            );
+        }
+    }
+    #[test]
+    fn a_default_for_a_field_it_cannot_set_is_refused_by_name() {
+        for (context, message) in [
+            (
+                "{'default_state': 'posted'}",
+                "Window action context key 'default_state' names the readonly field 'state' of 't.move': a default cannot set it.",
+            ),
+            (
+                "{'default_amount_total': 5}",
+                "Window action context key 'default_amount_total' names the computed field 'amount_total' of 't.move': a default cannot set it.",
+            ),
+            (
+                "{'default_partner_name': 'x'}",
+                "Window action context key 'default_partner_name' names the related field 'partner_name' of 't.move': a default cannot set it.",
+            ),
+            (
+                "{'default_line_ids': 1}",
+                "Window action context key 'default_line_ids' names the one2many field 'line_ids' of 't.move': it cannot take a default from an action context.",
+            ),
+            (
+                "{'default_tag_ids': 1}",
+                "Window action context key 'default_tag_ids' names the many2many field 'tag_ids' of 't.move': it cannot take a default from an action context.",
+            ),
+            (
+                "{'default_attachment': 'AAAA'}",
+                "Window action context key 'default_attachment' names the binary field 'attachment' of 't.move': it cannot take a default from an action context.",
+            ),
+            // one refused key refuses the whole context, after admitted ones too
+            (
+                "{'default_move_type': 'entry', 'default_state': 'posted'}",
+                "Window action context key 'default_state' names the readonly field",
+            ),
+        ] {
+            let error = sources(None, Some(context)).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Validation, "{context}");
+            assert!(
+                error.message().starts_with(message),
+                "{context}: {}",
+                error.message()
+            );
+        }
+    }
+    #[test]
+    fn a_default_literal_that_does_not_fit_its_field_is_refused_by_name() {
+        for (context, message) in [
+            (
+                "{'default_to_check': 1}",
+                "Window action context value of 'default_to_check' must be a boolean literal",
+            ),
+            (
+                "{'default_to_check': 'True'}",
+                "Window action context value of 'default_to_check' must be a boolean literal",
+            ),
+            (
+                "{'default_sequence': '5'}",
+                "Window action context value of 'default_sequence' must be a safe integer literal",
+            ),
+            (
+                "{'default_sequence': True}",
+                "Window action context value of 'default_sequence' must be a safe integer literal",
+            ),
+            (
+                "{'default_journal_id': 'sale'}",
+                "Window action context value of 'default_journal_id' must be a record id",
+            ),
+            (
+                "{'default_journal_id': 0}",
+                "Window action context value of 'default_journal_id' must be a record id",
+            ),
+            (
+                "{'default_journal_id': -5}",
+                "Window action context value of 'default_journal_id' must be a record id",
+            ),
+            (
+                "{'default_journal_id': True}",
+                "Window action context value of 'default_journal_id' must be a record id",
+            ),
+            (
+                "{'default_amount': '100'}",
+                "Window action context value of 'default_amount' must be a safe integer literal",
+            ),
+            (
+                "{'default_move_type': 'out_receipt'}",
+                "Window action context value of 'default_move_type' must be a text literal that is one of the field's selection values",
+            ),
+            (
+                "{'default_move_type': 1}",
+                "Window action context value of 'default_move_type' must be a text literal that is one of the field's selection values",
+            ),
+            (
+                "{'default_kind': 1}",
+                "Window action context value of 'default_kind' must be a text literal",
+            ),
+            (
+                "{'default_ref': 7}",
+                "Window action context value of 'default_ref' must be a text literal",
+            ),
+            (
+                "{'default_date': '17/11/2026'}",
+                "Window action context value of 'default_date' must be a date written as text, for example 2026-01-31",
+            ),
+            (
+                "{'default_date': '2026-11-17 08:30:00'}",
+                "Window action context value of 'default_date' must be a date written as text, for example 2026-01-31",
+            ),
+            (
+                "{'default_date': 20261117}",
+                "Window action context value of 'default_date' must be a date written as text, for example 2026-01-31",
+            ),
+            (
+                "{'default_posted_at': '2026-11-17'}",
+                "Window action context value of 'default_posted_at' must be a date and time written as text, for example 2026-01-31 08:30:00",
+            ),
+            (
+                "{'default_posted_at': '2026-11-17T08:30:00'}",
+                "Window action context value of 'default_posted_at' must be a date and time written as text, for example 2026-01-31 08:30:00",
+            ),
+        ] {
+            let error = sources(None, Some(context)).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Validation, "{context}");
+            assert!(
+                error.message().starts_with(message),
+                "{context}: {}",
+                error.message()
+            );
+            assert!(
+                error.message().ends_with("of 't.move' takes nothing else."),
                 "{context}: {}",
                 error.message()
             );

@@ -1450,7 +1450,7 @@ async fn location_policy_preserves_audit_users_and_raw_nulls() {
     h.cleanup().await.unwrap();
 }
 
-/// Empty, malformed and mixed create batches retain their normal boundaries.
+/// An empty create batch, a malformed value and a duplicate row keep their normal boundaries.
 #[tokio::test]
 async fn policy_create_preflight_keeps_empty_type_and_batch_boundaries() {
     let h = harness().await;

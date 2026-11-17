@@ -51,6 +51,12 @@ fn addons_dir() -> PathBuf {
 
 /// A fresh database with `account` installed.
 async fn install() -> (TestDb, Orm) {
+    let (db, orm, _) = install_system().await;
+    (db, orm)
+}
+
+/// [`install`] with the module system, for an upgrade.
+async fn install_system() -> (TestDb, Orm, ModuleSystem) {
     let db = TestDb::create().await.unwrap();
     let mut index = AddonIndex::new(true);
     index.add_dev_path(addons_dir());
@@ -90,7 +96,7 @@ async fn install() -> (TestDb, Orm) {
         Box::pin(system.button_immediate_install(&env, &[ModuleName::new("account").unwrap()]))
             .await
             .unwrap();
-    (db, outcome.orm)
+    (db, outcome.orm, system)
 }
 
 /// A second ORM on the same database, as another server node.
@@ -350,6 +356,108 @@ async fn posting_flips_body() {
     tx.rollback().await.unwrap();
     drop(tx);
     drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// A plain entry's total is the sum of its debit items, kept when its items change, and an upgrade
+/// from 1.2 gives the entries posted before it theirs.
+#[test]
+fn a_plain_entry_shows_the_total_of_its_debits() {
+    big_stack(entry_total_body);
+}
+
+async fn entry_total_body() {
+    let (db, orm, system) = install_system().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.rollback().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let l = ledger(&mut tx, company).await;
+    let created = moves(&tx, company)
+        .create(
+            &mut tx,
+            vec![
+                balanced(&l, d(2024, 1, 10), 5),
+                entry(
+                    d(2024, 1, 11),
+                    vec![
+                        line(l.bank, 7, 0),
+                        line(l.income, 0, 4),
+                        line(l.income, 0, 3),
+                    ],
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+    let ids = created.ids();
+    let (first, second) = (
+        created.browse([ids[0]]).unwrap(),
+        created.browse([ids[1]]).unwrap(),
+    );
+    assert_eq!(cell(&first, &mut tx, "amount_total").await, dec(5));
+    assert_eq!(cell(&second, &mut tx, "amount_total").await, dec(7));
+    // new items change it
+    first
+        .write(
+            &mut tx,
+            RawVals::new().set_commands("line_ids", vec![line(l.bank, 2, 0), line(l.income, 0, 2)]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cell(&first, &mut tx, "amount_total").await, dec(7));
+    created
+        .call::<(), ()>(&mut tx, "action_post", ())
+        .await
+        .unwrap();
+    assert_eq!(cell(&first, &mut tx, "amount_total").await, dec(7));
+    // a database of 1.2 kept these at zero
+    tx.execute(
+        "UPDATE account_move SET amount_total = 0 WHERE id = ANY($1)",
+        &[&ids],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "UPDATE ir_module_module SET latest_version = '1.2.0' WHERE name = 'account'",
+        &[],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+    let env = orm.env(SUPERUSER_ID, Context::new());
+    let upgraded =
+        Box::pin(system.button_immediate_upgrade(&env, &[ModuleName::new("account").unwrap()]))
+            .await
+            .unwrap();
+    drop(orm);
+    let mut tx = upgraded.orm.begin(SUPERUSER_ID).await.unwrap();
+    let totals: Vec<String> = tx
+        .query(
+            "SELECT amount_total::text FROM account_move WHERE id = ANY($1) ORDER BY id",
+            &[&ids],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    let totals: Vec<Decimal> = totals.iter().map(|t| t.parse().unwrap()).collect();
+    assert_eq!(totals, [Decimal::from(7), Decimal::from(7)]);
+    let version: String = tx
+        .query(
+            "SELECT latest_version FROM ir_module_module WHERE name = 'account'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(version, "1.3.0");
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(upgraded);
     db.cleanup().await.unwrap();
 }
 
@@ -1886,6 +1994,392 @@ async fn named_draft_body() {
     assert_eq!(
         batch.cells(&mut tx, "name").await.unwrap(),
         [Cell::Null, Cell::Null]
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// A draft is named by its kind, a posted entry by its number, and a reference follows in
+/// brackets: the breadcrumb and the form heading of a draft are no longer empty.
+#[test]
+fn an_entry_is_named_by_its_kind_until_it_has_a_number() {
+    big_stack(entry_names_body);
+}
+
+async fn entry_names_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.rollback().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let l = ledger(&mut tx, company).await;
+    let s = sales(&mut tx, company).await;
+    let created = moves(&tx, company)
+        .create(
+            &mut tx,
+            vec![
+                balanced(&l, d(2024, 1, 10), 5).set_cell("ref", text("Rent  of\tJanuary")),
+                invoice(&s, d(2024, 2, 10)),
+            ],
+        )
+        .await
+        .unwrap();
+    let ids = created.ids();
+    let entry = created.browse([ids[0]]).unwrap();
+    let invoice = created.browse([ids[1]]).unwrap();
+    assert_eq!(
+        cell(&entry, &mut tx, "display_name").await,
+        text("Draft Entry (Rent of January)")
+    );
+    assert_eq!(
+        cell(&invoice, &mut tx, "display_name").await,
+        text("Draft Invoice")
+    );
+    try_call(&created, &mut tx, "action_post").await.unwrap();
+    for (record, suffix) in [(&entry, " (Rent of January)"), (&invoice, "")] {
+        let Cell::Str(number) = cell(record, &mut tx, "name").await else {
+            panic!("a posted entry has a number")
+        };
+        assert_eq!(
+            cell(record, &mut tx, "display_name").await,
+            text(&format!("{number}{suffix}"))
+        );
+    }
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// An ORM on the same database that asks the installed access policy, so a test can act as a
+/// user who is not the superuser.
+async fn policy_orm(db: &TestDb, installed: &Orm) -> Orm {
+    let source = erp_security::source::PolicySource::build(
+        Arc::clone(installed.registry()),
+        db.pool().clone(),
+    )
+    .await
+    .unwrap();
+    Orm::builder(Arc::clone(installed.registry()), db.pool().clone())
+        .generation_attachment(erp_orm::GenerationAttachment::new(
+            Arc::clone(installed.registry()),
+            installed
+                .env(SUPERUSER_ID, Context::new())
+                .generation_attachment::<erp_views::PublishedViewTypes>()
+                .unwrap(),
+        ))
+        .require_core_tables(erp_security::auth::core_tables())
+        .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
+        .resolver(erp_security::resolver::Resolver::for_registry(installed.registry()).unwrap())
+        .policy(Arc::new(source) as Arc<dyn erp_orm::PolicyProvider>)
+        .impls(erp_modules::base_models::IMPLS.iter().copied())
+        .constraints(erp_modules::base_models::CONSTRAINTS.iter().copied())
+        .unlink_hook(erp_data::model_data::UNLINK_HOOK)
+        .build()
+        .unwrap()
+}
+
+async fn xml_id(tx: &mut Transaction, module: &str, name: &str) -> i64 {
+    tx.query(
+        "SELECT res_id::int8 FROM ir_model_data WHERE module = $1 AND name = $2",
+        &[&module, &name],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+/// An internal user of `company` only, with `groups`.
+async fn user(tx: &mut Transaction, login: &str, company: i64, groups: &[i64]) -> i64 {
+    let internal = xml_id(tx, "base", "group_user").await;
+    let vals = RawVals::new()
+        .set_cell("name", text(login))
+        .set_cell("login", text(login))
+        .set_cell("password", text("posting-fixture-password"))
+        .set_cell("company_id", Cell::Id(company))
+        .set_commands(
+            "company_ids",
+            vec![Command::set([RecId::from_real(company).unwrap()])],
+        )
+        .set_commands(
+            "group_ids",
+            vec![Command::set(
+                groups
+                    .iter()
+                    .chain([&internal])
+                    .map(|id| RecId::from_real(*id).unwrap()),
+            )],
+        );
+    tx.env()
+        .records("res.users")
+        .unwrap()
+        .create(tx, vec![vals])
+        .await
+        .unwrap()
+        .ids()[0]
+}
+
+/// The refusal a caller without rights on an entry gets: the access error, never the text that
+/// names the entry's state and number.
+fn kept_private(error: &Error, number: &str) {
+    assert_eq!(error.kind(), ErrorKind::Access, "{}", error.message());
+    assert!(
+        !error.message().contains(number) && !error.message().contains("posted entry"),
+        "{}",
+        error.message()
+    );
+}
+
+/// The guards of posted entries read an entry by the id the caller gave. They ask the caller's
+/// rights on that entry first: an accountant of another company, or a user without accounting
+/// rights, gets the access refusal and learns neither the state nor the number of the entry.
+#[test]
+fn the_entry_guards_ask_the_caller_rights_before_they_read_an_entry() {
+    big_stack(entry_guards_access_body);
+}
+
+async fn entry_guards_access_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let main = main_company(&mut tx).await;
+    let second = other_company(&mut tx, main).await;
+    tx.commit().await.unwrap();
+    periods(&orm, main).await;
+    periods(&orm, second).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let own = ledger(&mut tx, main).await;
+    let foreign = ledger(&mut tx, second).await;
+    let posted = moves(&tx, second)
+        .create(&mut tx, vec![balanced(&foreign, d(2024, 1, 3), 10)])
+        .await
+        .unwrap();
+    try_call(&posted, &mut tx, "action_post").await.unwrap();
+    let Cell::Str(number) = cell(&posted, &mut tx, "name").await else {
+        panic!("a posted entry has a number");
+    };
+    let draft = moves(&tx, second)
+        .create(&mut tx, vec![balanced(&foreign, d(2024, 1, 4), 10)])
+        .await
+        .unwrap();
+    let own_posted = moves(&tx, main)
+        .create(&mut tx, vec![balanced(&own, d(2024, 1, 3), 10)])
+        .await
+        .unwrap();
+    try_call(&own_posted, &mut tx, "action_post").await.unwrap();
+    let Cell::Str(own_number) = cell(&own_posted, &mut tx, "name").await else {
+        panic!("a posted entry has a number");
+    };
+    // the database keeps an active settings administrator: the rule runs on every user create
+    let system = xml_id(&mut tx, "base", "group_system").await;
+    user(&mut tx, "posting-admin", main, &[system]).await;
+    let accounting = xml_id(&mut tx, "account", "group_account_user").await;
+    let accountant = user(&mut tx, "posting-accountant", main, &[accounting]).await;
+    let outsider = user(&mut tx, "posting-outsider", main, &[]).await;
+    tx.commit().await.unwrap();
+    let orm = policy_orm(&db, &orm).await;
+
+    // an accountant of the main company, on the entries of the second company
+    let mut tx = orm
+        .begin(erp_orm::UserId::new(accountant).unwrap())
+        .await
+        .unwrap();
+    let items = tx.env().records("account.move.line").unwrap();
+    for entry in [posted.ids()[0], draft.ids()[0]] {
+        let vals = line_vals(own.bank, 5, 0).set_cell("move_id", Cell::Id(entry));
+        let model = items.clone();
+        let error = tx
+            .savepoint(async move |tx| model.create(tx, vec![vals]).await.map(|_| ()))
+            .await
+            .unwrap_err();
+        kept_private(&error, &number);
+    }
+    let theirs = tx
+        .env()
+        .records("account.move")
+        .unwrap()
+        .browse([posted.ids()[0]])
+        .unwrap();
+    let error = try_write(
+        &theirs,
+        &mut tx,
+        RawVals::new().set_cell("name", text("MINE/0001")),
+    )
+    .await
+    .unwrap_err();
+    kept_private(&error, &number);
+    let record = theirs.clone();
+    let error = tx
+        .savepoint(async move |tx| record.unlink(tx).await)
+        .await
+        .unwrap_err();
+    kept_private(&error, &number);
+    tx.rollback().await.unwrap();
+    drop(tx);
+
+    // a user without accounting rights, on a posted entry of the user's own company
+    let mut tx = orm
+        .begin(erp_orm::UserId::new(outsider).unwrap())
+        .await
+        .unwrap();
+    let items = tx.env().records("account.move.line").unwrap();
+    let vals = line_vals(own.bank, 5, 0).set_cell("move_id", Cell::Id(own_posted.ids()[0]));
+    let error = tx
+        .savepoint(async move |tx| items.create(tx, vec![vals]).await.map(|_| ()))
+        .await
+        .unwrap_err();
+    kept_private(&error, &own_number);
+    let mine = tx
+        .env()
+        .records("account.move")
+        .unwrap()
+        .browse([own_posted.ids()[0]])
+        .unwrap();
+    let record = mine.clone();
+    let error = tx
+        .savepoint(async move |tx| record.unlink(tx).await)
+        .await
+        .unwrap_err();
+    kept_private(&error, &own_number);
+    tx.rollback().await.unwrap();
+    drop(tx);
+
+    // the accountant still gets the refusal that names the entry on the company's own entries
+    let mut tx = orm
+        .begin(erp_orm::UserId::new(accountant).unwrap())
+        .await
+        .unwrap();
+    let mine = tx
+        .env()
+        .records("account.move")
+        .unwrap()
+        .browse([own_posted.ids()[0]])
+        .unwrap();
+    let error = try_write(
+        &mine,
+        &mut tx,
+        RawVals::new().set_cell("name", text("MINE/0001")),
+    )
+    .await
+    .unwrap_err();
+    refused(&error, Some("name"));
+    assert!(
+        error.message().contains(&*own_number),
+        "{}",
+        error.message()
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+/// The totals, the amount due and the payment status of an invoice come from its lines only: a
+/// caller value is refused by name on a draft too (create, write and the context default), so a
+/// draft cannot be posted with a paid status or another total.
+/// Posting runs the line sync once more, so an item changed directly on the item model is in
+/// the posted totals.
+#[test]
+fn a_draft_invoice_refuses_caller_totals_and_payment_status() {
+    big_stack(draft_totals_body);
+}
+
+async fn draft_totals_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.rollback().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let s = sales(&mut tx, company).await;
+    let model = moves(&tx, company);
+    let draft = model
+        .create(&mut tx, vec![invoice(&s, d(2024, 2, 10))])
+        .await
+        .unwrap();
+    assert_eq!(cell(&draft, &mut tx, "state").await, text("draft"));
+    let figures = [
+        ("amount_untaxed", num("1")),
+        ("amount_tax", num("1")),
+        ("amount_total", num("1")),
+        ("amount_residual", num("0")),
+        ("payment_state", text("paid")),
+    ];
+    for (field, value) in &figures {
+        let before = cell(&draft, &mut tx, field).await;
+        // on a write
+        let error = try_write(
+            &draft,
+            &mut tx,
+            RawVals::new().set_cell(*field, value.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UserError, "{}", error.message());
+        assert!(
+            error.message().contains(field) && error.message().contains("computed from its lines"),
+            "{field}: {}",
+            error.message()
+        );
+        assert_eq!(cell(&draft, &mut tx, field).await, before, "{field}");
+        // with the record
+        let vals = invoice(&s, d(2024, 2, 11)).set_cell(*field, value.clone());
+        let creator = model.clone();
+        let error = tx
+            .savepoint(async move |tx| creator.create(tx, vec![vals]).await.map(|_| ()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UserError, "{}", error.message());
+        assert!(
+            error.message().contains(field) && error.message().contains("computed from its lines"),
+            "{field}: {}",
+            error.message()
+        );
+    }
+    // through the context
+    let key = "default_payment_state";
+    let creator = model.with_context([(key, Value::Str("paid".into()))]);
+    let vals = invoice(&s, d(2024, 2, 11));
+    let error = tx
+        .savepoint(async move |tx| creator.create(tx, vec![vals]).await.map(|_| ()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError, "{}", error.message());
+    assert!(error.message().contains(key), "{}", error.message());
+    // posted, the invoice carries the figures of its lines
+    try_call(&draft, &mut tx, "action_post").await.unwrap();
+    assert_eq!(cell(&draft, &mut tx, "amount_total").await, num("115"));
+    assert_eq!(cell(&draft, &mut tx, "amount_residual").await, num("115"));
+    assert_eq!(
+        cell(&draft, &mut tx, "payment_state").await,
+        text("not_paid")
+    );
+    // an item written directly does not run the line sync: posting runs it, so the posted
+    // invoice carries the figures of the lines it has
+    let second = model
+        .create(&mut tx, vec![invoice(&s, d(2024, 2, 12))])
+        .await
+        .unwrap();
+    let product_line = second.related(&mut tx, "invoice_line_ids").await.unwrap();
+    try_write(
+        &product_line,
+        &mut tx,
+        RawVals::new().set_cell("price_unit", num("200")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cell(&second, &mut tx, "amount_total").await, num("115"));
+    try_call(&second, &mut tx, "action_post").await.unwrap();
+    assert_eq!(cell(&second, &mut tx, "state").await, text("posted"));
+    assert_eq!(cell(&second, &mut tx, "amount_untaxed").await, num("200"));
+    assert_eq!(cell(&second, &mut tx, "amount_tax").await, num("30"));
+    assert_eq!(cell(&second, &mut tx, "amount_total").await, num("230"));
+    assert_eq!(cell(&second, &mut tx, "amount_residual").await, num("230"));
+    assert_eq!(
+        cell(&product_line, &mut tx, "price_subtotal").await,
+        num("200")
     );
     tx.rollback().await.unwrap();
     drop(tx);

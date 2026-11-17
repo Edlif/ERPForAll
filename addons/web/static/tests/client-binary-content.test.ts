@@ -238,6 +238,24 @@ describe("image widget: download, enlarge and cancel on a bin_size value", () =>
     await expect(a).rejects.toMatchObject({ name: "AbortError" });
   });
 
+  test("a caller of the tick its predecessor left in starts a read of its own, not the cancelled one", async () => {
+    let reads = 0;
+    const { rpc, call } = client(async () => (++reads === 1 ? new Promise(() => {}) : [{ id: 1, image_1920: PNG }]));
+    const leaving = new AbortController();
+    const first = binaryContent(rpc, "res.partner", 1, "image_1920", {}, "1.00 Kb", leaving.signal);
+    await tick();
+    // a form render disposes a widget and builds its successor in one tick
+    leaving.abort();
+    const second = binaryContent(rpc, "res.partner", 1, "image_1920", {}, "1.00 Kb");
+    expect(second).not.toBe(first);
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    expect(await second).toBe(PNG);
+    expect(call).toHaveBeenCalledTimes(2);
+    // the cancelled read's late rejection does not remove its successor: the content is kept
+    await binaryContent(rpc, "res.partner", 1, "image_1920", {}, "1.00 Kb");
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
   test("a widget disposed while its read runs cancels it and shows no error", async () => {
     let signal: AbortSignal | undefined;
     const { rpc } = client(async (_model, _method, _args, options) => { signal = options?.["signal"] as AbortSignal; return new Promise(() => {}); });

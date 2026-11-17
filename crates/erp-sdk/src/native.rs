@@ -123,15 +123,16 @@ pub use erp_orm::{Capability, capability};
 /// Explicit native whole-unit retry policy and failure metadata.
 pub use erp_orm::{RetryPolicy, RunFailure, RunOptions, require_top_level_unit};
 
+/// Tracked fields (addon guide "Tracked fields").
+pub use erp_orm::{
+    CREATION_LOG_DISABLE_KEY, PrecommitHook, PrecommitHookFn, TRACKING_DISABLE_KEYS, TrackedChange,
+    TrackedRecord,
+};
 /// Leaf partitioning: the upkeep calls' arguments and report, and the declaration
 /// parts a runtime `ModelDecl` uses.
 pub use erp_orm::{
     Horizon, KeepAfter, PartitionAction, PartitionEntry, PartitionReport, PartitionStep,
     PartitionWindow,
-};
-/// Tracked fields (addon guide "Tracked fields").
-pub use erp_orm::{
-    PrecommitHook, PrecommitHookFn, TRACKING_DISABLE_KEYS, TrackedChange, TrackedRecord,
 };
 /// Declared access-rule operators (Amendment 1): declare one with [`rule_operator!`] and
 /// the policy compiler accepts its spelling in the domain text of `ir.access` rows on the model

@@ -30,6 +30,9 @@ impl FiscalPartner {
     ) -> Result<Vec<String>> {
         let mut fields: Vec<String> = sup.call(tx, this.as_records(), ()).await?;
         fields.push("property_account_position_id".into());
+        // the payment-term defaults of `payterm/partner.rs` follow the commercial partner too
+        fields.push("property_payment_term_id".into());
+        fields.push("property_supplier_payment_term_id".into());
         Ok(fields)
     }
 }

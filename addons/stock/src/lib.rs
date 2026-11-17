@@ -114,6 +114,9 @@ mod done;
 // The transfer's own rules: defaults and reference from the operation type, cancel, delete.
 mod picking_flow;
 
+// Status changes of transfers written by the stock statements, reported for their history.
+mod state_history;
+
 pub use quant_engine::{
     QuantBalance, QuantChange, QuantError, QuantFilter, QuantKey, apply_quant_changes,
     apply_quant_changes_in_chunks, available_quantity, gather_quants,

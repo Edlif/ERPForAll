@@ -971,9 +971,8 @@ async fn the_schema_topic() {
     assert_eq!(model.field("share").unwrap().kind(), FieldKind::Bool);
     assert!(decoded.model("res.partner").is_some());
     let models: Vec<&str> = decoded.models().map(|(n, _)| n.as_str()).collect();
-    // `thread.scheduled` adds its model to the schema `mail` contributes.
-    // shortcut: `product.product` and `product.template` are named by `mail`'s part although this database has
-    // no `product` ((c).4 is not built yet); task removes both names here.
+    // `thread.scheduled` adds its model to the schema `mail` contributes; the
+    // thread models are this database's own (base and mail only: no product models)
     assert_eq!(
         models,
         [
@@ -983,8 +982,6 @@ async fn the_schema_topic() {
             "mail.message.subtype",
             "mail.scheduled.message",
             "messaging.self",
-            "product.product",
-            "product.template",
             "res.company",
             "res.partner",
             "res.users"

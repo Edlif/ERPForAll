@@ -32,6 +32,42 @@ pub(crate) trait ModelLookup {
     fn has_model(&self, model: &str) -> bool;
     /// Whether the registered model declares the field.
     fn has_field(&self, model: &str, field: &str) -> bool;
+    /// What a `default_<field>` key of a stored window-action context may give the field; `None`
+    /// when the model does not declare the field.
+    fn default_target(&self, model: &str, field: &str) -> Option<DefaultTarget>;
+}
+
+/// How a field takes a default from a stored window-action context
+/// (`metadata.rs`, `parse_action_context`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DefaultTarget {
+    /// Related field: its value comes from another record.
+    Related,
+    /// Computed field: its value comes from its compute method.
+    Computed,
+    /// Readonly field.
+    Readonly,
+    /// One2many or many2many field, with the type's name.
+    ToMany(&'static str),
+    /// A field type that takes no default from an action context, with the type's name.
+    Unsupported(&'static str),
+    /// Boolean field: a boolean literal.
+    Boolean,
+    /// Integer field: an integer literal.
+    Integer,
+    /// Many2one field: a record id (a positive integer literal).
+    RecordId,
+    /// Float or monetary field: an integer literal (the context admits no float literal).
+    Number,
+    /// Char, text or html field: a text literal.
+    Text,
+    /// Selection field: a text literal, one of the declared values when the selection is static
+    /// (`None` for a selection whose values come from a method).
+    Selection(Option<Vec<String>>),
+    /// Date field: a text literal `YYYY-MM-DD`.
+    Date,
+    /// Datetime field: a text literal `YYYY-MM-DD HH:MM:SS`.
+    Datetime,
 }
 
 fn fail(message: impl Into<String>) -> Error {
@@ -668,6 +704,16 @@ mod tests {
         }
         fn has_field(&self, model: &str, field: &str) -> bool {
             model == "library.loan" && matches!(field, "book_id" | "borrower_id" | "due_date")
+        }
+        fn default_target(&self, model: &str, field: &str) -> Option<DefaultTarget> {
+            if model != "library.loan" {
+                return None;
+            }
+            match field {
+                "book_id" | "borrower_id" => Some(DefaultTarget::RecordId),
+                "due_date" => Some(DefaultTarget::Date),
+                _ => None,
+            }
         }
     }
 

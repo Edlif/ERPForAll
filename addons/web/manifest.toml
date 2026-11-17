@@ -11,4 +11,4 @@ license = "MIT OR Apache-2.0"
 version = "1.1"
 auto_install = true
 depends = ["base"]
-data = ["data/addons_views.xml", "data/report_layouts.xml"]
+data = ["data/addons_views.xml", "data/report_layouts.xml", "data/report_documents.xml"]

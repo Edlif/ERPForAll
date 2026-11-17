@@ -8,6 +8,8 @@
 // header (TableLook::Lined).
 #let rule = 0.5pt + rgb("#ced4da")
 #set table(stroke: (x: none, y: 0.5pt + rgb("#dee2e6")), inset: (x: 6pt, y: 5pt))
+// A table row is never split across two pages: a row that does not fit moves to the next one.
+#set table.cell(breakable: false)
 #let built = ()
 #for n in d.nodes {
   let children = n.at("children", default: ()).map(i => built.at(i))

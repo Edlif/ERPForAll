@@ -13,6 +13,7 @@ use erp_sdk::prelude::*;
 use super::settings;
 use super::{direction_sign, is_invoice, is_refund, is_sale, journal_type};
 use crate::moves::{id_cell, unchecked};
+use crate::payterm::{self, compute as terms_compute};
 use crate::tax::compute::{self, AmountType, BaseLine, TaxDef, TaxKind};
 
 fn real(id: i64) -> Result<RecId> {
@@ -124,6 +125,8 @@ struct Invoice {
     move_type: Arc<str>,
     company: i64,
     currency: i64,
+    company_currency: i64,
+    term: Option<i64>,
     journal: i64,
     partner: Option<i64>,
     invoice_date: Option<Date>,
@@ -201,6 +204,8 @@ async fn load_invoices(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Res
         .browse(chosen.iter().copied())?;
     let companies = moves.cells(tx, "company_id").await?;
     let currencies = moves.cells(tx, "currency_id").await?;
+    let company_currencies = moves.cells(tx, "company_currency_id").await?;
+    let terms = moves.cells(tx, "invoice_payment_term_id").await?;
     let journals = moves.cells(tx, "journal_id").await?;
     let partners = moves.cells(tx, "partner_id").await?;
     let invoice_dates = moves.cells(tx, "invoice_date").await?;
@@ -221,6 +226,15 @@ async fn load_invoices(tx: &mut Transaction, env: &Env, move_ids: &[i64]) -> Res
                 .ok_or_else(|| missing("company"))?,
             currency: id_cell(Some(nth(&currencies, i, "currency_id")?), "currency_id")?
                 .ok_or_else(|| missing("currency"))?,
+            company_currency: id_cell(
+                Some(nth(&company_currencies, i, "company_currency_id")?),
+                "company_currency_id",
+            )?
+            .ok_or_else(|| missing("company currency"))?,
+            term: id_cell(
+                Some(nth(&terms, i, "invoice_payment_term_id")?),
+                "invoice_payment_term_id",
+            )?,
             journal: id_cell(Some(nth(&journals, i, "journal_id")?), "journal_id")?
                 .ok_or_else(|| missing("journal"))?,
             partner: id_cell(Some(nth(&partners, i, "partner_id")?), "partner_id")?,
@@ -267,7 +281,7 @@ async fn check_journals(tx: &mut Transaction, env: &Env, invoices: &[Invoice]) -
     Ok(())
 }
 
-/// The rounding increment of each invoice currency.
+/// The rounding increment of each invoice currency and company currency.
 async fn load_increments(
     tx: &mut Transaction,
     env: &Env,
@@ -275,7 +289,7 @@ async fn load_increments(
 ) -> Result<BTreeMap<i64, Increment>> {
     let currencies: Vec<i64> = invoices
         .iter()
-        .map(|i| i.currency)
+        .flat_map(|i| [i.currency, i.company_currency])
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -708,13 +722,17 @@ async fn sync(tx: &mut Transaction, env: &Env, move_ids: &[i64], redated: bool) 
     if !creates.is_empty() {
         items.create(tx, std::mem::take(&mut creates)).await?;
     }
-    sync_terms(tx, env, &items, &lines, &totals).await?;
+    let term_dues = sync_terms(tx, env, &items, &lines, &totals, &increments).await?;
     // the header totals, written past the entry's write override (they trigger no sync); a
     // header whose stored values already match is not written
     let moves = env.records("account.move")?;
     for (invoice, untaxed, tax) in &totals {
         let amount_total = total(*untaxed, *tax)?;
-        let due = due_date(invoice).filter(|due| invoice.due != Some(*due));
+        let due = term_dues
+            .get(&invoice.id)
+            .copied()
+            .or_else(|| due_date(invoice))
+            .filter(|due| invoice.due != Some(*due));
         if due.is_none() && header_matches(&invoice.stored, *untaxed, *tax, amount_total) {
             continue;
         }
@@ -793,7 +811,8 @@ async fn sync_terms(
     items: &Records,
     lines: &[Line],
     totals: &[(&Invoice, Decimal, Decimal)],
-) -> Result<()> {
+    increments: &BTreeMap<i64, Increment>,
+) -> Result<BTreeMap<i64, Date>> {
     tx.flush().await?;
     let move_ids: Vec<i64> = totals.iter().map(|(i, _, _)| i.id).collect();
     let rows = tx
@@ -838,6 +857,19 @@ async fn sync_terms(
             text(nth(&cells, i, "account type")?, "account_type")?,
         );
     }
+    let term_ids: Vec<i64> = totals
+        .iter()
+        .filter_map(|(i, _, _)| i.term)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let payment_terms = payterm::load_terms(tx, env, &term_ids).await?;
+    let digits = if term_ids.is_empty() {
+        0
+    } else {
+        payterm::percent_digits(tx, env).await?
+    };
+    let mut term_dues: BTreeMap<i64, Date> = BTreeMap::new();
     let mut fallback: BTreeMap<(i64, &'static str), i64> = BTreeMap::new();
     let mut creates = Vec::new();
     let mut deletes = Vec::new();
@@ -871,39 +903,61 @@ async fn sync_terms(
                 }
             },
         };
-        let due = due_date(invoice);
         let (term_balance, term_amount) = (-balance, -amount);
-        match terms.split_first() {
-            Some((term, rest)) => {
-                deletes.extend(rest.iter().map(|l| l.id));
-                let same = term.balance == term_balance
-                    && term.amount_currency == term_amount
-                    && term.currency == Some(invoice.currency)
-                    && term.account == Some(account)
-                    && term.partner == invoice.partner
-                    && term.maturity == due;
-                if !same {
-                    let vals = RawVals::new()
-                        .set_cell("currency_id", Cell::Id(invoice.currency))
+        let wanted_lines = installments(
+            invoice,
+            &payment_terms,
+            digits,
+            increments,
+            term_balance,
+            term_amount,
+        )?;
+        if let Some(last) = wanted_lines.iter().filter_map(|w| w.date).max()
+            && invoice.term.is_some()
+        {
+            term_dues.insert(invoice.id, last);
+        }
+        let mut existing = terms.iter();
+        for wanted_line in &wanted_lines {
+            let due = wanted_line.date;
+            match existing.next() {
+                Some(term) => {
+                    let same = term.balance == wanted_line.balance
+                        && term.amount_currency == wanted_line.amount_currency
+                        && term.currency == Some(invoice.currency)
+                        && term.account == Some(account)
+                        && term.partner == invoice.partner
+                        && term.maturity == due;
+                    if !same {
+                        let vals = RawVals::new()
+                            .set_cell("currency_id", Cell::Id(invoice.currency))
+                            .set_cell("account_id", Cell::Id(account))
+                            .set_cell("partner_id", invoice.partner.map_or(Cell::Null, Cell::Id))
+                            .set_cell("date_maturity", due.map_or(Cell::Null, Cell::Date))
+                            .set_cell("balance", Cell::Decimal(wanted_line.balance))
+                            .set_cell(
+                                "amount_currency",
+                                Cell::Decimal(wanted_line.amount_currency),
+                            );
+                        items.browse([term.id])?.write(tx, vals).await?;
+                    }
+                }
+                None => creates.push(
+                    RawVals::new()
+                        .set_cell("move_id", Cell::Id(invoice.id))
+                        .set_cell("display_type", Cell::Str("payment_term".into()))
                         .set_cell("account_id", Cell::Id(account))
                         .set_cell("partner_id", invoice.partner.map_or(Cell::Null, Cell::Id))
                         .set_cell("date_maturity", due.map_or(Cell::Null, Cell::Date))
-                        .set_cell("balance", Cell::Decimal(term_balance))
-                        .set_cell("amount_currency", Cell::Decimal(term_amount));
-                    items.browse([term.id])?.write(tx, vals).await?;
-                }
+                        .set_cell("balance", Cell::Decimal(wanted_line.balance))
+                        .set_cell(
+                            "amount_currency",
+                            Cell::Decimal(wanted_line.amount_currency),
+                        ),
+                ),
             }
-            None => creates.push(
-                RawVals::new()
-                    .set_cell("move_id", Cell::Id(invoice.id))
-                    .set_cell("display_type", Cell::Str("payment_term".into()))
-                    .set_cell("account_id", Cell::Id(account))
-                    .set_cell("partner_id", invoice.partner.map_or(Cell::Null, Cell::Id))
-                    .set_cell("date_maturity", due.map_or(Cell::Null, Cell::Date))
-                    .set_cell("balance", Cell::Decimal(term_balance))
-                    .set_cell("amount_currency", Cell::Decimal(term_amount)),
-            ),
         }
+        deletes.extend(existing.map(|l| l.id));
     }
     if !deletes.is_empty() {
         items.browse(deletes)?.unlink(tx).await?;
@@ -911,7 +965,68 @@ async fn sync_terms(
     if !creates.is_empty() {
         items.create(tx, creates).await?;
     }
-    Ok(())
+    Ok(term_dues)
+}
+
+/// The receivable or payable lines an invoice needs for the amounts to collect, one per instalment
+/// of its payment terms. Without terms, or while the invoice has no date
+/// to count from, a single line due on [`due_date`]: the invoice then keeps the lines it had.
+fn installments(
+    invoice: &Invoice,
+    payment_terms: &BTreeMap<i64, Vec<terms_compute::TermLine>>,
+    digits: u32,
+    increments: &BTreeMap<i64, Increment>,
+    balance: Decimal,
+    amount_currency: Decimal,
+) -> Result<Vec<Wanted>> {
+    let single = || {
+        vec![Wanted {
+            date: due_date(invoice),
+            balance,
+            amount_currency,
+        }]
+    };
+    let (Some(term), Some(date_ref)) = (invoice.term, invoice.invoice_date.or(invoice.date)) else {
+        return Ok(single());
+    };
+    let lines = payment_terms
+        .get(&term)
+        .ok_or_else(|| Error::invariant(format!("payment term {term} was not loaded")))?;
+    terms_compute::check_percent_lines(lines, digits)?;
+    let increment = |currency: i64| {
+        increments
+            .get(&currency)
+            .ok_or_else(|| Error::invariant("an invoice currency has no loaded rounding"))
+    };
+    let sign = if balance < Decimal::ZERO || (balance.is_zero() && amount_currency < Decimal::ZERO)
+    {
+        -Decimal::ONE
+    } else {
+        Decimal::ONE
+    };
+    Ok(terms_compute::instalments(
+        lines,
+        date_ref,
+        balance,
+        amount_currency,
+        sign,
+        increment(invoice.company_currency)?,
+        increment(invoice.currency)?,
+    )?
+    .into_iter()
+    .map(|i| Wanted {
+        date: Some(i.date),
+        balance: i.balance,
+        amount_currency: i.amount_currency,
+    })
+    .collect())
+}
+
+/// A receivable or payable line the invoice needs: its due date and its amounts.
+struct Wanted {
+    date: Option<Date>,
+    balance: Decimal,
+    amount_currency: Decimal,
 }
 
 /// The receivable or payable account (`wanted` is the account type) of an invoice of `company`

@@ -2,11 +2,12 @@
 // The built-in registry entries: message actions, composer actions, message renderers and the `@` suggestion
 // provider. Addons add theirs next to these.
 import { untrack } from "@erpforall/elang";
-import { PARTNER_MODEL, readMessage } from "./contract";
+import { PARTNER_MODEL, parseWireDatetime, readMessage } from "./contract";
 import { glyphNode, h, humanize, normalize } from "./dom";
 import { OWNING_TASK, ThreadViewError, unavailable } from "./errors";
 import { performOperation } from "./operations";
 import type { ComposerAction, MessageAction, MessageRenderer, PartnerSuggestion, Suggestion, SuggestionProvider, ThreadViewRegistries } from "./registries";
+import { formatter } from "./message";
 import { bodyTextOf, renderBody } from "./sanitize";
 import { t } from "./context";
 import { threadState } from "./state";
@@ -144,8 +145,16 @@ const trackingRenderer: MessageRenderer = {
     const none = t(view, "None");
     const list = h(doc, "ul", { class: "erp-mail-tracking" });
     for (const change of message.tracking) {
-      const label = view.services.fieldLabel?.(view.ref.model, change.field) ?? humanize(change.field);
-      const shown = (display: string | null, raw: unknown): string => (display !== null && display !== "" ? display : raw === null || raw === "" || raw === false ? none : String(raw));
+      const label = view.services.fieldLabel?.(view.ref.model, change.field) ?? change.label ?? humanize(change.field);
+      const shown = (display: string | null, raw: unknown): string => {
+        if (display !== null && display !== "") return display;
+        if (raw === null || raw === "" || raw === false || (Array.isArray(raw) && raw.length === 0)) return none;
+        // A datetime is stored in UTC without display text: show it in the viewer's zone.
+        if (change.type === "datetime" && typeof raw === "string") {
+          return formatter(view.services.locale, view.services.timeZone, "datetime").format(parseWireDatetime(raw, `tracking ${change.field}`));
+        }
+        return String(raw);
+      };
       list.append(
         h(doc, "li", { class: "erp-mail-tracking-change", "data-field": change.field },
           h(doc, "span", { class: "erp-mail-tracking-field" }, label),

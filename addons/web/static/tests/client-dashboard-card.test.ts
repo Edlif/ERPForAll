@@ -4,7 +4,7 @@
 // through the application to the action named by its XML id.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { HumanApp } from "../src/client/app.js";
-import { axisLabel, dashboardCardWidget, parseDashboardCard } from "../src/client/dashboard-card.js";
+import { admitRequestContext, axisLabel, dashboardCardWidget, parseDashboardCard } from "../src/client/dashboard-card.js";
 import { CurrencyDisplayCache } from "../src/client/field-currency.js";
 import { kanbanLayout, renderKanbanCards } from "../src/client/kanban.js";
 import { describeViews, type Field } from "../src/client/metadata.js";
@@ -23,7 +23,7 @@ const contract = () => ({
   ],
   stats: [
     { label: "Late", count: 3, amount: "1250000.00", currency_id: 12, action: "account.action_move_out_invoice_type",
-      domain: [["journal_id", "=", 5], ["state", "=", "posted"]], context: { journal_type: "sale" }, tone: "danger" },
+      domain: [["journal_id", "=", 5], ["state", "=", "posted"]], context: { default_journal_id: 5 }, tone: "danger" },
     { label: "To check", count: 1200, amount: null, currency_id: null, action: "account.action_move_journal_line", domain: [], context: {}, tone: "neutral" }
   ],
   chart: { type: "bar", label: "Due", points: [{ label: "Overdue", value: "900000.00", tone: "danger" }, { label: "This week", value: "1250.50", tone: "neutral" }, { label: "Later", value: "-20", tone: "warning" }] }
@@ -56,7 +56,7 @@ test("contract v1 is admitted into a validated card", () => {
     ],
     stats: [
       { label: "Late", count: 3, amount: "1250000.00", currencyId: 12, action: "account.action_move_out_invoice_type",
-        domain: [["journal_id", "=", 5], ["state", "=", "posted"]], context: { journal_type: "sale" }, tone: "danger" },
+        domain: [["journal_id", "=", 5], ["state", "=", "posted"]], context: { default_journal_id: 5 }, tone: "danger" },
       { label: "To check", count: 1200, amount: null, currencyId: null, action: "account.action_move_journal_line", domain: [], context: {}, tone: "neutral" }
     ],
     chart: { type: "bar", label: "Due", points: [{ label: "Overdue", value: "900000.00", tone: "danger" }, { label: "This week", value: "1250.50", tone: "neutral" }, { label: "Later", value: "-20", tone: "warning" }] }
@@ -105,6 +105,57 @@ test("each departure from contract v1 is refused by the key it concerns and draw
     const { node } = dashboardCardWidget(environment(value).env);
     expect(node.className).toBe("dashboard-card-error");
     expect(node.textContent).toBe(message);
+  }
+});
+
+test("a button's or figure's context admits only default keys with plain values", () => {
+  const withContext = (context: unknown, stat = false) => json(value => { ((stat ? value.stats[0] : value.buttons[1]) as Record<string, unknown>)["context"] = context; });
+  const keys = "is not admitted: only default_<field> keys are.";
+  const filter = "is not admitted: a card cannot set a default filter yet (put the condition in the figure's domain), only default_<field> keys are.";
+  const plain = "must be a text, a boolean or a whole number.";
+  const cases: [string, string][] = [
+    [withContext({ allowed_company_ids: [1, 2] }), `Dashboard card: buttons[1].context["allowed_company_ids"] ${keys}`],
+    [withContext({ default_move_type: "out_invoice", lang: "fr_FR" }), `Dashboard card: buttons[1].context["lang"] ${keys}`],
+    [withContext({ tz: "UTC" }), `Dashboard card: buttons[1].context["tz"] ${keys}`],
+    [withContext({ active_test: false }), `Dashboard card: buttons[1].context["active_test"] ${keys}`],
+    [withContext({ bin_size: true }), `Dashboard card: buttons[1].context["bin_size"] ${keys}`],
+    [withContext({ journal_type: "sale" }), `Dashboard card: buttons[1].context["journal_type"] ${keys}`],
+    [withContext({ default_: 1 }), `Dashboard card: buttons[1].context["default_"] ${keys}`],
+    [withContext({ Default_Move_Type: "entry" }), `Dashboard card: buttons[1].context["Default_Move_Type"] ${keys}`],
+    [withContext({ default_journal_id: { id: 5 } }), `Dashboard card: buttons[1].context["default_journal_id"] ${plain}`],
+    [withContext({ default_journal_id: [5] }), `Dashboard card: buttons[1].context["default_journal_id"] ${plain}`],
+    [withContext({ default_journal_id: 5.5 }), `Dashboard card: buttons[1].context["default_journal_id"] ${plain}`],
+    [withContext({ default_journal_id: null }), `Dashboard card: buttons[1].context["default_journal_id"] ${plain}`],
+    // The list does not apply default filters yet: such a key would open it unfiltered, so it is refused by name.
+    [withContext({ search_default_journal_id: 5 }), `Dashboard card: buttons[1].context["search_default_journal_id"] ${filter}`],
+    [withContext({ search_default_journal_id: 5 }, true), `Dashboard card: stats[0].context["search_default_journal_id"] ${filter}`],
+    [withContext(Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`default_field_${index}`, index]))), "Dashboard card: buttons[1].context has more than 16 keys."],
+    [withContext({ lang: "fr_FR" }, true), `Dashboard card: stats[0].context["lang"] ${keys}`],
+    [withContext({ default_journal_id: 5.5 }, true), `Dashboard card: stats[0].context["default_journal_id"] ${plain}`]
+  ];
+  for (const [value, message] of cases) {
+    expect(() => parseDashboardCard(value), message).toThrowError(expect.objectContaining({ kind: "server", message }));
+    const { node } = dashboardCardWidget(environment(value).env);
+    expect(node.className).toBe("dashboard-card-error");
+    expect(node.textContent).toBe(message);
+  }
+  // The keys the server sends today, and sixteen keys, pass unchanged.
+  const real = { default_move_type: "out_invoice", default_journal_id: 5, default_picking_type_id: 3 };
+  expect(parseDashboardCard(withContext(real))!.buttons[1]!.context).toEqual(real);
+  expect(parseDashboardCard(withContext(real, true))!.stats[0]!.context).toEqual(real);
+  const sixteen = Object.fromEntries(Array.from({ length: 16 }, (_, index) => [`default_field_${index}`, index % 2 === 0 ? index : `value ${index}`]));
+  expect(parseDashboardCard(withContext({ ...sixteen, default_field_0: true }))!.buttons[1]!.context).toEqual({ ...sixteen, default_field_0: true });
+});
+
+test("the application checks a request's context again where it uses it", () => {
+  expect(admitRequestContext({ default_move_type: "out_invoice", default_journal_id: 5 }, "the request context")).toEqual({ default_move_type: "out_invoice", default_journal_id: 5 });
+  for (const [value, message] of [
+    [{ allowed_company_ids: [9] }, "Dashboard card: the request context[\"allowed_company_ids\"] is not admitted: only default_<field> keys are."],
+    [{ search_default_journal_id: 5 }, "Dashboard card: the request context[\"search_default_journal_id\"] is not admitted: a card cannot set a default filter yet (put the condition in the figure's domain), only default_<field> keys are."],
+    [{ default_journal_id: [5] }, "Dashboard card: the request context[\"default_journal_id\"] must be a text, a boolean or a whole number."],
+    [[], "Dashboard card: the request context must be an object."]
+  ] as [unknown, string][]) {
+    expect(() => admitRequestContext(value, "the request context"), message).toThrowError(expect.objectContaining({ kind: "server", message }));
   }
 });
 
@@ -205,7 +256,7 @@ test("a button opens its action with its context; a figure opens its action's li
   expect(opened).toEqual([
     { xmlId: "account.action_move_out_invoice_type", viewMode: "form", domain: [], context: { default_move_type: "out_invoice", default_journal_id: 5 } },
     { xmlId: "account.action_move_in_invoice_type", viewMode: null, domain: [], context: {} },
-    { xmlId: "account.action_move_out_invoice_type", viewMode: "list", domain: [["journal_id", "=", 5], ["state", "=", "posted"]], context: { journal_type: "sale" } }
+    { xmlId: "account.action_move_out_invoice_type", viewMode: "list", domain: [["journal_id", "=", 5], ["state", "=", "posted"]], context: { default_journal_id: 5 } }
   ]);
 });
 
@@ -269,6 +320,25 @@ test("without an action opener the card shows why instead of drawing dead contro
 });
 
 // ---- through the application ----
+test("one failed currency read is reported once for every figure that waited on it; a disposed card reports and draws nothing", async () => {
+  const refused = () => new RpcClient(async () => reply({ name: "erp.exceptions.AccessError", message: "You may not read currencies." }, 403), () => {});
+  const amounts = (node: HTMLElement) => [...node.querySelectorAll(".dashboard-card-stat-amount")].map(item => item.textContent);
+  // two money figures per card, three cards of one view (one currency cache)
+  const twoAmounts = json(value => { value.stats[1] = { ...value.stats[0]!, label: "Unpaid" } as never; });
+  const shared = { rpc: refused(), currencies: new CurrencyDisplayCache() }, reported: unknown[] = [];
+  const make = () => dashboardCardWidget(environment(twoAmounts, { ...shared, report: error => { reported.push(error); } }).env);
+  const kept = make(), other = make(), replaced = make();
+  replaced.dispose();
+  await vi.waitFor(() => expect(amounts(other.node)).toEqual(["Amount unavailable", "Amount unavailable"]));
+  expect(amounts(kept.node)).toEqual(["Amount unavailable", "Amount unavailable"]);
+  expect(amounts(replaced.node)).toEqual(["…", "…"]);
+  expect(reported).toHaveLength(1);
+  // a card that was replaced before the answer is the only one waiting: nothing is reported
+  const alone = environment(json(), { rpc: refused() });
+  dashboardCardWidget(alone.env).dispose();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(alone.reported).toEqual([]);
+});
 
 const column = (type: string, label: string) => ({ type, label, required: false, readonly: false, relation: null, relation_field: null, selection: null });
 const modifiers = { readonly: null, required: null, invisible: null };
@@ -345,7 +415,7 @@ test("through the application a figure loads its action by XML id and opens its 
   expect(reference.body).toMatchObject({ xml_id: "account.action_move_out_invoice_type" });
   const read = calls.filter(call => call.model === "t.move" && call.method === "web_search_read").at(-1)!.body;
   expect(read["domain"]).toEqual([["move_type", "=", "out_invoice"], ["journal_id", "=", 5], ["state", "=", "posted"]]);
-  expect(read["context"]).toMatchObject({ journal_type: "sale" });
+  expect(read["context"]).toMatchObject({ default_journal_id: 5 });
   expect(new URL(window.location.href).searchParams.get("view_type")).toBe("list");
 });
 
@@ -383,11 +453,81 @@ test("the action's own literal defaults travel with a figure's list, so New ther
   root.querySelector<HTMLButtonElement>(".dashboard-card-stat")!.click();
   await vi.waitFor(() => expect(calls.some(call => call.model === "t.move" && call.method === "web_search_read")).toBe(true));
   const read = calls.filter(call => call.model === "t.move" && call.method === "web_search_read").at(-1)!.body;
-  expect(read["context"]).toMatchObject({ default_move_type: "out_invoice", journal_type: "sale" });
+  expect(read["context"]).toMatchObject({ default_move_type: "out_invoice", default_journal_id: 5 });
+  // The session's own keys are handed on as the session set them, next to the admitted defaults.
+  expect(read["context"]).toMatchObject({ allowed_company_ids: [1], lang: "en_US", tz: "UTC" });
   const create = [...root.querySelectorAll<HTMLButtonElement>("[data-control-actions] button")].find(node => node.textContent?.trim() === "New");
   expect(create).toBeDefined();
   create!.click();
   await vi.waitFor(() => expect(calls.some(call => call.model === "t.move" && call.method === "default_get")).toBe(true));
   const defaults = calls.find(call => call.model === "t.move" && call.method === "default_get")!.body;
   expect(defaults["context"]).toMatchObject({ default_move_type: "out_invoice" });
+});
+
+/** The journals kanban with one card, and `actionRef` answering the read of the action a figure names. */
+async function journalsPage(actionRef: () => Response | Promise<Response>) {
+  history.replaceState(null, "", "/erp/action-20");
+  const calls: { model: string; method: string }[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    const parts = url.split("/"), method = parts.at(-1)!, model = parts.at(-2)!;
+    calls.push({ model, method });
+    if (method === "erp_load_web_menus") return reply({ wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: "Journals", action_id: 20, children: [], icon: null }] });
+    if (method === "erp_load_web_action" || method === "erp_load_web_action_views") {
+      const action = { wire_major: 1, id: 20, name: "Journals", model: "t.journal", target: "current", views: [{ id: 7, type: "kanban" }], domain: null, context: null };
+      return reply(method === "erp_load_web_action_views" ? { action, views: journals } : action);
+    }
+    if (method === "erp_load_web_action_ref") return actionRef();
+    if (method === "get_views") return reply(model === "t.move" ? moves : journals);
+    if (method === "fields_get") return reply({ name: { string: "Name", type: "char", groupable: true } });
+    if (method === "web_search_read") return reply(model === "t.move" ? { length: 0, records: [] } : { length: 1, records: [{ id: 5, name: "Customer Invoices", dashboard: json() }] });
+    if (model === "res.currency" && method === "web_read") return reply([{ id: 12, symbol: "Rp", position: "before", decimal_places: 2 }]);
+    return reply([]);
+  }));
+  const root = document.createElement("div");
+  for (const region of ["header", "navigation", "notice", "content"]) { const node = document.createElement("div"); node.setAttribute(`data-client-${region}`, ""); root.append(node); }
+  document.body.append(root);
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  await vi.waitFor(() => expect(root.querySelector(".dashboard-card-stat")).not.toBeNull());
+  return { root, calls, asked: () => calls.filter(call => call.method === "erp_load_web_action_ref").length, listed: () => calls.some(call => call.model === "t.move" && call.method === "web_search_read") };
+}
+const invoices = () => reply({ wire_major: 1, id: 30, name: "Invoices", model: "t.move", target: "current", views: [{ id: 12, type: "list" }, { id: 13, type: "form" }], domain: null, context: null });
+const settled = () => new Promise(resolve => setTimeout(resolve, 30));
+
+test("a figure activated twice while its action is read opens its list once", async () => {
+  const answers: ((response: Response) => void)[] = [];
+  const page = await journalsPage(() => new Promise<Response>(resolve => { answers.push(resolve); }));
+  const entries = history.length;
+  page.root.querySelector<HTMLButtonElement>(".dashboard-card-stat")!.click();
+  page.root.querySelector<HTMLButtonElement>(".dashboard-card-stat")!.click();
+  await vi.waitFor(() => expect(page.asked()).toBe(2));
+  answers[0]!(invoices());
+  await settled();
+  // the earlier request is not the latest one: its answer opens nothing
+  expect(page.listed()).toBe(false);
+  expect(history.length).toBe(entries);
+  answers[1]!(invoices());
+  await vi.waitFor(() => expect(page.listed()).toBe(true));
+  await settled();
+  expect(history.length).toBe(entries + 1);
+  expect(new URL(window.location.href).searchParams.get("view_type")).toBe("list");
+  expect(page.root.querySelector("[data-client-notice]")!.textContent).not.toContain("Wait for the current operation to finish.");
+});
+
+test("a figure's action that answers after the user left the page opens nothing", async () => {
+  const answers: ((response: Response) => void)[] = [];
+  const page = await journalsPage(() => new Promise<Response>(resolve => { answers.push(resolve); }));
+  page.root.querySelector<HTMLButtonElement>(".dashboard-card-stat")!.click();
+  await vi.waitFor(() => expect(page.asked()).toBe(1));
+  // the user goes back to the home page while the read runs: a navigation of their own
+  history.replaceState({ erpIndex: -1 }, "", "/erp");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: { erpIndex: -1 } }));
+  await vi.waitFor(() => expect(page.root.querySelector(".home-grid")).not.toBeNull());
+  const entries = history.length, address = window.location.href;
+  answers[0]!(invoices());
+  await settled();
+  expect(page.listed()).toBe(false);
+  expect(history.length).toBe(entries);
+  expect(window.location.href).toBe(address);
+  expect(page.root.querySelector(".home-grid")).not.toBeNull();
 });

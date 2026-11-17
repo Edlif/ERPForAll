@@ -325,16 +325,48 @@ async fn cards_per_journal_type_with_drafts_body() {
         };
         let card: Json = serde_json::from_str(json).unwrap();
         assert_eq!(card["v"], 1);
-        assert_eq!(card["buttons"][0]["context"]["default_journal_id"], id);
+        if id == b.bank {
+            // a bank journal starts no document from its card
+            assert_eq!(card["buttons"], serde_json::json!([]), "{card}");
+        } else {
+            assert_eq!(card["buttons"][0]["context"]["default_journal_id"], id);
+        }
         for stat in card["stats"].as_array().unwrap() {
             if stat["label"] == "Balance" {
+                // journal items of the default account: no journal default
+                assert_eq!(stat["context"], serde_json::json!({}));
                 continue;
             }
             assert_eq!(
                 stat["domain"][0],
                 serde_json::json!(["journal_id", "=", id])
             );
+            // New in the opened list creates in this journal
+            assert_eq!(
+                stat["context"],
+                serde_json::json!({"default_journal_id": id}),
+                "{stat}"
+            );
         }
+    }
+
+    // the lists the figures of a sales and a purchase card open show every document type
+    for name in ["action_move_out_documents", "action_move_in_documents"] {
+        let action = xml_id(&mut tx, "account", name).await;
+        let rows = tx
+            .query(
+                "SELECT res_model, domain FROM ir_act_window WHERE id::int8 = $1",
+                &[&action],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{name} is installed");
+        assert_eq!(rows[0].get::<_, String>(0), "account.move");
+        assert_eq!(
+            rows[0].get::<_, Option<String>>(1),
+            None,
+            "{name} has no domain of its own"
+        );
     }
 
     let sale = card(&mut tx, main, b.sale).await.unwrap();
@@ -352,10 +384,14 @@ async fn cards_per_journal_type_with_drafts_body() {
     assert_eq!(drafts["count"], 2);
     assert_eq!(amount(&drafts["amount"]), Decimal::from(75));
     assert_eq!(drafts["currency_id"], currency);
-    assert_eq!(drafts["action"], "account.action_move_out_invoice_type");
+    // the invoice of 100 and the refund-like entry of 25 are both counted, so the list the
+    // figure opens is not limited to one document type
+    assert_eq!(drafts["action"], "account.action_move_out_documents");
+    assert_eq!(drafts["context"]["default_journal_id"], b.sale);
     // a figure that counts nothing is shown at zero, in the neutral tone
     for label in ["Unpaid", "Late"] {
         let zero = stat(&sale, label);
+        assert_eq!(zero["action"], "account.action_move_out_documents");
         assert_eq!(zero["count"], 0, "{sale}");
         assert_eq!(amount(&zero["amount"]), Decimal::ZERO);
         assert_eq!(zero["tone"], "neutral");
@@ -396,14 +432,28 @@ async fn cards_per_journal_type_with_drafts_body() {
         Decimal::from(70),
         "purchases show a positive amount"
     );
+    for label in ["Drafts", "To pay", "Late"] {
+        assert_eq!(
+            stat(&purchase, label)["action"],
+            "account.action_move_in_documents"
+        );
+    }
+    assert_eq!(drafts["context"]["default_journal_id"], b.purchase);
 
     let bank = card(&mut tx, main, b.bank).await.unwrap();
-    assert_eq!(bank["buttons"][0]["label"], "Transactions");
+    assert_eq!(bank["buttons"], serde_json::json!([]));
+    // the journal's entries are a figure: its count is the list it opens (one draft entry)
+    let transactions = stat(&bank, "Transactions");
+    assert_eq!(transactions["count"], 1, "{bank}");
+    assert!(transactions["amount"].is_null() && transactions["currency_id"].is_null());
+    assert_eq!(transactions["action"], "account.action_move_journal_line");
+    // the list shows every kind of entry: the stat's own domain keeps the plain ones it counts
     assert_eq!(
-        bank["buttons"][0]["action"],
-        "account.action_move_journal_line"
+        transactions["domain"],
+        serde_json::json!([["journal_id", "=", b.bank], ["move_type", "=", "entry"]])
     );
-    assert!(bank["buttons"][0]["view_mode"].is_null());
+    assert_eq!(transactions["context"]["default_journal_id"], b.bank);
+    assert_eq!(stat(&bank, "Balance")["context"], serde_json::json!({}));
     // a draft is not in the balance: the figure is shown at zero
     assert_eq!(stat(&bank, "Balance")["count"], 0, "{bank}");
     assert_eq!(amount(&stat(&bank, "Balance")["amount"]), Decimal::ZERO);
@@ -417,6 +467,14 @@ async fn cards_per_journal_type_with_drafts_body() {
         "entry"
     );
     assert_eq!(stat(&general, "Drafts")["count"], 1);
+    assert_eq!(
+        stat(&general, "Drafts")["action"],
+        "account.action_move_journal_line"
+    );
+    assert_eq!(
+        stat(&general, "Drafts")["context"]["default_journal_id"],
+        b.general
+    );
     assert!(stat(&general, "Drafts")["amount"].is_null());
     assert!(general["chart"].is_null());
     tx.rollback().await.unwrap();

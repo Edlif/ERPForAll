@@ -77,6 +77,8 @@ test("tracking JSON is validated change by change with the exact path in the mes
   failsWith(() => parseTracking('[{"n":"x","t":"char","od":3}]', "t"), "data", "t[0].od must be a string or null");
   failsWith(() => parseTracking(JSON.stringify(Array.from({ length: 257 }, () => ({ n: "x", t: "char" }))), "t"), "data", "t lists 257 changes; the limit is 256");
   expect(parseTracking('[{"n":"name","t":"char","o":"a","v":"b"}]', "t")).toEqual([{ field: "name", type: "char", old: "a", new: "b", oldDisplay: null, newDisplay: null }]);
+  expect(parseTracking('[{"n":"state","l":"Status","t":"selection","o":"draft","v":"done"}]', "t")[0]?.label).toBe("Status");
+  failsWith(() => parseTracking('[{"n":"x","t":"char","l":3}]', "t"), "data", "t[0].l must be a string or null");
 });
 
 test("the registries are defined once per hub and each guard refuses a malformed value", () => {

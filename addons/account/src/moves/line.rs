@@ -8,6 +8,7 @@ use erp_addon_base::money::{
     CURRENCY_ROUNDING_MODE, MAX_CURRENCIES_PER_CALL, RateBook, RoundingTable,
 };
 use erp_sdk::GeneratedInput;
+use erp_sdk::Operation;
 use erp_sdk::money::{Increment, RateDateRule};
 use erp_sdk::prelude::*;
 
@@ -35,6 +36,15 @@ use super::{
             "_check_non_accountable_fields_null",
             "CHECK (display_type NOT IN ('line_section', 'line_subsection', 'line_note') OR (COALESCE(balance, 0) = 0 AND COALESCE(amount_currency, 0) = 0 AND account_id IS NULL))",
             "A section or note line has no amount and no account."
+        ),
+    ],
+    // the grouped reads of the journal overview: lines of a journal by entry state, and posted
+    // lines of an account by date
+    indexes = [
+        ("_journal_state", "(journal_id, parent_state)"),
+        (
+            "_posted_account_date",
+            "(account_id, date) WHERE parent_state = 'posted'"
         ),
     ],
 )]
@@ -248,6 +258,60 @@ pub struct AccountMoveLine {
         string = "Total"
     )]
     pub price_total: Decimal,
+    /// The settlement of the item once it and every item matched with it are settled; written
+    /// only by the reconciliation service (`crate::reconcile`).
+    #[field(
+        many2one,
+        comodel = "account.full.reconcile",
+        ondelete = "set null",
+        readonly = true,
+        copy = false,
+        index = "btree_not_null",
+        string = "Matching"
+    )]
+    pub full_reconcile_id: Option<RecId>,
+    /// The matches in which the item is the credit side.
+    #[field(
+        one2many,
+        comodel = "account.partial.reconcile",
+        inverse_name = "credit_move_id",
+        readonly = true,
+        copy = false,
+        string = "Matched Debits"
+    )]
+    pub matched_debit_ids: Vec<RecId>,
+    /// The matches in which the item is the debit side.
+    #[field(
+        one2many,
+        comodel = "account.partial.reconcile",
+        inverse_name = "debit_move_id",
+        readonly = true,
+        copy = false,
+        string = "Matched Credits"
+    )]
+    pub matched_credit_ids: Vec<RecId>,
+    /// What is still due on the item, in the company currency.
+    #[field(
+        monetary,
+        currency_field = "company_currency_id",
+        compute = "_compute_amount_residual",
+        string = "Residual Amount"
+    )]
+    pub amount_residual: Decimal,
+    /// What is still due on the item, in its currency.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        compute = "_compute_amount_residual",
+        string = "Residual Amount in Currency"
+    )]
+    pub amount_residual_currency: Decimal,
+    /// Both residuals are zero.
+    #[field(boolean, compute = "_compute_amount_residual", string = "Reconciled")]
+    pub reconciled: bool,
+    /// The settlement id, else `P` and the smallest match id of the item's matches, else empty.
+    #[field(char, compute = "_compute_amount_residual", string = "Matching #")]
+    pub matching_number: Option<Arc<str>>,
 }
 
 /// An amount cell as an exact decimal; empty is zero.
@@ -434,8 +498,24 @@ async fn convert_amounts(
         .collect()
 }
 
+/// The fields of an item only the reconciliation service writes.
+const RECONCILE_OWNED: [&str; 3] = [
+    "full_reconcile_id",
+    "matched_debit_ids",
+    "matched_credit_ids",
+];
+
 fn refuse_line_inputs(vals: &RawVals) -> Result<()> {
     refuse_state(vals, "parent_state")?;
+    let owned = RECONCILE_OWNED
+        .iter()
+        .find(|f| vals.contains(f) || vals.commands(f).is_some());
+    if let Some(field) = owned {
+        return Err(Error::user(format!(
+            "The field {field} of a journal item is set by matching items; use Reconcile or \
+             Unreconcile instead."
+        )));
+    }
     if matches!(vals.get("is_storno"), Some(Cell::Bool(true))) {
         return Err(Error::validation(
             "Storno journal items need the company's storno setting, which is not available yet.",
@@ -586,7 +666,17 @@ impl AccountMoveLine {
     ) -> Result<Records> {
         let env = this.env().clone();
         let skip = skip_balance_check(&env)?;
-        super::refuse_context_defaults(&env, &["move_id", "parent_state", "is_storno"])?;
+        super::refuse_context_defaults(
+            &env,
+            &[
+                "move_id",
+                "parent_state",
+                "is_storno",
+                "full_reconcile_id",
+                "matched_debit_ids",
+                "matched_credit_ids",
+            ],
+        )?;
         let mut move_ids = Vec::with_capacity(vals_list.len());
         for vals in &vals_list {
             refuse_line_inputs(vals)?;
@@ -596,7 +686,9 @@ impl AccountMoveLine {
         }
         move_ids.sort_unstable();
         move_ids.dedup();
-        super::post::hold_draft_entries(tx, &move_ids, "add items to").await?;
+        // adding an item changes its entry: the caller needs write access on it
+        super::post::hold_draft_entries(tx, &env, &move_ids, Operation::Write, "add items to")
+            .await?;
         let entries = move_entries(tx, &env, &move_ids).await?;
         let mut conversions = Vec::new();
         let mut targets = Vec::new();
@@ -637,6 +729,7 @@ impl AccountMoveLine {
         }
         let created = sup.call(tx, this.as_records(), (vals_list,)).await?;
         if !skip {
+            super::refresh_entry_totals(tx, &move_ids).await?;
             check_balanced(tx, &move_ids).await?;
         }
         Ok(created)
@@ -683,7 +776,7 @@ impl AccountMoveLine {
         let closed = super::post::closed_fields(&vals, &super::post::POSTED_LINE_WRITABLE);
         if !closed.is_empty() {
             let what = format!("change {} on the items of", closed.join(", "));
-            super::post::hold_draft_entries(tx, &move_ids, &what).await?;
+            super::post::hold_draft_entries(tx, &env, &move_ids, Operation::Write, &what).await?;
         }
         let amounts = ["balance", "amount_currency", "currency_id"]
             .iter()
@@ -796,6 +889,9 @@ impl AccountMoveLine {
                 None => unchecked(&records).write(tx, group_vals).await?,
             }
         }
+        if !skip {
+            super::refresh_entry_totals(tx, &move_ids).await?;
+        }
         if !skip && (vals.contains("balance") || vals.contains("amount_currency")) {
             check_balanced(tx, &move_ids).await?;
         }
@@ -818,9 +914,17 @@ impl AccountMoveLine {
             .collect();
         move_ids.sort_unstable();
         move_ids.dedup();
-        super::post::hold_draft_entries(tx, &move_ids, "delete the items of").await?;
+        super::post::hold_draft_entries(
+            tx,
+            this.env(),
+            &move_ids,
+            Operation::Write,
+            "delete the items of",
+        )
+        .await?;
         sup.call(tx, this.as_records(), ()).await?;
         if !skip {
+            super::refresh_entry_totals(tx, &move_ids).await?;
             check_balanced(tx, &move_ids).await?;
         }
         Ok(())

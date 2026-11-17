@@ -15,7 +15,8 @@ mod topics;
 pub use method::MailStore;
 pub(crate) use params::bounded;
 pub use params::{MAX_PARAMS_BYTES, MAX_PARAMS_DEPTH, ParamDecl, ParamKind, TopicParams};
-pub use registry::{Expected, MAIL_EXPECTED, TopicRegistry};
+pub(crate) use registry::CallSchema;
+pub use registry::{Expected, MAIL_EXPECTED, ServedSchema, TopicRegistry};
 pub use topic::{
     AccessFn, Audience, RunFn, SchemaFragment, SchemaPart, StoreTopic, TopicFuture, TopicInput,
     TopicOutput,

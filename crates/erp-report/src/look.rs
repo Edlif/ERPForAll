@@ -61,8 +61,11 @@ pub(crate) struct Look {
     pub(crate) column: Option<u8>,
     /// Space between flex children, in points at the base size.
     pub(crate) gap: Option<Size>,
-    /// A `colspan` or `rowspan` above one.
+    /// A `rowspan` above one.
     pub(crate) spans: bool,
+    /// The columns a table cell spans (`colspan`), when the attribute is set; it must be a whole
+    /// number of at least one.
+    pub(crate) colspan: Option<Result<usize, String>>,
     pub(crate) icon: bool,
     /// Space before and after a block.
     pub(crate) above: Option<Size>,
@@ -134,8 +137,18 @@ impl Look {
                         }
                     }
                 }
-                "colspan" | "rowspan" => {
+                "rowspan" => {
                     look.spans |= value.trim().parse::<u32>().is_ok_and(|n| n > 1);
+                }
+                "colspan" => {
+                    look.colspan = Some(
+                        value
+                            .trim()
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|n| *n >= 1)
+                            .ok_or_else(|| value.to_owned()),
+                    );
                 }
                 "data-icon" => look.icon = true,
                 _ => {} // The other declared attributes carry no layout in this contract.

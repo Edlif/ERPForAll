@@ -14,6 +14,7 @@ members = [
     "addons/barcodes",
     "addons/barcodes_gs1_nomenclature",
     "addons/stock",
+    "addons/stock_mail",
     "addons/delivery",
     "addons/stock_delivery",
     "addons/product_expiry",
@@ -25,7 +26,9 @@ members = [
     "addons/stock_dropshipping",
     "addons/analytic",
     "addons/account",
+    "addons/account_mail",
     "addons/purchase",
+    "addons/purchase_mail",
     "addons/sales_team",
     "addons/sale",
     # sample WebAssembly addons: Rust code packed as .erpaddon components
@@ -102,6 +105,7 @@ erp-addon-acceptance-notes = { package = "addon-acceptance_notes", path = "addon
 erp-addon-barcodes = { path = "addons/barcodes" }
 erp-addon-barcodes_gs1_nomenclature = { path = "addons/barcodes_gs1_nomenclature" }
 erp-addon-stock = { path = "addons/stock" }
+erp-addon-stock-mail = { path = "addons/stock_mail" }
 erp-addon-delivery = { path = "addons/delivery" }
 erp-addon-stock_delivery = { path = "addons/stock_delivery" }
 erp-addon-product_expiry = { path = "addons/product_expiry" }
@@ -113,7 +117,9 @@ erp-addon-sale_stock = { path = "addons/sale_stock" }
 erp-addon-stock_dropshipping = { path = "addons/stock_dropshipping" }
 erp-addon-analytic = { path = "addons/analytic" }
 erp-addon-account = { path = "addons/account" }
+erp-addon-account-mail = { path = "addons/account_mail" }
 erp-addon-purchase = { path = "addons/purchase" }
+erp-addon-purchase-mail = { path = "addons/purchase_mail" }
 erp-addon-sales_team = { path = "addons/sales_team" }
 erp-addon-sale = { path = "addons/sale" }
 # Fixture addon crates (tests only)

@@ -442,6 +442,71 @@ async fn a_line_takes_its_moves_defaults() {
     assert_eq!(row.get::<_, Decimal>(7), dec("2"));
 }
 
+/// The Detailed Operations of `picking` as the ORM reads them, ascending.
+async fn detailed_operations(f: &Fixture, tx: &mut Transaction, picking: i64) -> Vec<i64> {
+    let records = f
+        .env(tx)
+        .records("stock.picking")
+        .unwrap()
+        .browse([picking])
+        .unwrap();
+    let cell = records.cell(tx, "move_line_ids").await.unwrap();
+    let Cell::Ids(ids) = cell else {
+        panic!("stock.picking.move_line_ids is not an id list: {cell:?}");
+    };
+    let mut out: Vec<i64> = ids.iter().map(|id| id.get()).collect();
+    out.sort_unstable();
+    out
+}
+
+/// A transfer's Detailed Operations are exactly the lines of its own moves: the ORM read equals
+/// the lines created for those moves and the stored lines joined through their moves, and holds
+/// no line of another transfer.
+#[tokio::test]
+async fn a_transfer_reads_the_lines_of_its_moves() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let picking = f.picking(&mut tx, f.receipt_type, f.vendor, f.l).await;
+    let other = f.picking(&mut tx, f.receipt_type, f.vendor, f.l).await;
+    let empty = f.picking(&mut tx, f.receipt_type, f.vendor, f.l).await;
+    let first = f
+        .move_in(&mut tx, Some(picking), f.p, f.vendor, f.l, "5")
+        .await;
+    let second = f
+        .move_in(&mut tx, Some(picking), f.consumable, f.vendor, f.l, "5")
+        .await;
+    let elsewhere = f
+        .move_in(&mut tx, Some(other), f.p, f.vendor, f.l, "5")
+        .await;
+    let ids = f
+        .add_lines(
+            &mut tx,
+            vec![line(first, "2"), line(second, "3"), line(elsewhere, "4")],
+        )
+        .await
+        .unwrap();
+    let mut own = vec![ids[0], ids[1]];
+    own.sort_unstable();
+    let joined: Vec<i64> = tx
+        .query(
+            "SELECT l.id FROM stock_move_line l JOIN stock_move m ON m.id = l.move_id \
+             WHERE m.picking_id = $1 ORDER BY l.id",
+            &[&picking],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(joined, own);
+    assert_eq!(detailed_operations(&f, &mut tx, picking).await, own);
+    assert_eq!(detailed_operations(&f, &mut tx, other).await, vec![ids[2]]);
+    assert_eq!(
+        detailed_operations(&f, &mut tx, empty).await,
+        Vec::<i64>::new()
+    );
+}
+
 #[tokio::test]
 async fn move_quantity_is_the_sum_of_its_lines_in_the_move_unit() {
     let f = fixture().await;

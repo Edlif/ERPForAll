@@ -56,10 +56,29 @@ function tone(value: unknown, path: string): DashboardTone {
   if (typeof value !== "string" || !TONES.includes(value)) return refuse(path, "must be neutral, warning or danger");
   return value as DashboardTone;
 }
-function context(value: unknown, path: string): Record<string, unknown> {
+/** Most keys of the context a button or figure hands to its action. */
+const MAX_CONTEXT_KEYS = 16;
+/** The context a card's button or figure hands to its action: at most 16 `default_<field>` keys, each with a text,
+ *  boolean or safe-integer value. Session keys (companies, language, time zone) and every other key or value form are
+ *  refused by name; so is `search_default_<name>`, because the list does not apply default filters yet and would open
+ *  unfiltered next to a figure that counts filtered rows. The application checks a request's context again where it
+ *  uses it. */
+export function admitRequestContext(value: unknown, path: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return refuse(path, "must be an object");
-  return value as Record<string, unknown>;
+  const entries = Object.entries(value as Json);
+  if (entries.length > MAX_CONTEXT_KEYS) refuse(path, `has more than ${MAX_CONTEXT_KEYS} keys`);
+  const admitted: Record<string, unknown> = {};
+  for (const [key, item] of entries) {
+    // A key is quoted and clipped: it is server data on its way into a message.
+    const at = `${path}[${JSON.stringify(key.slice(0, 64))}]`;
+    if (key.startsWith("search_default_")) refuse(at, "is not admitted: a card cannot set a default filter yet (put the condition in the figure's domain), only default_<field> keys are");
+    if (!/^default_[a-z_][a-z0-9_]*$/.test(key)) refuse(at, "is not admitted: only default_<field> keys are");
+    if (!(typeof item === "string" || typeof item === "boolean" || typeof item === "number" && Number.isSafeInteger(item))) refuse(at, "must be a text, a boolean or a whole number");
+    admitted[key] = item;
+  }
+  return admitted;
 }
+const context = admitRequestContext;
 function domain(value: unknown, path: string): unknown[] {
   const terms = list(value, path);
   terms.forEach((term, index) => {
@@ -173,8 +192,9 @@ export function renderDashboardChart(chart: DashboardChart, locale: NumericLocal
   return figure;
 }
 
-/** Draws a parsed card; `open` runs the application's action opener. */
-export function renderDashboardCard(card: DashboardCard, environment: WidgetEnvironment): HTMLElement {
+/** Draws a parsed card; `open` runs the application's action opener. `scope` is the widget's lifetime: after it
+ *  aborts, a currency answer draws and reports nothing. */
+export function renderDashboardCard(card: DashboardCard, environment: WidgetEnvironment, scope?: AbortSignal): HTMLElement {
   const root = el("div", undefined, "dashboard-card");
   const { numericLocale: locale, openAction } = environment;
   if (!locale) throw new ClientError("unsupported", "The dashboard card needs the user's number format.");
@@ -195,7 +215,7 @@ export function renderDashboardCard(card: DashboardCard, environment: WidgetEnvi
       const control = createButtonControl({ label: stat.label, rank: "unstyled", className: `dashboard-card-stat dashboard-card-tone-${stat.tone}`,
         action: () => open({ xmlId: stat.action, viewMode: "list", domain: stat.domain, context: stat.context }) });
       control.prepend(el("span", formatNumeric(stat.count, "integer", locale), "dashboard-card-stat-count"));
-      if (stat.amount !== null && stat.currencyId !== null) control.append(amount(stat.amount, stat.currencyId, environment, locale));
+      if (stat.amount !== null && stat.currencyId !== null) control.append(amount(stat.amount, stat.currencyId, environment, locale, scope));
       const item = el("li");
       item.append(control);
       stats.append(item);
@@ -206,12 +226,19 @@ export function renderDashboardCard(card: DashboardCard, environment: WidgetEnvi
   return root;
 }
 
-/** An amount in its currency (symbol, position and decimals read through the view's shared currency cache). */
-function amount(value: string, currencyId: number, environment: WidgetEnvironment, locale: NumericLocale): HTMLElement {
+/** Failed currency reads already reported. Every figure of a view waits on the one cached read (`CurrencyDisplayCache`),
+ *  so they all get the same error object: the user is told once, not once per figure. */
+const reportedFailures = new WeakSet<object>();
+
+/** An amount in its currency (symbol, position and decimals read through the view's shared currency cache). The read
+ *  itself stays under the view's signal, since other cards wait on it; `scope` only decides whether this card still listens. */
+function amount(value: string, currencyId: number, environment: WidgetEnvironment, locale: NumericLocale, scope?: AbortSignal): HTMLElement {
   const host = el("span", "…", "dashboard-card-stat-amount");
   host.setAttribute("aria-busy", "true");
   if (!environment.currencies) throw new ClientError("unsupported", "The dashboard card needs the view's currency cache.");
+  const left = (): boolean => scope?.aborted === true || environment.signal?.aborted === true;
   void environment.currencies.get(currencyId, environment.rpc, environment.context, environment.signal).then(currency => {
+    if (left()) return;
     const figure = number(value);
     validateMonetaryAmount(figure, currency.digits);
     const text = el("span", formatNumeric(figure, "float", locale, currency.digits)), symbol = el("span", currency.symbol, "field-currency-symbol");
@@ -220,9 +247,13 @@ function amount(value: string, currencyId: number, environment: WidgetEnvironmen
     host.replaceChildren(presentation);
     host.removeAttribute("aria-busy");
   }).catch(error => {
-    if (environment.signal?.aborted) return;
+    if (left()) return;
     host.textContent = "Amount unavailable";
     host.removeAttribute("aria-busy");
+    if (typeof error === "object" && error !== null) {
+      if (reportedFailures.has(error)) return;
+      reportedFailures.add(error);
+    }
     environment.report(error);
   });
   return host;
@@ -233,14 +264,16 @@ const renderError = (message: string): HTMLElement => el("p", message, "dashboar
 /** The registered render: an empty body without data, the refusal by name on bad data, else the card. */
 export function dashboardCardWidget(environment: WidgetEnvironment): WidgetHandle {
   let node: HTMLElement;
+  // The widget's own lifetime: a card replaced by a search or a page change stops listening to its currency reads.
+  const scope = new AbortController();
   try {
     const card = parseDashboardCard(environment.value);
-    node = card ? renderDashboardCard(card, environment) : el("div", undefined, "dashboard-card dashboard-card-empty");
+    node = card ? renderDashboardCard(card, environment, scope.signal) : el("div", undefined, "dashboard-card dashboard-card-empty");
   } catch (error) {
     if (!(error instanceof ClientError)) throw error;
     node = renderError(error.message);
   }
-  return { node, dispose: () => {} };
+  return { node, dispose: () => scope.abort() };
 }
 
 registerFieldWidget("card.dashboard_card", { kinds: ["text"], render: dashboardCardWidget });

@@ -34,6 +34,8 @@ fn the_due_date_follows_the_invoice_date_until_set_later() {
         move_type: "out_invoice".into(),
         company: 1,
         currency: 1,
+        company_currency: 1,
+        term: None,
         journal: 1,
         partner: None,
         invoice_date: Some(day("2026-11-16")),

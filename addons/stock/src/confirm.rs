@@ -231,7 +231,9 @@ impl StockPicking {
         if moves.is_empty() {
             return Err(StockError::NothingToConfirm.into());
         }
-        confirm_moves(records, tx, &moves, true).await
+        let before = crate::state_history::before(tx, records).await?;
+        confirm_moves(records, tx, &moves, true).await?;
+        crate::state_history::report(tx, records, before).await
     }
 
     /// A transfer with no open move is refused by name.
@@ -248,13 +250,15 @@ impl StockPicking {
         let ids = records.ids();
         let all = picking_moves(tx, &ids).await?;
         lock_move_roots(tx, &all, &ids).await?;
+        let before = crate::state_history::before(tx, records).await?;
         let drafts = draft_moves(tx, &ids).await?;
         confirm_moves(records, tx, &drafts, false).await?;
         let moves = open_moves(records, tx).await?;
         if moves.is_empty() {
             return Err(StockError::NothingToAssign.into());
         }
-        assign_moves(records, tx, &moves).await
+        assign_moves(records, tx, &moves).await?;
+        crate::state_history::report(tx, records, before).await
     }
 }
 

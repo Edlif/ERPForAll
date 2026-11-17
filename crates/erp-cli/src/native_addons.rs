@@ -20,9 +20,12 @@ pub static DESCRIPTORS: &[&AddonDescriptor] = &[
     &erp_addon_theme_office_blue::ADDON,
     &erp_addon_analytic::ADDON,
     &erp_addon_account::ADDON,
+    &erp_addon_account_mail::ADDON,
     &erp_addon_purchase::ADDON,
+    &erp_addon_purchase_mail::ADDON,
     &erp_addon_barcodes_gs1_nomenclature::ADDON,
     &erp_addon_stock::ADDON,
+    &erp_addon_stock_mail::ADDON,
     &erp_addon_sales_team::ADDON,
     &erp_addon_sale::ADDON,
 ];

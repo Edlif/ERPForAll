@@ -6,9 +6,16 @@ use crate::fiscal::{PeriodVerdict, WriteClass, period_admission};
 use erp_sdk::prelude::*;
 use std::collections::BTreeMap;
 
+const COMPANY_LOCK: &str = "SELECT FROM res_company WHERE id = ANY($1::int8[]) OR id IN ( \
+     SELECT unnest(CASE WHEN c.parent_path ~ '^([0-9]+/)+$' \
+         THEN string_to_array(rtrim(c.parent_path, '/'), '/')::int8[] END) \
+     FROM res_company c WHERE c.id = ANY($1::int8[])) \
+     ORDER BY length(parent_path) DESC, id FOR SHARE";
+
 /// Check a batch against company/ancestor dates and the fiscal periods, in input order.
 /// Company scope is checked before policy details are read. Empty input reads nothing.
-/// Call once per batch, in the transaction performing the write; entry hooks must separately
+/// Call once per batch, in the transaction performing the write (the check locks the company
+/// rows shared, so it cannot run in a read-only transaction); entry hooks must separately
 /// authorize their business records. No exception or context bypass is supported.
 ///
 /// # Errors
@@ -26,6 +33,16 @@ pub async fn check_lock_dates(
     companies.dedup();
     require_company_access(tx, &companies).await?;
     tx.flush().await?;
+    // The checked companies and their ancestors are held shared for the rest of the transaction,
+    // the deepest company first: a branch before its root, the order of `fiscal/status.rs` (target
+    // company row, then root row), so a setter and a check never wait for each other in a cycle.
+    // The dates read below then stay the dates in force until the write commits. A lock date
+    // committed after this transaction's snapshot fails the lock with a serialization error
+    // (40001), so the unit is retried and decides on the new date; a setter that starts now waits
+    // for this transaction (its `FOR UPDATE`, `locking/company.rs`). The lock is on the whole
+    // company row: any other committed change of a checked company or ancestor (a period serial,
+    // a fiscal position revision, a plain company write) retries the check the same way.
+    tx.query(COMPANY_LOCK, &[&companies]).await?;
     // Validate every parent edge as well as the path shape. A syntactically valid truncated
     // branch path must not silently discard an ancestor's restrictions.
     let rows = tx

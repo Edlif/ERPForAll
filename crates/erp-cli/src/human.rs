@@ -1128,10 +1128,10 @@ pub(crate) async fn open_attachments(
 }
 
 /// The ORM builder every server-composed ORM starts from: the base models' implementations and
-/// constraints, the external-id and attachment unlink hooks, and the installed packages' WebAssembly method layers,
-/// computes and constraints. The request ORM adds its policy, resolver, RPC and signal on top; the
-/// maintenance commands (`erp db vacuum-transient`) use it as it is, so both run the same
-/// overrides and unlink hooks.
+/// constraints, the external-id and attachment unlink hooks, the mail history hook, and the
+/// installed packages' WebAssembly method layers, computes and constraints. The request ORM adds
+/// its policy, resolver, RPC and signal on top; the maintenance commands (`erp db
+/// vacuum-transient`) use it as it is, so both run the same overrides and unlink hooks.
 fn server_orm_builder(
     registry: Arc<erp_registry::Registry>,
     pool: deadpool_postgres::Pool,
@@ -1149,6 +1149,9 @@ fn server_orm_builder(
         .constraints(erp_modules::base_models::CONSTRAINTS.iter().copied())
         .unlink_hook(erp_data::model_data::UNLINK_HOOK)
         .unlink_hook(erp_addon_base::attachments::UNLINK_HOOK)
+        // the record history in the chatter (creation lines, tracked changes); returns at once
+        // when `mail` is not installed
+        .precommit_hook(erp_addon_mail::TRACKING_HOOK)
         .wasm_methods(wasm_methods)
         .computes(checks.computes)
         .constraints(checks.constraints)

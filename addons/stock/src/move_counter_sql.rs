@@ -243,7 +243,10 @@ object!(
             SqlResult::Trigger,
             r#"
 BEGIN
-    -- a new transfer's foreign-key check waits on this lock, so none appears unseen
+    -- a transfer created or re-sourced through the ORM holds its source location shared before
+    -- its row is written, so it either waits on this lock and is retried, or made this statement
+    -- fail its own lock first; a transfer committed between this transaction's snapshot and this
+    -- lock is not seen below (its state is evaluated again at its next update)
     PERFORM 1 FROM public.stock_location l
       JOIN old_rows o ON o.id = l.id
       JOIN new_rows n ON n.id = o.id

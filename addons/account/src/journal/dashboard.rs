@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `dashboard_card` is JSON text of the card contract v1: buttons, stats and a chart, computed
 //! for all requested journals in a fixed number of grouped reads under the reader's own access
-//! rights (record rules and company scope apply inside each statement). As in the reference a
-//! stat appears only when it counts something. Amounts are company currency: journal-item
-//! balances on receivable and payable accounts for sales and purchases, the default account's
-//! posted balance for bank, cash and credit card journals.
+//! rights (record rules and company scope apply inside each statement). A stat is always shown, at
+//! zero when it counts nothing, and opens the list it counts. Amounts are company currency:
+//! journal-item balances on receivable and payable accounts for sales and purchases, the default
+//! account's posted balance for bank, cash and credit card journals.
 //!
 //! The months of the sales and purchase chart and the days of the balance chart are declared
 //! settings ([`GRAPH_MONTHS`], [`BALANCE_DAYS`]). User-visible labels are kept in [`labels`]: the
@@ -51,7 +51,7 @@ pub mod labels {
     pub const NEW_BILL: &str = "New Bill";
     /// Button of a miscellaneous journal.
     pub const NEW_ENTRY: &str = "New Entry";
-    /// Button of a bank, cash or credit card journal: its entries.
+    /// Stat of a bank, cash or credit card journal: its journal entries.
     pub const TRANSACTIONS: &str = "Transactions";
     /// Draft documents or entries.
     pub const DRAFTS: &str = "Drafts";
@@ -150,6 +150,15 @@ impl Kind {
     }
 }
 
+/// What a stat opens: a window action, the domain added to the action's own and the context
+/// merged over the action's.
+#[derive(Debug, Clone)]
+struct Target {
+    action: &'static str,
+    domain: Json,
+    context: Json,
+}
+
 #[derive(Debug, Clone)]
 struct Journal {
     id: i64,
@@ -160,12 +169,34 @@ struct Journal {
 }
 
 impl Journal {
-    /// The list a stat of this journal opens.
+    /// The action the button of this journal starts a new document in.
     fn action(&self) -> &'static str {
         match self.kind {
             Kind::Sale => "account.action_move_out_invoice_type",
             Kind::Purchase => "account.action_move_in_invoice_type",
             _ => "account.action_move_journal_line",
+        }
+    }
+
+    /// The list a stat of this journal opens. A sales or purchase stat counts every document of
+    /// the journal, so its list has no document-type domain. The other journals open the journal
+    /// entries list, which shows every kind of entry: a stat that counts one kind (Transactions
+    /// counts plain entries) carries that restriction in its own domain.
+    fn stat_action(&self) -> &'static str {
+        match self.kind {
+            Kind::Sale => "account.action_move_out_documents",
+            Kind::Purchase => "account.action_move_in_documents",
+            _ => "account.action_move_journal_line",
+        }
+    }
+
+    /// The list of this journal's entries a stat opens: `domain` (which names the journal), and
+    /// the journal as the default of an entry created from that list.
+    fn entries(&self, domain: Json) -> Target {
+        Target {
+            action: self.stat_action(),
+            domain,
+            context: json!({"default_journal_id": self.id}),
         }
     }
 }
@@ -273,7 +304,7 @@ fn group_decimal(value: &GroupValue) -> Result<Decimal> {
 fn group_str(value: &GroupValue) -> Result<&str> {
     match value {
         GroupValue::Str(s) => Ok(&**s),
-        other => Err(Error::internal(format!("a dashboard state is {other:?}"))),
+        other => Err(Error::internal(format!("a dashboard group is {other:?}"))),
     }
 }
 
@@ -333,8 +364,8 @@ struct Sum {
 /// Every number the cards show, read in a fixed number of statements.
 #[derive(Debug, Default)]
 struct Figures {
-    /// Entries by journal and state.
-    entries: BTreeMap<(i64, String), i64>,
+    /// Entries by journal, state and move type.
+    entries: BTreeMap<(i64, String, String), i64>,
     /// Sales and purchases: lines on receivable and payable accounts by journal and entry state.
     open: BTreeMap<(i64, String), Sum>,
     /// Sales and purchases: posted open lines due before today.
@@ -365,21 +396,25 @@ async fn figures(
             .collect()
     };
 
-    // 1. Entries by journal and state (drafts, and whether a journal has entries at all).
+    // 1. Entries by journal, state and move type (drafts across every type; the plain entries of
+    // a liquidity journal).
     let groups = grouped(
         tx,
         env,
         "account.move",
         Domain::field("journal_id")?.in_(ids_where(|_| true)),
-        &["journal_id", "state"],
+        &["journal_id", "state", "move_type"],
         &["__count"],
     )
     .await?;
     for r in 0..groups.len() {
         let journal = group_id(&groups.column(0)[r], "journal")?;
         let state = group_str(&groups.column(1)[r])?.to_owned();
-        f.entries
-            .insert((journal, state), group_int(&groups.column(2)[r])?);
+        let move_type = group_str(&groups.column(2)[r])?.to_owned();
+        f.entries.insert(
+            (journal, state, move_type),
+            group_int(&groups.column(3)[r])?,
+        );
     }
 
     // 2-4. Sales and purchases: lines on receivable and payable accounts.
@@ -577,15 +612,8 @@ fn amount(value: Decimal) -> Json {
 }
 
 /// A stat.
-fn stat(
-    journal: &Journal,
-    label: &str,
-    sum: Sum,
-    money: bool,
-    action: &str,
-    domain: Json,
-    tone: &str,
-) -> Json {
+/// `money` says whether it shows an amount.
+fn stat(journal: &Journal, label: &str, sum: Sum, money: bool, target: Target, tone: &str) -> Json {
     let tone = if sum.count == 0 { "neutral" } else { tone };
     let (amount_value, currency) = if money {
         (amount(sum.amount), json!(journal.currency))
@@ -597,55 +625,43 @@ fn stat(
         "count": sum.count,
         "amount": amount_value,
         "currency_id": currency,
-        "action": action,
-        "domain": domain,
-        "context": {},
+        "action": target.action,
+        "domain": target.domain,
+        "context": target.context,
         "tone": tone,
     })
 }
 
-fn button(journal: &Journal) -> Json {
-    let id = journal.id;
-    let (label, action, view_mode, context) = match journal.kind {
-        Kind::Sale => (
-            labels::NEW_INVOICE,
-            journal.action(),
-            json!("form"),
-            json!({"default_move_type": "out_invoice", "default_journal_id": id}),
-        ),
-        Kind::Purchase => (
-            labels::NEW_BILL,
-            journal.action(),
-            json!("form"),
-            json!({"default_move_type": "in_invoice", "default_journal_id": id}),
-        ),
-        // The reference opens the journal's statements; until statements exist, its entries.
-        Kind::Bank | Kind::Cash | Kind::Credit => (
-            labels::TRANSACTIONS,
-            journal.action(),
-            Json::Null,
-            json!({"default_journal_id": id, "search_default_journal_id": id}),
-        ),
-        Kind::General => (
-            labels::NEW_ENTRY,
-            journal.action(),
-            json!("form"),
-            json!({"default_move_type": "entry", "default_journal_id": id}),
-        ),
+/// The button that starts a new document in the journal. A bank, cash or credit card journal has
+/// none: the reference opens the journal's statements there, and until statements exist the
+/// journal's entries are reached from the Transactions stat, whose domain names the journal (a
+/// button carries no domain in contract v1).
+fn button(journal: &Journal) -> Option<Json> {
+    let (label, move_type) = match journal.kind {
+        Kind::Sale => (labels::NEW_INVOICE, "out_invoice"),
+        Kind::Purchase => (labels::NEW_BILL, "in_invoice"),
+        Kind::General => (labels::NEW_ENTRY, "entry"),
+        Kind::Bank | Kind::Cash | Kind::Credit => return None,
     };
-    json!({
+    Some(json!({
         "label": label,
-        "action": action,
-        "view_mode": view_mode,
-        "context": context,
+        "action": journal.action(),
+        "view_mode": "form",
+        "context": {"default_move_type": move_type, "default_journal_id": journal.id},
         "primary": true,
-    })
+    }))
 }
 
 /// The card of one journal from the figures.
 fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings) -> Result<Json> {
     let id = journal.id;
-    let entries = |state: &str| f.entries.get(&(id, state.to_owned())).copied().unwrap_or(0);
+    // drafts of the journal across every move type
+    let draft_entries: i64 = f
+        .entries
+        .iter()
+        .filter(|((journal, state, _), _)| *journal == id && state == "draft")
+        .map(|(_, count)| *count)
+        .sum();
     let drafts_domain = json!([["journal_id", "=", id], ["state", "=", "draft"]]);
     let (stats, chart) = match journal.kind {
         Kind::Sale | Kind::Purchase => {
@@ -678,18 +694,16 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                 Json::Array(domain)
             };
             let drafts = Sum {
-                count: entries("draft"),
+                count: draft_entries,
                 amount: open("draft").amount * sign,
             };
-            let action = journal.action();
             let stats = [
                 stat(
                     journal,
                     labels::DRAFTS,
                     drafts,
                     true,
-                    action,
-                    drafts_domain,
+                    journal.entries(drafts_domain),
                     "neutral",
                 ),
                 stat(
@@ -697,8 +711,7 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                     unpaid_label,
                     signed(open("posted")),
                     true,
-                    action,
-                    unpaid_domain(false),
+                    journal.entries(unpaid_domain(false)),
                     "warning",
                 ),
                 stat(
@@ -706,8 +719,7 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                     labels::LATE,
                     signed(late),
                     true,
-                    action,
-                    unpaid_domain(true),
+                    journal.entries(unpaid_domain(true)),
                     "danger",
                 ),
             ];
@@ -745,15 +757,42 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                 ]),
                 None => json!([]),
             };
-            let stats = stat(
-                journal,
-                labels::BALANCE,
-                balance,
-                true,
-                "account.action_account_moves_all",
-                balance_domain,
-                "neutral",
-            );
+            // The journal's plain entries in every state; the list it opens has the same
+            // restriction in the stat's domain.
+            let transactions = Sum {
+                count: f
+                    .entries
+                    .iter()
+                    .filter(|((journal, _, move_type), _)| *journal == id && move_type == "entry")
+                    .map(|(_, count)| *count)
+                    .sum(),
+                amount: Decimal::ZERO,
+            };
+            let stats = [
+                stat(
+                    journal,
+                    labels::BALANCE,
+                    balance,
+                    true,
+                    Target {
+                        action: "account.action_account_moves_all",
+                        domain: balance_domain,
+                        context: json!({}),
+                    },
+                    "neutral",
+                ),
+                stat(
+                    journal,
+                    labels::TRANSACTIONS,
+                    transactions,
+                    false,
+                    journal.entries(json!([
+                        ["journal_id", "=", id],
+                        ["move_type", "=", "entry"]
+                    ])),
+                    "neutral",
+                ),
+            ];
             // always drawn: a journal without entries shows its flat balance line
             let chart = {
                 let mut running = pair
@@ -775,11 +814,11 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                 }
                 json!({"type": "line", "label": labels::BALANCE, "points": points})
             };
-            (vec![stats], chart)
+            (stats.to_vec(), chart)
         }
         Kind::General => {
             let drafts = Sum {
-                count: entries("draft"),
+                count: draft_entries,
                 amount: Decimal::ZERO,
             };
             let stats = stat(
@@ -787,14 +826,14 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                 labels::DRAFTS,
                 drafts,
                 false,
-                journal.action(),
-                drafts_domain,
+                journal.entries(drafts_domain),
                 "warning",
             );
             (vec![stats], Json::Null)
         }
     };
-    Ok(json!({"v": 1, "buttons": [button(journal)], "stats": stats, "chart": chart}))
+    let buttons: Vec<Json> = button(journal).into_iter().collect();
+    Ok(json!({"v": 1, "buttons": buttons, "stats": stats, "chart": chart}))
 }
 
 #[methods(AccountJournal, addon = "account")]
@@ -871,13 +910,17 @@ mod tests {
             currency: Some(3),
             default_account: None,
         };
+        let target = || Target {
+            action: "a.b",
+            domain: json!([]),
+            context: json!({}),
+        };
         let empty = stat(
             &journal,
             labels::LATE,
             Sum::default(),
             true,
-            "a.b",
-            json!([]),
+            target(),
             "danger",
         );
         assert_eq!(empty["count"], 0);
@@ -887,27 +930,50 @@ mod tests {
             count: 2,
             amount: Decimal::from(5),
         };
-        let shown = stat(
-            &journal,
-            labels::LATE,
-            late,
-            true,
-            "a.b",
-            json!([]),
-            "danger",
-        );
+        let shown = stat(&journal, labels::LATE, late, true, target(), "danger");
         assert_eq!(shown["count"], 2);
         assert_eq!(shown["amount"], "5");
         assert_eq!(shown["currency_id"], 3);
-        let plain = stat(
-            &journal,
-            labels::DRAFTS,
-            late,
-            false,
-            "a.b",
-            json!([]),
-            "warning",
-        );
+        let plain = stat(&journal, labels::DRAFTS, late, false, target(), "warning");
         assert!(plain["amount"].is_null() && plain["currency_id"].is_null());
+    }
+
+    fn journal_of(kind: Kind) -> Journal {
+        Journal {
+            id: 7,
+            kind,
+            company: 1,
+            currency: Some(3),
+            default_account: None,
+        }
+    }
+
+    /// A liquidity journal has no button; the others start a new document in their journal.
+    #[test]
+    fn a_liquidity_journal_has_no_button() {
+        for kind in [Kind::Bank, Kind::Cash, Kind::Credit] {
+            assert!(button(&journal_of(kind)).is_none(), "{kind:?}");
+        }
+        let sale = button(&journal_of(Kind::Sale)).unwrap();
+        assert_eq!(sale["action"], "account.action_move_out_invoice_type");
+        assert_eq!(sale["context"]["default_move_type"], "out_invoice");
+        assert_eq!(sale["context"]["default_journal_id"], 7);
+    }
+
+    /// A stat of a sales or purchase journal opens the list of every document of the journal,
+    /// with the journal as the default of a new one.
+    #[test]
+    fn a_stat_opens_the_list_of_every_document_of_its_journal() {
+        let sale = journal_of(Kind::Sale).entries(json!([]));
+        assert_eq!(sale.action, "account.action_move_out_documents");
+        assert_eq!(sale.context, json!({"default_journal_id": 7}));
+        assert_eq!(
+            journal_of(Kind::Purchase).stat_action(),
+            "account.action_move_in_documents"
+        );
+        assert_eq!(
+            journal_of(Kind::Bank).stat_action(),
+            "account.action_move_journal_line"
+        );
     }
 }

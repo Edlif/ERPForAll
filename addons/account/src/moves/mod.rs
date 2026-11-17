@@ -14,12 +14,14 @@
 //! guards (company of accounts and journals, the line's entry never changing, amount in currency
 //! equal to the balance in the company currency) are checked by the ORM for now.
 
+mod display;
 mod line;
 mod post;
 
 pub use line::AccountMoveLine;
 pub use post::{POSTER_GROUP, cancel_moves, post_moves, reset_moves};
 
+use erp_sdk::Operation;
 use erp_sdk::ValueMap;
 use erp_sdk::prelude::*;
 
@@ -42,6 +44,9 @@ pub struct AccountMove {
     /// Number of the entry; empty on a draft that was never numbered, given at posting.
     #[field(char, copy = false, string = "Number")]
     pub name: Option<Arc<str>>,
+    /// The kind of a draft, then its number, with the reference in brackets (`display.rs`).
+    #[field(char, compute = "_compute_display_name")]
+    pub display_name: Option<Arc<str>>,
     /// Reference of the entry.
     #[field(char, copy = false, string = "Reference")]
     pub r#ref: Option<Arc<str>>,
@@ -127,13 +132,25 @@ pub struct AccountMove {
     /// Invoice or bill date; a customer document confirmed without one takes today.
     #[field(date, copy = false, string = "Invoice/Bill Date")]
     pub invoice_date: Option<Date>,
-    /// Due date: the invoice date unless set by hand, until payment terms exist.
+    /// Due date: the last instalment of the payment terms; without terms the one set by hand,
+    /// else the invoice date.
     #[field(
         date,
         string = "Due Date",
-        help = "The invoice date unless set by hand; payment terms are not available yet."
+        help = "With payment terms, the date of the last instalment. Without terms, the date set by hand, else the invoice date."
     )]
     pub invoice_date_due: Option<Date>,
+    /// Terms that split the amount due into instalments; a new invoice takes the partner's.
+    #[field(
+        many2one,
+        comodel = "account.payment.term",
+        copy = true,
+        ondelete = "restrict",
+        index = "btree_not_null",
+        check_company = true,
+        string = "Payment Terms"
+    )]
+    pub invoice_payment_term_id: Option<RecId>,
     /// The lines a user edits on an invoice: products, sections and notes (the tax and
     /// receivable/payable lines of `line_ids` are kept in step by the invoice line sync).
     #[field(
@@ -172,17 +189,17 @@ pub struct AccountMove {
         string = "Total"
     )]
     pub amount_total: Decimal,
-    /// Amount still due.
+    /// Amount still due: what remains on the receivable or payable items once matched with
+    /// payments, written by the reconciliation service (`crate::reconcile`).
     #[field(
         monetary,
         currency_field = "currency_id",
         readonly = true,
         copy = false,
-        string = "Amount Due",
-        help = "Equals the total until payments and reconciliation are available."
+        string = "Amount Due"
     )]
     pub amount_residual: Decimal,
-    /// Payment status.
+    /// Payment status, written with the amount due by the reconciliation service.
     #[field(
         selection,
         selection = [
@@ -196,8 +213,7 @@ pub struct AccountMove {
         readonly = true,
         copy = false,
         default = "not_paid",
-        string = "Payment Status",
-        help = "Not Paid on every invoice until payments are available."
+        string = "Payment Status"
     )]
     pub payment_state: Option<Arc<str>>,
 }
@@ -250,8 +266,14 @@ impl AccountMove {
         let env = this.env().clone();
         let skip = skip_balance_check(&env)?;
         refuse_context_defaults(&env, &["state"])?;
+        refuse_sync_owned_defaults(&env)?;
         for vals in &mut vals_list {
             refuse_state(vals, "state")?;
+            refuse_sync_owned(vals)?;
+            // given with the record, so no default (context or stored) can stand in for Post
+            if !vals.contains("state") {
+                vals.insert("state".into(), Cell::Str("draft".into()));
+            }
             crate::invoice::prepare_create(tx, &env, vals).await?;
             fill_defaults(tx, &env, vals).await?;
             crate::invoice::fill_create_taxes(tx, &env, vals).await?;
@@ -259,6 +281,7 @@ impl AccountMove {
         let records = unchecked(this.as_records());
         let created = sup.call(tx, &records, (vals_list,)).await?;
         crate::invoice::sync_lines(tx, &env, &created.ids()).await?;
+        refresh_entry_totals(tx, &created.ids()).await?;
         if !skip {
             check_balanced(tx, &created.ids()).await?;
         }
@@ -270,7 +293,8 @@ impl AccountMove {
     /// draft invoice whose accounting date changes has its foreign-currency balances converted
     /// again at the new date. On a posted or cancelled entry only
     /// [`post::POSTED_MOVE_WRITABLE`] may be written; a written state is refused there too, since
-    /// the state changes only through Post, Reset to Draft and Cancel.
+    /// the state changes only through Post, Reset to Draft and Cancel. The totals and the payment
+    /// status ([`SYNC_OWNED_FIELDS`]) are refused on a draft as well.
     #[method(override)]
     async fn write(
         this: &RecordSet<AccountMove>,
@@ -293,13 +317,18 @@ impl AccountMove {
         let closed = post::closed_fields(&vals, &post::POSTED_MOVE_WRITABLE);
         if !closed.is_empty() {
             let what = format!("change {} of", closed.join(", "));
-            post::refuse_closed_entries(tx, &this.ids(), &what).await?;
+            post::refuse_closed_entries(tx, this.env(), &this.ids(), Operation::Write, &what)
+                .await?;
         }
+        refuse_sync_owned(&vals)?;
         sup.call(tx, &unchecked(this.as_records()), (vals,)).await?;
         if sync && redated {
             crate::invoice::sync_lines_redated(tx, this.env(), &this.ids()).await?;
         } else if sync {
             crate::invoice::sync_lines(tx, this.env(), &this.ids()).await?;
+        }
+        if lines_changed {
+            refresh_entry_totals(tx, &this.ids()).await?;
         }
         if lines_changed && !skip {
             check_balanced(tx, &this.ids()).await?;
@@ -312,8 +341,47 @@ impl AccountMove {
     #[method(override)]
     async fn unlink(this: &RecordSet<AccountMove>, tx: &mut Transaction, sup: Super) -> Result<()> {
         tx.flush().await?;
-        post::refuse_closed_entries(tx, &this.ids(), "delete").await?;
+        post::refuse_closed_entries(tx, this.env(), &this.ids(), Operation::Unlink, "delete")
+            .await?;
         sup.call(tx, &unchecked(this.as_records()), ()).await
+    }
+}
+
+/// The figures of an entry that only the invoice line sync writes (past this override, with the
+/// base write): the totals, the amount due and the payment status. A caller value for one of them
+/// is refused on create and on write, drafts included: posting does not recompute them, so a
+/// draft written with a paid status or another total would keep it once posted.
+pub(crate) const SYNC_OWNED_FIELDS: [&str; 5] = [
+    "amount_untaxed",
+    "amount_tax",
+    "amount_total",
+    "amount_residual",
+    "payment_state",
+];
+
+/// Refuses a caller value for one of [`SYNC_OWNED_FIELDS`], naming the field.
+pub(crate) fn refuse_sync_owned(vals: &RawVals) -> Result<()> {
+    match SYNC_OWNED_FIELDS.iter().find(|field| vals.contains(field)) {
+        None => Ok(()),
+        Some(field) => Err(Error::user(format!(
+            "The field {field} of a journal entry is computed from its lines and cannot be set; \
+             change the lines instead."
+        ))),
+    }
+}
+
+/// Refuses a context default for one of [`SYNC_OWNED_FIELDS`]: the base create would apply it
+/// after [`refuse_sync_owned`] has read the values.
+fn refuse_sync_owned_defaults(env: &Env) -> Result<()> {
+    let named = SYNC_OWNED_FIELDS
+        .iter()
+        .find(|field| env.context().contains(&format!("default_{field}")));
+    match named {
+        None => Ok(()),
+        Some(field) => Err(Error::user(format!(
+            "The context key default_{field} is not accepted: the field {field} of a journal \
+             entry is computed from its lines."
+        ))),
     }
 }
 
@@ -364,6 +432,52 @@ pub(crate) fn skip_balance_check(env: &Env) -> Result<bool> {
 /// that is only half written; the caller checks once at the end.
 pub(crate) fn unchecked(records: &Records) -> Records {
     records.with_context([(CHECK_KEY, Value::Bool(false))])
+}
+
+/// The statement setting the total of plain entries (`move_type = entry`) from their items: the
+/// sum of the debit items' amounts in the entry's currency, as the reference shows a
+/// miscellaneous entry's total (invoice totals come from the invoice line sync). `filter` narrows
+/// the entries (`e` is the entry); only entries whose total changed are written.
+fn entry_totals_sql(filter: &str) -> String {
+    format!(
+        "UPDATE account_move m SET amount_total = t.total \
+         FROM (SELECT e.id, COALESCE(SUM(l.amount_currency) FILTER (WHERE l.balance > 0), 0) \
+               AS total \
+               FROM account_move e LEFT JOIN account_move_line l ON l.move_id = e.id \
+               WHERE e.move_type = 'entry'{filter} GROUP BY e.id) t \
+         WHERE m.id = t.id AND m.amount_total IS DISTINCT FROM t.total"
+    )
+}
+
+/// Sets the total of the plain entries among `move_ids` from their items. Called where items change
+/// with the balance check on, and at posting: items written directly with the check skipped give
+/// their entry its total at the next entry write or at posting.
+pub(crate) async fn refresh_entry_totals(tx: &mut Transaction, move_ids: &[i64]) -> Result<()> {
+    if move_ids.is_empty() {
+        return Ok(());
+    }
+    tx.flush().await?;
+    tx.execute(
+        &entry_totals_sql(" AND e.id = ANY($1::int8[])"),
+        &[&move_ids],
+    )
+    .await?;
+    let moves = tx
+        .env()
+        .records("account.move")?
+        .browse(move_ids.iter().copied())?;
+    tx.invalidate_records(&moves, Some(&["amount_total"])).await
+}
+
+/// Entries posted before 1.3 kept a zero total unless they were invoices: give every plain entry
+/// the total of its debit items.
+#[erp_sdk::migration(addon = "account", version = "1.3", stage = post)]
+pub async fn fill_entry_totals(
+    tx: &mut Transaction,
+    _from: &erp_sdk::migrations::SemverVersion,
+) -> Result<()> {
+    tx.execute(&entry_totals_sql(""), &[]).await?;
+    Ok(())
 }
 
 /// Refuses the entries among `move_ids` whose balances do not sum to zero. Amounts are exact on

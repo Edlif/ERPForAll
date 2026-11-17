@@ -164,6 +164,25 @@ fn internal_user_can_maintain_references_but_not_operational_rows() {
             users.push(created.ids()[0]);
         }
         let user = users[1];
+        let template = tx
+            .env()
+            .records("product.template")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("name", Cell::Str("Access fixture".into()))],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let product: i64 = tx
+            .query(
+                "SELECT id FROM product_product WHERE product_tmpl_id = $1",
+                &[&template],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
         tx.install_audit_schema().await.unwrap();
         tx.commit().await.unwrap();
         drop(tx);
@@ -226,6 +245,34 @@ fn internal_user_can_maintain_references_but_not_operational_rows() {
                 refusal(&orm, "create", "c", description, model).await
             );
         }
+        // the access check comes before the unit work of a move create: a product-unit demand the
+        // unit service would refuse by name does not speak first for a caller without access
+        let description = installed
+            .registry()
+            .model("stock.move")
+            .unwrap()
+            .description
+            .clone();
+        let error = tx
+            .env()
+            .records("stock.move")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("product_id", Cell::Id(product))
+                        .set_cell("product_uom_qty", Cell::Decimal("2".parse().unwrap()))
+                        .set_cell("product_qty", Cell::Decimal("7".parse().unwrap())),
+                ],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), erp_fields::ErrorKind::Access, "{error:?}");
+        assert_eq!(
+            error.message(),
+            refusal(&orm, "create", "c", description.as_str(), "stock.move").await
+        );
         tx.rollback().await.unwrap();
         drop(tx);
         db.cleanup().await.unwrap();

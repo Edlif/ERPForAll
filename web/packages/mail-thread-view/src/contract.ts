@@ -31,9 +31,11 @@ export interface Capabilities {
   readonly partnerNames: boolean;
 }
 
-/** One change of a tracked field (communication.md section 4.3: `{f, n, t, o, v, od, vd, cur}`). */
+/** One change of a tracked field (communication.md section 4.3: `{f, n, l, t, o, v, od, vd, cur}`). */
 export interface TrackingChange {
   readonly field: string;
+  /** The field's label when the change was written (`l`); present only when the server stored one. */
+  readonly label?: string;
   readonly type: string;
   readonly old: unknown;
   readonly new: unknown;
@@ -196,7 +198,17 @@ export function parseTracking(text: string, where: string): TrackingChange[] {
       if (typeof shown !== "string") throw new ThreadViewError("data", `${where}[${index}].${key} must be a string or null`);
       return shown;
     };
-    return { field: name, type, old: change["o"] ?? null, new: change["v"] ?? null, oldDisplay: display("od"), newDisplay: display("vd") };
+    const label = change["l"];
+    if (label !== undefined && label !== null && typeof label !== "string") throw new ThreadViewError("data", `${where}[${index}].l must be a string or null`);
+    return {
+      field: name,
+      ...(typeof label === "string" && label !== "" ? { label } : {}),
+      type,
+      old: change["o"] ?? null,
+      new: change["v"] ?? null,
+      oldDisplay: display("od"),
+      newDisplay: display("vd"),
+    };
   });
 }
 

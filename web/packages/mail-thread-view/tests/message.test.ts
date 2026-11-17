@@ -63,6 +63,43 @@ test("tracking, notification and comment messages are drawn by the renderer regi
   expect(article(labelled, 2).querySelector(".erp-mail-tracking-field")?.textContent).toBe("mail.thread:stage_id");
 });
 
+/// (partial: the client shows a tracked datetime in the viewer's zone)
+test("a history line shows the stored label, the old value, the arrow and the new value, and a datetime in the viewer's zone", () => {
+  const rig = new Rig();
+  rig.records(ann);
+  const history = JSON.stringify([
+    { n: "state", l: "Status", t: "selection", o: "draft", v: "posted", od: "Draft", vd: "Posted" },
+    { n: "date_done", l: "Date of Transfer", t: "datetime", o: null, v: "2026-11-17 08:30:00", od: null, vd: null },
+  ]);
+  rig.load([message(2, { message_type: "tracking", body: "", author_id: 1, tracking: history })]);
+  const thread = rig.thread({ order: "asc" });
+  flushSync();
+  const lines = [...article(thread, 2).querySelectorAll(".erp-mail-tracking-change")];
+  const part = (index: number, name: string): string | null | undefined => lines[index]?.querySelector(`.erp-mail-tracking-${name}`)?.textContent;
+  expect(lines.map((_, index) => part(index, "field"))).toEqual(["Status", "Date of Transfer"]);
+  expect([part(0, "old"), part(0, "new")]).toEqual(["Draft", "Posted"]);
+  expect(lines[0]?.querySelector(".erp-mail-tracking-arrow svg")).not.toBeNull();
+  const expected = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(Date.UTC(2026, 10, 17, 8, 30)));
+  expect([part(1, "old"), part(1, "new")]).toEqual(["None", expected]);
+  expect(article(thread, 2).textContent).toContain("Ann");
+});
+
+test("a history line shows a text stored once as its raw value, and an emptied many2many as None", () => {
+  const rig = new Rig();
+  rig.records(ann);
+  const history = JSON.stringify([
+    { n: "ref", l: "Reference", t: "char", o: "INV/1", v: "INV/2" },
+    { n: "tag_ids", l: "Tags", t: "many2many", o: [3], v: [], od: "Urgent", vd: null },
+  ]);
+  rig.load([message(2, { message_type: "tracking", body: "", author_id: 1, tracking: history })]);
+  const thread = rig.thread({ order: "asc" });
+  flushSync();
+  const lines = [...article(thread, 2).querySelectorAll(".erp-mail-tracking-change")];
+  const part = (index: number, name: string): string | null | undefined => lines[index]?.querySelector(`.erp-mail-tracking-${name}`)?.textContent;
+  expect([part(0, "old"), part(0, "new")]).toEqual(["INV/1", "INV/2"]);
+  expect([part(1, "old"), part(1, "new")]).toEqual(["Urgent", "None"]);
+});
+
 test("a renderer that throws is replaced by a visible line and reported, and no renderer at all is a visible failure", () => {
   const rig = new Rig();
   rig.records(ann);

@@ -25,7 +25,9 @@
 //!
 //! Lock order, the same on every path so none waits for another in a cycle: the target company
 //! row (a setter's write, or `FOR UPDATE` in a lock run's second step), then the root company row
-//! (`fiscal_period_serial`), then the period advisory locks in id order.
+//! (`fiscal_period_serial`), then the period advisory locks in id order. The lock-date check
+//! (`locking::check_lock_dates`) holds its company rows shared in the same order, a branch before
+//! its ancestors.
 
 use erp_sdk::prelude::*;
 

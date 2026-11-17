@@ -17,9 +17,12 @@ pub const LINKED: &[&str] = &[
     "theme_office_blue",
     "analytic",
     "account",
+    "account_mail",
     "purchase",
+    "purchase_mail",
     "barcodes_gs1_nomenclature",
     "stock",
+    "stock_mail",
     "sales_team",
     "sale",
 ];

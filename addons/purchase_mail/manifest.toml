@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name = "Purchase Mail Bridge"
+summary = "Messages, followers, activities and chatter for purchase orders"
+category = "Supply Chain/Purchase"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "purchase", "mail"]
+auto_install = true
+data = [
+    "views/purchase_order_views.xml",
+]

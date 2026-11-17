@@ -187,6 +187,22 @@ pub struct MailMessage {
     /// Posted without push or out-of-focus alert (5); stored for the push job.
     #[field(boolean, readonly = true, copy = false)]
     pub silent: bool,
+    /// The tracked-field changes a history message records:
+    /// a JSON array, one object per changed field (`n` name, `l` label, `t` type, `o`/`v` old and
+    /// new value, `od`/`vd` their display text). Written by the tracking consumer
+    /// (`crate::tracking`), never by a caller. The values may include fields the reader is not
+    /// allowed to see, so the field is closed to every user (`groups = "."`: generic `read`,
+    /// `search_read`, domains, grouping and export refuse it); only the thread loading reads it,
+    /// in superuser mode, and drops the changes the reader may not see
+    /// (`crate::tracking::visible_changes`).
+    #[field(
+        json,
+        readonly = true,
+        copy = false,
+        groups = ".",
+        string = "Tracking Values"
+    )]
+    pub tracking: Option<erp_sdk::serde_json::Value>,
 }
 
 fn now(_ctx: &DefaultContext) -> Value {

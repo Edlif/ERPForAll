@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+The parts of a printed business document (invoice, order, delivery slip), for any addon's
+     report to call inside `web.external_layout`. Each part
+     takes its values as call arguments (`label.translate="..."` for a label, so it is translated
+     like text) and, where it holds other parts or a value, its body. The accent colour of the
+     document title and grand total is this layout's one colour token (#086d71); an addon that
+     wants another inherits these templates. 
+-->
+<erp>
+    <!-- Kind and number of the document as its title, and its status when it matters.
+         Arguments: `title` (the kind), `number` and `status` (each a value or False). -->
+    <template id="document_title">
+        <div class="row align-items-end mb-4">
+            <div class="col-8">
+                <div style="font-size: 17pt; font-weight: bold; color: #086d71"><t t-out="title"/><t t-if="number"> <span style="color: #1f2328" t-out="number"/></t></div>
+            </div>
+            <div class="col-4 text-end">
+                <strong t-if="status" style="font-size: 11pt; color: #b42318" t-out="status"/>
+            </div>
+        </div>
+    </template>
+
+    <!-- The address row: its body holds one or two `web.document_address` parts side by side. -->
+    <template id="document_addresses">
+        <div class="row mb-4">
+            <t t-out="0"/>
+        </div>
+    </template>
+
+    <!-- One address block. Arguments: `address` (a res.partner record), `label`. -->
+    <template id="document_address">
+        <div class="col-6">
+            <div class="small text-muted mb-1" t-out="label"/>
+            <!-- one block with line breaks, so the address reads as one set of tight lines -->
+            <div class="mb-1"><strong t-out="address.display_name"/><t t-if="address.street"><br/><span t-field="address.street"/></t><t t-if="address.street2"><br/><span t-field="address.street2"/></t><t t-if="address.zip or address.city"><br/><span t-if="address.zip" t-field="address.zip"/> <span t-if="address.city" t-field="address.city"/></t><t t-if="address.state_id or address.country_id"><br/><span t-if="address.state_id" t-field="address.state_id.name"/><t t-if="address.state_id and address.country_id">, </t><span t-if="address.country_id" t-field="address.country_id.name"/></t></div>
+            <div t-if="address.vat" class="small"><span class="text-muted">Tax ID</span> <span t-field="address.vat"/></div>
+        </div>
+    </template>
+
+    <!-- The information row: its body holds `web.document_info_item` parts, four to a line; more
+         go on to the next line. -->
+    <template id="document_info">
+        <div class="row mb-4">
+            <t t-out="0"/>
+        </div>
+    </template>
+
+    <!-- One labelled value of the information row. Argument: `label`; the body is the value. -->
+    <template id="document_info_item">
+        <div class="col-3">
+            <div class="small text-muted mb-1" t-out="label"/>
+            <div class="fw-bold mb-2"><t t-out="0"/></div>
+        </div>
+    </template>
+
+    <!-- The lines table: its body is the caller's `thead` (repeated on every page) and `tbody`.
+         Number columns take `text-end` on their `th` and `td`. -->
+    <template id="document_lines">
+        <table class="table table-sm mb-4">
+            <t t-out="0"/>
+        </table>
+    </template>
+
+    <!-- A section title over the whole lines table. Arguments: `columns` (the table's column
+         count), `text`. -->
+    <template id="document_line_section">
+        <tr>
+            <td t-att-colspan="columns" class="fw-bold" t-out="text"/>
+        </tr>
+    </template>
+
+    <!-- A note over the whole lines table. Arguments: `columns`, `text`. -->
+    <template id="document_line_note">
+        <tr>
+            <td t-att-colspan="columns" class="fst-italic text-muted" t-out="text"/>
+        </tr>
+    </template>
+
+    <!-- The totals block at the right, kept on one page: its body holds `web.document_total_row`
+         and `web.document_total_grand` parts, top to bottom. -->
+    <template id="document_totals">
+        <div class="row mb-4 avoid-page-break-inside">
+            <div class="col-6"/>
+            <div class="col-6">
+                <table class="table table-sm">
+                    <tbody>
+                        <t t-out="0"/>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </template>
+
+    <!-- A row of the totals block (untaxed amount, one tax group, a payment). Argument: `label`;
+         the body is the amount. -->
+    <template id="document_total_row">
+        <tr>
+            <td t-out="label"/>
+            <td class="text-end"><t t-out="0"/></td>
+        </tr>
+    </template>
+
+    <!-- The total, or the amount due, in bold. Argument: `label`; the body is the amount. -->
+    <template id="document_total_grand">
+        <tr>
+            <td class="fw-bold" style="font-size: 11pt" t-out="label"/>
+            <td class="text-end fw-bold" style="font-size: 11pt; color: #086d71"><t t-out="0"/></td>
+        </tr>
+    </template>
+
+    <!-- A note or terms block. Argument: `label` (a value or False); the body is the text. -->
+    <template id="document_note">
+        <div class="mb-3 avoid-page-break-inside">
+            <div t-if="label" class="small fw-bold mb-1" t-out="label"/>
+            <div class="small"><t t-out="0"/></div>
+        </div>
+    </template>
+
+    <!-- The signature row: its body holds `web.document_signature` parts, three to a line. -->
+    <template id="document_signatures">
+        <div class="row avoid-page-break-inside" style="margin-top: 48pt">
+            <t t-out="0"/>
+        </div>
+    </template>
+
+    <!-- One signature line. Argument: `label` (who signs). -->
+    <template id="document_signature">
+        <div class="col-4 border-top pt-1 small text-muted text-center" t-out="label"/>
+    </template>
+</erp>

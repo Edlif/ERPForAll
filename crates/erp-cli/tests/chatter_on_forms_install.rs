@@ -436,8 +436,7 @@ fn mail_install_serves_chatter_and_thread_post_on_product_forms() {
 }
 
 /// (every thread model of the installed registry is a model of the store
-/// schema, so the web client's `hold` of a chatter record is accepted; a new thread model that its
-/// addon forgets to declare in a store schema part fails here)
+/// schema served to the database, so the web client's `hold` of a chatter record is accepted)
 #[test]
 fn every_thread_model_is_a_model_of_the_store_schema() {
     big_stack(async move {
@@ -459,7 +458,11 @@ fn every_thread_model_is_a_model_of_the_store_schema() {
             .await
             .unwrap();
         assert!(outcome.post_commit.is_clean());
-        let schema = erp_addon_mail::store::schema().unwrap();
+        let served = erp_addon_mail::store_fetch::TopicRegistry::linked()
+            .unwrap()
+            .schema_for(outcome.orm.registry())
+            .unwrap();
+        let schema = served.schema();
         let threads: Vec<&str> = outcome
             .orm
             .registry()
@@ -480,7 +483,7 @@ fn every_thread_model_is_a_model_of_the_store_schema() {
         for model in threads {
             assert!(
                 schema.model(model).is_some(),
-                "{model} inherits mail.thread but is not a model of the store schema: add it to thread_schema in addons/mail/src/store.rs"
+                "{model} inherits mail.thread but is not a model of the store schema served to this database"
             );
         }
         db.cleanup().await.unwrap();

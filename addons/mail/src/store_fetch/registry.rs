@@ -1,11 +1,11 @@
 //! The closed topic registry and the store schema it derives (2, D2.3).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use erp_sdk::serde_json::{self, Value as Json};
 use erp_sdk::store_wire::{FieldSpec, SchemaGeneration, StoreSchema};
-use erp_sdk::{Error, Result};
+use erp_sdk::{Env, Error, Operation, Result, Transaction};
 
 use super::topic::{SchemaFragment, SchemaPart, StoreTopic};
 use super::{SCHEMA_SLOT, TOPIC_SLOT};
@@ -55,8 +55,41 @@ const MAX_NAME_BYTES: usize = 64;
 #[derive(Debug)]
 pub struct TopicRegistry {
     topics: BTreeMap<&'static str, &'static StoreTopic>,
+    parts: Vec<&'static SchemaPart>,
     schema: StoreSchema,
     schema_document: Json,
+    /// The last schema built for each audience (internal users, then share users), by the
+    /// thread models it names.
+    served: Mutex<[Option<Served>; 2]>,
+}
+
+/// A served schema keyed by the thread models it names.
+type Served = (Vec<String>, Arc<ServedSchema>);
+
+/// The schema the running `store_fetch` call is encoded against, for its `schema` topic.
+#[derive(Debug, Default)]
+pub(crate) struct CallSchema(pub(crate) Option<Arc<ServedSchema>>);
+
+/// The store schema served to one database: the linked parts and the thread models of its
+/// registry (see [`TopicRegistry::schema_for`]).
+#[derive(Debug)]
+pub struct ServedSchema {
+    schema: StoreSchema,
+    document: Json,
+}
+
+impl ServedSchema {
+    /// The schema answers are encoded against.
+    #[must_use]
+    pub fn schema(&self) -> &StoreSchema {
+        &self.schema
+    }
+
+    /// The schema as the JSON document the `schema` topic returns.
+    #[must_use]
+    pub fn document(&self) -> &Json {
+        &self.document
+    }
 }
 
 fn valid_topic_name(name: &str) -> bool {
@@ -168,11 +201,13 @@ impl TopicRegistry {
                 )));
             }
         }
-        let (schema, schema_document) = build_schema(parts)?;
+        let (schema, schema_document) = build_schema(parts, &[], false)?;
         Ok(Self {
             topics: by_name,
+            parts: parts.to_vec(),
             schema,
             schema_document,
+            served: Mutex::new([None, None]),
         })
     }
 
@@ -273,10 +308,82 @@ impl TopicRegistry {
         self.topics.keys().copied()
     }
 
-    /// The store schema of every part.
+    /// The store schema of every part, without any database's thread models; answers use
+    /// [`TopicRegistry::schema_for`].
     #[must_use]
     pub fn schema(&self) -> &StoreSchema {
         &self.schema
+    }
+
+    /// The schema served to the database of `registry`: the parts, and every concrete model of
+    /// `registry` that inherits `mail.thread` (no fields: the client holds a chatter's record by
+    /// it). The registry is the installed set of the database, rebuilt by every install, upgrade
+    /// or uninstall on every node, so a change of the threaded models changes the generation and
+    /// clients refetch the schema (3, (c).1). The content alone decides it:
+    /// two nodes with the same installed set serve the same generation.
+    ///
+    /// # Errors
+    /// `Programming` when a thread model clashes with the parts (a build defect).
+    pub fn schema_for(&self, registry: &erp_sdk::Registry) -> Result<Arc<ServedSchema>> {
+        self.served(thread_models(registry), false)
+    }
+
+    /// The schema served to a caller outside `base.group_user` (portal, public): the parts and
+    /// only the thread models in `reachable` (those the caller may read at model level), with a
+    /// generation of its own, never the internal one, so a client never holds the wrong schema.
+    ///
+    /// # Errors
+    /// As [`TopicRegistry::schema_for`].
+    pub fn schema_for_share(
+        &self,
+        registry: &erp_sdk::Registry,
+        reachable: &BTreeSet<String>,
+    ) -> Result<Arc<ServedSchema>> {
+        let mut threads = thread_models(registry);
+        threads.retain(|name| reachable.contains(name));
+        self.served(threads, true)
+    }
+
+    /// The schema served to the caller of `env`: [`TopicRegistry::schema_for`] for superuser mode
+    /// and internal users, [`TopicRegistry::schema_for_share`] with the thread models the caller
+    /// may read for everyone else. The thread models list which applications are installed, which
+    /// only internal users may know (model metadata is closed to the others).
+    ///
+    /// # Errors
+    /// As [`TopicRegistry::schema_for`]; the group and access checks' failures.
+    pub async fn schema_for_reader(
+        &self,
+        tx: &mut Transaction,
+        env: &Env,
+    ) -> Result<Arc<ServedSchema>> {
+        if env.su() || tx.has_group(env, "base.group_user").await? {
+            return self.schema_for(tx.registry());
+        }
+        let mut reachable = BTreeSet::new();
+        for model in thread_models(tx.registry()) {
+            if env.records(&model)?.has_access(tx, Operation::Read).await? {
+                reachable.insert(model);
+            }
+        }
+        self.schema_for_share(tx.registry(), &reachable)
+    }
+
+    fn served(&self, threads: Vec<String>, share: bool) -> Result<Arc<ServedSchema>> {
+        // every entry is replaced whole, so a panic of another holder left nothing half-written
+        let mut served = self.served.lock().unwrap_or_else(PoisonError::into_inner);
+        let slot = &mut served[usize::from(share)];
+        if let Some((names, schema)) = slot.as_ref()
+            && *names == threads
+        {
+            return Ok(Arc::clone(schema));
+        }
+        // shortcut: one entry per audience, rebuilt when a process serves databases (or share
+        // users) with different thread sets in turn (cost not measured); keep one per set when
+        // that shows in a profile
+        let (schema, document) = build_schema(&self.parts, &threads, share)?;
+        let built = Arc::new(ServedSchema { schema, document });
+        *slot = Some((threads, Arc::clone(&built)));
+        Ok(built)
     }
 
     /// The schema as the JSON document the `schema` topic returns.
@@ -286,8 +393,26 @@ impl TopicRegistry {
     }
 }
 
-fn build_schema(parts: &[&'static SchemaPart]) -> Result<(StoreSchema, Json)> {
-    let mut models: BTreeSet<String> = BTreeSet::new();
+/// The concrete models of `registry` that inherit `mail.thread`, sorted.
+fn thread_models(registry: &erp_sdk::Registry) -> Vec<String> {
+    registry
+        .models()
+        .iter()
+        .filter(|m| !m.is_abstract() && m.inherits("mail.thread"))
+        .map(|m| m.name.to_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The schema of `parts` and `threads`; `share` gives the schema of a share caller a generation
+/// of its own even when its content equals the internal one.
+fn build_schema(
+    parts: &[&'static SchemaPart],
+    threads: &[String],
+    share: bool,
+) -> Result<(StoreSchema, Json)> {
+    let mut models: BTreeSet<String> = threads.iter().cloned().collect();
     let mut fields: BTreeMap<(String, String), (&'static str, FieldSpec)> = BTreeMap::new();
     for part in parts {
         let mut fragment = SchemaFragment::default();
@@ -322,7 +447,9 @@ fn build_schema(parts: &[&'static SchemaPart]) -> Result<(StoreSchema, Json)> {
         }
         builder.build().map_err(wire_err)
     };
-    let pending = make("pending")?.encode().map_err(wire_err)?;
+    let pending = make(if share { "pending-share" } else { "pending" })?
+        .encode()
+        .map_err(wire_err)?;
     let token = format!("s1-{:016x}", fnv1a64(&pending));
     let schema = make(&token)?;
     let document = serde_json::from_slice(&schema.encode().map_err(wire_err)?)

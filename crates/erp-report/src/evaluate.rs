@@ -128,9 +128,10 @@ enum Item {
         block: bool,
         column: Option<u8>,
     },
-    Cell(NodeId),
+    /// A table cell and the columns it spans.
+    Cell(NodeId, usize),
     Row {
-        cells: Vec<NodeId>,
+        cells: Vec<(NodeId, usize)>,
         head: bool,
     },
     Entry(NodeId),
@@ -415,6 +416,31 @@ fn is_block(tag: &str) -> bool {
             | "hr"
     ) || matches!(tag.as_bytes(), [b'h', b'1'..=b'6'])
 }
+/// The lines of a 12-column row, as index ranges of its cells. A row whose cells all have a width
+/// (`col-N`) and add up to more than twelve wraps, as a Bootstrap row does; a row with a sharing
+/// column (`col`, `col-auto`) stays one line.
+fn row_lines(widths: &[Option<u8>]) -> Vec<std::ops::Range<usize>> {
+    let fixed: Option<Vec<u32>> = widths
+        .iter()
+        .map(|w| w.filter(|n| *n > 0).map(u32::from))
+        .collect();
+    let Some(fixed) = fixed.filter(|fixed| fixed.iter().sum::<u32>() > 12) else {
+        return std::iter::once(0..widths.len()).collect();
+    };
+    let mut lines = Vec::new();
+    let (mut start, mut used) = (0, 0);
+    for (index, width) in fixed.iter().enumerate() {
+        if used > 0 && used + width > 12 {
+            lines.push(start..index);
+            (start, used) = (index, 0);
+        }
+        used += width;
+    }
+    lines.push(start..fixed.len());
+    lines
+}
+/// The widest `colspan` a cell may take, as in HTML.
+const MAX_COLSPAN: usize = 1000;
 /// Elements that carry style to their cells and emit no node themselves.
 fn is_table_part(tag: &str) -> bool {
     matches!(tag, "thead" | "tbody" | "tfoot" | "tr")
@@ -1070,7 +1096,7 @@ impl<'p> Run<'p> {
                     blocks &= block;
                     ids.push(id);
                 }
-                Item::Cell(_) | Item::Row { .. } | Item::Entry(_) => {
+                Item::Cell(..) | Item::Row { .. } | Item::Entry(_) => {
                     return Err(at.evaluate(
                         "a table row, table cell or list item outside its table or list",
                     ));
@@ -1156,7 +1182,7 @@ impl<'p> Run<'p> {
         }
         if look.spans {
             return Err(ReportError::Unsupported {
-                feature: "table cell spans",
+                feature: "table row spans",
                 task: "a later release",
             });
         }
@@ -1354,7 +1380,7 @@ impl<'p> Run<'p> {
                             cells.push(id);
                             widths.push(column.filter(|_| look.role == Role::Row));
                         }
-                        Item::Cell(_) | Item::Row { .. } | Item::Entry(_) => {
+                        Item::Cell(..) | Item::Row { .. } | Item::Entry(_) => {
                             return Err(at.evaluate(
                                 "a table row, table cell or list item outside its table or list",
                             ));
@@ -1370,13 +1396,45 @@ impl<'p> Run<'p> {
                         .gap
                         .map_or(0.0, |gap| gap.points(own.inherit.text.size, self.base)),
                 };
-                let grid = self.builder.add(Node::Grid {
-                    columns: weights(&widths),
-                    gutter,
-                    cells,
-                    align: look.cross.unwrap_or_default(),
+                let align = look.cross.unwrap_or_default();
+                let lines = match look.role {
+                    Role::Row => row_lines(&widths),
+                    _ => std::iter::once(0..cells.len()).collect(),
+                };
+                if let [_] = lines.as_slice() {
+                    let grid = self.builder.add(Node::Grid {
+                        columns: weights(&widths),
+                        gutter,
+                        cells,
+                        align,
+                    })?;
+                    return self.wrapped(grid, own, look, out);
+                }
+                // Columns adding up to more than twelve go on to further lines, each on the same
+                // twelve-column grid: a short last line keeps its widths and leaves the rest empty.
+                let mut grids = Vec::with_capacity(lines.len());
+                for line in lines {
+                    let mut line_cells = cells[line.clone()].to_vec();
+                    let mut line_widths = widths[line].to_vec();
+                    let used: u32 = line_widths.iter().flatten().map(|n| u32::from(*n)).sum();
+                    if let Ok(rest) = u8::try_from(12u32.saturating_sub(used))
+                        && rest > 0
+                    {
+                        line_cells.push(self.builder.add(Node::Text(String::new()))?);
+                        line_widths.push(Some(rest));
+                    }
+                    grids.push(self.builder.add(Node::Grid {
+                        columns: weights(&line_widths),
+                        gutter,
+                        cells: line_cells,
+                        align,
+                    })?);
+                }
+                let lines = self.builder.add(Node::Block {
+                    children: grids,
+                    style: Style::default(),
                 })?;
-                return self.wrapped(grid, own, look, out);
+                return self.wrapped(lines, own, look, out);
             }
             Role::Plain => {}
         }
@@ -1387,14 +1445,33 @@ impl<'p> Run<'p> {
             "hr" => self.node(Node::Rule, true, out)?,
             "td" | "th" => {
                 let styled = own.styled() || inherit.pending;
-                out.push(Item::Cell(self.single(kids, own, styled, at)?));
+                let id = self.single(kids, own, styled, at)?;
+                let span = match &look.colspan {
+                    None => 1,
+                    Some(Ok(span)) if *span <= MAX_COLSPAN => *span,
+                    Some(Ok(_) | Err(_)) => {
+                        return Err(at.evaluate(format!(
+                            "colspan must be a whole number from 1 to {MAX_COLSPAN}"
+                        )));
+                    }
+                };
+                let id = if span > 1 {
+                    self.builder.add(Node::Cell {
+                        child: id,
+                        colspan: span,
+                        rowspan: 1,
+                    })?
+                } else {
+                    id
+                };
+                out.push(Item::Cell(id, span));
             }
             "li" => out.push(Item::Entry(self.single(kids, own, own.styled(), at)?)),
             "tr" => {
                 let mut cells = Vec::new();
                 for item in kids {
                     match item {
-                        Item::Cell(id) => cells.push(id),
+                        Item::Cell(id, span) => cells.push((id, span)),
                         Item::Text(text) if blank(&text) => {}
                         _ => return Err(misplaced("a table row that should hold cells")),
                     }
@@ -1419,7 +1496,7 @@ impl<'p> Run<'p> {
                 for item in kids {
                     match item {
                         Item::Row { cells, head } => {
-                            columns = columns.max(cells.len());
+                            columns = columns.max(cells.iter().map(|(_, span)| span).sum());
                             rows.push((cells, head));
                         }
                         Item::Text(text) if blank(&text) => {}
@@ -1431,10 +1508,13 @@ impl<'p> Run<'p> {
                 }
                 let mut header = Vec::new();
                 let mut cells = Vec::new();
-                for (mut row, head) in rows {
+                for (row, head) in rows {
+                    let mut width: usize = row.iter().map(|(_, span)| span).sum();
+                    let mut row: Vec<NodeId> = row.into_iter().map(|(id, _)| id).collect();
                     // A short row is filled with empty cells so that the next row starts a line.
-                    while row.len() < columns {
+                    while width < columns {
                         row.push(self.builder.add(Node::Text(String::new()))?);
+                        width += 1;
                     }
                     if head {
                         header.extend(row);

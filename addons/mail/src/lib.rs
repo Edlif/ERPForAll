@@ -21,6 +21,7 @@ pub mod store_fetch;
 pub mod subtype;
 pub mod thread_load;
 pub mod thread_rpc;
+pub mod tracking;
 
 mod res_company;
 mod res_partner;
@@ -54,3 +55,4 @@ pub use thread_load::{
     DEFAULT_MESSAGE_PAGE, MAX_MESSAGE_PAGE, MailMessageStore, MailThreadStore, ThreadFacts,
 };
 pub use thread_rpc::{MailThreadRpc, PostWire};
+pub use tracking::TRACKING_HOOK;

@@ -232,6 +232,67 @@ impl MailThread {
         crate::post::message_log_batch(tx, this.as_records(), bodies).await
     }
 
+    /// Creating thread records notes them for their creation line, written at commit by the
+    /// history consumer (`crate::tracking`), unless the context holds `mail_create_nolog` or
+    /// `tracking_disable` (as the reference's `create`).
+    #[method(override)]
+    async fn create(
+        this: &RecordSet<MailThread>,
+        tx: &mut Transaction,
+        vals_list: Vec<RawVals>,
+        sup: Super,
+    ) -> Result<Records> {
+        let created: Records = sup.call(tx, this.as_records(), (vals_list,)).await?;
+        let context = this.env().context();
+        let quiet = [erp_sdk::CREATION_LOG_DISABLE_KEY, "tracking_disable"]
+            .iter()
+            .any(|key| context.get(key).is_some_and(|v| v.is_truthy()));
+        if !quiet {
+            crate::tracking::note_created(tx, created.spec().name, &created.ids());
+        }
+        Ok(created)
+    }
+
+    /// A model overrides it to say more (for instance which document
+    /// the record came from). A record missing from the answer gets no creation line.
+    #[method]
+    async fn _creation_message(
+        this: &RecordSet<MailThread>,
+        _tx: &mut Transaction,
+    ) -> Result<BTreeMap<i64, String>> {
+        let records = this.as_records();
+        let text = format!("{} created", records.spec().description);
+        Ok(records
+            .ids()
+            .into_iter()
+            .map(|id| (id, text.clone()))
+            .collect())
+    }
+
+    /// Without an answer for a record its change is an internal note
+    /// (`mail.mt_note`). A model overrides it to give a status change its own subtype, so that
+    /// followers can be told about it differently.
+    #[method]
+    async fn _track_subtype(
+        _this: &RecordSet<MailThread>,
+        _tx: &mut Transaction,
+        _changed: BTreeMap<i64, Vec<String>>,
+    ) -> Result<BTreeMap<i64, String>> {
+        Ok(BTreeMap::new())
+    }
+
+    /// Empty
+    /// by default. A model overrides it to explain a change, and may post a message of its own
+    /// here with `message_post`, next to the history line.
+    #[method]
+    async fn _track_body(
+        _this: &RecordSet<MailThread>,
+        _tx: &mut Transaction,
+        _changed: BTreeMap<i64, Vec<String>>,
+    ) -> Result<BTreeMap<i64, String>> {
+        Ok(BTreeMap::new())
+    }
+
     /// Deleting thread records deletes their messages, followers and scheduled messages
     /// : all point at the record through `model`/`res_id`, which no
     /// foreign key covers. The records go first, so a caller who may not delete them deletes

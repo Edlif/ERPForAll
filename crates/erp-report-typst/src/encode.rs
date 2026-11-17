@@ -117,13 +117,41 @@ fn text_len(doc: &DocTree, id: &NodeId, depth: usize) -> usize {
     }
 }
 /// Column shares from the longest text in each column, header included, as a browser's automatic table
-/// layout gives them: a title column gets more room than a year column. A spanning cell counts toward the
-/// column it starts in.
+/// layout gives them: a title column gets more room than a year column. Cells are placed as the
+/// renderer places them (spans move the cells after them); a cell spanning several columns, such as a
+/// section title over a whole row, claims no column of its own.
 fn column_weights(doc: &DocTree, columns: usize, header: &[NodeId], cells: &[NodeId]) -> Vec<f64> {
     let mut longest = vec![0; columns];
-    for (index, id) in header.iter().chain(cells).enumerate() {
-        if let Some(column) = longest.get_mut(index % columns.max(1)) {
-            *column = (*column).max(text_len(doc, id, 0));
+    // An empty table has no column to place a cell in.
+    let sections: &[&[NodeId]] = if columns == 0 { &[] } else { &[header, cells] };
+    for section in sections {
+        // Rows still covered by a row span from above, per column, counting the current row.
+        let mut busy = vec![0usize; columns];
+        let mut col = 0;
+        for id in section.iter() {
+            let (colspan, rowspan) = match doc.nodes().get(id.index()) {
+                Some(Node::Cell {
+                    colspan, rowspan, ..
+                }) => (*colspan, *rowspan),
+                _ => (1, 1),
+            };
+            // The builder admitted the placement, so a free slot exists within one more row.
+            while col == columns || busy.get(col).is_some_and(|b| *b > 0) {
+                if col == columns {
+                    busy.iter_mut().for_each(|b| *b = b.saturating_sub(1));
+                    col = 0;
+                } else {
+                    col += 1;
+                }
+            }
+            let end = (col + colspan).min(columns);
+            busy[col..end].iter_mut().for_each(|b| *b = rowspan);
+            if colspan == 1
+                && let Some(column) = longest.get_mut(col)
+            {
+                *column = (*column).max(text_len(doc, id, 0));
+            }
+            col = end;
         }
     }
     let page = doc.options().page();

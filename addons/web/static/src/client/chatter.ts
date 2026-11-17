@@ -118,6 +118,19 @@ function storePayloadOf(raw: unknown, what: string): string | Uint8Array {
   throw new ClientError("server", `${what} answered no store payload`);
 }
 
+/** The schema generation a store payload names, when it can be read without decoding (JSON text or object). */
+function payloadGeneration(raw: unknown): string | undefined {
+  let doc: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      doc = JSON.parse(raw);
+    } catch {
+      return undefined; // the decoder refuses it when the payload is applied
+    }
+  }
+  return isRecord(doc) && typeof doc["schema"] === "string" ? doc["schema"] : undefined;
+}
+
 /** The `topics` list of a `store_fetch` answer, and a finder for one named topic. */
 function topicsOf(res: Record<string, unknown>): (name: string) => Record<string, unknown> | undefined {
   const topics = res["topics"];
@@ -608,23 +621,33 @@ export class Chatter {
     const pager: ThreadPager = {
       loadLatest: async (threadRef) => {
         const request = ++latestLoad;
-        const topics: Array<{ name: string; params?: Record<string, unknown> }> = [];
-        if (store.generation === null) {
-          topics.push({ name: "schema" });
-        }
-        topics.push({
-          name: "thread",
-          params: { model: threadRef.model, id: threadRef.id, messages: true, attachments: true, limit: 30 },
-        });
+        const fetchLatest = async (withSchema: boolean): Promise<Record<string, unknown>> => {
+          const topics: Array<{ name: string; params?: Record<string, unknown> }> = [];
+          if (withSchema) topics.push({ name: "schema" });
+          topics.push({
+            name: "thread",
+            params: { model: threadRef.model, id: threadRef.id, messages: true, attachments: true, limit: 30 },
+          });
+          return requireRecord(
+            await options.rpc.call("mail.store", "store_fetch", { wire: 1, topics }),
+            "store_fetch"
+          );
+        };
 
-        const res = requireRecord(
-          await options.rpc.call("mail.store", "store_fetch", { wire: 1, topics }),
-          "store_fetch"
-        );
+        let res = await fetchLatest(store.generation === null);
         if (request !== latestLoad) return;
+        // An install, upgrade or uninstall that changes the threaded models gives the server a new schema
+        // generation: renew the schema once; a second mismatch is refused when the payload is applied.
+        let renew = false;
+        const answered = payloadGeneration(res["store"]);
+        if (store.generation !== null && answered !== undefined && answered !== store.generation) {
+          renew = true;
+          res = await fetchLatest(true);
+          if (request !== latestLoad) return;
+        }
         const topicNamed = topicsOf(res);
 
-        if (store.generation === null) {
+        if (store.generation === null || renew) {
           const schemaTopic = topicNamed("schema");
           if (!schemaTopic || schemaTopic["ok"] === false || !schemaTopic["data"]) {
             throw new ClientError("server", "store_fetch answered no schema for the messaging store");

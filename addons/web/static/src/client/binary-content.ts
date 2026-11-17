@@ -101,6 +101,8 @@ export function binaryContent(rpc: RpcClient, model: string, id: number, field: 
     characters: 0, users: 0, settled: false,
     promise: new Promise<string>((resolve, reject) => { mine = { resolve, reject }; waiters.set(id, [...(waiters.get(id) ?? []), mine]); }),
     cancel() {
+      // gone at once, not one microtask later in the rejection handler: a caller of the same tick starts a read of its own
+      if (store.entries.get(key) === entry) store.entries.delete(key);
       const rest = (waiters.get(id) ?? []).filter(waiter => waiter !== mine);
       if (rest.length > 0) waiters.set(id, rest); else waiters.delete(id);
       mine.reject(new DOMException(`The read of ${model}.${field} was cancelled.`, "AbortError"));

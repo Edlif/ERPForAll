@@ -7,12 +7,14 @@
     <field name="model">account.move</field>
     <field name="arch" type="xml">
       <list>
-        <field name="name"/>
         <field name="date"/>
+        <field name="name"/>
         <field name="journal_id"/>
         <field name="partner_id"/>
         <field name="ref"/>
-        <field name="state"/>
+        <field name="currency_id" invisible="1"/>
+        <field name="amount_total"/>
+        <field name="state" widget="badge"/>
       </list>
     </field>
   </record>
@@ -28,10 +30,11 @@
         </header>
         <sheet>
           <div class="oe_title">
-            <h1><field name="name" readonly="1"/></h1>
+            <h1><field name="name" readonly="1" invisible="not name"/><field name="display_name" readonly="1" invisible="name"/></h1>
           </div>
           <group>
             <group>
+              <field name="move_type" invisible="1"/>
               <field name="date"/>
               <field name="journal_id"/>
               <field name="ref"/>
@@ -44,8 +47,9 @@
           </group>
           <notebook>
             <page string="Journal Items" name="journal_items">
-              <!-- The lines show with the line model's default list (view_move_line_lines) and open in its form. -->
-              <field name="line_ids"/>
+              <!-- The lines show with the line model's default list (view_move_line_lines) and open in its form.
+                   The items of an invoice or bill follow its product lines: they are edited in the invoice form. -->
+              <field name="line_ids" readonly="move_type != 'entry'"/>
             </page>
           </notebook>
         </sheet>
@@ -64,6 +68,11 @@
         <field name="journal_id"/>
         <filter name="draft" string="Draft" domain="[('state', '=', 'draft')]"/>
         <filter name="posted" string="Posted" domain="[('state', '=', 'posted')]"/>
+        <separator/>
+        <filter name="misc" string="Miscellaneous" domain="[('journal_id.type', '=', 'general')]"/>
+        <filter name="sales" string="Sales" domain="[('journal_id.type', '=', 'sale')]"/>
+        <filter name="purchases" string="Purchases" domain="[('journal_id.type', '=', 'purchase')]"/>
+        <filter name="liquidity" string="Bank and Cash" domain="[('journal_id.type', 'in', ('bank', 'cash', 'credit'))]"/>
         <group>
           <filter name="groupby_journal" string="Journal" context="{'group_by': 'journal_id'}"/>
           <filter name="groupby_date" string="Date" context="{'group_by': 'date'}"/>
@@ -79,7 +88,7 @@
     <field name="view_mode">list,form</field>
     <field name="view_id" ref="view_move_list"/>
     <field name="search_view_id" ref="view_move_search"/>
-    <field name="domain">[('move_type', '=', 'entry')]</field>
+    <!-- New creates a miscellaneous entry. -->
     <field name="context">{'default_move_type': 'entry'}</field>
   </record>
 

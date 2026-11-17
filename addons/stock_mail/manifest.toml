@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name = "Inventory Mail Bridge"
+summary = "Messages, followers, activities and chatter for transfers"
+category = "Inventory"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "stock", "mail"]
+auto_install = true
+data = [
+    "views/stock_picking_views.xml",
+]

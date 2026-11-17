@@ -31,6 +31,11 @@ ignore = [
     # workspace or in vendor/ calls the rustix xattr functions. Removed with the update to >= 1.1.6: board task
     # DEPS.RUSTIX-0486 (a lock change takes a full run of its own).
     { id = "RUSTSEC-2026-0486", reason = "xattr functions are not called; rustix is updated by DEPS.RUSTIX-0486" },
+    # chrono and humantime, marked unmaintained on 2026-11-17 (no vulnerability reported, no safe upgrade). Both are in
+    # the lock only under object_store (erp-blob). Removed when object_store drops them: board task DEPS.CHRONO-0543
+    # (a lock change takes a full run of its own).
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, reached only through object_store under erp-blob; followed by DEPS.CHRONO-0543" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime is unmaintained (wraps chrono), reached only through object_store under erp-blob; followed by DEPS.CHRONO-0543" },
     # The report engine's Typst dependencies (Licences; reviewed again at every Typst upgrade).
     { id = "RUSTSEC-2026-0194", reason = "quick-xml under citationberg (CSL/bibliography parsing): the report World never serves a bibliography or CSL file" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader under citationberg (CSL parsing): unreachable, no bibliography or CSL input" },

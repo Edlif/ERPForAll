@@ -1534,6 +1534,356 @@ fn stock_security_move_delete_keeps_chains_and_takes_lines() {
     });
 }
 
+/// An Inventory manager who is not the system administrator creates an operation type with a
+/// prefix and changes the prefix; the application creates and writes the numbering sequence for
+/// the caller. A user without the right to create operation types is refused and no sequence
+/// appears. A warehouse made by hand gets its numbered types the same way.
+#[test]
+fn stock_security_operation_type_numbering_is_set_up_for_the_manager() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let installed = install(&db).await;
+        let users = roles(&installed).await;
+        let a = xid(&installed, "base", "main_company").await;
+        let mut setup = installed.begin(SUPERUSER_ID).await.unwrap();
+        let location = create(
+            &mut setup,
+            "stock.location",
+            RawVals::new().set_cell("name", Cell::Str("Numbering stock".into())),
+        )
+        .await;
+        setup.commit().await.unwrap();
+        drop(setup);
+        let orm = secure(&db, &installed).await;
+        let vals = || {
+            RawVals::new()
+                .set_cell("name", Cell::Str("Transfer Internal".into()))
+                .set_cell("code", Cell::Str("internal".into()))
+                .set_cell("company_id", Cell::Id(a))
+                .set_cell("sequence_code", Cell::Str("INTX".into()))
+                .set_cell("default_location_src_id", Cell::Id(location))
+                .set_cell("default_location_dest_id", Cell::Id(location))
+        };
+        let sequences = |orm: &Orm| {
+            let orm = orm.clone();
+            async move {
+                let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+                let n: i64 = tx
+                    .query("SELECT count(*) FROM ir_sequence", &[])
+                    .await
+                    .unwrap()[0]
+                    .get(0);
+                tx.rollback().await.unwrap();
+                n
+            }
+        };
+
+        // without the right to create operation types: refused, no sequence appears
+        let before = sequences(&orm).await;
+        let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
+        let error = tx
+            .env()
+            .with_company(a)
+            .unwrap()
+            .records("stock.picking.type")
+            .unwrap()
+            .create(&mut tx, vec![vals()])
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Access, "{error:?}");
+        tx.rollback().await.unwrap();
+        drop(tx);
+        assert_eq!(sequences(&orm).await, before);
+
+        // the manager creates the type, and a transfer of it gets its numbered reference
+        let mut tx = orm.begin(UserId::new(users[3]).unwrap()).await.unwrap();
+        let env = tx.env().with_company(a).unwrap();
+        let kind = env
+            .records("stock.picking.type")
+            .unwrap()
+            .create(&mut tx, vec![vals()])
+            .await
+            .unwrap();
+        let picking = env
+            .records("stock.picking")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("picking_type_id", Cell::Id(kind.ids()[0]))],
+            )
+            .await
+            .unwrap();
+        let name = picking.cell(&mut tx, "name").await.unwrap();
+        assert!(
+            matches!(&name, Cell::Str(name) if name.starts_with("INTX")),
+            "{name:?}"
+        );
+        // the same user changes the prefix
+        kind.write(
+            &mut tx,
+            RawVals::new().set_cell("sequence_code", Cell::Str("INTY".into())),
+        )
+        .await
+        .unwrap();
+        let prefix = kind.cell(&mut tx, "sequence_code").await.unwrap();
+        assert_eq!(prefix, Cell::Str("INTY".into()));
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        // a warehouse made by hand gets its numbered operation types
+        let mut tx = orm.begin(UserId::new(users[3]).unwrap()).await.unwrap();
+        let warehouse = tx
+            .env()
+            .with_company(a)
+            .unwrap()
+            .records("stock.warehouse")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Hand made".into()))
+                        .set_cell("code", Cell::Str("HM".into()))
+                        .set_cell("company_id", Cell::Id(a)),
+                ],
+            )
+            .await
+            .unwrap();
+        let with_sequence: i64 = tx
+            .query(
+                "SELECT count(*) FROM stock_picking_type WHERE warehouse_id = $1 AND sequence_id IS NOT NULL",
+                &[&warehouse.ids()[0]],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        assert!(with_sequence > 0);
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// An Inventory manager who is not the system administrator can give an operation type only its
+/// own numbering or the numbering of another operation type of its company: another application's
+/// sequence is refused on a write, on a write together with a new prefix (that sequence keeps its
+/// prefix), on a create and through a context default. Sharing a type's numbering and the normal
+/// prefix edit still work, also on a type made with a warehouse, and a prefix cannot be emptied.
+#[test]
+fn stock_security_operation_type_numbering_cannot_reach_another_sequence() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let installed = install(&db).await;
+        let users = roles(&installed).await;
+        let a = xid(&installed, "base", "main_company").await;
+        let mut setup = installed.begin(SUPERUSER_ID).await.unwrap();
+        let location = create(
+            &mut setup,
+            "stock.location",
+            RawVals::new().set_cell("name", Cell::Str("Numbering stock".into())),
+        )
+        .await;
+        // stands for the numbering of another application (sales, purchase): a code, no company
+        let other = create(
+            &mut setup,
+            "ir.sequence",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Other numbering".into()))
+                .set_cell("code", Cell::Str("test.other.numbering".into()))
+                .set_cell("prefix", Cell::Str("OTHER/".into())),
+        )
+        .await;
+        setup.commit().await.unwrap();
+        drop(setup);
+        let orm = secure(&db, &installed).await;
+        let vals = |prefix: &str| {
+            RawVals::new()
+                .set_cell("name", Cell::Str(format!("Type {prefix}").into()))
+                .set_cell("code", Cell::Str("internal".into()))
+                .set_cell("company_id", Cell::Id(a))
+                .set_cell("sequence_code", Cell::Str(prefix.into()))
+                .set_cell("default_location_src_id", Cell::Id(location))
+                .set_cell("default_location_dest_id", Cell::Id(location))
+        };
+        const LINK: &str = "An operation type can only use its own numbering or the numbering of \
+                            another operation type of its company.";
+        let manager = UserId::new(users[3]).unwrap();
+        let mut tx = orm.begin(manager).await.unwrap();
+        let types = tx
+            .env()
+            .with_company(a)
+            .unwrap()
+            .records("stock.picking.type")
+            .unwrap();
+        let kind = types.create(&mut tx, vec![vals("OWNA/")]).await.unwrap();
+        let Cell::Id(own) = kind.cell(&mut tx, "sequence_id").await.unwrap() else {
+            panic!("no numbering")
+        };
+        let kind = kind.ids()[0];
+        tx.commit().await.unwrap();
+        drop(tx);
+        // each refused call poisons its transaction, so each runs in one of its own
+        let refused = |call: &'static str| {
+            let orm = orm.clone();
+            async move {
+                let mut tx = orm.begin(manager).await.unwrap();
+                let env = tx.env().with_company(a).unwrap();
+                let types = env.records("stock.picking.type").unwrap();
+                let named = vals("NAMED/").set_cell("sequence_id", Cell::Id(other));
+                let mut bare = named.clone();
+                bare.remove("sequence_code");
+                let result = match call {
+                    "link" => types
+                        .browse([kind])
+                        .unwrap()
+                        .write(
+                            &mut tx,
+                            RawVals::new().set_cell("sequence_id", Cell::Id(other)),
+                        )
+                        .await
+                        .map(|_| ()),
+                    "link and prefix" => types
+                        .browse([kind])
+                        .unwrap()
+                        .write(
+                            &mut tx,
+                            RawVals::new()
+                                .set_cell("sequence_id", Cell::Id(other))
+                                .set_cell("sequence_code", Cell::Str("TAKEN/".into())),
+                        )
+                        .await
+                        .map(|_| ()),
+                    "create with prefix" => types.create(&mut tx, vec![named]).await.map(|_| ()),
+                    "create" => types.create(&mut tx, vec![bare]).await.map(|_| ()),
+                    "context default" => {
+                        let mut defaulted = vals("DEFAULTED/");
+                        defaulted.remove("sequence_code");
+                        types
+                            .with_context([("default_sequence_id", erp_fields::Value::Int(other))])
+                            .create(&mut tx, vec![defaulted])
+                            .await
+                            .map(|_| ())
+                    }
+                    "clear" => types
+                        .browse([kind])
+                        .unwrap()
+                        .write(
+                            &mut tx,
+                            RawVals::new().set_cell("sequence_code", Cell::Null),
+                        )
+                        .await
+                        .map(|_| ()),
+                    "empty" => types
+                        .browse([kind])
+                        .unwrap()
+                        .write(
+                            &mut tx,
+                            RawVals::new().set_cell("sequence_code", Cell::Str("".into())),
+                        )
+                        .await
+                        .map(|_| ()),
+                    _ => unreachable!(),
+                };
+                tx.rollback().await.unwrap();
+                result.expect_err(call)
+            }
+        };
+        for call in ["link", "link and prefix", "create", "context default"] {
+            let error = refused(call).await;
+            assert_eq!(error.kind(), ErrorKind::Access, "{call}: {error:?}");
+            assert_eq!(error.message(), LINK, "{call}");
+        }
+        // with a prefix too, the prefix is refused as a write of that sequence
+        let error = refused("create with prefix").await;
+        assert_eq!(error.kind(), ErrorKind::Access, "{error:?}");
+        for call in ["clear", "empty"] {
+            let error = refused(call).await;
+            assert_eq!(error.kind(), ErrorKind::Validation, "{call}: {error:?}");
+            assert_eq!(
+                error.message(),
+                "The sequence prefix of an operation type cannot be emptied; enter a new prefix.",
+                "{call}"
+            );
+        }
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let row: (i64, String, String) = {
+            let rows = tx
+                .query(
+                    "SELECT t.sequence_id::int8, s.prefix, s.name FROM stock_picking_type t, ir_sequence s \
+                     WHERE t.id = $1 AND s.id = $2",
+                    &[&kind, &other],
+                )
+                .await
+                .unwrap();
+            (rows[0].get(0), rows[0].get(1), rows[0].get(2))
+        };
+        assert_eq!(row, (own, "OTHER/".into(), "Other numbering".into()));
+        tx.rollback().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(manager).await.unwrap();
+        let env = tx.env().with_company(a).unwrap();
+        let types = env.records("stock.picking.type").unwrap();
+        // sharing the numbering of another operation type of the company is allowed
+        let mut shared = vals("SHARED/").set_cell("sequence_id", Cell::Id(own));
+        shared.remove("sequence_code");
+        let sharing = types.create(&mut tx, vec![shared]).await.unwrap();
+        assert_eq!(
+            sharing.cell(&mut tx, "sequence_id").await.unwrap(),
+            Cell::Id(own)
+        );
+        // the normal prefix edit still works
+        let kind = types.browse([kind]).unwrap();
+        kind.write(
+            &mut tx,
+            RawVals::new().set_cell("sequence_code", Cell::Str("OWNB/".into())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            kind.cell(&mut tx, "sequence_code").await.unwrap(),
+            Cell::Str("OWNB/".into())
+        );
+        // a type made with a warehouse keeps its prefix edit
+        let warehouse = env
+            .records("stock.warehouse")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Hand made".into()))
+                        .set_cell("code", Cell::Str("HM".into()))
+                        .set_cell("company_id", Cell::Id(a)),
+                ],
+            )
+            .await
+            .unwrap();
+        let made: i64 = tx
+            .query(
+                "SELECT min(id) FROM stock_picking_type WHERE warehouse_id = $1",
+                &[&warehouse.ids()[0]],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let made = types.browse([made]).unwrap();
+        made.write(
+            &mut tx,
+            RawVals::new().set_cell("sequence_code", Cell::Str("HM/NEW/".into())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            made.cell(&mut tx, "sequence_code").await.unwrap(),
+            Cell::Str("HM/NEW/".into())
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
 #[test]
 fn stock_security_engine_owned_rows_and_columns_refuse_generic_writes() {
     run(async {

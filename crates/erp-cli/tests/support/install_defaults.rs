@@ -32,6 +32,7 @@ pub const ACCOUNT: &[(&str, &[&str])] = &[
             "menu_action_move_journal_line",
             "menu_action_move_out_invoice_type",
             "menu_action_move_out_refund_type",
+            "menu_action_payment_term",
             "menu_board_journal_1",
             "menu_finance",
             "menu_finance_configuration",
@@ -40,6 +41,22 @@ pub const ACCOUNT: &[(&str, &[&str])] = &[
             "menu_finance_receivables",
             "menu_tax_groups",
             "menu_taxes",
+        ],
+    ),
+    (
+        "SELECT d.name || '=' || (t.name->>'en_US') || '/' || (SELECT count(*) FROM account_payment_term_line l WHERE l.payment_id = t.id) \
+         FROM ir_model_data d JOIN account_payment_term t ON t.id = d.res_id \
+         WHERE d.module = 'account' AND d.model = 'account.payment.term' ORDER BY t.sequence",
+        &[
+            "account_payment_term_immediate=Immediate Payment/1",
+            "account_payment_term_15days=15 Days/1",
+            "account_payment_term_21days=21 Days/1",
+            "account_payment_term_30days=30 Days/1",
+            "account_payment_term_45days=45 Days/1",
+            "account_payment_term_end_following_month=End of Following Month/1",
+            "account_payment_term_10days_after_end_next_month=10 Days after the Following Month Ends/1",
+            "account_payment_term_advance_60days=30% Now, Balance 60 Days/2",
+            "account_payment_term_90days_on_the_10th=90 days, on the 10th/1",
         ],
     ),
     (

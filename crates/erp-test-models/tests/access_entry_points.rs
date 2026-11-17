@@ -143,7 +143,7 @@ const GROUP_CHECK: &str = "asks the policy about the groups or capabilities of t
 const PARITY_EXISTS: &str =
     "existence only, no rule (the reference ERP exists(), models.py _existing;)";
 const PARITY_LOCK: &str = "row locks without a rule, as the reference ERP (models.py:5056-5112 lock_for_update/try_lock_for_update select ids FOR UPDATE with no access check); a user can lock rows it cannot read: flagged for a later release";
-const SEQUENCE_DRAW: &str = "the model-level read check on ir.sequence through the engine before the draw (the reference ERP check_access('read') on an empty recordset, ir_sequence.py:291,301; the reference ERP has no record rule on ir.sequence); the lookup by code keeps the caller's validated current company or the shared scope, as the reference ERP's search (ir_sequence.py:302-303); the counter row and a new date range are then written with raw SQL under the framework's rights, as the reference ERP's _next and sudo() create (tests: base_sequences.rs, a_user_without_read_access_on_ir_sequence_cannot_draw and a_user_with_read_access_only_draws_for_each_company)";
+const SEQUENCE_DRAW: &str = "the model-level read check on ir.sequence through the engine before the draw (the reference ERP check_access('read') on an empty recordset, ir_sequence.py:291,301; the reference ERP has no record rule on ir.sequence); the lookup by code keeps the caller's validated current company or the shared scope, as the reference ERP's search (ir_sequence.py:302-303); the lookup by id refuses a record of a company outside the caller's selected companies, as the model's company access would on a read (test: a_sequence_of_another_company_is_not_drawn_by_id); the counter row and a new date range are then written with raw SQL under the framework's rights, as the reference ERP's _next and sudo() create (tests: base_sequences.rs, a_user_without_read_access_on_ir_sequence_cannot_draw and a_user_with_read_access_only_draws_for_each_company)";
 const DEFAULTS: &str = "no record of the model is read: field defaults (ir.default through ir_default::get_model_defaults); default x2many commands check their comodel's model access (defaults.rs); field groups a later release";
 
 /// Every public entry point of `erp-orm` that takes the transaction.
@@ -315,6 +315,14 @@ const ENTRY_POINTS: &[(&str, Class)] = &[
              transaction's own writes captured (a later release) for records the caller \
              already wrote; filtering the values by the reader's field access is the consumer's \
              job (the mail addon, a later release)",
+        ),
+    ),
+    (
+        "Transaction::track_external",
+        Unchecked(
+            "reads and writes nothing: adds old and new values the caller's own statement already \
+             wrote to the transaction's tracking log, for records the caller holds; the mail \
+             addon's consumer filters them by the reader's field access",
         ),
     ),
     (
@@ -1043,7 +1051,7 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
     (
         "account/invoice/settings.rs::configured_code",
         1,
-        "reads one company setting, the code of the default receivable or payable account an invoice of that company takes; the framework reads its own configuration, and a user who writes an invoice needs no settings group; only the configured code leaves the read",
+        "reads, on the invoice's own company, the account code chosen for receivable or payable accounts (one company-scope settings key) when several accounts of that type exist; the framework reads its own configuration, the caller needs no settings group, and only the code is returned to the invoice code",
     ),
     (
         "account/journal/dashboard.rs::journals",
@@ -1661,6 +1669,21 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "creates the internal notes of `_message_log_batch`, a private method (not RPC, not data-callable) whose callers check access to the records first, as the reference ERP's sudo log; bodies are escaped text, the subtype is `mail.mt_note` and nobody is notified",
     ),
     (
+        "mail/tracking.rs::log_history",
+        2,
+        "the precommit history hook: checks which thread records the transaction itself created still exist (ids only, nothing returned to a caller), and creates their creation lines and the history messages of the tracked changes the transaction's own writes made; `mail.message` is writable by system users only, and every value comes from the transaction's capture, the model's own `_creation_message`/`_track_body` methods and the context read; nobody is notified",
+    ),
+    (
+        "mail/tracking.rs::value_max_chars",
+        1,
+        "reads the system parameter `mail.tracking_value_max_chars` (`get_int`, one non-secret integer the writer cannot read themselves) to bound the text the history stores; the value is validated and never returned",
+    ),
+    (
+        "mail/tracking.rs::display_names",
+        1,
+        "reads only `display_name` (archived included) of the records the old and new values of tracked relational fields point at, to store them as the history's display text, as the reference stores display names at write time; the names reach readers through the thread only, and a change of a field restricted to groups is dropped for readers outside them",
+    ),
+    (
         "product/product.rs::write",
         1,
         "counts `product.combo.item` rows that use the variants being archived, so a variant in a combo the caller cannot read is still refused; only the count is used and the error names no combo",
@@ -1769,6 +1792,16 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "sales_team/team.rs::add_members_to_favorites",
         1,
         "after the base create of teams, or a base write of their `member_ids`, checked the caller's create or write right on those teams (Sales administrator), links the members of those teams, and on a create the acting user, into their `favorite_user_ids`; reads the members through the caller's own read, writes only that relation of those teams, returns nothing",
+    ),
+    (
+        "stock/operation_type.rs::create_sequence",
+        1,
+        "creates the numbering sequence of the operation type being created, after the caller's create right on the type was checked; writes only that type's name, prefix, padding, company and implementation, and the new sequence id goes only to the type's own sequence_id, which is what later prefix edits may write",
+    ),
+    (
+        "stock/operation_type.rs::write",
+        1,
+        "writes the name and prefix of the sequence linked to the operation type being edited, after the caller's write right on the type was checked; a caller can link only the type's own numbering or one another type of its company uses (any other link is refused on create and write, context defaults included), and the written sequence must have no lookup code and the type's company, so another application's numbering is never reached; only those two values are written and nothing is returned",
     ),
     (
         "stock/res_company.rs::create",

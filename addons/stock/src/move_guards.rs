@@ -202,8 +202,8 @@ impl StockMove {
     /// The done time, the open-line version, the status and the quantity come from the engine;
     /// refused by name or context default after the create access check, then set to their
     /// initial values. The transfers the new moves name (in the values or as the context default)
-    /// are locked before the insert; the counters the insert changed are notified once it is
-    /// flushed.
+    /// are locked after the create access check and before the transfer defaults and the unit
+    /// snapshot are read; the counters the insert changed are notified once it is flushed.
     #[method(override)]
     async fn create(
         this: &RecordSet<StockMove>,
@@ -232,9 +232,9 @@ impl StockMove {
             &mut vals_list,
         )
         .await?;
+        // the transfers are locked before the reads and the unit work (which records the units as
+        // used); the access check above already ran
         check_move_create(records, tx, &vals_list).await?;
-        fill_from_pickings(records, tx, &mut vals_list).await?;
-        fill_create(records, tx, &mut vals_list).await?;
         let mut roots: Vec<i64> = vals_list
             .iter()
             .filter_map(|vals| vals.get("picking_id").and_then(cell_id))
@@ -245,6 +245,8 @@ impl StockMove {
         if !roots.is_empty() {
             lock_pickings(tx, &roots).await?;
         }
+        fill_from_pickings(records, tx, &mut vals_list).await?;
+        fill_create(records, tx, &mut vals_list).await?;
         let created = sup.call(tx, records, (vals_list,)).await?;
         tx.flush().await?;
         let pickings = pickings_of(tx, &created.ids()).await?;
@@ -262,7 +264,8 @@ impl StockMove {
     /// notifies the counters of those transfers. A demand or supply-method write recomputes the
     /// moves' states from their quantities; a transfer write carries the
     /// moves' lines to the new transfer. A deadline write first locks the transfers, then
-    /// the moves, of every move its shift may reach.
+    /// the moves, of every move its shift may reach. The write access check and these locks come
+    /// before the unit snapshot is taken.
     #[method(override)]
     async fn write(
         this: &RecordSet<StockMove>,
@@ -290,11 +293,43 @@ impl StockMove {
         )
         .await?;
         check_move_write(records, tx, &vals).await?;
+        let units = UNIT_INPUTS.iter().any(|f| vals.contains(f))
+            || SNAPSHOT_FIELDS.iter().any(|f| vals.contains(f));
+        let counted = COUNTED_MOVE_FIELDS.iter().any(|f| vals.contains(f));
+        let relinked = vals.contains("picking_id");
+        let referenced = relinked || names(&vals, "reference_ids");
+        let deadline = vals.contains("date_deadline");
+        if records.is_empty() || !(units || counted || referenced || deadline) {
+            return sup.call(tx, records, (vals,)).await;
+        }
+        // access first, then the root locks, then the unit work (which records the units as used)
+        records.check_access(tx, Operation::Write).await?;
+        let ids = records.ids();
+        let mut plan = None;
+        let mut roots = Vec::new();
+        if counted || referenced || deadline {
+            // discovery reads the stored transfer, chain and deadline of each move
+            tx.flush().await?;
+            if deadline {
+                plan = Some(deadline_plan(tx, &ids).await?);
+            }
+            let new_root: Vec<i64> = vals
+                .get("picking_id")
+                .and_then(cell_id)
+                .into_iter()
+                .collect();
+            // the moves a deadline shift may write, and their transfers, are locked
+            // in the root order before any of them is written; the lock below then holds them
+            // already
+            if let Some(plan) = &plan {
+                lock_move_roots(tx, &plan.moves(), &new_root).await?;
+            }
+            if counted || referenced {
+                roots = lock_move_roots(tx, &ids, &new_root).await?;
+            }
+        }
         let mut vals = vals;
-        if !records.is_empty()
-            && (UNIT_INPUTS.iter().any(|f| vals.contains(f))
-                || SNAPSHOT_FIELDS.iter().any(|f| vals.contains(f)))
-        {
+        if units {
             let mut groups = write_groups(records, tx, &vals).await?;
             if groups.len() > 1 {
                 return write_each(records, tx, groups).await;
@@ -303,37 +338,6 @@ impl StockMove {
                 vals = group;
             }
         }
-        let counted = COUNTED_MOVE_FIELDS.iter().any(|f| vals.contains(f));
-        let relinked = vals.contains("picking_id");
-        let referenced = relinked || names(&vals, "reference_ids");
-        let deadline = vals.contains("date_deadline");
-        if records.is_empty() || !(counted || referenced || deadline) {
-            return sup.call(tx, records, (vals,)).await;
-        }
-        records.check_access(tx, Operation::Write).await?;
-        // discovery reads the stored transfer, chain and deadline of each move
-        tx.flush().await?;
-        let ids = records.ids();
-        let plan = if deadline {
-            Some(deadline_plan(tx, &ids).await?)
-        } else {
-            None
-        };
-        let new_root: Vec<i64> = vals
-            .get("picking_id")
-            .and_then(cell_id)
-            .into_iter()
-            .collect();
-        // the moves a deadline shift may write, and their transfers, are locked in the
-        // root order before any of them is written; the lock below then holds them already
-        if let Some(plan) = &plan {
-            lock_move_roots(tx, &plan.moves(), &new_root).await?;
-        }
-        let roots = if counted || referenced {
-            lock_move_roots(tx, &ids, &new_root).await?
-        } else {
-            Vec::new()
-        };
         let restate = STATE_INPUTS.iter().any(|f| vals.contains(f));
         sup.call(tx, records, (vals,)).await?;
         tx.flush().await?;
@@ -417,31 +421,60 @@ impl StockMove {
     }
 }
 
-/// Write the groups of [`write_groups`] one ORM write each, after locking the transfers of all of
-/// them in order (each nested write re-locks only what it holds already).
+/// Write the groups of [`write_groups`] one ORM write each. The caller holds the transfers and
+/// moves of the counted or referenced groups, and of the deadline chain, in the root order: each
+/// nested write re-locks only what is held (a write naming only unit inputs takes no root lock, in
+/// one group or in several). A deadline is written first, once, to all the moves: its shift is
+/// then computed from one plan, read before any other value of the call is written, as a write in
+/// one group computes it.
 async fn write_each(
     records: &Records,
     tx: &mut Transaction,
-    groups: Vec<(Vec<i64>, RawVals)>,
+    mut groups: Vec<(Vec<i64>, RawVals)>,
 ) -> Result<()> {
-    records.check_access(tx, Operation::Write).await?;
-    tx.flush().await?;
-    let new_root: Vec<i64> = groups
-        .iter()
-        .filter_map(|(_, vals)| vals.get("picking_id").and_then(cell_id))
-        .collect();
-    lock_move_roots(tx, &records.ids(), &new_root).await?;
+    let mut deadline = None;
+    for (_, vals) in &mut groups {
+        if let Some(cell) = vals.remove("date_deadline") {
+            deadline = Some(cell);
+        }
+    }
+    if let Some(cell) = deadline {
+        let vals = RawVals::new().set_cell("date_deadline", cell);
+        records.write(tx, vals).await?;
+    }
     for (ids, vals) in groups {
         records.browse(ids)?.write(tx, vals).await?;
     }
     Ok(())
 }
 
+const LOCK_SOURCES: &str = "SELECT FROM stock_location WHERE id = ANY($1) ORDER BY id FOR SHARE";
+
+/// Hold the source locations `ids` of new or re-sourced transfers shared, ascending, before the
+/// transfer rows are written: the transfer's state is evaluated from its source location's usage
+/// (the reservation bypass). A usage change committed after this transaction's snapshot fails the
+/// lock with a serialization error (`40001`), so the unit retries and evaluates under the new
+/// usage; a usage change that starts now finds the row held and is retried in its turn (its lock
+/// does not wait, `crate::quant_guards`). The quant engine holds its locations the same way.
+///
+/// Not covered: a shared lock writes no row version, so a usage change whose snapshot predates
+/// this transaction's commit and whose lock comes after it does not see the new transfer; that
+/// transfer keeps the state of the old usage until its next update.
+async fn lock_sources(tx: &mut Transaction, mut ids: Vec<i64>) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    tx.query(LOCK_SOURCES, &[&ids]).await.map(drop)
+}
+
 #[methods(StockPicking, addon = "stock")]
 impl StockPicking {
     /// The counter vector and the state follow from the moves: refused by name or context default
     /// after the create access check, then set to their initial values (no move, `draft`). The
-    /// operation type supplies the reference, locations and company (`crate::picking_flow`).
+    /// operation type supplies the reference, locations and company (`crate::picking_flow`). The
+    /// source locations are held shared before the insert (`lock_sources`).
     #[method(override)]
     async fn create(
         this: &RecordSet<StockPicking>,
@@ -471,12 +504,24 @@ impl StockPicking {
         )
         .await?;
         fill_from_types(records, tx, &mut vals_list).await?;
+        let mut sources: Vec<i64> = vals_list
+            .iter()
+            .filter_map(|vals| vals.get("location_id").and_then(cell_id))
+            .collect();
+        if let Some(Value::Int(id)) = records.env().context().get("default_location_id") {
+            sources.push(id);
+        }
+        if !sources.is_empty() {
+            records.check_access(tx, Operation::Create).await?;
+            lock_sources(tx, sources).await?;
+        }
         sup.call(tx, records, (vals_list,)).await
     }
 
     /// The counter vector and the state are refused by name after the write access check. A
-    /// shipping-policy or source-location change re-evaluates the state in its own statement (the
-    /// state trigger); it is flushed and the state notified.
+    /// shipping-policy or source-location change locks the transfers ascending, and a new source
+    /// location as a create does, then re-evaluates the state in its own statement (the state
+    /// trigger); it is flushed and the state notified.
     #[method(override)]
     async fn write(
         this: &RecordSet<StockPicking>,
@@ -505,12 +550,34 @@ impl StockPicking {
         .await?;
         check_picking_write(records, tx, &vals).await?;
         let reevaluate = !records.is_empty() && STATE_INPUT_FIELDS.iter().any(|f| vals.contains(f));
+        if reevaluate {
+            records.check_access(tx, Operation::Write).await?;
+            // the transfers are locked ascending before their policy or source changes
+            lock_pickings(tx, &records.ids()).await?;
+            let source = vals.get("location_id").and_then(cell_id);
+            lock_sources(tx, source.into_iter().collect()).await?;
+        }
         sup.call(tx, records, (vals,)).await?;
         if reevaluate {
             tx.flush().await?;
             notify_pickings(records, tx, &records.ids()).await?;
         }
         Ok(())
+    }
+
+    /// The generic upsert by the declared key runs no `create` or `write` override, so none of
+    /// the checks above: it is refused, after the model access checks of both operations.
+    #[method(override)]
+    async fn upsert(
+        this: &RecordSet<StockPicking>,
+        tx: &mut Transaction,
+        _call: erp_sdk::UpsertCall,
+        _sup: Super,
+    ) -> Result<erp_sdk::UpsertResult> {
+        let records = this.as_records();
+        records.check_access(tx, Operation::Create).await?;
+        records.check_access(tx, Operation::Write).await?;
+        Err(StockError::TransferUpsert.into())
     }
 
     /// A done transfer is not deleted (`crate::done`); the moves of any other are cancelled and

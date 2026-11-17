@@ -2,7 +2,7 @@
 //! D6). Pure: no database.
 #![allow(clippy::unwrap_used, clippy::panic, reason = "tests")]
 
-use erp_fields::{ErrorKind, OnDelete};
+use erp_fields::{ErrorKind, OnDelete, RangeBounds};
 use erp_registry::{
     AddonDescriptor, DEFAULT_TRACKING_SEQUENCE, FieldDecl, MAX_TRACKED_FIELDS, ModelDecl, Registry,
     RegistryBuilder,
@@ -245,4 +245,60 @@ fn tracking_a_generated_field_is_refused() {
                 .to_owned()
         )
     );
+}
+
+/// A credential is never written into a document's history: tracking a `secret` field is refused
+/// at registry build, also when an extension adds `tracking` to a secret field of another addon.
+#[test]
+fn tracking_a_secret_field_is_refused() {
+    let message = "field 'track.x.token': tracking a secret field is refused (its value would be \
+                   stored in the document's history and shown in its chatter)";
+    assert_eq!(
+        refusal(vec![model(vec![
+            FieldDecl::char("token").secret(true).tracking(10)
+        ])]),
+        (ErrorKind::Programming, message.to_owned())
+    );
+    assert_eq!(
+        refusal(vec![
+            model(vec![FieldDecl::char("token").secret(true)]),
+            ModelDecl::extension("track_ext", "track.x", &["track.x"])
+                .fields(leak(vec![FieldDecl::char("token").tracking(10)])),
+        ]),
+        (ErrorKind::Programming, message.to_owned())
+    );
+}
+
+/// The history stores and shows scalar, text, date and relational values only: a type it cannot
+/// store is refused at registry build (by field and type name), not at the first save.
+#[test]
+fn tracking_a_type_the_history_cannot_store_is_refused() {
+    for (decl, ty) in [
+        (FieldDecl::json("f"), "json"),
+        (FieldDecl::binary("f"), "binary"),
+        (FieldDecl::image("f", 64, 64), "binary"),
+        (FieldDecl::uuid("f"), "uuid"),
+        (FieldDecl::xid8("f"), "xid8"),
+        (FieldDecl::timestamptz("f"), "timestamptz"),
+        (
+            FieldDecl::date_range("f", RangeBounds::HalfOpen),
+            "date_range",
+        ),
+        (
+            FieldDecl::datetime_range("f", RangeBounds::HalfOpen),
+            "datetime_range",
+        ),
+    ] {
+        assert_eq!(
+            refusal(vec![model(vec![decl.tracking(10)])]),
+            (
+                ErrorKind::Programming,
+                format!(
+                    "field 'track.x.f': tracking a {ty} field is not supported (the history \
+                     stores and shows scalar, text, date and relational values only)"
+                )
+            ),
+            "{ty}"
+        );
+    }
 }

@@ -137,6 +137,15 @@ fn dump_node(doc: &DocTree, id: &NodeId, out: &mut String) {
             "image[{width:?} {height:?} {alt:?} {} bytes]",
             data.len()
         )),
+        Node::Cell {
+            child,
+            colspan,
+            rowspan,
+        } => {
+            out.push_str(&format!("cell[{colspan}x{rowspan}]("));
+            dump_node(doc, child, out);
+            out.push(')');
+        }
         Node::Rule => out.push_str("hr"),
         Node::LineBreak => out.push_str("br"),
         Node::PageBreak => out.push_str("pagebreak"),
@@ -911,8 +920,8 @@ fn what_later_slices_add_is_refused_by_task() {
             "report icons requires a later release",
         ),
         (
-            "<table><tr><td colspan='2'>x</td></tr></table>",
-            "report table cell spans requires a later release",
+            "<table><tr><td rowspan='2'>x</td></tr></table>",
+            "report table row spans requires a later release",
         ),
     ] {
         let err = print_order(arch, &EvalOptions::default()).unwrap_err();
@@ -1039,6 +1048,89 @@ fn page_break_controls_become_document_nodes() {
             "test.report:1: a page break inside a table, grid, list, inline element or padded block cannot be laid out"
         );
     }
+}
+
+#[test]
+fn a_cell_spans_the_columns_its_colspan_names() {
+    // A section row over the whole table; the table counts its columns by span, and a short row
+    // after it is filled to the column count.
+    assert_eq!(
+        render(
+            "<table><thead><tr><th>Item</th><th>Qty</th><th>Price</th></tr></thead><tbody>\
+             <tr><td t-att-colspan='width' class='fw-bold'>Section</td></tr>\
+             <tr><td>a</td><td colspan='2'>b</td></tr><tr><td>c</td></tr></tbody></table>",
+            &[("width", ExprValue::Int(3))]
+        ),
+        r#"flow(table[3](head: block[b]("Item") block[b]("Qty") block[b]("Price"); cells: cell[3x1](block[b]("Section")) "a" cell[2x1]("b") "c" "" ""))"#
+    );
+    // The widest row sets the column count.
+    assert_eq!(
+        render(
+            "<table><tr><td colspan='3'>wide</td></tr><tr><td>x</td></tr></table>",
+            &[]
+        ),
+        r#"flow(table[3](head: ; cells: cell[3x1]("wide") "x" "" ""))"#
+    );
+    // The profile admits a positive whole number; a cell wider than HTML allows is refused.
+    let program = compile("<table><tr><td colspan='1001'>x</td></tr></table>");
+    let err = evaluate(&program, &EvalContext::standard()).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "test.report:1: colspan must be a whole number from 1 to 1000"
+    );
+}
+
+/// further lines, as a Bootstrap row does, so a long information row wraps instead of squeezing)
+#[test]
+fn a_row_of_more_than_twelve_columns_wraps() {
+    assert_eq!(
+        render(
+            "<div class='row'><div class='col-4'>a</div><div class='col-4'>b</div><div \
+             class='col-4'>c</div><div class='col-4'>d</div><div class='col-6'>e</div></div>",
+            &[]
+        ),
+        r#"flow(block[](grid[4,4,4|15](block[]("a") block[]("b") block[]("c")) grid[4,6,2|15](block[]("d") block[]("e") "")))"#
+    );
+    // Twelve or fewer twelfths, or a sharing column, stay one line as before.
+    assert_eq!(
+        render(
+            "<div class='row'><div class='col-6'>a</div><div class='col-6'>b</div></div>",
+            &[]
+        ),
+        r#"flow(grid[6,6|15](block[]("a") block[]("b")))"#
+    );
+    assert_eq!(
+        render(
+            "<div class='row'><div class='col-8'>a</div><div class='col-8'>b</div><div \
+             class='col'>c</div></div>",
+            &[]
+        ),
+        r#"flow(grid[8,8,1|15](block[]("a") block[]("b") block[]("c")))"#
+    );
+}
+
+/// language, as a text node is; `t-translation="off"` keeps it)
+#[test]
+fn a_translate_argument_of_a_call_is_a_term() {
+    let french = Language::new("fr_FR")
+        .unwrap()
+        .with_term("Due Date", "Date d'échéance");
+    let sources = [
+        TemplateSource::new(
+            "test.report",
+            "<div><t t-call='test.item' label.translate='Due Date'/><p t-translation='off'><t \
+             t-call='test.item' label.translate='Due Date'/></p><t t-call='test.item' \
+             label.translate='Paid on {{ day }}'/></div>",
+        ),
+        TemplateSource::new("test.item", "<p t-out='label'/>"),
+    ];
+    let program =
+        ReportProgram::compile("test.report", &sources, &french, ReportLimits::default()).unwrap();
+    let context = EvalContext::standard().with_var("day", ExprValue::str("3"));
+    assert_eq!(
+        dump(&evaluate(&program, &context).unwrap()),
+        r#"flow(block[]("Date d'échéance") block[]("Due Date") block[]("Paid on 3"))"#
+    );
 }
 
 #[test]

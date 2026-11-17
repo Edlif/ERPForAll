@@ -2108,6 +2108,107 @@ async fn a_user_without_read_access_on_ir_sequence_cannot_draw() {
     h.cleanup().await.unwrap();
 }
 
+/// A sequence record of a company that is not selected is not drawn by id: the access refusal,
+/// and the counter does not move. The shared record and the record of the selected company are
+/// drawn; superuser mode draws whatever the company.
+#[tokio::test]
+async fn a_sequence_of_another_company_is_not_drawn_by_id() {
+    let policy = erp_testkit::DomainPolicy::builder(erp_testkit::Otherwise::Allow)
+        .build()
+        .unwrap();
+    let h = draw_harness(policy).await;
+    let mut tx = h.begin().await.unwrap();
+    let own = create_seq(
+        &mut tx,
+        "INV C1",
+        "INV",
+        "no_gap",
+        Some("C1/"),
+        None,
+        3,
+        1,
+        1,
+        Some(1),
+        false,
+    )
+    .await;
+    let shared = create_seq(
+        &mut tx,
+        "INV shared",
+        "INV",
+        "no_gap",
+        Some("ALL/"),
+        None,
+        3,
+        1,
+        1,
+        None,
+        false,
+    )
+    .await;
+    let other = create_seq(
+        &mut tx,
+        "INV C2",
+        "INV",
+        "no_gap",
+        Some("C2/"),
+        None,
+        3,
+        1,
+        1,
+        Some(2),
+        false,
+    )
+    .await;
+    tx.commit().await.unwrap();
+
+    // the user's selected company is company 1
+    let mut tx = begin_seq_user(&h).await;
+    let env = tx.env();
+    assert_eq!(
+        erp_sdk::sequence::draw_by_id(&mut tx, &env, own, None)
+            .await
+            .unwrap(),
+        "C1/001"
+    );
+    assert_eq!(
+        erp_sdk::sequence::draw_by_id(&mut tx, &env, shared, None)
+            .await
+            .unwrap(),
+        "ALL/001"
+    );
+    let err = erp_sdk::sequence::draw_by_id(&mut tx, &env, other, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Access, "{err}");
+    assert_eq!(
+        err.message(),
+        format!(
+            "The sequence {other} belongs to a company that is not one of the selected companies."
+        )
+    );
+    // read in the refused transaction itself: the draw wrote nothing
+    assert_eq!(number_next(&mut tx, other).await, 1);
+    let err = sequence::next_by_id(&mut tx, &env, other, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Access, "{err}");
+    assert_eq!(number_next(&mut tx, other).await, 1);
+    drop(tx);
+
+    let mut tx = h.begin().await.unwrap();
+    assert_eq!(number_next(&mut tx, other).await, 1);
+    let env = tx.env();
+    assert_eq!(
+        erp_sdk::sequence::draw_by_id(&mut tx, &env, other, None)
+            .await
+            .unwrap(),
+        "C2/001"
+    );
+    drop(tx);
+    h.cleanup().await.unwrap();
+}
+
 /// A user who may only read `ir.sequence` (no create, write or unlink on it or on its date
 /// ranges) draws numbers: company 1 gets its own record before the shared one, company 2 the
 /// shared one, a date-range sequence creates its range; an unknown code, a missing id and a

@@ -278,7 +278,8 @@ pub use signal::{
 pub use timeouts::Timeouts;
 pub use tokio_postgres::Row;
 pub use tracking::{
-    PrecommitHook, PrecommitHookFn, TRACKING_DISABLE_KEYS, TrackedChange, TrackedRecord,
+    CREATION_LOG_DISABLE_KEY, PrecommitHook, PrecommitHookFn, TRACKING_DISABLE_KEYS, TrackedChange,
+    TrackedRecord,
 };
 #[cfg(feature = "test-faults")]
 #[doc(hidden)]

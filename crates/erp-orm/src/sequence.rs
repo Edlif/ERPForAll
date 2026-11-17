@@ -898,9 +898,11 @@ async fn next_by_id_with_clock_and_wait_mode<F>(
 where
     F: Fn() -> Date,
 {
+    // validated against the subject's newest resolution, also under sudo
+    let companies = tx.companies(env).await?;
     check_draw_access(tx, env).await?;
     let sql = r#"
-        SELECT id, implementation, prefix, suffix, number_next, number_increment, padding, use_date_range, name, COALESCE(wait_mode, 'nowait')
+        SELECT id, implementation, prefix, suffix, number_next, number_increment, padding, use_date_range, name, COALESCE(wait_mode, 'nowait'), company_id::int8
         FROM ir_sequence
         WHERE id = $1
     "#;
@@ -909,6 +911,19 @@ where
     let Some(row) = rows.first() else {
         return Ok(None);
     };
+    // `ir.sequence` gives a company's record to that company only and the shared record (no
+    // company) to everyone: an ORM read of a record outside the selected companies is refused,
+    // so the draw by id is too. Superuser mode draws whatever the company.
+    let company: Option<i64> = row.try_get(10).map_err(|e| Error::db(e.to_string()))?;
+    if let Some(company) = company
+        && !env.su()
+        && !companies.iter().any(|allowed| allowed.get() == company)
+    {
+        return Err(Error::access(format!(
+            "The sequence {sequence_id} belongs to a company that is not one of the selected \
+             companies."
+        )));
+    }
 
     let record = SequenceRecordData::from_row(row)?;
     let drawn =
@@ -944,10 +959,15 @@ pub async fn draw_by_code(
     })
 }
 
+/// Access, date and concurrency as [`draw_by_code`].
+///
+///   Superuser mode draws whatever the company.
+///
 /// # Errors
 ///
-/// `Access` without read access on `ir.sequence`; `UserError` naming the id when no such record
-/// exists; the errors of [`draw_by_code`] otherwise.
+/// `Access` without read access on `ir.sequence`, or for a record of a company that is not
+/// selected; `UserError` naming the id when no such record exists; the errors of
+/// [`draw_by_code`] otherwise.
 pub async fn draw_by_id(
     tx: &mut Transaction,
     env: &Env,
@@ -1001,7 +1021,8 @@ pub async fn next_by_code_with_wait_mode(
 }
 
 /// Draw the next number for a sequence record id: `None` when the record
-/// does not exist. Checks read access on `ir.sequence` first. Addons call [`draw_by_id`].
+/// does not exist. Checks read access on `ir.sequence` first, and refuses a record of a company
+/// that is not selected in `env` (outside superuser mode). Addons call [`draw_by_id`].
 pub async fn next_by_id(
     tx: &mut Transaction,
     env: &Env,

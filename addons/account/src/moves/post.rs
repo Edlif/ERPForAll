@@ -169,6 +169,7 @@ pub async fn post_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
         // default: the date they write is part of what the header read below sees. Entries that
         // are not invoices pass all three.
         crate::invoice::sync_lines(tx, moves.env(), &ids).await?;
+        super::refresh_entry_totals(tx, &ids).await?;
         tx.flush().await?;
         crate::invoice::post::check_postable(tx, moves.env(), &ids).await?;
         crate::invoice::post::before_post(tx, moves.env(), &ids).await?;
@@ -226,7 +227,23 @@ pub async fn post_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
             .zip(dates.iter().copied())
             .collect();
         set_state(tx, &pairs, "posted").await?;
-        number(tx, moves.env(), &headers, &dates).await?;
+        // the history of the entries (a no-op without a tracking addon such as the mail bridge)
+        tx.track_external(
+            moves,
+            "state",
+            headers
+                .iter()
+                .map(|h| (h.id, text_cell(&h.state), text_cell("posted"))),
+        )?;
+        tx.track_external(
+            moves,
+            "date",
+            pairs
+                .iter()
+                .zip(&headers)
+                .map(|((id, date), h)| (*id, Cell::Date(h.date), Cell::Date(*date))),
+        )?;
+        number(tx, moves, &headers, &dates).await?;
         invalidate(tx, moves).await
     })
     .await
@@ -258,6 +275,13 @@ pub async fn reset_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
         }
         let pairs: Vec<(i64, Date)> = states.iter().map(|(id, _, date)| (*id, *date)).collect();
         set_state(tx, &pairs, "draft").await?;
+        tx.track_external(
+            moves,
+            "state",
+            states
+                .iter()
+                .map(|(id, state, _)| (*id, text_cell(state), text_cell("draft"))),
+        )?;
         invalidate(tx, moves).await
     })
     .await
@@ -289,25 +313,57 @@ pub async fn cancel_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
         }
         let pairs: Vec<(i64, Date)> = states.iter().map(|(id, _, date)| (*id, *date)).collect();
         set_state(tx, &pairs, "cancel").await?;
+        tx.track_external(
+            moves,
+            "state",
+            states
+                .iter()
+                .map(|(id, state, _)| (*id, text_cell(state), text_cell("cancel"))),
+        )?;
         invalidate(tx, moves).await
     })
     .await
 }
 
-/// Refuses a change of `fields` (or any change when `fields` is `None`) on entries of `move_ids`
-/// that are posted or cancelled. `what` names the operation.
+/// Asks the caller's `operation` right on the entries of `move_ids`. It runs before any statement
+/// reads or locks an entry by a caller-supplied id: without it the refusal text would give the
+/// state and number of an entry the caller may not read (another company's), and a caller without
+/// rights could hold its header until its own transaction ends.
+async fn authorize_entries(
+    tx: &mut Transaction,
+    env: &Env,
+    move_ids: &[i64],
+    operation: Operation,
+) -> Result<()> {
+    env.records("account.move")?
+        .browse(move_ids.iter().copied())?
+        .check_access(tx, operation)
+        .await
+}
+
+/// Refuses `what` on the entries of `move_ids` that are posted or cancelled (
+/// -066, -069, -070), after the caller's `operation` right on those entries was checked.
 ///
 /// # Errors
 ///
-/// `UserError` naming the first such entry; database errors.
+/// `Access` when the caller lacks `operation` on one of the entries; `UserError` naming the first
+/// posted or cancelled entry; database errors.
 pub(crate) async fn refuse_closed_entries(
     tx: &mut Transaction,
+    env: &Env,
     move_ids: &[i64],
+    operation: Operation,
     what: &str,
 ) -> Result<()> {
     if move_ids.is_empty() {
         return Ok(());
     }
+    authorize_entries(tx, env, move_ids, operation).await?;
+    closed_refusal(tx, move_ids, what).await
+}
+
+/// The refusal of [`refuse_closed_entries`], for entries the caller was authorized on.
+async fn closed_refusal(tx: &mut Transaction, move_ids: &[i64], what: &str) -> Result<()> {
     let rows = tx
         .query(
             "SELECT id::int8, state::text, name::text FROM account_move \
@@ -346,6 +402,7 @@ pub(crate) fn closed_fields<'a>(vals: &'a RawVals, writable: &[&str]) -> Vec<&'a
 /// poster whose snapshot is older than a committed item change then sees an unchanged header
 /// and posts without the item. With the version update, whichever of the two commits second
 /// fails with a serialization error at its header lock, and its retry sees the other's result.
+/// The caller's `operation` right on the entries is checked first, before the lock is taken.
 ///
 /// # Errors
 ///
@@ -353,12 +410,15 @@ pub(crate) fn closed_fields<'a>(vals: &'a RawVals, writable: &[&str]) -> Vec<&'a
 /// of the headers since this one began.
 pub(crate) async fn hold_draft_entries(
     tx: &mut Transaction,
+    env: &Env,
     move_ids: &[i64],
+    operation: Operation,
     what: &str,
 ) -> Result<()> {
     if move_ids.is_empty() {
         return Ok(());
     }
+    authorize_entries(tx, env, move_ids, operation).await?;
     tx.execute(
         "WITH held AS (SELECT id FROM account_move WHERE id = ANY($1::int8[]) \
                        ORDER BY id FOR NO KEY UPDATE) \
@@ -366,7 +426,7 @@ pub(crate) async fn hold_draft_entries(
         &[&move_ids],
     )
     .await?;
-    refuse_closed_entries(tx, move_ids, what).await
+    closed_refusal(tx, move_ids, what).await
 }
 
 /// The database ids of `moves`, sorted and without repeats: every statement below reads and
@@ -764,6 +824,10 @@ async fn lock_headers(tx: &mut Transaction, ids: &[i64]) -> Result<Vec<(i64, Str
         .collect()
 }
 
+fn text_cell(text: &str) -> Cell {
+    Cell::Str(text.into())
+}
+
 /// One statement flips the headers of `pairs` (entry, accounting date) and their lines to `state`
 /// and writes the accounting date on both (3 step 5).
 async fn set_state(tx: &mut Transaction, pairs: &[(i64, Date)], state: &str) -> Result<()> {
@@ -801,7 +865,13 @@ async fn set_state(tx: &mut Transaction, pairs: &[(i64, Date)], state: &str) -> 
 /// writing the names. Every entry is unnamed here: a named draft was refused with the
 /// validations. Credit notes are numbered in the refund chain of a journal that keeps one.
 /// `dates` is in `headers` order.
-async fn number(tx: &mut Transaction, env: &Env, headers: &[Header], dates: &[Date]) -> Result<()> {
+async fn number(
+    tx: &mut Transaction,
+    moves: &Records,
+    headers: &[Header],
+    dates: &[Date],
+) -> Result<()> {
+    let env = moves.env();
     if let Some(named) = headers.iter().find(|h| h.name.is_some()) {
         return Err(Error::invariant(format!(
             "entry {} reached numbering with a name",
@@ -883,11 +953,19 @@ async fn number(tx: &mut Transaction, env: &Env, headers: &[Header], dates: &[Da
             ids.len()
         )));
     }
-    Ok(())
+    // the number in the entry's history; every entry was unnamed before (checked above)
+    tx.track_external(
+        moves,
+        "name",
+        assigned
+            .iter()
+            .map(|a| (a.document_id, Cell::Null, text_cell(&a.name))),
+    )
 }
 
 async fn invalidate(tx: &mut Transaction, moves: &Records) -> Result<()> {
-    tx.invalidate_records(moves, Some(&["state", "date", "name"]))
+    // the display name is computed from the state and the number, which change here by SQL
+    tx.invalidate_records(moves, Some(&["state", "date", "name", "display_name"]))
         .await?;
     tx.invalidate_model("account.move.line", Some(&["parent_state", "date"]))
         .await

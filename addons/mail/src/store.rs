@@ -15,12 +15,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use erp_sdk::store_wire::{
-    AnswerBuilder, FieldKind, FieldSpec, FieldValue as Wire, StoreSchema, WireError,
-};
+use erp_sdk::store_wire::{AnswerBuilder, FieldKind, FieldSpec, FieldValue as Wire, WireError};
 use erp_sdk::{Env, Error, Result, Transaction, Value, serde_json};
 
-use crate::store_fetch::{SchemaFragment, SchemaPart, TopicRegistry};
+use crate::store_fetch::{SchemaFragment, SchemaPart, ServedSchema, TopicRegistry};
 
 /// The fields of a `mail.message` record in a store answer.
 pub(crate) const MESSAGE_FIELDS: [&str; 10] = [
@@ -71,14 +69,8 @@ crate::store_schema_part!(THREAD_SCHEMA = SchemaPart::new("mail", thread_schema)
 fn thread_schema(f: &mut SchemaFragment) {
     // the partner records the answers carry for the authors, recipients and followers they name
     f.field(PARTNER, "name", FieldSpec::new(FieldKind::String));
-    // every thread model of the repository, so the client can hold their chatter records.
-    // shortcut: only `mail` may contribute a part until installed-only schema filtering exists (
-    // (c).4), so the product bridge's two models are named here (no fields, so no record data); they
-    // move to a `product_mail` part with task.
-    f.model("res.users")
-        .model("res.company")
-        .model("product.template")
-        .model("product.product");
+    // the thread models are not named here: the schema served to a database adds every model of
+    // its registry that inherits `mail.thread` (`TopicRegistry::schema_for`)
     f.field(SUBTYPE, "name", FieldSpec::new(FieldKind::String));
     f.field(SUBTYPE, "internal", FieldSpec::new(FieldKind::Bool));
     f.field(MESSAGE, "body", FieldSpec::new(FieldKind::Html));
@@ -123,6 +115,9 @@ fn thread_schema(f: &mut SchemaFragment) {
     f.field(ATTACHMENT, "url", FieldSpec::new(FieldKind::String));
     f.field(MESSAGE, "res_model", FieldSpec::new(FieldKind::String));
     f.field(MESSAGE, "res_id", FieldSpec::new(FieldKind::Int));
+    // the history changes the reader may see, as the JSON text of `mail.message.tracking`
+    // (`crate::tracking::visible_changes`); absent on a message without them
+    f.field(MESSAGE, "tracking", FieldSpec::new(FieldKind::String));
     f.field(FOLLOWERS, "res_model", FieldSpec::new(FieldKind::String));
     f.field(FOLLOWERS, "res_id", FieldSpec::new(FieldKind::Int));
     f.field(
@@ -137,13 +132,16 @@ fn thread_schema(f: &mut SchemaFragment) {
     );
 }
 
-/// The store schema the thread answers are encoded against: the registry's schema, the one a
-/// `store_fetch` answer uses (a client fetches it once per generation).
+/// The store schema the thread answers of `tx`'s caller are encoded against: the one a
+/// `store_fetch` answer and the `schema` topic give that caller
+/// ([`TopicRegistry::schema_for_reader`]; a client fetches it once per generation).
 ///
 /// # Errors
-/// `Programming` when the linked registry or its schema is invalid (a defect, never a default).
-pub fn schema() -> Result<&'static StoreSchema> {
-    Ok(TopicRegistry::linked()?.schema())
+/// `Programming` when the linked registry or its schema is invalid (a defect, never a default);
+/// the group and access checks' failures.
+pub async fn schema(tx: &mut Transaction) -> Result<Arc<ServedSchema>> {
+    let env = tx.env();
+    TopicRegistry::linked()?.schema_for_reader(tx, &env).await
 }
 
 fn wire(error: WireError) -> Error {
@@ -502,10 +500,10 @@ pub(crate) async fn answer(
     tx: &mut Transaction,
     fill: impl FnOnce(&mut AnswerBuilder<'_>, bool) -> Result<()>,
 ) -> Result<Value> {
-    let schema = schema()?;
+    let served = schema(tx).await?;
     let asof = tx.store_snapshot().await?;
     let wrote = asof.own().is_some();
-    let mut builder = AnswerBuilder::new(schema, asof);
+    let mut builder = AnswerBuilder::new(served.schema(), asof);
     fill(&mut builder, wrote)?;
     let bytes = builder.encode().map_err(wire)?;
     let json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {

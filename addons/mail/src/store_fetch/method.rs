@@ -146,8 +146,12 @@ async fn run(tx: &mut Transaction, env: &Env, wire: u64, topics: &Value) -> Resu
     let items = parse_items(topics)?;
     let registry = TopicRegistry::linked()?;
     let requests = resolve(registry, env, items)?;
+    // the caller's audience decides which thread models the schema names; its `schema` topic
+    // returns this very schema
+    let served = registry.schema_for_reader(tx, env).await?;
+    tx.extension::<super::CallSchema>().0 = Some(std::sync::Arc::clone(&served));
     let asof = tx.store_snapshot().await?;
-    let mut answer = AnswerBuilder::new(registry.schema(), asof);
+    let mut answer = AnswerBuilder::new(served.schema(), asof);
     let mut slots: Vec<Json> = Vec::with_capacity(requests.len());
     // what earlier topics of this call already put in the payload: two topics may stage the same
     // value for a record (a thread and its messages both name the author); a different value is a defect

@@ -66,6 +66,52 @@ async fn inclusive_locks_select_by_journal_and_tax_impact() {
     drop(tx);
     h.cleanup().await.unwrap();
 }
+/// A check whose snapshot predates a committed lock date does not decide on the old date: it fails
+/// with a retryable serialization error, for the company itself and for a branch of it. On a fresh
+/// snapshot the committed date binds.
+#[tokio::test]
+async fn a_check_behind_a_committed_lock_date_is_retried() {
+    let h = harness().await;
+    let root = company(&h, None).await;
+    let branch = company(&h, Some(root)).await;
+    periods(&h, root).await;
+    let sale = |company: i64| request(company, d(2024, 2, 15), JournalClass::Sale, TaxImpact::None);
+    for checked in [root, branch] {
+        let mut tx = begin(&h).await;
+        tx.query("SELECT 1", &[]).await.unwrap();
+        h.db()
+            .client()
+            .await
+            .unwrap()
+            .execute(
+                "UPDATE res_company SET sale_lock_date=$2 WHERE id=$1",
+                &[&root, &d(2024, 2, 15)],
+            )
+            .await
+            .unwrap();
+        let error = check_lock_dates(&mut tx, &[sale(checked)])
+            .await
+            .expect_err("the check decided on a lock date older than the committed one");
+        assert_eq!(
+            error.sqlstate(),
+            Some("40001"),
+            "company {checked}: {error:?}"
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+    }
+    let mut tx = begin(&h).await;
+    let result = check_lock_dates(&mut tx, &[sale(root)]).await.unwrap();
+    let error = result[0].clone().into_result().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "The accounting date 2024-02-15 is locked: sale_lock_date through 2024-02-15."
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    h.cleanup().await.unwrap();
+}
 #[tokio::test]
 async fn ancestors_contribute_but_branches_do_not_lock_parents() {
     let h = harness().await;

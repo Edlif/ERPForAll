@@ -7,6 +7,7 @@ import { BIN_SIZE_CONTEXT, forgetBinaryContent } from "./binary-content.js";
 import { createHotkeyController, type HotkeyBinding } from "@erpforall/elang";
 import { reportHotkeyError } from "../../../../../web/src/runtime/hotkeys.js";
 import { dropAbsentDashboardFilters, mountDashboard } from "./dashboard.js";
+import { admitRequestContext } from "./dashboard-card.js";
 import { SearchModel, createSearchBar } from "./search/index.js";
 import { readMenuModule, readSettingsTarget } from "./settings-items.js";
 import { icon, menuIcon } from "./icons.js";
@@ -178,6 +179,8 @@ export class HumanApp {
   private current: Route = {};
   private currentUrl = window.location.pathname + window.location.search;
   private generation = 0;
+  /** Number of the latest action a dashboard card asked to open (`openActionRequest`). */
+  private actionRequest = 0;
   /** Settles when the navigation now running ends, whether it committed, was superseded or failed. */
   private navigationInFlight: Promise<void> | undefined;
   /** Records of `edit="0"` views: once they have an id they are never written back. */
@@ -1187,10 +1190,17 @@ export class HumanApp {
   /** Opens a window action named by its XML id (dashboard cards): its list, or a new record in its form, filtered by
    *  the action's domain and the request's, with the request's context and the way back to `origin`. */
   private async openActionRequest(request: ActionRequest, origin: Route, originLabel: string): Promise<void> {
+    // The list's stale-answer guard: request number, route generation, expiry. The read does not block the page, so
+    // the user may go elsewhere or activate a control again before it answers; only the latest request of the page
+    // that asked navigates.
+    const mine = ++this.actionRequest, generation = this.generation;
     const action = object(await this.rpc.call("ir.actions.act_window", "erp_load_web_action_ref", { xml_id: request.xmlId, context: this.context }));
+    if (mine !== this.actionRequest || generation !== this.generation || this.expired) return;
     if (action["wire_major"] !== 1 || action["target"] !== "current") throw new ClientError("unsupported", "Unsupported or mismatched window action.");
-    // The action's defaults first, then the request's (a figure opened with `{}` still creates with the action's).
-    const context = { ...this.context, ...this.actionContext(action), ...request.context };
+    // The action's defaults first, then the request's (a figure opened with `{}` still creates with the action's), and
+    // the session context last, so neither the action nor the card replaces a session key. The request's context is
+    // checked again here: any widget can hand one in, not only a parsed dashboard card.
+    const context = { ...this.actionContext(action), ...admitRequestContext(request.context, "the request context"), ...this.context };
     const views = actionViews(action), list = views.find(view => view[1] === "list"), form = views.find(view => view[1] === "form");
     // A related window opens a list (and its form) only (actions.ts `current_window`); other view types come with that result.
     if (!list) throw new ClientError("unsupported", `The action ${request.xmlId} has no list view, so a dashboard card cannot open it yet.`);
@@ -1202,6 +1212,8 @@ export class HumanApp {
     const id = this.methodActions.add({ result, context, origin: { ...origin }, originLabel });
     try { await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: id, model: result.model, view_type: request.viewMode === "form" ? "form" : "list" }); }
     catch (error) { this.methodActions.remove(id); throw error; }
+    // A navigation that did not arrive (the page may not be left) keeps no entry behind.
+    if (this.current.method_action !== id) this.methodActions.remove(id);
   }
 
   /** Navigation and prefetch share one caller-bound action/view metadata producer. */

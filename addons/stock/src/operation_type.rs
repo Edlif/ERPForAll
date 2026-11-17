@@ -195,7 +195,38 @@ async fn sequence_name(
         None => Ok(format!("{prefix} numbering")),
     }
 }
-async fn create_sequence(env: &Env, tx: &mut Transaction, vals: &mut RawVals) -> Result<()> {
+const FOREIGN_NUMBERING: &str = "An operation type can only use its own numbering or the numbering of \
+                                 another operation type of its company.";
+/// A caller links a type only to numbering made for an operation type: `types` must use a sequence
+/// of `own` (made by this call) or one that another type of the same company already uses. The
+/// reference lets any user with write on the type link any sequence; here the prefix edit writes
+/// the linked sequence for the caller, so the link is the boundary.
+async fn admit_links(env: &Env, tx: &mut Transaction, types: &[i64], own: &[i64]) -> Result<()> {
+    if env.su() || types.is_empty() {
+        return Ok(());
+    }
+    tx.flush().await?;
+    let foreign = tx
+        .query(
+            "SELECT 1 FROM stock_picking_type t WHERE t.id = ANY($1::int8[]) \
+             AND t.sequence_id IS NOT NULL AND t.sequence_id <> ALL($2::int8[]) \
+             AND NOT EXISTS (SELECT 1 FROM stock_picking_type o WHERE o.sequence_id = t.sequence_id \
+             AND o.company_id = t.company_id AND o.id <> ALL($1::int8[])) LIMIT 1",
+            &[&types, &own],
+        )
+        .await?;
+    if foreign.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::access(FOREIGN_NUMBERING))
+    }
+}
+/// Creates the type's own numbering when a prefix and no sequence are given; returns its id.
+async fn create_sequence(
+    env: &Env,
+    tx: &mut Transaction,
+    vals: &mut RawVals,
+) -> Result<Option<i64>> {
     let prefix = string(vals, "sequence_code")?.map(str::to_owned);
     if let Some(prefix) = prefix
         && !prefix.is_empty()
@@ -219,7 +250,10 @@ async fn create_sequence(env: &Env, tx: &mut Transaction, vals: &mut RawVals) ->
             ));
         }
         let name = sequence_name(env, tx, vals, &prefix).await?;
+        // The caller's right to create the type was checked by `authorize`; the type's own
+        // numbering is then created by the application with exactly these values.
         let sequence = env
+            .sudo(true)
             .records("ir.sequence")?
             .create(
                 tx,
@@ -234,8 +268,12 @@ async fn create_sequence(env: &Env, tx: &mut Transaction, vals: &mut RawVals) ->
             )
             .await?;
         vals.insert("sequence_id".into(), Cell::Id(sequence.ids()[0]));
+        // The new sequence already carries the prefix; writing it through the related field
+        // again would need the caller's own right on the sequence.
+        vals.remove("sequence_code");
+        return Ok(Some(sequence.ids()[0]));
     }
-    Ok(())
+    Ok(None)
 }
 #[methods(StockPickingType, addon = "stock")]
 impl StockPickingType {
@@ -255,12 +293,16 @@ impl StockPickingType {
             prefetch_warehouses(records.env(), tx, &vals_list).await?;
             let mut cache = LocationCache::default();
             let mut prepared = Vec::with_capacity(vals_list.len());
+            let mut own = Vec::new();
             for mut vals in vals_list {
                 locations(records.env(), tx, &mut vals, &mut cache).await?;
-                create_sequence(records.env(), tx, &mut vals).await?;
+                own.extend(create_sequence(records.env(), tx, &mut vals).await?);
                 prepared.push(vals);
             }
-            sup.call(tx, &records, (prepared,)).await
+            let created = sup.call(tx, &records, (prepared,)).await?;
+            // after the base create, so a sequence from a context default is checked too
+            admit_links(records.env(), tx, &created.ids(), &own).await?;
+            Ok(created)
         })
         .await
     }
@@ -457,13 +499,34 @@ pub(crate) async fn write(
         // A prefix edit accompanied by a cleared sequence retains each row's current link,
         // as the sequence-edit contract specifies; no cross-row link is substituted.
         if vals.contains("sequence_code") && matches!(vals.get("sequence_id"),Some(Cell::Null)) {vals.remove("sequence_id");}
+        // The prefix lives on the linked sequence, which the caller has no right to write
+        // directly: it is written below by the application after the type's own check.
+        let prefix_edit=vals.remove("sequence_code");
+        if prefix_edit.as_ref().is_some_and(|prefix| !matches!(prefix,Cell::Str(p) if !p.is_empty())) {
+            return Err(Error::validation("The sequence prefix of an operation type cannot be emptied; enter a new prefix."));
+        }
+        let relinked:Vec<i64>=match vals.get("sequence_id") {
+            Some(Cell::Id(new)) => {
+                let new=Cell::Id(*new);
+                records.cells(tx,"sequence_id").await?.into_iter().zip(records.ids()).filter(|(old,_)|*old!=new).map(|(_,id)|id).collect()
+            }
+            _ => Vec::new(),
+        };
         sup.call(tx,&records,(vals.clone(),)).await?;
+        admit_links(records.env(),tx,&relinked,&[]).await?;
         for record in records.iter() {
-            if let Some(Cell::Str(prefix))=vals.get("sequence_code") {
+            if let Some(Cell::Str(prefix))=prefix_edit.as_ref() {
                 let Cell::Id(sid)=record.cell(tx,"sequence_id").await? else {return Err(Error::user("Set a reference sequence before editing an operation type sequence prefix."));};
+                // A link made before this check existed: only a sequence without a lookup code, of
+                // the type's company, is written for the caller.
+                if !records.env().su() {
+                    let sequence=records.env().records("ir.sequence")?.browse([sid])?;
+                    let coded=!matches!(sequence.cell(tx,"code").await?,Cell::Null);
+                    if coded || sequence.cell(tx,"company_id").await?!=record.cell(tx,"company_id").await? {return Err(Error::access(FOREIGN_NUMBERING));}
+                }
                 let current=RawVals::new().set_cell("warehouse_id",record.cell(tx,"warehouse_id").await?);
                 let name=sequence_name(records.env(),tx,&current,prefix).await?;
-                records.env().records("ir.sequence")?.browse([sid])?.write(tx,RawVals::new().set_cell("name",Cell::Str(name.into()))).await?;
+                records.env().sudo(true).records("ir.sequence")?.browse([sid])?.write(tx,RawVals::new().set_cell("name",Cell::Str(name.into())).set_cell("prefix",Cell::Str(prefix.clone()))).await?;
             }
         }
         for (record,old) in records.iter().zip(old_methods) {

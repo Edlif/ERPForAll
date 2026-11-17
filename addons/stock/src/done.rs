@@ -354,13 +354,15 @@ async fn product_name(tx: &mut Transaction, product: i64) -> Result<String> {
     }
 }
 
+/// The caller
+/// checks the write right on `records` before anything of them is read.
+///
 /// # Errors
 ///
 /// The refusals of [`StockError`] named in the module documentation; the engine's refusals
 /// ([`crate::QuantError::NegativeStockForbidden`]); a retryable `40001` when a transfer changed
 /// since the transaction's snapshot; read and database errors.
 pub(crate) async fn validate(records: &Records, tx: &mut Transaction) -> Result<()> {
-    records.check_access(tx, Operation::Write).await?;
     tx.flush().await?;
     let ids = records.ids();
     if ids.is_empty() {
@@ -559,6 +561,10 @@ impl StockPicking {
         this: &RecordSet<StockPicking>,
         tx: &mut Transaction,
     ) -> Result<()> {
-        validate(this.as_records(), tx).await
+        let records = this.as_records();
+        records.check_access(tx, Operation::Write).await?;
+        let before = crate::state_history::before(tx, records).await?;
+        validate(records, tx).await?;
+        crate::state_history::report(tx, records, before).await
     }
 }

@@ -364,7 +364,7 @@ fn checked_attachment_ids(ids: &[i64]) -> Result<Vec<i64>> {
 }
 
 /// HTML escaping of text (`&`, `<`, `>`, `"`, `'`).
-fn escape_into(out: &mut String, text: &str) {
+pub(crate) fn escape_into(out: &mut String, text: &str) {
     for c in text.chars() {
         match c {
             '&' => out.push_str("&amp;"),

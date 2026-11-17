@@ -70,6 +70,9 @@ pub enum StockError {
         /// Named by a context default rather than in the values.
         default: bool,
     },
+    /// An ORM upsert of transfers by their declared key. The generic upsert runs no `create` or
+    /// `write` override, so it would skip every transfer guard; refused for every caller.
+    TransferUpsert,
     /// A create or write named a column of a stock move that its operation lines, confirmation and
     /// reservation decide (status, quantity), or a create carried a `default_<field>` context key
     /// for one. Refused for every caller, superuser included.
@@ -267,6 +270,11 @@ impl fmt::Display for StockError {
                 "{field} of a transfer follows from its moves; a new transfer cannot take it \
                  from a default in the context."
             ),
+            Self::TransferUpsert => write!(
+                f,
+                "Transfers cannot be updated by key: the checks of a transfer run on create and \
+                 write. Use create or write."
+            ),
             Self::DerivedFromLines {
                 field,
                 default: false,
@@ -416,6 +424,7 @@ impl From<StockError> for erp_sdk::Error {
             | StockError::NothingToConfirm
             | StockError::NeedsProcurement => Self::user(error.to_string()),
             StockError::DerivedFromMoves { .. }
+            | StockError::TransferUpsert
             | StockError::DerivedFromLines { .. }
             | StockError::ReferenceProjection { .. }
             | StockError::UnitSnapshot { .. } => Self::programming(error.to_string()),

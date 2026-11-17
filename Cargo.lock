@@ -1431,6 +1431,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "erp-addon-account-mail"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-account",
+ "erp-addon-mail",
+ "erp-sdk",
+]
+
+[[package]]
 name = "erp-addon-analytic"
 version = "0.1.0"
 dependencies = [
@@ -1535,6 +1544,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "erp-addon-purchase-mail"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-mail",
+ "erp-addon-purchase",
+ "erp-sdk",
+]
+
+[[package]]
 name = "erp-addon-purchase_stock"
 version = "0.1.0"
 dependencies = [
@@ -1622,6 +1640,15 @@ dependencies = [
  "futures-util",
  "tokio",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "erp-addon-stock-mail"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-mail",
+ "erp-addon-stock",
+ "erp-sdk",
 ]
 
 [[package]]
@@ -1868,6 +1895,7 @@ dependencies = [
  "clap",
  "deadpool-postgres",
  "erp-addon-account",
+ "erp-addon-account-mail",
  "erp-addon-analytic",
  "erp-addon-barcodes",
  "erp-addon-barcodes_gs1_nomenclature",
@@ -1876,10 +1904,12 @@ dependencies = [
  "erp-addon-product",
  "erp-addon-product-mail",
  "erp-addon-purchase",
+ "erp-addon-purchase-mail",
  "erp-addon-sale",
  "erp-addon-sales_team",
  "erp-addon-sample_library_wasm",
  "erp-addon-stock",
+ "erp-addon-stock-mail",
  "erp-addon-stock_account",
  "erp-addon-theme-office-blue",
  "erp-addon-uom",

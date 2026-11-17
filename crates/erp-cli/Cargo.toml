@@ -25,6 +25,10 @@ erp-addon-account.workspace = true
 erp-addon-purchase.workspace = true
 erp-addon-barcodes_gs1_nomenclature.workspace = true
 erp-addon-stock.workspace = true
+# message thread and chatter on entries, purchase orders and transfers (bridges, auto-installed with mail)
+erp-addon-account-mail.workspace = true
+erp-addon-purchase-mail.workspace = true
+erp-addon-stock-mail.workspace = true
 # sales: the teams and the Sales groups every sales addon builds on
 erp-addon-sales_team.workspace = true
 # sales: quotations and sales orders

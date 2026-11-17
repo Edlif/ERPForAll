@@ -7,8 +7,8 @@
 //! also converts the balances of a foreign-currency invoice again at the new date. Posting checks
 //! live in [`post`] and are called by the posting service.
 //!
-//! Not in this cut (each refused or left visible, never guessed): receipts, payment terms
-//! (the due date is the invoice date unless set by hand), product account mappings
+//! Not in this cut (each refused or left visible, never guessed): receipts, early payment discount
+//! and cash rounding of payment terms, product account mappings
 //! (product lines take the journal's default account), fiscal positions, cash
 //! rounding, payments (the amount due is the total, the payment state `not_paid`).
 
@@ -28,13 +28,14 @@ use crate::moves::id_cell;
 pub const INVOICE_TYPES: [&str; 4] = ["out_invoice", "out_refund", "in_invoice", "in_refund"];
 
 /// Fields whose change on a draft invoice rebuilds its tax, receivable/payable and total values.
-const SYNC_FIELDS: [&str; 8] = [
+const SYNC_FIELDS: [&str; 9] = [
     "partner_id",
     "currency_id",
     "move_type",
     "journal_id",
     "invoice_date",
     "invoice_date_due",
+    "invoice_payment_term_id",
     "date",
     "company_id",
 ];
@@ -125,9 +126,9 @@ pub(crate) async fn prepare_create(
     fill_line_accounts(tx, env, vals, journal).await
 }
 
-/// Fills the taxes of the new product lines of a draft invoice, after the entry defaults have
-/// decided its company (so the taxes are those of the company the entry gets). Does nothing for
-/// other entries.
+/// Fills the partner's default payment terms and the taxes of the new product lines of a draft
+/// invoice, after the entry defaults have decided its company (so both are those of the company
+/// the entry gets). Does nothing for other entries.
 pub(crate) async fn fill_create_taxes(
     tx: &mut Transaction,
     env: &Env,
@@ -143,7 +144,38 @@ pub(crate) async fn fill_create_taxes(
         company,
         sale: is_sale(&kind),
     };
+    // The partner's default payment terms, decided here because the entry's company is known only now.
+    if !vals.contains("invoice_payment_term_id")
+        && !env.context().contains("default_invoice_payment_term_id")
+        && let Some(partner) = id_cell(vals.get("partner_id"), "partner_id")?
+        && let Some(term) = partner_terms(tx, env, company, context.sale, partner).await?
+    {
+        vals.insert("invoice_payment_term_id".into(), Cell::Id(term));
+    }
     fill_taxes(tx, env, vals, &context).await
+}
+
+/// The payment terms a partner has for `company`: the customer terms of a customer document, the
+/// vendor terms of a vendor bill.
+async fn partner_terms(
+    tx: &mut Transaction,
+    env: &Env,
+    company: i64,
+    sale: bool,
+    partner: i64,
+) -> Result<Option<i64>> {
+    let field = if sale {
+        "property_payment_term_id"
+    } else {
+        "property_supplier_payment_term_id"
+    };
+    let cell = env
+        .with_company(company)?
+        .records("res.partner")?
+        .browse([partner])?
+        .cell(tx, field)
+        .await?;
+    id_cell(Some(&cell), field)
 }
 
 /// Prepares a write of draft entries: fills the account of new product lines and the accounting
@@ -191,6 +223,30 @@ pub(crate) async fn prepare_write(
     if needs_taxes(vals) {
         let context = write_tax_context(tx, records, vals).await?;
         fill_taxes(tx, records.env(), vals, &context).await?;
+    }
+    // a new partner brings its payment terms, when the invoices agree on kind and company
+    if !vals.contains("invoice_payment_term_id")
+        && let Some(partner) = id_cell(vals.get("partner_id"), "partner_id")?
+    {
+        let kinds: Vec<bool> = records
+            .cells(tx, "move_type")
+            .await?
+            .iter()
+            .filter_map(|c| text_of(Some(c)))
+            .map(|k| is_sale(&k))
+            .collect();
+        let mut companies = Vec::new();
+        for cell in records.cells(tx, "company_id").await? {
+            companies.extend(id_cell(Some(&cell), "company_id")?);
+        }
+        companies.sort_unstable();
+        companies.dedup();
+        if let (Some(&sale), [company]) = (kinds.first(), companies.as_slice())
+            && kinds.iter().all(|k| *k == sale)
+            && let Some(term) = partner_terms(tx, records.env(), *company, sale, partner).await?
+        {
+            vals.insert("invoice_payment_term_id".into(), Cell::Id(term));
+        }
     }
     Ok(true)
 }

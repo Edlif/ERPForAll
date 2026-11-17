@@ -2486,6 +2486,30 @@ fn resolve_tracking(
              recomputed fields belongs to a later slice)"
         )));
     }
+    if p.secret == Some(true) {
+        return Err(Error::programming(format!(
+            "field '{model}.{name}': tracking a secret field is refused (its value would be \
+             stored in the document's history and shown in its chatter)"
+        )));
+    }
+    // the types the mail history cannot store as a JSON value and show (`raw_json` and `display`
+    // of `addons/mail/src/tracking.rs`); that consumer keeps a runtime refusal as a defect guard
+    if matches!(
+        ty,
+        FieldType::Json
+            | FieldType::Binary { .. }
+            | FieldType::Uuid
+            | FieldType::Xid8
+            | FieldType::TimestampTz
+            | FieldType::DateRange { .. }
+            | FieldType::DatetimeRange { .. }
+    ) {
+        return Err(Error::programming(format!(
+            "field '{model}.{name}': tracking a {} field is not supported (the history stores \
+             and shows scalar, text, date and relational values only)",
+            ty.type_name()
+        )));
+    }
     if p.translate == Some(true) || p.company_dependent == Some(true) {
         return Err(Error::programming(format!(
             "field '{model}.{name}': tracking a translated or company-dependent field is not \

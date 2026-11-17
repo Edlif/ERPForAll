@@ -128,12 +128,13 @@ pub(crate) async fn snapshots(
     Ok(out)
 }
 
-/// The snapshot cells for `demand` (moves only) and `quantity` under `snapshot`.
+/// The snapshot cells for `demand` (moves only) and `quantity` under `snapshot`. An amount given
+/// as `None` stays as stored: its product-unit cell is not part of the result.
 fn snapshot_cells(
     target: Target,
     snapshot: &ProductUnitSnapshot,
-    demand: Decimal,
-    quantity: Decimal,
+    demand: Option<Decimal>,
+    quantity: Option<Decimal>,
 ) -> Result<Vec<(&'static str, Cell)>> {
     let digits = i32::try_from(snapshot.digits())
         .map_err(|e| Error::internal("Product Unit digits out of range.").with_source(e))?;
@@ -144,12 +145,16 @@ fn snapshot_cells(
             Cell::Decimal(snapshot.target_factor()),
         ),
         ("product_unit_digits", Cell::Int(digits)),
-        (
+    ];
+    if let Some(quantity) = quantity {
+        cells.push((
             "quantity_product_uom",
             Cell::Decimal(snapshot.product_quantity(quantity)?),
-        ),
-    ];
-    if target == Target::Move {
+        ));
+    }
+    if target == Target::Move
+        && let Some(demand) = demand
+    {
         cells.push((
             "product_qty",
             Cell::Decimal(snapshot.product_quantity(demand)?),
@@ -158,14 +163,35 @@ fn snapshot_cells(
     Ok(cells)
 }
 
+/// True when the stored factors and digits of a record are the ones `snapshot` carries: a
+/// product-unit amount converted under them is still right while its own amount is unchanged.
+fn stored_under(
+    snapshot: &ProductUnitSnapshot,
+    factor: &Cell,
+    product_factor: &Cell,
+    digits: &Cell,
+) -> Result<bool> {
+    if [factor, product_factor, digits]
+        .iter()
+        .any(|cell| matches!(cell, Cell::Null))
+    {
+        return Ok(false);
+    }
+    Ok(
+        number(Some(factor), "uom_factor")? == snapshot.source_factor()
+            && number(Some(product_factor), "product_uom_factor")? == snapshot.target_factor()
+            && number(Some(digits), "product_unit_digits")? == Decimal::from(snapshot.digits()),
+    )
+}
+
 /// Put the snapshot cells into `vals`; a supplied cell must have the same value.
 fn stamp(
     target: Target,
     tx: &Transaction,
     vals: &mut RawVals,
     snapshot: &ProductUnitSnapshot,
-    demand: Decimal,
-    quantity: Decimal,
+    demand: Option<Decimal>,
+    quantity: Option<Decimal>,
 ) -> Result<()> {
     for (field, cell) in snapshot_cells(target, snapshot, demand, quantity)? {
         if let Some(given) = vals.get(field)
@@ -246,14 +272,17 @@ pub(crate) async fn fill_create_for(
             .ok_or_else(|| Error::internal("A unit snapshot was not captured."))?;
         let demand = number(vals.get("product_uom_qty"), "product_uom_qty")?;
         let quantity = number(vals.get("quantity"), "quantity")?;
-        stamp(target, tx, vals, snapshot, demand, quantity)?;
+        stamp(target, tx, vals, snapshot, Some(demand), Some(quantity))?;
     }
     Ok(())
 }
 
 /// The values a move write of `vals` gives `records`, grouped so the records sharing every
 /// resulting value are written in one call: the written values, the unit a product change takes,
-/// and the snapshot. Usually one group; several when the records' units or own demands differ.
+/// and the snapshot. One group per pair of units when the records keep the factors and digits
+/// they were stored with: a product-unit amount whose own amount the write does not name is then
+/// left as stored, so records that differ only in it share a group. A record whose unit, product,
+/// factors or digits change takes both amounts again and groups by them as well.
 ///
 /// # Errors
 ///
@@ -265,6 +294,10 @@ pub async fn write_groups(
 ) -> Result<Vec<(Vec<i64>, RawVals)>> {
     write_groups_for(Target::Move, records, tx, vals).await
 }
+
+/// What the records of one write group share: the unit, the product's unit, and each amount the
+/// group converts again (`None`: left as stored).
+type GroupKey = (i64, i64, Option<Decimal>, Option<Decimal>);
 
 /// [`write_groups`] for moves or move lines.
 pub(crate) async fn write_groups_for(
@@ -282,6 +315,9 @@ pub(crate) async fn write_groups_for(
         Target::Line => vec![Cell::Null; ids.len()],
     };
     let old_quantities = records.cells(tx, "quantity").await?;
+    let old_factors = records.cells(tx, "uom_factor").await?;
+    let old_product_factors = records.cells(tx, "product_uom_factor").await?;
+    let old_digits = records.cells(tx, "product_unit_digits").await?;
     let new_product = vals.get("product_id").map(cell_id);
     let new_unit = vals.get("uom_id").map(cell_id);
     let mut rows = Vec::with_capacity(ids.len());
@@ -295,11 +331,11 @@ pub(crate) async fn write_groups_for(
         };
         let demand = match vals.get("product_uom_qty") {
             Some(cell) => number(Some(cell), "product_uom_qty")?,
-            None => number(old_demands.get(index), "product_uom_qty")?,
+            None => number(Some(&old_demands[index]), "product_uom_qty")?,
         };
         let quantity = match vals.get("quantity") {
             Some(cell) => number(Some(cell), "quantity")?,
-            None => number(old_quantities.get(index), "quantity")?,
+            None => number(Some(&old_quantities[index]), "quantity")?,
         };
         rows.push((product, unit, demand, quantity));
     }
@@ -319,13 +355,33 @@ pub(crate) async fn write_groups_for(
         .collect();
     let pairs = resolved.iter().flatten().map(|r| (r.0, r.1)).collect();
     let snapshots = snapshots(env, tx, pairs).await?;
-    let mut groups: BTreeMap<(i64, i64, Decimal, Decimal), Vec<i64>> = BTreeMap::new();
+    // an amount the write names (itself or its product-unit column) is always converted again
+    let rekeyed = new_product.is_some() || new_unit.is_some();
+    let names_demand = vals.contains("product_uom_qty") || vals.contains("product_qty");
+    let names_quantity = vals.contains("quantity") || vals.contains("quantity_product_uom");
+    let mut groups: BTreeMap<GroupKey, Vec<i64>> = BTreeMap::new();
     let mut untouched = Vec::new();
-    for (id, row) in ids.into_iter().zip(resolved) {
-        match row {
-            Some(key) => groups.entry(key).or_default().push(id),
-            None => untouched.push(id),
-        }
+    for (index, (id, row)) in ids.into_iter().zip(resolved).enumerate() {
+        let Some((unit, product_unit, demand, quantity)) = row else {
+            untouched.push(id);
+            continue;
+        };
+        let snapshot = snapshots
+            .get(&(unit, product_unit))
+            .ok_or_else(|| Error::internal("A unit snapshot was not captured."))?;
+        let kept = !rekeyed
+            && stored_under(
+                snapshot,
+                &old_factors[index],
+                &old_product_factors[index],
+                &old_digits[index],
+            )?;
+        let demand = (names_demand || !kept).then_some(demand);
+        let quantity = (names_quantity || !kept).then_some(quantity);
+        groups
+            .entry((unit, product_unit, demand, quantity))
+            .or_default()
+            .push(id);
     }
     let mut out = Vec::with_capacity(groups.len() + 1);
     if !untouched.is_empty() {

@@ -27,12 +27,13 @@ pub const SERVER_ONLY_CONTEXT_PREFIX: &str = "install_";
 /// relaxes a check, an audit, tracking or a constraint belongs here: the load-state keys
 /// (`erp_data::load::load_state`) make `ir.ui.view` skip sibling views in its write check
 /// (review A3-S1).
-pub const SERVER_ONLY_CONTEXT_KEYS: [&str; 15] = server_only_keys();
+pub const SERVER_ONLY_CONTEXT_KEYS: [&str; 16] = server_only_keys();
 
 /// The loader's keys, then the context keys that switch tracking off
 /// ([`erp_orm::TRACKING_DISABLE_KEYS`], the one list the ORM reads: a caller that could send them
-/// would silence the change log of its own writes).
-const fn server_only_keys() -> [&'static str; 15] {
+/// would silence the change log of its own writes) and the one that drops the creation line
+/// ([`erp_orm::CREATION_LOG_DISABLE_KEY`]).
+const fn server_only_keys() -> [&'static str; 16] {
     const LOADER: [&str; 12] = [
         "install_mode",
         "module",
@@ -47,7 +48,7 @@ const fn server_only_keys() -> [&'static str; 15] {
         "install_batch_positions",
         "install_batch_written",
     ];
-    let mut out = [""; 15];
+    let mut out = [""; 16];
     let mut i = 0;
     while i < LOADER.len() {
         out[i] = LOADER[i];
@@ -61,6 +62,7 @@ const fn server_only_keys() -> [&'static str; 15] {
     // `force_delete` skips the deletion refusals of the ORM (restrict and fallback references of
     // company maps, the view cascade): only server code sets it
     out[LOADER.len() + j] = "force_delete";
+    out[LOADER.len() + j + 1] = erp_orm::CREATION_LOG_DISABLE_KEY;
     out
 }
 

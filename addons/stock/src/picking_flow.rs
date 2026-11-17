@@ -284,12 +284,14 @@ impl StockPicking {
                 return Err(StockError::CancelEmpty.into());
             }
         }
+        let before = crate::state_history::before(tx, records).await?;
         let (_, open) = picking_moves(tx, &ids).await?;
         cancel_moves(records, tx, &open).await?;
         tx.execute(PICKINGS_LOCK, &[&ids, &records.env().uid()])
             .await?;
         tx.invalidate_model("stock.picking", Some(&AUDIT)).await?;
-        records.modified_external(tx, &["is_locked"]).await
+        records.modified_external(tx, &["is_locked"]).await?;
+        crate::state_history::report(tx, records, before).await
     }
 
     /// The operation type proposes the transfer's source, destination and company (the reference's
