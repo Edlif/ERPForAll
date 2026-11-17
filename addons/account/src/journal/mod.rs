@@ -187,6 +187,14 @@ pub struct AccountJournal {
         string = "Dedicated Payment Sequence"
     )]
     pub payment_sequence: bool,
+    /// The ways to pay and be paid through a bank, cash or credit-card journal.
+    #[field(
+        one2many,
+        comodel = "account.payment.method.line",
+        inverse_name = "journal_id",
+        string = "Payment Methods"
+    )]
+    pub payment_method_line_ids: Vec<RecId>,
     /// When the entry numbers restart at 1; set from the type at create when not given, and kept
     /// when the type changes later.
     #[field(
@@ -359,12 +367,14 @@ impl AccountJournal {
             }
         })?;
         check_currency_consistency(tx, this.env(), &created.ids(), &[]).await?;
+        crate::payment::default_lines(tx, this.env(), &created.ids()).await?;
         Ok(created)
     }
 
     /// A new journal currency is copied onto the default account of bank, cash and credit card
     /// journals; then the journal and its default account must agree on the
-    /// foreign currency.
+    /// foreign currency. A journal that becomes a bank, cash or credit card
+    /// journal gets the manual payment methods a new one gets, unless it has methods already.
     #[method(override)]
     async fn write(
         this: &RecordSet<AccountJournal>,
@@ -374,7 +384,12 @@ impl AccountJournal {
     ) -> Result<()> {
         let currency = vals.contains("currency_id");
         let account = vals.contains("default_account_id");
+        let kind = vals.contains("type");
         sup.call(tx, this.as_records(), (vals,)).await?;
+        if kind {
+            tx.flush().await?;
+            crate::payment::default_lines(tx, this.env(), &this.ids()).await?;
+        }
         if currency {
             for journal in this.iter() {
                 let journal_type = journal.get(tx, AccountJournal::TYPE).await?;

@@ -559,10 +559,13 @@ impl Compiler<'_> {
             let mut arguments = Vec::new();
             for (name, value) in node.attributes() {
                 let argument = match call_argument(node, name) {
-                    // A `name.translate` text is a term of the language, as a text node is.
+                    // A `name.translate` text is a term of the language, as a text node is. A
+                    // translation is data: it prints as written, never as an expression.
                     Some(true) if cx.translate && name.ends_with(".translate") => {
-                        let term = self.language.terms.get(value.trim()).cloned();
-                        Argument::Format(self.format(at, term.as_deref().unwrap_or(value))?)
+                        match self.language.terms.get(value.trim()) {
+                            Some(term) => Argument::Format(vec![Part::Literal(term.clone())]),
+                            None => Argument::Format(self.format(at, value)?),
+                        }
                     }
                     Some(true) => Argument::Format(self.format(at, value)?),
                     Some(false) => Argument::Value(self.code(at, value)?),

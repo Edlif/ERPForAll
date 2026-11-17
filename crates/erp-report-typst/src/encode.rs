@@ -26,8 +26,8 @@ fn array(values: impl IntoIterator<Item = Value>) -> Value {
 fn indices(nodes: &[NodeId]) -> Value {
     array(nodes.iter().map(|n| Value::Int(n.index() as i64)))
 }
-fn styled(dict: &mut Dict, style: &Style) -> Result<(), ReportError> {
-    dict.insert("size".into(), Value::Float(style.size()));
+fn styled(dict: &mut Dict, style: &Style, scale: f64) -> Result<(), ReportError> {
+    dict.insert("size".into(), Value::Float(style.size() * scale));
     dict.insert("bold".into(), Value::Bool(style.bold()));
     dict.insert("italic".into(), Value::Bool(style.italic()));
     dict.insert("underline".into(), Value::Bool(style.underline()));
@@ -92,7 +92,10 @@ const COLUMN_FIT_CHARS: usize = 16;
 const COLUMN_PADDING_POINTS: f64 = 12.0;
 /// Share of the body width content-sized columns may take while a longer column needs the rest; above it
 /// every column shares the width by its text, so many short columns never squeeze a long one to nothing.
-const COLUMN_FIT_SHARE: f64 = 0.6;
+const COLUMN_FIT_SHARE: f64 = 0.7;
+/// Font scale of a table whose number columns and short columns do not fit the page at the base size:
+/// the table steps down one size instead of letting an amount wrap or overlap its neighbour.
+const COMPACT_SCALE: f64 = 0.9;
 /// Points of width one character stands for when an image or graphic claims a column share.
 const POINTS_PER_CHAR: f64 = 5.0;
 /// Text length of a subtree, for sharing a table's width; an image or graphic counts by its width and a
@@ -116,70 +119,184 @@ fn text_len(doc: &DocTree, id: &NodeId, depth: usize) -> usize {
         _ => 0,
     }
 }
-/// Column shares from the longest text in each column, header included, as a browser's automatic table
-/// layout gives them: a title column gets more room than a year column. Cells are placed as the
-/// renderer places them (spans move the cells after them); a cell spanning several columns, such as a
-/// section title over a whole row, claims no column of its own.
-fn column_weights(doc: &DocTree, columns: usize, header: &[NodeId], cells: &[NodeId]) -> Vec<f64> {
-    let mut longest = vec![0; columns];
-    // An empty table has no column to place a cell in.
-    let sections: &[&[NodeId]] = if columns == 0 { &[] } else { &[header, cells] };
-    for section in sections {
-        // Rows still covered by a row span from above, per column, counting the current row.
-        let mut busy = vec![0usize; columns];
-        let mut col = 0;
-        for id in section.iter() {
-            let (colspan, rowspan) = match doc.nodes().get(id.index()) {
-                Some(Node::Cell {
-                    colspan, rowspan, ..
-                }) => (*colspan, *rowspan),
-                _ => (1, 1),
-            };
-            // The builder admitted the placement, so a free slot exists within one more row.
-            while col == columns || busy.get(col).is_some_and(|b| *b > 0) {
-                if col == columns {
-                    busy.iter_mut().for_each(|b| *b = b.saturating_sub(1));
-                    col = 0;
-                } else {
-                    col += 1;
-                }
+/// Whether a cell's content is aligned to the end (`text-end`), as a number column is.
+fn aligned_end(doc: &DocTree, id: &NodeId) -> bool {
+    match doc.nodes().get(id.index()) {
+        Some(Node::Cell { child, .. }) => aligned_end(doc, child),
+        Some(Node::Block { style, .. }) => matches!(style.alignment(), Alignment::End),
+        _ => false,
+    }
+}
+/// Where each cell of one table section sits, as the renderer places them (spans move the cells after
+/// them): `(row, column, colspan, rowspan)` per cell, in order.
+fn placements(
+    doc: &DocTree,
+    columns: usize,
+    section: &[NodeId],
+) -> Vec<(usize, usize, usize, usize)> {
+    let mut out = Vec::with_capacity(section.len());
+    if columns == 0 {
+        return out;
+    }
+    // Rows still covered by a row span from above, per column, counting the current row.
+    let mut busy = vec![0usize; columns];
+    let (mut row, mut col) = (0, 0);
+    for id in section {
+        let (colspan, rowspan) = match doc.nodes().get(id.index()) {
+            Some(Node::Cell {
+                colspan, rowspan, ..
+            }) => (*colspan, *rowspan),
+            _ => (1, 1),
+        };
+        // The builder admitted the placement, so a free slot exists within one more row.
+        while col == columns || busy.get(col).is_some_and(|b| *b > 0) {
+            if col == columns {
+                busy.iter_mut().for_each(|b| *b = b.saturating_sub(1));
+                col = 0;
+                row += 1;
+            } else {
+                col += 1;
             }
-            let end = (col + colspan).min(columns);
-            busy[col..end].iter_mut().for_each(|b| *b = rowspan);
+        }
+        let end = (col + colspan).min(columns);
+        busy[col..end].iter_mut().for_each(|b| *b = rowspan);
+        out.push((row, col, end - col, rowspan));
+        col = end;
+    }
+    out
+}
+/// A table's columns as encoded: the shares, whether it prints one size smaller, the number of
+/// header rows and the longest text per column.
+struct Columns {
+    weights: Vec<f64>,
+    compact: bool,
+    header_rows: usize,
+    longest: Vec<usize>,
+}
+/// Column shares from the longest text in each column, header included, as a browser's automatic table
+/// layout gives them: a title column gets more room than a year column. A cell spanning several columns,
+/// such as a section title over a whole row, claims no column of its own. A column whose every cell is
+/// aligned to the end holds numbers: it is sized to its content so an amount never wraps. `compact` says
+/// the table prints one font size smaller ([`COMPACT_SCALE`]) because its content-sized columns do not
+/// fit; the header rows are counted as the cells are placed (a spanning cell counts once).
+fn column_weights(doc: &DocTree, columns: usize, header: &[NodeId], cells: &[NodeId]) -> Columns {
+    let mut longest = vec![0; columns];
+    let mut numbers = vec![true; columns];
+    let mut header_rows = 0;
+    for (index, section) in [header, cells].into_iter().enumerate() {
+        let placed = placements(doc, columns, section);
+        if index == 0 {
+            header_rows = placed
+                .iter()
+                .map(|(row, .., rowspan)| row + rowspan)
+                .max()
+                .unwrap_or(0);
+        }
+        for (id, (_, col, colspan, _)) in section.iter().zip(placed) {
             if colspan == 1
                 && let Some(column) = longest.get_mut(col)
             {
-                *column = (*column).max(text_len(doc, id, 0));
+                let len = text_len(doc, id, 0);
+                *column = (*column).max(len);
+                if len > 0 && !aligned_end(doc, id) {
+                    numbers[col] = false;
+                }
             }
-            col = end;
         }
     }
     let page = doc.options().page();
     let [_, right, _, left] = page.margins();
-    shares(&longest, page.width() - left - right)
+    let (weights, compact) = shares(&longest, &numbers, page.width() - left - right);
+    Columns {
+        weights,
+        compact,
+        header_rows,
+        longest,
+    }
+}
+/// Width of one character and height of one line, in ems, for estimating how tall content prints.
+const CHAR_EM: f64 = 0.5;
+const LINE_EM: f64 = 1.4;
+/// Share of the page body above which a row or a kept block is estimated too tall to keep on one page:
+/// it may break across pages instead of running past the bottom margin. The estimate is rough, so the
+/// share leaves room for it to be off by half.
+const TALL_SHARE: f64 = 0.5;
+/// Line breaks a subtree forces (a block, a cell or a break starts a line) and the height of its
+/// images, in points.
+fn breaks(doc: &DocTree, id: &NodeId, depth: usize) -> (usize, f64) {
+    if depth > 64 {
+        return (0, 0.0);
+    }
+    let node = doc.nodes().get(id.index());
+    let own = match node {
+        Some(Node::Block { .. } | Node::Cell { .. } | Node::LineBreak | Node::PageBreak) => 1,
+        _ => 0,
+    };
+    let image = match node {
+        Some(Node::Image { height, .. } | Node::Vector { height, .. }) => {
+            height.unwrap_or(PLACEHOLDER_POINTS)
+        }
+        _ => 0.0,
+    };
+    node.into_iter()
+        .flat_map(Node::children)
+        .map(|child| breaks(doc, child, depth + 1))
+        .fold((own, image), |(n, h), (m, g)| (n + m, h + g))
+}
+/// Estimated height in points of a subtree laid out `width` points wide with text of `size` points.
+fn estimated_height(doc: &DocTree, id: &NodeId, width: f64, size: f64) -> f64 {
+    let per_line = (width / (size * CHAR_EM)).max(1.0);
+    let (forced, images) = breaks(doc, id, 0);
+    let lines = (text_len(doc, id, 0) as f64 / per_line).ceil() + forced as f64;
+    lines * size * LINE_EM + images
 }
 /// Column shares from the longest text per column; `0.0` asks the template for a column sized to its
 /// content. Without a long column the longest one takes the rest of the width, so the table still spans
 /// the page. When the content-sized columns would take more than their part of `body` points (estimated
-/// from their text), every column shares the width by its text instead.
-fn shares(longest: &[usize], body: f64) -> Vec<f64> {
+/// from their text), every column shares the width by its text instead. A number column (`numbers`) is
+/// sized to its content whatever its length; when the content-sized columns are too wide, the number
+/// columns stay content-sized, the others share by text and the table steps down one font size (`true`),
+/// as long as the number columns at that size leave the text columns the rest of [`COLUMN_FIT_SHARE`]
+/// of the body; otherwise every column shares by its text (an amount may wrap, a description keeps
+/// room to be read).
+fn shares(longest: &[usize], numbers: &[bool], body: f64) -> (Vec<f64>, bool) {
     let shared = |chars: usize| chars.clamp(COLUMN_CHARS_MIN, COLUMN_CHARS_MAX) as f64;
-    let fitted: f64 = longest
-        .iter()
-        .filter(|&&chars| chars <= COLUMN_FIT_CHARS)
-        .map(|&chars| chars as f64 * POINTS_PER_CHAR + COLUMN_PADDING_POINTS)
+    let fits =
+        |i: usize| longest[i] <= COLUMN_FIT_CHARS || numbers.get(i).copied().unwrap_or(false);
+    let fitted: f64 = (0..longest.len())
+        .filter(|&i| fits(i))
+        .map(|i| longest[i] as f64 * POINTS_PER_CHAR + COLUMN_PADDING_POINTS)
         .sum();
-    let has_long = longest.iter().any(|&chars| chars > COLUMN_FIT_CHARS);
+    let has_long = (0..longest.len()).any(|i| !fits(i));
+    let number = |i: usize| numbers.get(i).copied().unwrap_or(false);
     if fitted > body * if has_long { COLUMN_FIT_SHARE } else { 1.0 } {
-        return longest.iter().map(|&chars| shared(chars)).collect();
+        let numbers_at_compact: f64 = (0..longest.len())
+            .filter(|&i| number(i))
+            .map(|i| longest[i] as f64 * POINTS_PER_CHAR * COMPACT_SCALE + COLUMN_PADDING_POINTS)
+            .sum();
+        let room = if (0..longest.len()).all(number) {
+            f64::INFINITY
+        } else {
+            body * COLUMN_FIT_SHARE
+        };
+        let compact = (0..longest.len()).any(number) && numbers_at_compact <= room;
+        let out = (0..longest.len())
+            .map(|i| {
+                if compact && number(i) {
+                    0.0
+                } else {
+                    shared(longest[i])
+                }
+            })
+            .collect();
+        return (out, compact);
     }
-    let mut out: Vec<f64> = longest
-        .iter()
-        .map(|&chars| {
-            if chars <= COLUMN_FIT_CHARS {
+    let mut out: Vec<f64> = (0..longest.len())
+        .map(|i| {
+            if fits(i) {
                 0.0
             } else {
-                chars.min(COLUMN_CHARS_MAX) as f64
+                longest[i].min(COLUMN_CHARS_MAX) as f64
             }
         })
         .collect();
@@ -188,7 +305,7 @@ fn shares(longest: &[usize], body: f64) -> Vec<f64> {
     {
         out[widest] = longest[widest].max(COLUMN_CHARS_MIN) as f64;
     }
-    out
+    (out, false)
 }
 /// Typed renderer input and the warnings of nodes printed differently from what they ask for.
 /// Raster images are decoded here, before layout, so a corrupt image is an `Image` error and not a
@@ -196,6 +313,133 @@ fn shares(longest: &[usize], body: f64) -> Vec<f64> {
 pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String>), ReportError> {
     let mut nodes = Vec::with_capacity(doc.nodes().len());
     let mut warnings = Vec::new();
+    // Table column shares, and the font scale every node inherits from a compact table above it.
+    // Parents come after their children in the arena, so a reverse walk reaches a table first.
+    // `inherited` is the size a node's text gets from the nearest styled node above it, so a bare
+    // text in a compact table prints at the table's size as the styled cells beside it do.
+    // `width` is the width a node is laid out in (estimated for table columns), and `tall` marks the
+    // cells of rows and the kept blocks estimated taller than [`TALL_SHARE`] of the page body.
+    let count = doc.nodes().len();
+    let mut tables = std::collections::HashMap::new();
+    let mut scale = vec![1.0; count];
+    let mut inherited = vec![Style::default().size(); count];
+    let page = doc.options().page();
+    let [top, right, bottom, left] = page.margins();
+    let mut width = vec![page.width() - left - right; count];
+    let limit = (page.height() - top - bottom) * TALL_SHARE;
+    let mut tall = vec![false; count];
+    for (index, node) in doc.nodes().iter().enumerate().rev() {
+        let table = match node {
+            Node::Table {
+                columns,
+                header,
+                cells,
+            } => Some(column_weights(doc, *columns, header, cells)),
+            _ => None,
+        };
+        if table.as_ref().is_some_and(|table| table.compact) {
+            scale[index] = COMPACT_SCALE;
+        }
+        let (own, outer) = (scale[index], width[index]);
+        let size = match node {
+            Node::Block { style, .. } | Node::Inline { style, .. } => style.size(),
+            _ => inherited[index],
+        };
+        let inner = match node {
+            Node::Block { style, .. } => (outer - 2.0 * style.padding()).max(0.0),
+            _ => outer,
+        };
+        for child in node.children() {
+            if let Some(s) = scale.get_mut(child.index()) {
+                *s = f64::min(*s, own);
+            }
+            if let Some(s) = inherited.get_mut(child.index()) {
+                *s = size;
+            }
+            if let Some(w) = width.get_mut(child.index()) {
+                *w = inner;
+            }
+        }
+        match (node, table) {
+            (
+                Node::Table {
+                    columns,
+                    header,
+                    cells,
+                },
+                Some(table),
+            ) => {
+                let size = inherited[index] * own;
+                // content-sized columns as wide as their longest text, the others share the rest
+                let auto =
+                    |i: usize| table.longest[i] as f64 * size * CHAR_EM + COLUMN_PADDING_POINTS;
+                let fixed: f64 = (0..*columns)
+                    .filter(|&i| table.weights[i] == 0.0)
+                    .map(auto)
+                    .sum();
+                let shared: f64 = table.weights.iter().sum();
+                let rest = (outer - fixed).max(0.0);
+                let column = |i: usize| {
+                    if table.weights[i] == 0.0 {
+                        auto(i)
+                    } else {
+                        rest * table.weights[i] / shared
+                    }
+                };
+                for (section, body) in [(header, false), (cells, true)] {
+                    let placed = placements(doc, *columns, section);
+                    let mut rows: Vec<f64> = Vec::new();
+                    for (id, &(row, col, span, _)) in section.iter().zip(&placed) {
+                        let cell = ((col..col + span).map(column).sum::<f64>()
+                            - COLUMN_PADDING_POINTS)
+                            .max(size);
+                        width[id.index()] = cell;
+                        if body {
+                            if rows.len() <= row {
+                                rows.resize(row + 1, 0.0);
+                            }
+                            rows[row] = rows[row].max(estimated_height(doc, id, cell, size));
+                        }
+                    }
+                    if body {
+                        for (id, &(row, ..)) in section.iter().zip(&placed) {
+                            tall[id.index()] = rows[row] > limit;
+                        }
+                    }
+                }
+                tables.insert(index, (table.weights, table.header_rows));
+            }
+            (
+                Node::Grid {
+                    columns,
+                    gutter,
+                    cells,
+                    ..
+                },
+                _,
+            ) => {
+                let total: f64 = columns.iter().sum();
+                let free = (outer - gutter * columns.len().saturating_sub(1) as f64).max(0.0);
+                for (i, id) in cells.iter().enumerate() {
+                    let share = columns
+                        .get(i % columns.len().max(1))
+                        .copied()
+                        .unwrap_or(0.0);
+                    if total > 0.0 {
+                        width[id.index()] = free * share / total;
+                    }
+                }
+            }
+            (Node::Block { style, children }, _) if style.keep_together() => {
+                let height: f64 = children
+                    .iter()
+                    .map(|id| estimated_height(doc, id, inner.max(size), size * own))
+                    .sum();
+                tall[index] = height > limit;
+            }
+            _ => {}
+        }
+    }
     for (index, node) in doc.nodes().iter().enumerate() {
         let mut d = Dict::new();
         let kind = match node {
@@ -205,11 +449,18 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
             }
             Node::Text(text) => {
                 d.insert("text".into(), string(text));
+                let size = if scale[index] < 1.0 {
+                    Value::Float(inherited[index] * scale[index])
+                } else {
+                    Value::None
+                };
+                d.insert("size".into(), size);
                 "text"
             }
             Node::Block { children, style } | Node::Inline { children, style } => {
                 d.insert("children".into(), indices(children));
-                styled(&mut d, style)?;
+                styled(&mut d, style, scale[index])?;
+                d.insert("tall".into(), Value::Bool(tall[index]));
                 if matches!(node, Node::Block { .. }) {
                     "block"
                 } else {
@@ -249,14 +500,19 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                 header,
                 cells,
             } => {
+                let (weights, header_rows) = tables.remove(&index).unwrap_or_default();
                 d.insert("columns".into(), Value::Int(*columns as i64));
                 d.insert(
                     "weights".into(),
-                    array(
-                        column_weights(doc, *columns, header, cells)
-                            .into_iter()
-                            .map(Value::Float),
-                    ),
+                    array(weights.into_iter().map(Value::Float)),
+                );
+                d.insert("header_rows".into(), Value::Int(header_rows as i64));
+                d.insert(
+                    "loose".into(),
+                    array(cells.iter().map(|id| {
+                        let cell = matches!(doc.nodes().get(id.index()), Some(Node::Cell { .. }));
+                        Value::Bool(tall[id.index()] && !cell)
+                    })),
                 );
                 d.insert("header".into(), indices(header));
                 d.insert("children".into(), indices(cells));
@@ -341,6 +597,7 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                 d.insert("children".into(), indices(std::slice::from_ref(child)));
                 d.insert("colspan".into(), Value::Int(*colspan as i64));
                 d.insert("rowspan".into(), Value::Int(*rowspan as i64));
+                d.insert("breakable".into(), Value::Bool(tall[index]));
                 "cell"
             }
             Node::Rule => "rule",
@@ -396,19 +653,62 @@ mod tests {
         let body = 527.0;
         // Title, Author, Format, Year, Status of the sample Book List
         assert_eq!(
-            shares(&[25, 22, 9, 4, 9], body),
-            vec![25.0, 22.0, 0.0, 0.0, 0.0]
+            shares(&[25, 22, 9, 4, 9], &[false; 5], body),
+            (vec![25.0, 22.0, 0.0, 0.0, 0.0], false)
         );
-        assert_eq!(shares(&[90, 17], body), vec![40.0, 17.0]);
+        assert_eq!(
+            shares(&[90, 17], &[false; 2], body),
+            (vec![40.0, 17.0], false)
+        );
         // only short columns: the widest takes the rest of the page
-        assert_eq!(shares(&[4, 9, 2], body), vec![0.0, 9.0, 0.0]);
-        assert_eq!(shares(&[], body), Vec::<f64>::new());
+        assert_eq!(
+            shares(&[4, 9, 2], &[false; 3], body),
+            (vec![0.0, 9.0, 0.0], false)
+        );
+        assert_eq!(shares(&[], &[], body), (Vec::<f64>::new(), false));
         // seven 12-character amounts beside a partner name would leave the name almost no room: shared
         assert_eq!(
-            shares(&[30, 12, 12, 12, 12, 12, 12, 12], body),
-            vec![30.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0]
+            shares(&[30, 12, 12, 12, 12, 12, 12, 12], &[false; 8], body),
+            (vec![30.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0], false)
         );
+        // the same seven columns marked as numbers would leave the name less than its share of the
+        // body even one size smaller: every column shares by its text
+        assert_eq!(
+            shares(
+                &[30, 12, 12, 12, 12, 12, 12, 12],
+                &[false, true, true, true, true, true, true, true],
+                body
+            ),
+            (vec![30.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0, 12.0], false)
+        );
+        // four amounts that fit the number share only one size smaller: they keep their width and
+        // the table steps down a size
+        assert_eq!(
+            shares(
+                &[40, 17, 17, 17, 17],
+                &[false, true, true, true, true],
+                body
+            ),
+            (vec![40.0, 0.0, 0.0, 0.0, 0.0], true)
+        );
+        // amounts alone have no text column to keep room for: they step down
+        assert_eq!(shares(&[20; 6], &[true; 6], body), (vec![0.0; 6], true));
         // six 16-character columns alone overflow the body: shared, never wider than the page
-        assert_eq!(shares(&[16; 6], body), vec![16.0; 6]);
+        assert_eq!(shares(&[16; 6], &[false; 6], body), (vec![16.0; 6], false));
+        // an invoice: description, quantity, unit price, discount, taxes, amount; the number
+        // columns fit their longest amount, the text columns share the rest
+        assert_eq!(
+            shares(
+                &[66, 14, 16, 7, 18, 20],
+                &[false, true, true, true, false, true],
+                body
+            ),
+            (vec![40.0, 0.0, 0.0, 0.0, 18.0, 0.0], false)
+        );
+        // the same amounts without the number mark: the long amount column shares and may wrap
+        assert_eq!(
+            shares(&[66, 14, 16, 7, 18, 20], &[false; 6], body),
+            (vec![40.0, 0.0, 0.0, 0.0, 18.0, 20.0], false)
+        );
     }
 }

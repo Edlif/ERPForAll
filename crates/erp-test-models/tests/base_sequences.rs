@@ -2326,3 +2326,89 @@ async fn a_user_with_read_access_only_draws_for_each_company() {
     drop(tx);
     h.cleanup().await.unwrap();
 }
+
+/// A server whose database role may not create schema objects (as on a deployment): server code
+/// acting as the superuser that creates a standard sequence while the server runs is refused by
+/// name, since its backing sequence is a database object; a gapless one is created and drawn under
+/// the same role. (No user reaches this through the API: users only read sequences.)
+#[tokio::test]
+async fn a_role_without_schema_rights_is_refused_a_standard_sequence_by_name() {
+    let h = seq_harness().await;
+    let role = erp_sql::quote(&format!("seqrt_{}", h.db().name()));
+    let owner = h.db().client().await.unwrap();
+    owner
+        .batch_execute(&format!(
+            "CREATE ROLE {role} NOLOGIN; GRANT USAGE ON SCHEMA public TO {role}; \
+             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}; \
+             GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}"
+        ))
+        .await
+        .unwrap();
+    let mut tx = h.begin().await.unwrap();
+    tx.batch(&format!("SET LOCAL ROLE {role}")).await.unwrap();
+    let rows = tx
+        .query(
+            "SELECT has_schema_privilege(current_user, 'public', 'CREATE')",
+            &[],
+        )
+        .await
+        .unwrap();
+    let can_create: bool = rows[0].try_get(0).unwrap();
+    assert!(
+        !can_create,
+        "the role must not create objects, or this proves nothing"
+    );
+    let mut vals = erp_orm::RawVals::new();
+    vals.insert(
+        "name".into(),
+        erp_fields::Cell::Str("Run-time standard".into()),
+    );
+    vals.insert(
+        "implementation".into(),
+        erp_fields::Cell::Str("standard".into()),
+    );
+    let err = tx
+        .env()
+        .records("ir.sequence")
+        .unwrap()
+        .create(&mut tx, vec![vals])
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::UserError, "{err}");
+    assert_eq!(err.sqlstate(), Some("42501"));
+    assert_eq!(
+        err.message(),
+        "This server's database role cannot create database sequences while the server runs, \
+         so a sequence with the \"Standard\" implementation cannot be set up or changed here. Use \
+         the \"No gap\" implementation instead: it needs no database sequence."
+    );
+    drop(tx);
+
+    let mut tx = h.begin().await.unwrap();
+    tx.batch(&format!("SET LOCAL ROLE {role}")).await.unwrap();
+    create_seq(
+        &mut tx,
+        "Run-time gapless",
+        "test_runtime_nogap",
+        "no_gap",
+        None,
+        None,
+        0,
+        1,
+        1,
+        None,
+        false,
+    )
+    .await;
+    let env = tx.env();
+    let drawn = sequence::next_by_code(&mut tx, &env, "test_runtime_nogap", None)
+        .await
+        .unwrap();
+    assert_eq!(drawn.as_deref(), Some("1"));
+    drop(tx);
+    owner
+        .batch_execute(&format!("DROP OWNED BY {role}; DROP ROLE {role}"))
+        .await
+        .unwrap();
+    h.cleanup().await.unwrap();
+}

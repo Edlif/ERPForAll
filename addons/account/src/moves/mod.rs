@@ -15,6 +15,7 @@
 //! equal to the balance in the company currency) are checked by the ORM for now.
 
 mod display;
+pub(crate) use display::draft_label;
 mod line;
 mod post;
 
@@ -120,6 +121,17 @@ pub struct AccountMove {
         string = "Partner"
     )]
     pub partner_id: Option<RecId>,
+    /// The payment whose entry this is; written by the payment service only.
+    #[field(
+        many2one,
+        comodel = "account.payment",
+        readonly = true,
+        copy = false,
+        ondelete = "set null",
+        index = "btree_not_null",
+        string = "Payment"
+    )]
+    pub origin_payment_id: Option<RecId>,
     /// The journal items; deleted with the entry.
     #[field(
         one2many,
@@ -265,11 +277,12 @@ impl AccountMove {
     ) -> Result<Records> {
         let env = this.env().clone();
         let skip = skip_balance_check(&env)?;
-        refuse_context_defaults(&env, &["state"])?;
+        refuse_context_defaults(&env, &["state", PAYMENT_LINK])?;
         refuse_sync_owned_defaults(&env)?;
         for vals in &mut vals_list {
             refuse_state(vals, "state")?;
             refuse_sync_owned(vals)?;
+            refuse_payment_link(vals)?;
             // given with the record, so no default (context or stored) can stand in for Post
             if !vals.contains("state") {
                 vals.insert("state".into(), Cell::Str("draft".into()));
@@ -303,6 +316,7 @@ impl AccountMove {
         sup: Super,
     ) -> Result<()> {
         refuse_state(&vals, "state")?;
+        refuse_payment_link(&vals)?;
         let skip = skip_balance_check(this.env())?;
         if vals.contains("journal_id") && !vals.contains("name") {
             vals.insert("name".into(), Cell::Null);
@@ -383,6 +397,19 @@ fn refuse_sync_owned_defaults(env: &Env) -> Result<()> {
              entry is computed from its lines."
         ))),
     }
+}
+
+/// The entry's link to its payment, set by the payment service only.
+const PAYMENT_LINK: &str = "origin_payment_id";
+
+fn refuse_payment_link(vals: &RawVals) -> Result<()> {
+    if vals.contains(PAYMENT_LINK) {
+        return Err(Error::user(
+            "The payment of a journal entry is set when the payment is confirmed; it cannot be \
+             written.",
+        ));
+    }
+    Ok(())
 }
 
 /// The refusal of a caller-written state.

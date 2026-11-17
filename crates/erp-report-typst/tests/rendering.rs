@@ -838,9 +838,19 @@ fn uncovered_text_is_reported_not_hidden() {
 }
 
 /// Each text run of the first page with the height of its origin on the page, in points from the
-/// page's bottom edge: the text matrix under the transformation in force where the run is shown
-/// (`q`/`Q`/`cm` for the graphics state, `BT`/`Tm`/`Td` for the text position).
+/// page's bottom edge.
 fn text_heights(bytes: &[u8]) -> Vec<(String, f32)> {
+    text_runs(bytes)
+        .into_iter()
+        .map(|(run, height, _)| (run, height))
+        .collect()
+}
+
+/// Each text run of the first page with the height of its origin on the page, in points from the
+/// page's bottom edge, and its font size in points: the text matrix under the transformation in
+/// force where the run is shown (`q`/`Q`/`cm` for the graphics state, `BT`/`Tm`/`Td` for the text
+/// position, `Tf` for the font and its size).
+fn text_runs(bytes: &[u8]) -> Vec<(String, f32, f32)> {
     type Matrix = [f32; 6];
     fn times(m: Matrix, n: Matrix) -> Matrix {
         [
@@ -871,6 +881,7 @@ fn text_heights(bytes: &[u8]) -> Vec<(String, f32)> {
     };
     let (mut ctm, mut saved, mut text) = (IDENTITY, Vec::new(), IDENTITY);
     let mut font: Option<Vec<u8>> = None;
+    let mut size = 0.0;
     let mut runs = Vec::new();
     for operation in &content.operations {
         let operands = &operation.operands;
@@ -884,7 +895,10 @@ fn text_heights(bytes: &[u8]) -> Vec<(String, f32)> {
                 let n = numbers(operands);
                 text = times([1.0, 0.0, 0.0, 1.0, n[0], n[1]], text);
             }
-            "Tf" => font = Some(operands[0].as_name().unwrap().to_vec()),
+            "Tf" => {
+                font = Some(operands[0].as_name().unwrap().to_vec());
+                size = operands[1].as_float().unwrap();
+            }
             "Tj" | "TJ" => {
                 let name = font.as_ref().unwrap();
                 let (_, map) = maps.iter().find(|(n, _)| n == name).unwrap();
@@ -904,7 +918,8 @@ fn text_heights(bytes: &[u8]) -> Vec<(String, f32)> {
                         }
                     }
                 }
-                runs.push((run, times(text, ctm)[5]));
+                let placed = times(text, ctm);
+                runs.push((run, placed[5], size * placed[3].abs()));
             }
             _ => {} // other operators neither move nor show text
         }
@@ -1004,4 +1019,180 @@ fn a_grid_places_its_cells_in_the_row_as_it_says() {
             "header {header}: {middle_short} between {top_one} and {top_five}"
         );
     }
+}
+
+/// A table that steps down one size (number columns too wide for the base size) prints every cell
+/// at that size: a plain text cell, a styled description and the end-aligned amounts of one row.
+#[test]
+fn a_compact_table_prints_every_cell_at_one_size() {
+    let mut b = DocumentBuilder::new(Limits::default());
+    let mut cells = Vec::new();
+    let plain = b.add(Node::Text("Plain".into())).unwrap();
+    cells.push(
+        b.add(Node::Cell {
+            child: plain,
+            colspan: 1,
+            rowspan: 1,
+        })
+        .unwrap(),
+    );
+    let words = b.add(Node::Text("Descriptionlongword".into())).unwrap();
+    let styled = b
+        .add(Node::Block {
+            children: vec![words],
+            style: Style::default().with_bold(true),
+        })
+        .unwrap();
+    cells.push(
+        b.add(Node::Cell {
+            child: styled,
+            colspan: 1,
+            rowspan: 1,
+        })
+        .unwrap(),
+    );
+    for amount in ["1.111.111,11", "2.222.222,22", "3.333.333,33"] {
+        let text = b.add(Node::Text(amount.into())).unwrap();
+        let block = b
+            .add(Node::Block {
+                children: vec![text],
+                style: Style::default().with_alignment(Alignment::End),
+            })
+            .unwrap();
+        cells.push(
+            b.add(Node::Cell {
+                child: block,
+                colspan: 1,
+                rowspan: 1,
+            })
+            .unwrap(),
+        );
+    }
+    let table = b
+        .add(Node::Table {
+            columns: 5,
+            header: vec![],
+            cells,
+        })
+        .unwrap();
+    let output = engine()
+        .render(&b.finish(table, options()).unwrap())
+        .unwrap();
+    let runs = text_runs(output.bytes());
+    let size = |word: &str| {
+        let found: Vec<f32> = runs
+            .iter()
+            .filter(|(text, ..)| compact(text) == compact(word))
+            .map(|(.., size)| *size)
+            .collect();
+        assert_eq!(found.len(), 1, "{word} in {runs:?}");
+        found[0]
+    };
+    let amount = size("1.111.111,11");
+    assert!(
+        (amount - 9.0).abs() < 0.01,
+        "the table steps down: {amount}"
+    );
+    for word in ["Plain", "Descriptionlongword", "3.333.333,33"] {
+        assert!(
+            (size(word) - amount).abs() < 0.01,
+            "{word}: {} {runs:?}",
+            size(word)
+        );
+    }
+}
+
+/// Labelled words `<prefix>-NNNN`, `count` of them, as one text.
+fn words(prefix: &str, count: usize) -> String {
+    (0..count)
+        .map(|n| format!("{prefix}-{n:04}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The page each labelled word is printed on; every word is printed exactly once.
+fn pages_of(pages: &[String], prefix: &str, count: usize) -> Vec<usize> {
+    (0..count)
+        .map(|n| {
+            let word = format!("{prefix}-{n:04}");
+            let on: Vec<usize> = (0..pages.len())
+                .filter(|&p| compact(&pages[p]).contains(&word))
+                .collect();
+            assert_eq!(on.len(), 1, "{word} on pages {on:?}");
+            on[0]
+        })
+        .collect()
+}
+
+/// A table row taller than a page breaks across pages instead of running past the bottom margin,
+/// while the rows that fit on a page are still never split: each short row's two lines are on one
+/// page.
+#[test]
+fn a_row_taller_than_a_page_breaks_and_short_rows_stay_whole() {
+    let mut b = DocumentBuilder::new(Limits::default());
+    let header = b.add(Node::Text("HEADER".into())).unwrap();
+    let mut cells = Vec::new();
+    for row in 0..30 {
+        let first = b.add(Node::Text(format!("short-{row:02}-a"))).unwrap();
+        let line = b.add(Node::LineBreak).unwrap();
+        let second = b.add(Node::Text(format!("short-{row:02}-b"))).unwrap();
+        cells.push(
+            b.add(Node::Inline {
+                children: vec![first, line, second],
+                style: Style::default(),
+            })
+            .unwrap(),
+        );
+    }
+    let tall = b.add(Node::Text(words("tall", 900))).unwrap();
+    cells.push(tall);
+    let table = b
+        .add(Node::Table {
+            columns: 1,
+            header: vec![header],
+            cells,
+        })
+        .unwrap();
+    let output = engine()
+        .render(&b.finish(table, options()).unwrap())
+        .unwrap();
+    let pages = page_texts(output.bytes());
+    let on = pages_of(&pages, "tall", 900);
+    assert!(on[0] < on[899], "the tall row spans pages: {on:?}");
+    assert_eq!(on[899], pages.len() - 1, "its end is on the last page");
+    for row in 0..30 {
+        let page = |part: &str| {
+            (0..pages.len())
+                .find(|&p| compact(&pages[p]).contains(&format!("short-{row:02}-{part}")))
+                .unwrap()
+        };
+        assert_eq!(page("a"), page("b"), "row {row} is not split");
+    }
+}
+
+/// A block kept together (a note, the totals) that is taller than a page breaks across pages
+/// instead of running past the bottom margin.
+#[test]
+fn a_kept_block_taller_than_a_page_breaks() {
+    let mut b = DocumentBuilder::new(Limits::default());
+    let lead = b.add(Node::Text("Before the note".into())).unwrap();
+    let text = b.add(Node::Text(words("note", 900))).unwrap();
+    let note = b
+        .add(Node::Block {
+            children: vec![text],
+            style: Style::default().with_keep_together(true),
+        })
+        .unwrap();
+    let body = b
+        .add(Node::Flow {
+            children: vec![lead, note],
+        })
+        .unwrap();
+    let output = engine()
+        .render(&b.finish(body, options()).unwrap())
+        .unwrap();
+    let pages = page_texts(output.bytes());
+    let on = pages_of(&pages, "note", 900);
+    assert!(on[0] < on[899], "the note spans pages: {on:?}");
+    assert_eq!(on[899], pages.len() - 1, "its end is on the last page");
 }

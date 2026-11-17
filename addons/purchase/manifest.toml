@@ -13,5 +13,6 @@ data = [
     "security/purchase_security.xml",
     "data/purchase_data.xml",
     "views/purchase_views.xml",
+    "views/purchase_reports.xml",
     "security/ir.access.csv",
 ]

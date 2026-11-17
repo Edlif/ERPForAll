@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! What a journal item reads of its reconciliation (residuals, settled flag, matching number), the
-//! item action that matches, and the refused deletes of matches and settlements.
+//! item actions that match and unmatch, and the deletes of matches and settlements, which go
+//! through the reconciliation service.
 
 use std::collections::BTreeMap;
 
@@ -104,20 +105,57 @@ impl AccountMoveLine {
     pub async fn reconcile(this: &RecordSet<AccountMoveLine>, tx: &mut Transaction) -> Result<()> {
         apply::reconcile_lines(tx, this.as_records()).await
     }
+
+    /// Removes every match of the items (reference `remove_move_reconcile`); see
+    /// [`apply::unreconcile_partials`].
+    #[method]
+    #[rpc(effect = write)]
+    pub async fn remove_move_reconcile(
+        this: &RecordSet<AccountMoveLine>,
+        tx: &mut Transaction,
+    ) -> Result<()> {
+        let ids = this.ids();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        this.as_records()
+            .check_access(tx, erp_sdk::Operation::Write)
+            .await?;
+        tx.flush().await?;
+        let rows = tx
+            .query(
+                "SELECT id::int8 FROM account_partial_reconcile \
+                 WHERE debit_move_id = ANY($1::int8[]) OR credit_move_id = ANY($1::int8[]) \
+                 ORDER BY id",
+                &[&ids],
+            )
+            .await?;
+        let partials: Vec<i64> = rows
+            .iter()
+            .map(|row| {
+                row.try_get::<_, i64>(0)
+                    .map_err(|e| Error::db(format!("A match could not be read: {e}")))
+            })
+            .collect::<Result<_>>()?;
+        let records = this
+            .env()
+            .records("account.partial.reconcile")?
+            .browse(partials)?;
+        apply::unreconcile_partials(tx, &records).await
+    }
 }
 
 #[methods(AccountPartialReconcile, addon = "account")]
 impl AccountPartialReconcile {
-    /// Unmatching is not part of this release: deleting a match is refused.
+    /// Deleting a match is unmatching it: residuals, components, settlements and invoice statuses
+    /// follow ([`apply::unreconcile_partials`]).
     #[method(override)]
     async fn unlink(
-        _this: &RecordSet<AccountPartialReconcile>,
-        _tx: &mut Transaction,
+        this: &RecordSet<AccountPartialReconcile>,
+        tx: &mut Transaction,
         _sup: Super,
     ) -> Result<()> {
-        Err(Error::user(
-            "Matched journal items cannot be unmatched in this version.",
-        ))
+        apply::unreconcile_partials(tx, this.as_records()).await
     }
 }
 
@@ -131,7 +169,7 @@ impl AccountFullReconcile {
         _sup: Super,
     ) -> Result<()> {
         Err(Error::user(
-            "A settlement cannot be deleted; its journal items stay matched.",
+            "A settlement cannot be deleted on its own; unmatch its journal items instead.",
         ))
     }
 }

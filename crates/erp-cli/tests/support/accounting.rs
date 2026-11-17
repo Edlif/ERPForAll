@@ -43,13 +43,11 @@ fn addons_dir() -> PathBuf {
         .join("addons")
 }
 
-/// A fresh database with `account` installed.
-pub async fn install() -> (TestDb, Orm) {
-    // room for two units at once next to the connections the access policy keeps
-    let db = TestDb::builder().pool_size(8).create().await.unwrap();
+/// The artifact identity of every addon folder.
+pub fn identities() -> std::collections::BTreeMap<ModuleName, String> {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(addons_dir());
-    let identities = index
+    index
         .discover_entries()
         .unwrap()
         .into_iter()
@@ -61,10 +59,20 @@ pub async fn install() -> (TestDb, Orm) {
             .unwrap();
             (name, snapshot.digest().to_owned())
         })
-        .collect();
-    let system = ModuleSystem::builder(db.pool().clone(), index)
+        .collect()
+}
+
+/// The module system of `account` and its dependencies on `db`; `previous` are the identities of
+/// the release an upgrade starts from.
+pub fn system(
+    db: &TestDb,
+    previous: Option<std::collections::BTreeMap<ModuleName, String>>,
+) -> ModuleSystem {
+    let mut index = AddonIndex::new(true);
+    index.add_dev_path(addons_dir());
+    let mut builder = ModuleSystem::builder(db.pool().clone(), index)
         .view_types(erp_addon_web::view_type_contributions())
-        .native_artifact_identities(identities)
+        .native_artifact_identities(identities())
         .code([
             &erp_addon_base::ADDON,
             &erp_addon_web::ADDON,
@@ -74,12 +82,32 @@ pub async fn install() -> (TestDb, Orm) {
             &erp_addon_account::ADDON,
         ])
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
-        .require_core_tables(erp_security::auth::core_tables())
-        .build()
-        .unwrap();
-    let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
-        .await
-        .unwrap();
+        .require_core_tables(erp_security::auth::core_tables());
+    if let Some(previous) = previous {
+        builder = builder.identity_previous(previous);
+    }
+    builder.build().unwrap()
+}
+
+/// A fresh database with `account` installed.
+pub async fn install() -> (TestDb, Orm) {
+    install_with_demo(false).await
+}
+
+/// A fresh database with `account` installed, with or without demo data.
+pub async fn install_with_demo(demo: bool) -> (TestDb, Orm) {
+    // room for two units at once next to the connections the access policy keeps
+    let db = TestDb::builder().pool_size(8).create().await.unwrap();
+    let system = system(&db, None);
+    let init = Box::pin(
+        system.initialize(
+            InitOptions::new()
+                .with_skip_auto_install(true)
+                .with_demo(demo),
+        ),
+    )
+    .await
+    .unwrap();
     let env = init.orm.env(SUPERUSER_ID, Context::new());
     let outcome =
         Box::pin(system.button_immediate_install(&env, &[ModuleName::new("account").unwrap()]))

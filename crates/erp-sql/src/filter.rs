@@ -563,6 +563,17 @@ pub struct Filter {
     pub constant: Option<bool>,
 }
 
+/// The refusal of a condition on a field that is neither stored nor searchable, in
+/// our own sentence: it names the model and the field in plain words, never the condition's
+/// internal value form nor its operator, which the optimizer may already have rewritten (`=` to
+/// `in`) and so would not be what the caller sent.
+pub fn not_stored_message(model: &str, field: &str) -> String {
+    format!(
+        "A condition cannot use the field {field} of {model}: this field cannot be searched, \
+         because it is not stored."
+    )
+}
+
 pub fn make_alias(from: &str, link: &str) -> Arc<str> {
     Arc::from(shorten_identifier(&format!("{from}__{link}")))
 }
@@ -1856,10 +1867,7 @@ impl<'a> Planner<'a> {
             ));
         }
         if !matches!(field.ty, FieldType::Id) && !field.has_column() {
-            return Err(self.input_error(format!(
-                "Field has no SQL representation because it is not stored in condition \
-                 {condition:?}"
-            )));
+            return Err(self.input_error(not_stored_message(model.name, field.name)));
         }
         self.read(model_id, field);
         let col = Col {

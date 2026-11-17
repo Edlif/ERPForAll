@@ -34,8 +34,8 @@
               <field name="product_variant_count" widget="statinfo" string="Variants"/>
             </button>
           </div>
-          <field name="image_1920" widget="image" options="{'preview_image': 'image_128', 'size': [0, 128]}" alt="Product picture"/>
           <div class="oe_title">
+            <field name="image_1920" widget="image" options="{'preview_image': 'image_128', 'size': [100, 100]}" alt="Product picture"/>
             <h1><field name="name" placeholder="e.g. Cheese Burger"/></h1>
           </div>
           <notebook>

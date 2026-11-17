@@ -19,7 +19,7 @@
 //! key order, availability reads) with the quant model and location quant guards (`quant_guards`).
 //! Company stock lookups and company-dependent contact/user preferences are declared by stock.
 //! Provisioning remains a separate delivery; reading an empty company does not create topology.
-//! Operation types resolve location defaults, configure standard sequences, maintain per-user favorites,
+//! Operation types resolve location defaults, configure their own numbering, maintain per-user favorites,
 //! reschedule eligible move dates on method changes, and expose authorized basic transfer counts
 //! and the overview card built from them.
 //! Each transfer's move counter vector and state follow its moves in the statement that changes

@@ -1123,27 +1123,26 @@ fn stock_security_transactional_company_and_line_mutations() {
     });
 }
 
-/// The state of the database sequence behind an operation type's numbering, as the owner reads it.
-async fn numbering_state(orm: &Orm, picking_type: i64) -> (i64, bool) {
+/// The next number of an operation type's numbering, as the owner reads it: a type made while the
+/// server runs has gapless numbering, which keeps its next number on the sequence row.
+async fn numbering_state(orm: &Orm, picking_type: i64) -> i32 {
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
-    let sequence: i64 = tx
-        .query(
-            "SELECT sequence_id FROM stock_picking_type WHERE id = $1",
-            &[&picking_type],
-        )
-        .await
-        .unwrap()[0]
-        .get(0);
     let row = tx
         .query(
-            &format!("SELECT last_value, is_called FROM ir_sequence_{sequence:03}"),
-            &[],
+            "SELECT s.implementation, s.number_next FROM stock_picking_type t \
+             JOIN ir_sequence s ON s.id = t.sequence_id WHERE t.id = $1",
+            &[&picking_type],
         )
         .await
         .unwrap()
         .remove(0);
     tx.rollback().await.unwrap();
-    (row.get(0), row.get(1))
+    assert_eq!(
+        row.get::<_, String>(0),
+        "no_gap",
+        "a type made while the server runs"
+    );
+    row.get(1)
 }
 
 /// A transfer create checks the caller's create right and reads its operation type as the caller

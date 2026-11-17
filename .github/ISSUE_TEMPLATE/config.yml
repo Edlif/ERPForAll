@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and help
+    url: https://github.com/IndoERP/ERPForAll/discussions/categories/q-a
+    about: Ask and answer questions in Discussions.
+  - name: Ideas
+    url: https://github.com/IndoERP/ERPForAll/discussions/categories/ideas
+    about: Share and shape larger ideas before they become issues.
+  - name: Documentation
+    url: https://indoerp.github.io/ERPForAll/
+    about: Guides and reference for building addons, installing and operating ERPForAll.
+  - name: Security problem
+    url: https://github.com/IndoERP/ERPForAll/security/advisories/new
+    about: Report a vulnerability privately, never in a public issue.

@@ -21,7 +21,7 @@ the [Developer Certificate of Origin 1.1](https://developercertificate.org/):
 git commit -s
 ```
 
-adds `Signed-off-by: Your Name <you@example.com>` using your git identity.
+adds a `Signed-off-by:` line with the name and e-mail address of your git identity.
 
 ## Build and test
 

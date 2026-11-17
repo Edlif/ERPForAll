@@ -27,6 +27,8 @@ pub const ACCOUNT: &[(&str, &[&str])] = &[
             "menu_action_account_journal_form",
             "menu_action_account_journal_group_list",
             "menu_action_account_moves_all",
+            "menu_action_account_payments_payable",
+            "menu_action_account_payments_receivable",
             "menu_action_move_in_invoice_type",
             "menu_action_move_in_refund_type",
             "menu_action_move_journal_line",

@@ -8,12 +8,14 @@
 // header (TableLook::Lined).
 #let rule = 0.5pt + rgb("#ced4da")
 #set table(stroke: (x: none, y: 0.5pt + rgb("#dee2e6")), inset: (x: 6pt, y: 5pt))
-// A table row is never split across two pages: a row that does not fit moves to the next one.
+// A table row is never split across two pages: a row that does not fit moves to the next one. A row (or a
+// kept block) that encode.rs estimates taller than half the page body may break across pages
+// (`breakable`, `tall`), so nothing runs past the bottom margin.
 #set table.cell(breakable: false)
 #let built = ()
 #for n in d.nodes {
   let children = n.at("children", default: ()).map(i => built.at(i))
-  let content = if n.kind == "text" { text(n.text) }
+  let content = if n.kind == "text" { if n.size == none { text(n.text) } else { text(size: n.size * 1pt, n.text) } }
   else if n.kind == "flow" { children.join() }
   else if n.kind == "block" or n.kind == "inline" {
     let body = children.join()
@@ -28,7 +30,7 @@
       else {
         let pad = n.padding * 1pt
         let edge(on) = if on { calc.max(n.padding, 4) * 1pt } else { pad }
-        block(inset: (x: pad, top: edge(n.rule_above), bottom: edge(n.rule_below)), breakable: not n.keep,
+        block(inset: (x: pad, top: edge(n.rule_above), bottom: edge(n.rule_below)), breakable: not n.keep or n.tall,
           width: if n.fill != none or n.rule_above or n.rule_below { 100% } else { auto },
           fill: if n.fill == none { none } else { rgb(..n.fill) },
           radius: if n.fill == none { 0pt } else { 3pt },
@@ -45,15 +47,17 @@
   else if n.kind == "grid" { grid(columns: n.columns.map(x => x * 1fr), gutter: n.gutter * 1pt, align: if n.align == "center" { horizon } else if n.align == "end" { bottom } else { top }, ..children) }
   else if n.kind == "table" {
     // A table without header rows has no header: an empty one would print an empty first row.
-    let hrows = calc.ceil(n.header.len() / n.columns)
+    let hrows = n.header_rows
     let head = if hrows > 0 { (table.header(repeat: true, ..n.header.map(i => built.at(i))),) } else { () }
-    table(columns: n.weights.map(w => if w == 0 { auto } else { w * 1fr }), fill: (x, y) => if y < hrows { rgb("#f1f3f5") }, ..head, ..children)
+    // A plain child of a row that may break is made a breakable cell here; a cell node says so itself.
+    let body = children.enumerate().map(((i, c)) => if n.loose.at(i) { table.cell(breakable: true, c) } else { c })
+    table(columns: n.weights.map(w => if w == 0 { auto } else { w * 1fr }), fill: (x, y) => if y < hrows { rgb("#f1f3f5") }, ..head, ..body)
   }
   else if n.kind == "list" { if n.ordered { enum(..children) } else { list(..children) } }
   else if n.kind == "image" { image(n.data, format: n.format, width: if n.width == auto { auto } else { n.width * 1pt }, height: if n.height == auto { auto } else { n.height * 1pt }, alt: n.alt) }
   else if n.kind == "vector" { image(n.data, format: "svg", width: if n.width == auto { auto } else { n.width * 1pt }, height: if n.height == auto { auto } else { n.height * 1pt }, alt: n.alt) }
   else if n.kind == "placeholder" { box(width: n.width * 1pt, height: n.height * 1pt, stroke: 0.5pt + gray, inset: 2pt, clip: true, text(n.alt)) }
-  else if n.kind == "cell" { table.cell(colspan: n.colspan, rowspan: n.rowspan, children.first()) }
+  else if n.kind == "cell" { table.cell(colspan: n.colspan, rowspan: n.rowspan, breakable: n.breakable, children.first()) }
   else if n.kind == "rule" { line(length: 100%) }
   else if n.kind == "linebreak" { linebreak() }
   else if n.kind == "pagebreak" { pagebreak() }

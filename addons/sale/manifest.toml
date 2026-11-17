@@ -13,5 +13,6 @@ data = [
     "data/ir_sequence_data.xml",
     "views/sale_order_views.xml",
     "views/sale_menus.xml",
+    "views/sale_reports.xml",
     "security/ir.access.csv",
 ]

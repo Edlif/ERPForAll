@@ -17,6 +17,7 @@ pub mod ledger;
 pub mod locking;
 pub mod moves;
 pub mod numbering;
+pub mod payment;
 pub mod payterm;
 pub mod reconcile;
 

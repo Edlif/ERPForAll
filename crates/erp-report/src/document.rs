@@ -270,7 +270,8 @@ pub enum Node {
     PageCounter(PageCounter),
 }
 impl Node {
-    fn children(&self) -> impl Iterator<Item = &NodeId> {
+    /// The nodes this node holds, in document order (a table's header cells before its body cells).
+    pub fn children(&self) -> impl Iterator<Item = &NodeId> {
         let (first, second): (&[NodeId], &[NodeId]) = match self {
             Self::Flow { children }
             | Self::Block { children, .. }

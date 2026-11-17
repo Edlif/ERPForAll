@@ -521,11 +521,54 @@ async fn sequence_create_rename_and_independent_copy() {
         ("name", text("CUSTOM numbering (Warehouse Alpha)")),
         ("prefix", text("CUSTOM")),
         ("padding", Cell::Int(5)),
-        ("implementation", text("standard")),
+        // made while the server runs: gapless, so no database sequence is created, and a
+        // second drawer waits for the row instead of failing
+        ("implementation", text("no_gap")),
+        ("wait_mode", text("lock_timeout")),
         ("company_id", Cell::Id(f.company)),
     ] {
         assert_eq!(seq.cell(&mut tx, field).await.unwrap(), expected, "{field}");
     }
+    let backing: bool = tx
+        .query(
+            "SELECT to_regclass($1) IS NOT NULL",
+            &[&format!("ir_sequence_{sid:03}")],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert!(!backing, "no database sequence was created");
+    // a user outside superuser mode gets the transfer's number from it
+    let pickings = tx
+        .env()
+        .with_user(7)
+        .with_company(f.company)
+        .unwrap()
+        .records("stock.picking")
+        .unwrap();
+    let picking = pickings
+        .create(
+            &mut tx,
+            vec![
+                RawVals::new()
+                    .set_cell("company_id", Cell::Id(f.company))
+                    .set_cell("picking_type_id", Cell::Id(id))
+                    .set_cell("location_id", Cell::Id(f.location))
+                    .set_cell("location_dest_id", Cell::Id(f.other_location)),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        picking.cell(&mut tx, "name").await.unwrap(),
+        text("CUSTOM00001")
+    );
+    let next: i32 = tx
+        .query("SELECT number_next FROM ir_sequence WHERE id = $1", &[&sid])
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(next, 2, "the draw moved the counter row");
     update(
         &mut tx,
         &seq,

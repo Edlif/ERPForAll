@@ -38,7 +38,7 @@ async fn authorize(tx: &mut Transaction, records: &Records, operation: Operation
     let env = records.env().clone();
     if !env.su() && !tx.has_group(&env, RECONCILER_GROUP).await? {
         return Err(Error::access(format!(
-            "Only accounting users may match journal items ({RECONCILER_GROUP})."
+            "Only accounting users may match and unmatch journal items ({RECONCILER_GROUP})."
         )));
     }
     records.check_access(tx, operation).await
@@ -656,11 +656,144 @@ async fn settle(tx: &mut Transaction, graph: &Graph, close: bool) -> Result<()> 
     Ok(())
 }
 
+/// Removes the matches `partials` (`unlink`, `remove_move_reconcile`): the
+/// settlements of their components go, residuals are rebuilt from the matches that remain, the
+/// remaining components are relabelled and the invoices among the entries get their status back.
+///
+/// # Errors
+///
+/// `Access` without [`RECONCILER_GROUP`], the right to delete the matches (as the reference asks:
+/// unmatching deletes them, from either entry point) or write access to their items;
+/// `Missing` for a match that no longer exists; serialization failures as [`reconcile_lines`].
+pub async fn unreconcile_partials(tx: &mut Transaction, partials: &Records) -> Result<()> {
+    if partials.is_empty() {
+        return Ok(());
+    }
+    authorize(tx, partials, Operation::Unlink).await?;
+    let ids = sorted(partials.ids());
+    let env = partials.env().clone();
+    tx.savepoint(async |tx| {
+        tx.flush().await?;
+        let rows = tx
+            .query(
+                "SELECT debit_move_id::int8, credit_move_id::int8 FROM account_partial_reconcile \
+                 WHERE id = ANY($1::int8[])",
+                &[&ids],
+            )
+            .await?;
+        if rows.len() != ids.len() {
+            return Err(Error::missing("Some of the matches no longer exist."));
+        }
+        let mut endpoints = Vec::new();
+        for row in &rows {
+            endpoints.push(row.try_get::<_, i64>(0).map_err(db)?);
+            endpoints.push(row.try_get::<_, i64>(1).map_err(db)?);
+        }
+        let endpoints = sorted(endpoints);
+        env.records("account.move.line")?
+            .browse(endpoints.iter().copied())?
+            .check_access(tx, Operation::Write)
+            .await?;
+        let graph = closure(tx, &endpoints).await?;
+        hold(tx, &graph).await?;
+        let lines: Vec<i64> = graph.lines.iter().copied().collect();
+        unsettle(tx, &lines).await?;
+        tx.execute(
+            "DELETE FROM account_partial_reconcile WHERE id = ANY($1::int8[])",
+            &[&ids],
+        )
+        .await?;
+        rebuild(tx, &lines).await?;
+        let graph = closure(tx, &lines).await?;
+        settle(tx, &graph, false).await?;
+        refresh_moves_of(tx, &lines).await?;
+        invalidate(tx).await
+    })
+    .await
+}
+
+/// Deletes the settlements held by `lines` and clears their links on items and matches.
+async fn unsettle(tx: &mut Transaction, lines: &[i64]) -> Result<()> {
+    tx.execute(
+        "WITH gone AS (SELECT DISTINCT full_reconcile_id AS id FROM account_move_line \
+                       WHERE id = ANY($1::int8[]) AND full_reconcile_id IS NOT NULL), \
+         l AS (UPDATE account_move_line SET full_reconcile_id = NULL \
+               WHERE full_reconcile_id IN (SELECT id FROM gone) RETURNING 1), \
+         p AS (UPDATE account_partial_reconcile SET full_reconcile_id = NULL \
+               WHERE full_reconcile_id IN (SELECT id FROM gone) RETURNING 1) \
+         DELETE FROM account_full_reconcile WHERE id IN (SELECT id FROM gone)",
+        &[&lines],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Rebuilds the open-item rows of `lines` from their amounts and the matches that remain (
+/// D4: a removal reconstructs, never applies a second delta); an item without a match keeps no row.
+async fn rebuild(tx: &mut Transaction, lines: &[i64]) -> Result<()> {
+    let uid = tx.env().uid();
+    tx.execute(
+        "DELETE FROM account_open_item o WHERE o.line_id = ANY($1::int8[]) AND NOT EXISTS \
+         (SELECT 1 FROM account_partial_reconcile p \
+          WHERE p.debit_move_id = o.line_id OR p.credit_move_id = o.line_id)",
+        &[&lines],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO account_open_item (line_id, company_id, account_id, partner_id, currency_id, \
+         balance, amount_currency, amount_residual, amount_residual_currency, component_id, \
+         create_uid, create_date, write_uid, write_date) \
+         SELECT l.id, l.company_id, l.account_id, l.partner_id, l.currency_id, \
+                COALESCE(l.balance, 0), COALESCE(l.amount_currency, 0), \
+                COALESCE(l.balance, 0) - COALESCE(dr.amount, 0) + COALESCE(cr.amount, 0), \
+                COALESCE(l.amount_currency, 0) - COALESCE(dr.amount_currency, 0) \
+                    + COALESCE(cr.amount_currency, 0), \
+                0, $2, now() AT TIME ZONE 'UTC', $2, now() AT TIME ZONE 'UTC' \
+         FROM account_move_line l \
+         LEFT JOIN (SELECT debit_move_id AS id, SUM(amount) AS amount, \
+                           SUM(debit_amount_currency) AS amount_currency \
+                    FROM account_partial_reconcile WHERE debit_move_id = ANY($1::int8[]) \
+                    GROUP BY debit_move_id) dr ON dr.id = l.id \
+         LEFT JOIN (SELECT credit_move_id AS id, SUM(amount) AS amount, \
+                           SUM(credit_amount_currency) AS amount_currency \
+                    FROM account_partial_reconcile WHERE credit_move_id = ANY($1::int8[]) \
+                    GROUP BY credit_move_id) cr ON cr.id = l.id \
+         WHERE l.id = ANY($1::int8[]) AND (dr.id IS NOT NULL OR cr.id IS NOT NULL) ORDER BY l.id \
+         ON CONFLICT (line_id) DO UPDATE SET amount_residual = EXCLUDED.amount_residual, \
+             amount_residual_currency = EXCLUDED.amount_residual_currency, \
+             write_uid = EXCLUDED.write_uid, write_date = EXCLUDED.write_date",
+        &[&lines, &uid],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn refresh_moves_of(tx: &mut Transaction, lines: &[i64]) -> Result<()> {
+    let rows = tx
+        .query(
+            "SELECT DISTINCT move_id::int8 FROM account_move_line WHERE id = ANY($1::int8[]) \
+             ORDER BY 1",
+            &[&lines],
+        )
+        .await?;
+    let moves: Vec<i64> = rows
+        .iter()
+        .map(|row| row.try_get::<_, i64>(0).map_err(db))
+        .collect::<Result<_>>()?;
+    refresh_moves(tx, &moves).await
+}
+
 /// The one transition function of an invoice's amount due and payment status (A4
 /// W9), run in the reconciliation unit on the posted invoices among `moves` (a blocked invoice
 /// keeps its status). The amount due is what remains on its receivable or payable items, in the
 /// document currency; the status comes from [`plan::payment_state`].
 pub(crate) async fn refresh_moves(tx: &mut Transaction, moves: &[i64]) -> Result<()> {
+    refresh_invoices(tx, moves).await?;
+    // the payments read the invoices' new status
+    crate::payment::refresh_payments(tx, moves).await
+}
+
+async fn refresh_invoices(tx: &mut Transaction, moves: &[i64]) -> Result<()> {
     let types: Vec<String> = INVOICE_TYPES.iter().map(|t| (*t).to_owned()).collect();
     let rows = tx
         .query(
@@ -758,8 +891,8 @@ async fn counterparts(tx: &mut Transaction, ids: &[i64]) -> Result<Vec<(i64, Str
         .collect()
 }
 
-/// Whether the counterpart entry `cm` belongs to a payment; no payment model exists in this cut.
-const PAYMENT_ENTRY_SQL: &str = "false";
+/// Whether the counterpart entry `cm` belongs to a payment (bank statement lines come later).
+const PAYMENT_ENTRY_SQL: &str = "cm.origin_payment_id IS NOT NULL";
 
 async fn invalidate(tx: &mut Transaction) -> Result<()> {
     tx.invalidate_model(

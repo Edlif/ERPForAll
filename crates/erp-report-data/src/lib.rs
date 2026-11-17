@@ -5,11 +5,13 @@
 //! ([`DataStage`]) without touching a database. This crate runs them: [`load`] answers every
 //! request of the stage with one set-based ORM read in the caller's environment, so access rights,
 //! record rules and field groups decide exactly as they do for any other read of that user, and
-//! the number of reads follows the plan, never the number of records. [`field_info`] describes the
+//! the number of reads follows the plan, never the number of records. The one exception is the
+//! ORM's own: the display name of a many2one target, which the many2one read gives as a form shows
+//! it. [`field_info`] describes the
 //! registry's fields to the planner.
 #![allow(missing_docs)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use erp_fields::{Digits, FieldType, Value};
@@ -90,6 +92,10 @@ pub fn field_info(registry: &Registry, model: &str, field: &str) -> Option<Field
 /// values are read as ids, and their targets by the next request. Selection labels are the
 /// declared ones.
 ///
+/// A target
+/// reached any other way (a root, a one2many or many2many) is read with the caller's rights, and
+/// so is every other field of a target.
+///
 /// # Errors
 ///
 /// - [`DataError::Orm`]: the environment may not read a model, a record or a field of the plan
@@ -112,6 +118,13 @@ pub async fn load(
     document: Limits,
 ) -> Result<RecordStore, DataError> {
     let mut stage = DataStage::new(plan, roots, limits, document)?;
+    let names_only: BTreeSet<String> = plan
+        .levels()
+        .iter()
+        .filter(|level| level.display_name() && level.fields().is_empty())
+        .map(|level| level.model().to_owned())
+        .collect();
+    let mut labels = Labels::new();
     #[allow(
         clippy::while_let_loop,
         reason = "a `while let` keeps the request, which owns a Vec, alive across `supply`"
@@ -119,7 +132,7 @@ pub async fn load(
     loop {
         // the request borrows the stage: it ends with this statement, before `supply`
         let records = match stage.request() {
-            Some(request) => read(tx, env, &request).await?,
+            Some(request) => read(tx, env, &request, &names_only, &mut labels).await?,
             None => break,
         };
         stage.supply(records)?;
@@ -191,15 +204,42 @@ fn mismatch(model: &str, field: &str, expected: &str, value: &Value) -> DataErro
     )
 }
 
+/// The many2one labels read so far, by target model and id: the display name, or `None` for a
+/// target that no longer exists.
+type Labels = BTreeMap<String, BTreeMap<i64, Option<String>>>;
+
 /// One read of the stage: the request's fields of all its records, as the ORM returns them for
-/// `env`, converted by field type.
+/// `env`, converted by field type. A request for display names only is answered from `labels`
+/// for the ids they hold; the many2one fields read here whose target model is in `names_only`
+/// add their labels.
 async fn read(
     tx: &mut Transaction,
     env: &Env,
     request: &ReadRequest<'_>,
+    names_only: &BTreeSet<String>,
+    labels: &mut Labels,
 ) -> Result<Vec<LoadedRecord>, DataError> {
     let model = request.model();
-    let records = env.records(model)?.browse(request.ids().iter().copied())?;
+    let mut loaded = Vec::new();
+    let mut ids = request.ids().to_vec();
+    if request.fields().is_empty()
+        && request.display_name()
+        && let Some(known) = labels.get(model)
+    {
+        ids.retain(|id| match known.get(id) {
+            Some(Some(name)) => {
+                loaded.push(LoadedRecord::new(*id).with_display_name(name.as_str()));
+                false
+            }
+            // a target that no longer exists is left out, as a read leaves it out
+            Some(None) => false,
+            None => true,
+        });
+        if ids.is_empty() {
+            return Ok(loaded);
+        }
+    }
+    let records = env.records(model)?.browse(ids)?;
     let registry = Arc::clone(env.registry());
     let spec = registry.model_by_id(records.model_id());
     let fields = request
@@ -244,7 +284,19 @@ async fn read(
         records.exists(tx).await?
     };
     let rows = records.read_with(tx, &names, Load::Raw).await?;
-    let mut loaded = Vec::with_capacity(rows.len());
+    let labelled: Vec<(&str, &str)> = columns
+        .iter()
+        .filter_map(|(name, kind)| match kind {
+            Kind::One(target) if names_only.contains(*target) => Some((*name, *target)),
+            _ => None,
+        })
+        .collect();
+    if !labelled.is_empty() {
+        let fields: Vec<&str> = labelled.iter().map(|(name, _)| *name).collect();
+        let classic = records.read_with(tx, &fields, Load::Classic).await?;
+        add_labels(model, &rows, &classic, &labelled, labels)?;
+    }
+    loaded.reserve(rows.len());
     for row in &rows {
         let id = match row.get("id") {
             Some(Value::Int(id)) => *id,
@@ -270,6 +322,57 @@ async fn read(
         loaded.push(record);
     }
     Ok(loaded)
+}
+
+/// Add to `labels` the targets of the many2one fields `labelled` (field, target model) of the rows
+/// `raw` (ids) and `classic` (`[id, display_name]`, `False` for no target or a gone one), which are
+/// the same records in the same order.
+fn add_labels(
+    model: &str,
+    raw: &[BTreeMap<String, Value>],
+    classic: &[BTreeMap<String, Value>],
+    labelled: &[(&str, &str)],
+    labels: &mut Labels,
+) -> Result<(), DataError> {
+    if raw.len() != classic.len()
+        || raw
+            .iter()
+            .zip(classic)
+            .any(|(a, b)| a.get("id") != b.get("id"))
+    {
+        return Err(value_error(
+            model,
+            "id",
+            "the many2one names were read for other records than the fields",
+        ));
+    }
+    for (row, named) in raw.iter().zip(classic) {
+        for (field, target) in labelled {
+            let id = match row.get(*field) {
+                Some(Value::Int(id)) if *id != 0 => *id,
+                _ => continue,
+            };
+            let value = named
+                .get(*field)
+                .ok_or_else(|| value_error(model, field, "missing from the read"))?;
+            let label = match value {
+                // the target no longer exists
+                Value::False => None,
+                Value::List(pair) => match &pair[..] {
+                    [Value::Int(of), Value::Str(name)] if *of == id => Some(name.to_string()),
+                    // a target whose name is not set
+                    [Value::Int(of), Value::False] if *of == id => Some(String::new()),
+                    _ => return Err(mismatch(model, field, "the target's id and name", value)),
+                },
+                other => return Err(mismatch(model, field, "the target's id and name", other)),
+            };
+            labels
+                .entry((*target).to_owned())
+                .or_default()
+                .insert(id, label);
+        }
+    }
+    Ok(())
 }
 
 /// Whether a read of `fields` (and the display name) of `spec` fetches a stored column, which is

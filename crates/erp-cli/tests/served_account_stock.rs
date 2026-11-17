@@ -238,3 +238,196 @@ async fn served_node_offers_and_installs_account_and_stock() {
     drop(peer);
     fixture.cleanup().await;
 }
+
+/// Data an administrator creates through the JSON-2 API on a served node whose request role may
+/// not create objects in the schema, as on a deployment: an operation type made with a prefix gets
+/// gapless numbering and its transfer a number, while the types made by the install keep their
+/// standard sequences; no user creates a sequence through the API (access, first); an account is
+/// found by its code; a condition on a field that cannot be searched names it in plain words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn served_demo_data_under_a_request_role_without_schema_rights() {
+    let fixture = NativeFixture::start().await;
+    let (port, cookies) = (fixture.port, fixture.cookies.clone());
+    let can_create: bool = fixture
+        .client
+        .query_one(
+            "SELECT has_schema_privilege($1, current_schema(), 'CREATE')",
+            &[&fixture.role],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        !can_create,
+        "the request role must not create objects, or this test proves nothing"
+    );
+    install(&fixture, "account");
+    install(&fixture, "stock");
+    let post =
+        |path: &str, body: serde_json::Value| json_post(port, &cookies, path, &body.to_string());
+    let ok = |reply: Reply, what: &str| -> serde_json::Value {
+        assert_eq!(reply.status, 200, "{what}: {}", reply.body);
+        serde_json::from_str(&reply.body).unwrap()
+    };
+
+    // an operation type with a prefix, and a transfer of it
+    let warehouse: i64 = fixture
+        .client
+        .query_one("SELECT min(id)::int8 FROM stock_warehouse", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let created = ok(
+        post(
+            "/erp/json/2/stock.picking.type/create",
+            serde_json::json!({"vals_list":[{"name":"Demo receipts","code":"incoming",
+                "sequence_code":"DEMO/IN/","warehouse_id":warehouse}]}),
+        ),
+        "operation type create",
+    );
+    let kind = created[0].as_i64().unwrap();
+    let numbering: (String, String) = {
+        let row = fixture
+            .client
+            .query_one(
+                "SELECT s.implementation, s.wait_mode FROM stock_picking_type t \
+                 JOIN ir_sequence s ON s.id = t.sequence_id WHERE t.id = $1",
+                &[&kind],
+            )
+            .await
+            .unwrap();
+        (row.get(0), row.get(1))
+    };
+    assert_eq!(numbering, ("no_gap".to_owned(), "lock_timeout".to_owned()));
+    let installed: Vec<String> = fixture
+        .client
+        .query(
+            "SELECT DISTINCT s.implementation FROM stock_picking_type t \
+             JOIN ir_sequence s ON s.id = t.sequence_id WHERE t.id <> $1",
+            &[&kind],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(installed, ["standard"], "the install's numbering is kept");
+    let picking = ok(
+        post(
+            "/erp/json/2/stock.picking/create",
+            serde_json::json!({"vals_list":[{"picking_type_id":kind}]}),
+        ),
+        "transfer create",
+    )[0]
+    .as_i64()
+    .unwrap();
+    let name: String = fixture
+        .client
+        .query_one("SELECT name FROM stock_picking WHERE id = $1", &[&picking])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(name, "DEMO/IN/00001");
+
+    // No user creates a sequence through the API, the administrator included (an `erp db init`
+    // administrator is a Settings user, not the superuser): users only read sequences, so the
+    // refusal is access, before the database. The named refusal of a standard sequence under such
+    // a role, met by server code acting as the superuser, is in `base_sequences.rs`.
+    let count_sql = "SELECT count(*) FROM ir_sequence";
+    let before: i64 = fixture
+        .client
+        .query_one(count_sql, &[])
+        .await
+        .unwrap()
+        .get(0);
+    for implementation in ["standard", "no_gap"] {
+        let refused = post(
+            "/erp/json/2/ir.sequence/create",
+            serde_json::json!({"vals_list":[{"name":"By hand","implementation":implementation}]}),
+        );
+        assert_eq!(refused.status, 403, "{implementation}: {}", refused.body);
+        assert!(
+            refused.body.contains("erp.exceptions.AccessError")
+                && refused
+                    .body
+                    .contains("do not let you create 'Sequence' (ir.sequence) records"),
+            "{implementation}: {}",
+            refused.body
+        );
+    }
+    let after: i64 = fixture
+        .client
+        .query_one(count_sql, &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(after, before, "no sequence was made");
+
+    // an account by its code: a condition and a many2one search
+    let account = ok(
+        post(
+            "/erp/json/2/account.account/create",
+            serde_json::json!({"vals_list":[{"name":"Demo bank","code":"111201",
+                "account_type":"asset_current"}]}),
+        ),
+        "account create",
+    )[0]
+    .as_i64()
+    .unwrap();
+    for domain in [
+        serde_json::json!([["code", "in", ["111201"]]]),
+        serde_json::json!([["code", "=", "111201"]]),
+        serde_json::json!([["code", "=like", "1112%"]]),
+    ] {
+        let found = ok(
+            post(
+                "/erp/json/2/account.account/search_read",
+                serde_json::json!({"domain":domain,"fields":["code"]}),
+            ),
+            "account search",
+        );
+        let ids: Vec<i64> = found
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_i64().unwrap())
+            .collect();
+        assert!(ids.contains(&account), "{domain}: {found}");
+        assert!(
+            found
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["code"].as_str().unwrap().starts_with("1112")),
+            "{domain}: {found}"
+        );
+    }
+    let named = ok(
+        post(
+            "/erp/json/2/account.account/name_search",
+            serde_json::json!({"name":"111201"}),
+        ),
+        "account name search",
+    );
+    let pairs = named.as_array().unwrap();
+    assert!(
+        pairs.iter().any(|pair| pair[0].as_i64() == Some(account)),
+        "{named}"
+    );
+
+    // a field that cannot be searched is named, without the condition's internal form
+    let refused = post(
+        "/erp/json/2/res.company/search_read",
+        serde_json::json!({"domain":[["root_id","in",[1]]],"fields":["name"]}),
+    );
+    assert_eq!(refused.status, 422, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("the field root_id of res.company: this field cannot be searched"),
+        "{}",
+        refused.body
+    );
+    assert!(!refused.body.contains("OrderedSet"), "{}", refused.body);
+    fixture.cleanup().await;
+}

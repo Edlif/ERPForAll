@@ -57,6 +57,10 @@
                 </group>
               </group>
             </page>
+            <page string="Payments" name="payments">
+              <field name="payment_method_line_ids" invisible="type not in ('bank', 'cash', 'credit')"
+                     context="{'list_view_ref': 'account.view_account_payment_method_line_list', 'form_view_ref': 'account.view_account_payment_method_line_form'}"/>
+            </page>
             <page string="Dashboard" name="dashboard">
               <group>
                 <field name="show_on_dashboard"/>

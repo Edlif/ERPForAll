@@ -34,7 +34,7 @@ async fn partial_ids(tx: &mut Transaction, line: &Records) -> Vec<i64> {
 }
 
 #[test]
-fn paying_an_invoice_in_two_parts_settles_it() {
+fn paying_an_invoice_in_two_parts_settles_it_and_unmatching_reopens_it() {
     big_stack(two_parts_body);
 }
 
@@ -141,6 +141,32 @@ async fn two_parts_body() {
         .unwrap()[0]
         .get(0);
     assert_eq!(open, 0, "a settled component keeps no open-item rows");
+
+    // unmatching the second payment: back to partial, the settlement is gone
+    try_call(&second_item, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap();
+    assert_eq!(
+        inv_item.cell(&mut tx, "full_reconcile_id").await.unwrap(),
+        Cell::Null
+    );
+    assert_eq!(
+        decimal(&inv_item, &mut tx, "amount_residual").await,
+        num("700")
+    );
+    assert_eq!(string(&second_item, &mut tx, "matching_number").await, "");
+    assert_eq!(string(&inv_item, &mut tx, "matching_number").await, label);
+    assert_eq!(string(&invoice, &mut tx, "payment_state").await, "partial");
+    // and the first: not paid, the whole amount due
+    try_call(&inv_item, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap();
+    assert_eq!(
+        decimal(&invoice, &mut tx, "amount_residual").await,
+        num("1000")
+    );
+    assert_eq!(string(&invoice, &mut tx, "payment_state").await, "not_paid");
+    assert_eq!(string(&inv_item, &mut tx, "matching_number").await, "");
 
     // an invoice in two instalments: one payment over both, and one per instalment in due order
     let term = tx
@@ -388,7 +414,28 @@ async fn chain_body() {
         error.message()
     );
 
-    // neither a settlement nor a match is deleted: the items stay settled
+    try_call(bb, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap();
+    assert_eq!(string(bb, &mut tx, "matching_number").await, "");
+    let remaining = partial_ids(&mut tx, a).await[0];
+    for line in [a, c, dd] {
+        assert_eq!(
+            string(line, &mut tx, "matching_number").await,
+            format!("P{remaining}")
+        );
+    }
+    // A (500 open) with B again: B joins the component; C (settled) is left out with it
+    reconcile(&mut tx, &a.union(bb).unwrap().union(c).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(decimal(a, &mut tx, "amount_residual").await, num("0"));
+    assert_eq!(
+        string(bb, &mut tx, "matching_number").await,
+        format!("P{remaining}")
+    );
+
+    // a settlement is not deleted on its own; deleting its match unmatches the items
     let x = posted_entry(
         &mut tx,
         &b,
@@ -421,17 +468,19 @@ async fn chain_body() {
         .await
         .unwrap_err();
     assert!(
-        error.message().contains("cannot be deleted"),
+        error.message().contains("unmatch its journal items"),
         "{}",
         error.message()
     );
-    let pair = x.related(&mut tx, "matched_credit_ids").await.unwrap();
-    let error = tx
-        .savepoint(async |tx| pair.unlink(tx).await)
-        .await
-        .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::UserError, "{}", error.message());
     assert_eq!(decimal(&x, &mut tx, "amount_residual").await, num("0"));
+    let pair = x.related(&mut tx, "matched_credit_ids").await.unwrap();
+    pair.unlink(&mut tx).await.unwrap();
+    assert_eq!(decimal(&x, &mut tx, "amount_residual").await, num("250"));
+    assert_eq!(
+        x.cell(&mut tx, "full_reconcile_id").await.unwrap(),
+        Cell::Null
+    );
+    assert_eq!(string(&y, &mut tx, "matching_number").await, "");
 
     // an invoice settled only by its credit note reads reversed
     let invoice = posted_invoice(&mut tx, &b, "out_invoice", b.customer, "80", day).await;
@@ -695,6 +744,10 @@ async fn access_body() {
     let theirs_name = string(&theirs, &mut tx, "name").await;
     let pair = items_on(&mut tx, &[&settled, &theirs], b.receivable).await;
     reconcile(&mut tx, &pair).await.unwrap();
+    let settled_item = items_on(&mut tx, &[&settled], b.receivable).await;
+    let settled_match = partial_ids(&mut tx, &settled_item).await;
+    let settled_item = settled_item.ids();
+    assert_eq!(settled_match.len(), 1);
     let extra = posted_entry(
         &mut tx,
         &b,
@@ -783,6 +836,47 @@ async fn access_body() {
         error.message()
     );
     tx.rollback().await.unwrap();
+    // unmatching asks the right to delete the match and to change both items: a read-only user,
+    // an accountant of another company, and an accountant whose match reaches an entry of a branch
+    // they cannot change are refused, by removing the item's matches or by deleting the match
+    for who in [reader, outsider, accountant] {
+        let mut tx = policy
+            .begin(erp_orm::UserId::new(who).unwrap())
+            .await
+            .unwrap();
+        let lines = tx
+            .env()
+            .records("account.move.line")
+            .unwrap()
+            .browse(settled_item.clone())
+            .unwrap();
+        let error = try_call(&lines, &mut tx, "remove_move_reconcile")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ErrorKind::Access,
+            "{who}: {}",
+            error.message()
+        );
+        let matches = tx
+            .env()
+            .records("account.partial.reconcile")
+            .unwrap()
+            .browse(settled_match.clone())
+            .unwrap();
+        let error = tx
+            .savepoint(async |tx| matches.unlink(tx).await)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ErrorKind::Access,
+            "{who}: {}",
+            error.message()
+        );
+        tx.rollback().await.unwrap();
+    }
     drop(policy);
 
     // two units on the same items: the later one fails, one match exists
@@ -814,6 +908,63 @@ async fn access_body() {
         error.message()
     );
     late.rollback().await.unwrap();
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+#[test]
+fn unmatching_a_settling_payment_reopens_the_invoice() {
+    big_stack(unmatch_settled_body);
+}
+
+async fn unmatch_settled_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.commit().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let b = books(&mut tx, company).await;
+    let invoice =
+        posted_invoice(&mut tx, &b, "out_invoice", b.customer, "400", d(2024, 1, 1)).await;
+    let payment = posted_entry(
+        &mut tx,
+        &b,
+        b.receivable,
+        b.bank,
+        Some(b.customer),
+        "-400",
+        d(2024, 2, 1),
+    )
+    .await;
+    let inv_item = receivable(&mut tx, &b, &invoice).await;
+    let pay_item = receivable(&mut tx, &b, &payment).await;
+    reconcile(&mut tx, &inv_item.union(&pay_item).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(string(&invoice, &mut tx, "payment_state").await, "paid");
+
+    try_call(&pay_item, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap();
+    for item in [&inv_item, &pay_item] {
+        assert_eq!(string(item, &mut tx, "matching_number").await, "");
+        assert_eq!(
+            item.cell(&mut tx, "full_reconcile_id").await.unwrap(),
+            Cell::Null
+        );
+        assert_eq!(
+            item.cell(&mut tx, "reconciled").await.unwrap(),
+            Cell::Bool(false)
+        );
+    }
+    assert_eq!(
+        decimal(&invoice, &mut tx, "amount_residual").await,
+        num("400")
+    );
+    assert_eq!(string(&invoice, &mut tx, "payment_state").await, "not_paid");
+    assert!(partial_ids(&mut tx, &inv_item).await.is_empty());
+    tx.rollback().await.unwrap();
     drop(orm);
     db.cleanup().await.unwrap();
 }

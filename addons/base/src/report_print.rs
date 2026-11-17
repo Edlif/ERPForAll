@@ -11,17 +11,19 @@
 //! no process to start.
 //!
 //! The template context is `docs` (the printed records), `doc` and `o` are the loop names the
-//! templates choose, and `company` (the caller's current company, for the layouts).
+//! templates choose, and `company` (for the layouts: the printed records' own `company_id` when
+//! their model has one and it is set, else the caller's current company; see [`company_runs`]).
 
 use std::sync::Arc;
 
+use erp_sdk::auth::user_context;
 use erp_sdk::prelude::*;
 use erp_sdk::report::{
-    DataError, DocTree, DocumentOptions, EvalContext, EvalOptions, Language, Limits, Node,
-    PageSetup, PlanContext, ReportError, ReportLimits, ReportProgram, TemplateSource, field_info,
-    load_records,
+    DataError, DocTree, DocumentOptions, EvalContext, EvalOptions, LangFormat, Language, Limits,
+    Node, PageSetup, PlanContext, ReportError, ReportLimits, ReportProgram, TemplateSource,
+    field_info, load_records,
 };
-use erp_sdk::{Operation, access::GroupId};
+use erp_sdk::{FieldType, Operation, access::GroupId};
 
 use crate::ir_actions::report::paperformat_of;
 use crate::ir_ui_view::report_templates;
@@ -263,34 +265,254 @@ async fn page_of(
     .map_err(|e| report_error(report, &e))
 }
 
+/// The company each record of `ids` prints under, as runs of consecutive records of one company
+/// in the order given: the record's own `company_id` when the report's model has that field and it
+/// is set, else the caller's current company. A selection that mixes companies prints run by run,
+/// each document with its own company's letterhead.
+///
+/// # Errors
+///
+/// The caller's `Access` refusal of the read; a database error.
+pub async fn company_runs(
+    tx: &mut Transaction,
+    report: &PrintReport,
+    ids: &[i64],
+) -> Result<Vec<(Option<i64>, Vec<i64>)>> {
+    let env = tx.env();
+    let session = env.company_id()?;
+    let own = env
+        .registry()
+        .model(&report.model)
+        .and_then(|model| model.field("company_id"))
+        .is_some_and(|field| {
+            matches!(&field.ty, FieldType::Many2one { comodel, .. } if comodel.as_str() == "res.company")
+        });
+    let companies = if own {
+        let cells = env
+            .records(&report.model)?
+            .browse(ids.iter().copied())?
+            .cells(tx, "company_id")
+            .await?;
+        cells
+            .iter()
+            .map(|cell| {
+                <Option<RecId> as erp_sdk::FieldValue>::from_cell(cell)
+                    .map(|company| company.map(RecId::get).or(session))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        vec![session; ids.len()]
+    };
+    if companies.len() != ids.len() {
+        return Err(Error::invariant(format!(
+            "{} company_id read {} values for {} records",
+            report.model,
+            companies.len(),
+            ids.len()
+        )));
+    }
+    Ok(runs_of(ids, companies))
+}
+
+/// `ids` grouped into runs of consecutive records of one company, in the order given.
+fn runs_of(ids: &[i64], companies: Vec<Option<i64>>) -> Vec<(Option<i64>, Vec<i64>)> {
+    let mut runs: Vec<(Option<i64>, Vec<i64>)> = Vec::new();
+    for (id, company) in ids.iter().zip(companies) {
+        match runs.last_mut() {
+            Some((last, run)) if *last == company => run.push(*id),
+            _ => runs.push((company, vec![*id])),
+        }
+    }
+    runs
+}
+
 /// Compile, plan, load and evaluate `report` for `ids` (already checked with
-/// [`check_records`]) into one document, under the caller's rights.
+/// [`check_records`]) into one document, under the caller's rights, in the caller's language,
+/// number and date formats and timezone. The letterhead and the paper format are those of the
+/// records' company ([`company_runs`]); records of several companies are refused (see
+/// [`prepare_runs`]). The pages are counted over the whole document.
 ///
 /// # Errors
 ///
 /// `Validation` naming the report for a template the library refuses (missing, outside the print
-/// profile, over a limit) or data it cannot print; the caller's `Access` refusal of a read; a
-/// database error.
+/// profile, over a limit), data it cannot print, or records of several companies; the caller's
+/// `Access` refusal of a read; a database error.
 pub async fn prepare(tx: &mut Transaction, report: &PrintReport, ids: &[i64]) -> Result<DocTree> {
-    let env = tx.env();
-    let company = env.company_id()?;
+    let company = match company_runs(tx, report, ids).await?.as_slice() {
+        [] => tx.env().company_id()?,
+        [(company, _)] => *company,
+        _ => {
+            return Err(Error::validation(format!(
+                "Report '{}': the selected records belong to several companies and one document \
+                 prints with one company's letterhead. Print the records of each company apart.",
+                report.name
+            )));
+        }
+    };
+    let locale = locale(tx, report).await?;
+    let program = compile(tx, report, &report.report_name, None, &locale.language).await?;
+    let (_, mut documents) = evaluate_run(
+        tx,
+        report,
+        program,
+        &locale,
+        company,
+        ids,
+        vec![ids.to_vec()],
+    )
+    .await?;
+    documents
+        .pop()
+        .ok_or_else(|| Error::internal("printing: the document was not evaluated"))
+}
+
+/// One document per run of records of one company in `ids` (already checked with
+/// [`check_records`]), in order, each with its company's letterhead and paper format
+/// ([`company_runs`]). The template is compiled once and the companies are read once.
+///
+/// # Errors
+///
+/// As [`prepare`], except that records of several companies are printed.
+pub async fn prepare_runs(
+    tx: &mut Transaction,
+    report: &PrintReport,
+    ids: &[i64],
+) -> Result<Vec<DocTree>> {
+    let runs = company_runs(tx, report, ids).await?;
+    let locale = locale(tx, report).await?;
+    let mut program = compile(tx, report, &report.report_name, None, &locale.language).await?;
+    let mut documents = Vec::with_capacity(runs.len());
+    for (company, run) in runs {
+        let documents_of_run = vec![run.clone()];
+        let (compiled, evaluated) = evaluate_run(
+            tx,
+            report,
+            program,
+            &locale,
+            company,
+            &run,
+            documents_of_run,
+        )
+        .await?;
+        program = compiled;
+        documents.extend(evaluated);
+    }
+    Ok(documents)
+}
+
+/// Load `ids` of one `company` and evaluate one document per entry of `documents` (its records
+/// bound as `docs`). The program comes back for the next run.
+async fn evaluate_run(
+    tx: &mut Transaction,
+    report: &PrintReport,
+    program: ReportProgram,
+    locale: &Locale,
+    company: Option<i64>,
+    ids: &[i64],
+    documents: Vec<Vec<i64>>,
+) -> Result<(ReportProgram, Vec<DocTree>)> {
     let companies: Vec<i64> = company.into_iter().collect();
-    let program = compile(tx, report, &report.report_name, None).await?;
     let store = load(tx, report, &program, ids, &companies, &[]).await?;
-    let context = EvalContext::standard()
-        .with_var("docs", store.recordset(&report.model, ids))
-        .with_var("company", store.recordset("res.company", &companies));
     let page = page_of(tx, report, company).await?;
-    let options = DocumentOptions::new(format!("report-{}", report.id), report.name.clone(), page);
+    let options = locale.options.clone();
+    let model = report.model.clone();
+    let id = format!("report-{}", report.id);
+    let name = report.name.clone();
     blocking(report, move || {
-        program.evaluate(&context, &store, &EvalOptions::default(), options)
+        let evaluated = documents
+            .iter()
+            .map(|docs| {
+                let context = EvalContext::standard()
+                    .with_var("docs", store.recordset(&model, docs))
+                    .with_var("company", store.recordset("res.company", &companies));
+                let document = DocumentOptions::new(id.clone(), name.clone(), page.clone());
+                program.evaluate(&context, &store, &options, document)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok((program, evaluated))
     })
     .await
 }
 
-/// The language of the caller's context, or the reference's default.
-fn language(report: &PrintReport, env: &Env) -> Result<Language> {
-    Language::new(env.lang().unwrap_or("en_US")).map_err(|e| report_error(report, &e))
+/// What a document prints in: the printing user's language with the number and date formats of
+/// its language record, and the user's timezone, as the web client shows them. A print job runs
+/// as the user who asked for it, so a queued print reads the same values as a direct one.
+struct Locale {
+    language: Language,
+    options: EvalOptions,
+}
+
+/// The [`Locale`] of the user `tx` runs as.
+///
+/// # Errors
+///
+/// `Validation` naming the report when the user's language is not installed, its formats are not
+/// printable or the user's timezone is unknown; a database error.
+async fn locale(tx: &mut Transaction, report: &PrintReport) -> Result<Locale> {
+    let uid = tx.env().user_id();
+    let context = user_context(tx, uid).await?.ok_or_else(|| {
+        Error::missing(format!(
+            "Report '{}': the printing user {} does not exist.",
+            report.name,
+            uid.get()
+        ))
+    })?;
+    let code = context.lang();
+    let rows = tx
+        .query(
+            "SELECT decimal_point, thousands_sep, grouping, date_format, time_format \
+               FROM res_lang WHERE code = $1 AND active",
+            &[&code],
+        )
+        .await?;
+    let row = rows.first().ok_or_else(|| {
+        Error::validation(format!(
+            "Report '{}': the language {code} of your preferences is not installed.",
+            report.name
+        ))
+    })?;
+    let text = |i: usize, what: &str| -> Result<String> {
+        Ok(row
+            .try_get::<_, Option<String>>(i)
+            .map_err(|_| Error::db(format!("unexpected value in res_lang.{what}")))?
+            .unwrap_or_default())
+    };
+    let grouping = crate::parse_grouping(&text(2, "grouping")?)?
+        .into_iter()
+        .map(i8::try_from)
+        .collect::<std::result::Result<Vec<i8>, _>>()
+        .map_err(|_| {
+            Error::validation(format!(
+                "Report '{}': the digit grouping of the language {code} is out of range.",
+                report.name
+            ))
+        })?;
+    let formats = LangFormat::new(
+        &text(0, "decimal_point")?,
+        &text(1, "thousands_sep")?,
+        &grouping,
+        &text(3, "date_format")?,
+        &text(4, "time_format")?,
+    )
+    .map_err(|e| report_error(report, &e))?;
+    let tz = context.tz().filter(|tz| !tz.is_empty()).unwrap_or("UTC");
+    let zone = jiff::tz::TimeZone::get(tz).map_err(|_| {
+        Error::validation(format!(
+            "Report '{}': the timezone {tz} of your preferences is not known.",
+            report.name
+        ))
+    })?;
+    // shortcut: no translated template terms are stored yet (the terms of views are not imported),
+    // so the language carries none; load them here when a store of template terms exists.
+    let language = Language::new(code).map_err(|e| report_error(report, &e))?;
+    let options = EvalOptions::default()
+        .with_formats(formats)
+        .with_utc_offsets(move |unix| {
+            jiff::Timestamp::from_second(unix)
+                .ok()
+                .map(|instant| zone.to_offset(instant).seconds())
+        });
+    Ok(Locale { language, options })
 }
 
 /// Compile `root` from the database templates, or from `inline` (key, arch) when given.
@@ -299,13 +521,13 @@ async fn compile(
     report: &PrintReport,
     root: &str,
     inline: Option<(&str, &str)>,
+    language: &Language,
 ) -> Result<ReportProgram> {
     let sources = match inline {
         Some((key, arch)) => vec![(key.to_owned(), arch.to_owned())],
         None => report_templates::template_sources(tx, &report.name, root).await?,
     };
-    let env = tx.env();
-    let language = language(report, &env)?;
+    let language = language.clone();
     let root = root.to_owned();
     blocking(report, move || {
         let templates: Vec<TemplateSource<'_>> = sources
@@ -377,7 +599,9 @@ pub async fn file_name(
                 escape_attribute(expr)
             );
             let inline = Some(("report.file_name", arch.as_str()));
-            let program = compile(tx, report, "report.file_name", inline).await?;
+            // the name is an expression over the record: it has no text to translate
+            let language = Language::new("en_US").map_err(|e| report_error(report, &e))?;
+            let program = compile(tx, report, "report.file_name", inline, &language).await?;
             let store = load(tx, report, &program, ids, &[], &["object"]).await?;
             let context = EvalContext::standard()
                 .with_var("docs", store.recordset(&report.model, ids))
@@ -456,5 +680,19 @@ mod tests {
             escape_attribute("'a' + \"b\" & <c>"),
             "'a' + &quot;b&quot; &amp; &lt;c>"
         );
+    }
+
+    #[test]
+    fn records_print_in_runs_of_one_company_in_the_order_given() {
+        assert_eq!(
+            runs_of(&[4, 5, 6, 7], vec![Some(1), Some(1), Some(2), Some(1)]),
+            vec![
+                (Some(1), vec![4, 5]),
+                (Some(2), vec![6]),
+                (Some(1), vec![7])
+            ]
+        );
+        assert_eq!(runs_of(&[8], vec![None]), vec![(None, vec![8])]);
+        assert!(runs_of(&[], Vec::new()).is_empty());
     }
 }

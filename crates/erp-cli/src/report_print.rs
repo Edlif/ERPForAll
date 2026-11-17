@@ -388,24 +388,39 @@ impl WebReport for ReportRuntime {
             erp_addon_base::report_job::check_direct_print(tx, ids).await?;
             let found = report_print::find(tx, report).await?;
             report_print::check_records(tx, &found, None, ids).await?;
-            let document = report_print::prepare(tx, &found, ids).await?;
             match format {
-                ReportFormat::Html => Ok(PrintedReport {
-                    file_name: report_print::file_name(tx, &found, ids, "html").await?,
-                    // CPU work over up to the document limits: off the runtime thread.
-                    bytes: tokio::task::spawn_blocking(move || render_html(&document, &[]))
-                        .await
-                        .map_err(|e| {
-                            Error::internal(format!("printing: the HTML task failed: {e}"))
-                        })?
-                        .map_err(|e| Error::validation(format!("Report '{}': {e}", found.name)))?
-                        .into_bytes(),
-                }),
                 ReportFormat::Pdf => {
-                    let file_name = report_print::file_name(tx, &found, ids, "pdf").await?;
+                    // each company's records print as their own document, with that company's
+                    // letterhead, and the documents are merged in the order given
+                    let documents = report_print::prepare_runs(tx, &found, ids).await?;
+                    let mut parts = Vec::with_capacity(documents.len());
+                    for document in documents {
+                        parts.push(self.layout(document).await?.into_bytes());
+                    }
+                    let bytes = if parts.len() == 1 {
+                        parts.pop().unwrap_or_default()
+                    } else {
+                        merge(parts).await?
+                    };
                     Ok(PrintedReport {
-                        file_name,
-                        bytes: self.layout(document).await?.into_bytes(),
+                        file_name: report_print::file_name(tx, &found, ids, "pdf").await?,
+                        bytes,
+                    })
+                }
+                ReportFormat::Html => {
+                    let document = report_print::prepare(tx, &found, ids).await?;
+                    Ok(PrintedReport {
+                        file_name: report_print::file_name(tx, &found, ids, "html").await?,
+                        // CPU work over up to the document limits: off the runtime thread.
+                        bytes: tokio::task::spawn_blocking(move || render_html(&document, &[]))
+                            .await
+                            .map_err(|e| {
+                                Error::internal(format!("printing: the HTML task failed: {e}"))
+                            })?
+                            .map_err(|e| {
+                                Error::validation(format!("Report '{}': {e}", found.name))
+                            })?
+                            .into_bytes(),
                     })
                 }
                 other => Err(Error::programming(format!(

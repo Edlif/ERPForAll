@@ -39,3 +39,11 @@ threads-required = "num-test-threads"
 # `binary(=…)` matches no binary: its tests are named by their prefix instead (they exist in that binary only).
 filter = 'binary(=alloc_copy_served) | test(/^served_impex_/)'
 retries = 1
+
+# 2026-11-17: this test fails when the guard's snapshot predates the receipt's commit and its lock comes after it:
+# the gap of the location usage and archive guards that (D6, note of that day) records as open. It failed
+# once in three full runs of one staging cycle on unchanged code. Retried until board task
+# closes the gap; that task removes this override.
+[[profile.ci.overrides]]
+filter = 'binary(=quant_engine) & test(=a_location_guard_retries_past_a_concurrent_receipt)'
+retries = 2

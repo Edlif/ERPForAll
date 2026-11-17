@@ -21,6 +21,8 @@ erp-fields.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# The evaluation context a test prints a loaded store with.
+erp-expr = { workspace = true }
 erp-testkit = { workspace = true }
 # `base_users`: the users model the non-superuser test runs under.
 erp-test-models = { workspace = true }

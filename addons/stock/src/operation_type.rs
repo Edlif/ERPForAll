@@ -250,6 +250,14 @@ async fn create_sequence(
             ));
         }
         let name = sequence_name(env, tx, vals, &prefix).await?;
+        // An addon install or upgrade keeps the standard (database) sequence. Numbering made
+        // while the server runs is gapless: it needs no database object, which the server's
+        // database role may not create, and its draws wait for the row lock instead of failing.
+        let (implementation, wait_mode) = if tx.is_operation_managed() {
+            ("standard", "nowait")
+        } else {
+            ("no_gap", "lock_timeout")
+        };
         // The caller's right to create the type was checked by `authorize`; the type's own
         // numbering is then created by the application with exactly these values.
         let sequence = env
@@ -263,7 +271,8 @@ async fn create_sequence(
                         .set_cell("prefix", Cell::Str(prefix.into()))
                         .set_cell("padding", Cell::Int(5))
                         .set_cell("company_id", Cell::Id(company))
-                        .set_cell("implementation", Cell::Str("standard".into())),
+                        .set_cell("implementation", Cell::Str(implementation.into()))
+                        .set_cell("wait_mode", Cell::Str(wait_mode.into())),
                 ],
             )
             .await?;
@@ -277,6 +286,25 @@ async fn create_sequence(
 }
 #[methods(StockPickingType, addon = "stock")]
 impl StockPickingType {
+    /// The company defaults to the environment's, as in the reference, so a type created without
+    /// naming its company belongs to the active one.
+    #[method(override)]
+    async fn default_get(
+        this: &RecordSet<StockPickingType>,
+        tx: &mut Transaction,
+        names: Vec<String>,
+        sup: Super,
+    ) -> Result<ValueMap> {
+        let requested = names.iter().any(|name| name == "company_id");
+        let mut result: ValueMap = sup.call(tx, this.as_records(), (names,)).await?;
+        if requested
+            && !result.contains_key("company_id")
+            && let Some(company) = this.env().company_id()?
+        {
+            result.insert("company_id".into(), Value::Int(company));
+        }
+        Ok(result)
+    }
     #[method(override)]
     async fn create(
         this: &RecordSet<StockPickingType>,

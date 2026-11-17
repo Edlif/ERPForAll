@@ -46,7 +46,7 @@ PostgreSQL 18 reachable through `DATABASE_URL`). Web checks: `pnpm run typecheck
 
 ## Where to look first
 
-- Installing and running: [docs/install.md](docs/install.md). Production: [docs/deployment.md](docs/deployment.md).
+- Installing and running: [docs/install.md](docs/install.md). Deploying: [docs/deployment.md](docs/deployment.md).
 - Layout, crates, writing an addon, the web client: [docs/development.md](docs/development.md).
 - The `erp` program: `crates/erp-cli`. The server and its configuration: `crates/erp-server`.
 - A model, a field or the ORM: `crates/erp-orm`, `crates/erp-fields`, `crates/erp-registry`.

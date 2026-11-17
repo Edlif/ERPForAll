@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Demo outstanding accounts of the main company, set on the manual payment methods of the demo
+     bank and cash journals, so payments can be confirmed on the demo ledger. Invented records. -->
+<erp>
+  <record id="account_demo_outstanding_receipts" model="account.account">
+    <field name="name">Outstanding Receipts</field>
+    <field name="code">101300</field>
+    <field name="account_type">asset_current</field>
+    <field name="reconcile" eval="True"/>
+    <field name="company_ids" eval="[(6, 0, [ref('base.main_company')])]"/>
+  </record>
+  <record id="account_demo_outstanding_payments" model="account.account">
+    <field name="name">Outstanding Payments</field>
+    <field name="code">101400</field>
+    <field name="account_type">asset_current</field>
+    <field name="reconcile" eval="True"/>
+    <field name="company_ids" eval="[(6, 0, [ref('base.main_company')])]"/>
+  </record>
+  <function model="account.payment.method.line" name="_demo_outstanding_accounts"/>
+</erp>

@@ -269,7 +269,8 @@ pub struct StockPickingType {
     /// Display order.
     #[field(integer)]
     pub sequence: i32,
-    /// Numbering of its transfers (a standard, gap-allowed sequence, topology ADR A1).
+    /// Numbering of its transfers (topology ADR A1): a standard, gap-allowed sequence when made
+    /// by an addon install or upgrade, a gapless one when made while the server runs.
     #[field(
         many2one,
         comodel = "ir.sequence",

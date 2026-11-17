@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. For a security problem, do not open an issue: follow SECURITY.md instead.
+        Questions are welcome in Discussions.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did and what you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ERPForAll commit or version
+      placeholder: "for example the output of git rev-parse --short HEAD"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, PostgreSQL version, browser for web client problems.
+      placeholder: "Ubuntu 24.04, PostgreSQL 18, Firefox"
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - ORM and database
+        - Addons and modules
+        - Security and sign-in
+        - Web client
+        - Reports
+        - Accounting
+        - Inventory
+        - Sales or purchase
+        - Command line or installation
+        - Documentation
+        - Other
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Remove passwords, API keys and other secrets first.
+      render: text

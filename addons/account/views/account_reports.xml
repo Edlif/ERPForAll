@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+The printed accounting documents, built on the shared document parts of the web addon
+     : one template for customer invoices, credit notes,
+     vendor bills and vendor credit notes (the title follows the type, a draft or cancelled document
+     says so), and the journal entry with its items. Both are in the Print menu of journal
+     entries; the invoice report of a plain journal entry prints the journal entry. 
+-->
+<erp>
+    <template id="report_invoice_document">
+        <div class="page">
+            <t t-set="status" t-value="False"/>
+            <t t-if="o.state == 'draft'" t-set="status">Draft</t>
+            <t t-if="o.state == 'cancel'" t-set="status">Cancelled</t>
+            <t t-set="kind">Invoice</t>
+            <t t-set="date_label">Invoice Date</t>
+            <t t-set="party">Customer</t>
+            <t t-if="o.move_type == 'out_refund'" t-set="kind">Credit Note</t>
+            <t t-if="o.move_type == 'out_refund'" t-set="date_label">Credit Note Date</t>
+            <t t-if="o.move_type == 'in_invoice'" t-set="kind">Vendor Bill</t>
+            <t t-if="o.move_type == 'in_refund'" t-set="kind">Vendor Credit Note</t>
+            <t t-if="o.move_type in ('in_invoice', 'in_refund')" t-set="date_label">Bill Date</t>
+            <t t-if="o.move_type in ('in_invoice', 'in_refund')" t-set="party">Vendor</t>
+            <t t-call="web.document_title" title="kind" number="o.name" status="status"/>
+            <t t-if="o.partner_id" t-call="web.document_addresses">
+                <t t-call="web.document_address" address="o.partner_id" label="party"/>
+            </t>
+            <t t-call="web.document_info">
+                <t t-if="o.invoice_date" t-call="web.document_info_item" label="date_label"><span t-field="o.invoice_date"/></t>
+                <t t-if="o.invoice_date_due and o.move_type in ('out_invoice', 'in_invoice')" t-call="web.document_info_item" label.translate="Due Date"><span t-field="o.invoice_date_due"/></t>
+                <t t-if="o.ref" t-call="web.document_info_item" label.translate="Reference"><span t-field="o.ref"/></t>
+                <t t-if="o.currency_id.id != o.company_currency_id.id" t-call="web.document_info_item" label.translate="Currency"><span t-field="o.currency_id.name"/></t>
+            </t>
+            <!-- The discount column shows only when a line has a discount. -->
+            <t t-set="discounted" t-value="[line for line in o.invoice_line_ids if line.display_type == 'product' and line.discount]"/>
+            <t t-set="columns" t-value="6 if discounted else 5"/>
+            <t t-call="web.document_lines">
+                <thead>
+                    <tr>
+                        <th>Description</th>
+                        <th class="text-end">Quantity</th>
+                        <th class="text-end">Unit Price</th>
+                        <th t-if="discounted" class="text-end">Disc. %</th>
+                        <th>Taxes</th>
+                        <th class="text-end">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <t t-foreach="o.invoice_line_ids" t-as="line">
+                        <t t-if="line.display_type in ('line_section', 'line_subsection')" t-call="web.document_line_section" columns="columns" text="line.name"/>
+                        <t t-elif="line.display_type == 'line_note'" t-call="web.document_line_note" columns="columns" text="line.name"/>
+                        <tr t-else="">
+                            <td><span t-if="line.name" t-field="line.name"/><span t-elif="line.product_id" t-field="line.product_id"/></td>
+                            <td class="text-end"><span t-field="line.quantity"/><t t-if="line.product_uom_id"> <span t-field="line.product_uom_id.name"/></t></td>
+                            <td class="text-end"><span t-field="line.price_unit" t-options="{'widget': 'float', 'precision': o.currency_id.decimal_places}"/></td>
+                            <td t-if="discounted" class="text-end"><span t-if="line.discount" t-field="line.discount"/></td>
+                            <td><t t-foreach="line.tax_ids" t-as="tax"><t t-out="tax.tax_label or tax.name"/><br t-if="not tax_last"/></t></td>
+                            <td class="text-end"><span t-field="line.price_subtotal"/></td>
+                        </tr>
+                    </t>
+                </tbody>
+            </t>
+            <!-- A row per tax group; the tax lines of an invoice carry its taxes on the side opposite to
+                 its total. A tax amount without a tax line of a group prints as one row of taxes. -->
+            <t t-set="tax_sign" t-value="-1 if o.move_type in ('out_invoice', 'in_refund') else 1"/>
+            <t t-set="tax_groups" t-value="o.line_ids.tax_line_id.tax_group_id"/>
+            <t t-call="web.document_totals">
+                <t t-call="web.document_total_row" label.translate="Untaxed Amount"><span t-field="o.amount_untaxed"/></t>
+                <t t-foreach="tax_groups" t-as="group">
+                    <t t-call="web.document_total_row" label="group.name"><span t-out="tax_sign * sum([item.amount_currency for item in o.line_ids if item.tax_line_id.tax_group_id.id == group.id])" t-options="{'widget': 'monetary', 'display_currency': o.currency_id}"/></t>
+                </t>
+                <t t-if="o.amount_tax and not tax_groups">
+                    <t t-call="web.document_total_row" label.translate="Taxes"><span t-field="o.amount_tax"/></t>
+                </t>
+                <t t-call="web.document_total_grand" label.translate="Total"><span t-field="o.amount_total"/></t>
+                <t t-if="o.state == 'posted' and o.amount_residual != o.amount_total">
+                    <t t-call="web.document_total_row" label.translate="Paid"><span t-out="o.amount_total - o.amount_residual" t-options="{'widget': 'monetary', 'display_currency': o.currency_id}"/></t>
+                    <t t-call="web.document_total_grand" label.translate="Amount Due"><span t-field="o.amount_residual"/></t>
+                </t>
+            </t>
+            <t t-if="o.move_type == 'out_invoice' and o.state == 'posted' and o.name" t-call="web.document_note" label.translate="Payment">
+                Please quote <strong t-out="o.name"/> as the reference of your payment<t t-if="o.invoice_date_due"> and pay by <strong t-field="o.invoice_date_due"/></t>.
+            </t>
+        </div>
+    </template>
+
+    <template id="report_move_document">
+        <div class="page">
+            <t t-set="status" t-value="False"/>
+            <t t-if="o.state == 'draft'" t-set="status">Draft</t>
+            <t t-if="o.state == 'cancel'" t-set="status">Cancelled</t>
+            <t t-call="web.document_title" title.translate="Journal Entry" number="o.name" status="status"/>
+            <t t-call="web.document_info">
+                <t t-call="web.document_info_item" label.translate="Accounting Date"><span t-field="o.date"/></t>
+                <t t-call="web.document_info_item" label.translate="Journal"><span t-field="o.journal_id.name"/></t>
+                <t t-if="o.partner_id" t-call="web.document_info_item" label.translate="Partner"><span t-field="o.partner_id"/></t>
+                <t t-if="o.ref" t-call="web.document_info_item" label.translate="Reference"><span t-field="o.ref"/></t>
+            </t>
+            <t t-set="items" t-value="[item for item in o.line_ids if item.display_type not in ('line_section', 'line_subsection', 'line_note')]"/>
+            <t t-call="web.document_lines">
+                <thead>
+                    <tr>
+                        <th>Account</th>
+                        <th>Partner</th>
+                        <th>Label</th>
+                        <th class="text-end">Debit</th>
+                        <th class="text-end">Credit</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr t-foreach="items" t-as="item">
+                        <td><span t-field="item.account_id.code"/> <span t-field="item.account_id.name"/></td>
+                        <td><span t-if="item.partner_id" t-field="item.partner_id"/></td>
+                        <td><span t-if="item.name" t-field="item.name"/></td>
+                        <td class="text-end"><span t-if="item.debit" t-field="item.debit"/></td>
+                        <td class="text-end"><span t-if="item.credit" t-field="item.credit"/></td>
+                    </tr>
+                    <tr>
+                        <td colspan="3" class="fw-bold">Total</td>
+                        <td class="text-end fw-bold"><span t-out="sum([item.debit for item in items])" t-options="{'widget': 'monetary', 'display_currency': o.company_currency_id}"/></td>
+                        <td class="text-end fw-bold"><span t-out="sum([item.credit for item in items])" t-options="{'widget': 'monetary', 'display_currency': o.company_currency_id}"/></td>
+                    </tr>
+                </tbody>
+            </t>
+        </div>
+    </template>
+
+    <template id="report_invoice">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="o">
+                    <div t-att-class="None if o_first else 'page-break-before'">
+                        <t t-if="o.move_type == 'entry'" t-call="account.report_move_document"/>
+                        <t t-else="" t-call="account.report_invoice_document"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_move">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="o">
+                    <div t-att-class="None if o_first else 'page-break-before'">
+                        <t t-call="account.report_move_document"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_report_invoice" model="ir.actions.report">
+        <field name="name">Invoice</field>
+        <field name="model">account.move</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">account.report_invoice</field>
+        <field name="print_report_name">('Credit Note' if object.move_type == 'out_refund' else 'Vendor Bill' if object.move_type == 'in_invoice' else 'Vendor Credit Note' if object.move_type == 'in_refund' else 'Journal Entry' if object.move_type == 'entry' else 'Invoice') + ' - ' + (object.name or 'Draft')</field>
+        <field name="binding_model_id" ref="account.model_account_move"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_move" model="ir.actions.report">
+        <field name="name">Journal Entry</field>
+        <field name="model">account.move</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">account.report_move</field>
+        <field name="print_report_name">'Journal Entry - ' + (object.name or 'Draft')</field>
+        <field name="binding_model_id" ref="account.model_account_move"/>
+        <field name="binding_type">report</field>
+    </record>
+</erp>

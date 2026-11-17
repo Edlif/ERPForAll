@@ -4,8 +4,8 @@
 # service container. The test support creates and drops its own databases on the server named by DATABASE_URL.
 # Web job: type check and unit tests of the web workspace with the pinned Node and pnpm.
 #
-# Honest limits: the project's authors ran these commands on their own Linux build machine, not on GitHub-hosted
-# runners. The first run may need adjustments (runner packages, timeouts). Tests that need tools the runner lacks are
+# Honest limits: the project's authors run these commands on their own Linux build machine. On GitHub-hosted
+# runners the Rust job has not passed yet (it ran out of disk; the settings below are the first adjustment). Tests that need tools the runner lacks are
 # not skipped silently: they fail and show what is missing.
 name: CI
 
@@ -36,8 +36,18 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
       ERP_TEST_DATABASE_URLS: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      # A hosted runner has about 14 GB of free disk and this job ran out of it (2026-11-17, "No space left on
+      # device" after 43 minutes): build without debug info and incremental state, as the project's own CI does.
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
+      - name: Free disk space on the runner
+        # preinstalled toolchains this job never uses
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          df -h /
       - name: Install the pinned Rust toolchain
         run: rustup show
       - name: Install cargo-nextest

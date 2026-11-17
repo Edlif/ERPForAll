@@ -1052,3 +1052,141 @@ async fn codes_by_company_given_while_creating_the_account() {
         vec![(root, "5050".to_owned())]
     );
 }
+
+/// The accounts of `company` whose code matches `operator` and `value`, by id.
+async fn by_code(
+    tx: &mut Transaction,
+    company: i64,
+    operator: Operator,
+    value: impl Into<erp_sdk::domain::Value>,
+) -> Vec<i64> {
+    let domain = Domain::condition("code", operator, value).unwrap();
+    let mut ids = accounts(tx, company)
+        .search(tx, &domain)
+        .await
+        .unwrap()
+        .ids();
+    ids.sort_unstable();
+    ids
+}
+
+#[tokio::test]
+async fn accounts_are_searched_by_their_code_in_the_active_company() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let root = company(&mut tx, "Root", None).await;
+    let branch = company(&mut tx, "Branch", Some(root)).await;
+    let other = company(&mut tx, "Other", None).await;
+    let both = tx
+        .env()
+        .with_company(other)
+        .unwrap()
+        .with_company(root)
+        .unwrap()
+        .records("account.account")
+        .unwrap();
+    let shared = create(
+        &both,
+        &mut tx,
+        account_vals("Shared", "asset_current", "111201").set_commands(
+            "company_ids",
+            vec![Command::set([
+                RecId::from_real(root).unwrap(),
+                RecId::from_real(other).unwrap(),
+            ])],
+        ),
+    )
+    .await
+    .unwrap()
+    .ids()[0];
+    write(
+        &accounts(&tx, other).browse([shared]).unwrap(),
+        &mut tx,
+        RawVals::new().set_cell("code", text("222201")),
+    )
+    .await
+    .unwrap();
+    let second = create(
+        &accounts(&tx, root),
+        &mut tx,
+        account_vals("Second", "asset_current", "111202"),
+    )
+    .await
+    .unwrap()
+    .ids()[0];
+    let plain = create(
+        &accounts(&tx, root),
+        &mut tx,
+        RawVals::new()
+            .set_cell("name", text("Without code"))
+            .set_cell("account_type", text("asset_current")),
+    )
+    .await
+    .unwrap()
+    .ids()[0];
+    let mut pair = vec![shared, second];
+    pair.sort_unstable();
+    let mut second_plain = vec![second, plain];
+    second_plain.sort_unstable();
+
+    // exact, a list and a prefix, in the root company
+    assert_eq!(
+        by_code(&mut tx, root, Operator::Eq, "111201").await,
+        [shared]
+    );
+    assert_eq!(
+        by_code(&mut tx, root, Operator::In, vec!["111201", "111202"]).await,
+        pair
+    );
+    assert_eq!(
+        by_code(&mut tx, root, Operator::EqLike, "1112%").await,
+        pair
+    );
+    assert_eq!(
+        by_code(&mut tx, root, Operator::Like, "1202").await,
+        [second]
+    );
+    assert_eq!(
+        by_code(&mut tx, root, Operator::ILike, "1202").await,
+        [second]
+    );
+    // a negative operator also finds the account that has no code here
+    assert_eq!(
+        by_code(&mut tx, root, Operator::Ne, "111201").await,
+        second_plain
+    );
+    assert_eq!(
+        by_code(&mut tx, root, Operator::NotIn, vec!["111201", "111202"]).await,
+        [plain]
+    );
+    assert_eq!(by_code(&mut tx, root, Operator::Eq, false).await, [plain]);
+    // the branch searches its root's codes; the other tree has its own code for the account
+    assert_eq!(
+        by_code(&mut tx, branch, Operator::Eq, "111201").await,
+        [shared]
+    );
+    assert_eq!(
+        by_code(&mut tx, other, Operator::Eq, "222201").await,
+        [shared]
+    );
+    assert!(
+        by_code(&mut tx, root, Operator::Eq, "222201")
+            .await
+            .is_empty()
+    );
+    assert!(
+        by_code(&mut tx, other, Operator::Eq, "111201")
+            .await
+            .is_empty()
+    );
+    // a many2one search by the code finds the account
+    let found = accounts(&tx, root)
+        .name_search(&mut tx, "111201")
+        .await
+        .unwrap();
+    assert_eq!(
+        found.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        [shared]
+    );
+    tx.rollback().await.unwrap();
+}

@@ -417,11 +417,11 @@ async fn nonstored_root_search_group_and_order_are_named_refusals() {
     let domain = Domain::condition("root_id", Operator::Eq, root).unwrap();
     let error = companies.search(&mut tx, &domain).await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Programming);
+    // the model and the field in plain words, no internal value form
     assert_eq!(
         error.message(),
-        format!(
-            "Field has no SQL representation because it is not stored in condition ('root_id', 'in', OrderedSet([{root}]))"
-        )
+        "A condition cannot use the field root_id of res.company: this field cannot be searched, \
+         because it is not stored."
     );
     let error = companies
         .search_with(

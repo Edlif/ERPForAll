@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+Printed documents of purchase orders, built on the shared document parts of the web addon
+     : the request for quotation (no prices) and the purchase order
+     (prices, taxes and totals). Both sit under the Print menu of the order list and form. The delivery
+     address is the company's own: an order carries no separate delivery address yet. 
+-->
+<erp>
+    <!-- The part both documents share: vendor and delivery address, then the dates and the buyer. -->
+    <template id="report_order_header">
+        <t t-call="web.document_addresses">
+            <t t-call="web.document_address" address="o.partner_id" label.translate="Vendor"/>
+            <t t-call="web.document_address" address="o.company_id.partner_id" label.translate="Delivery Address"/>
+        </t>
+        <t t-call="web.document_info">
+            <t t-if="o.date_approve" t-call="web.document_info_item" label.translate="Order Date"><span t-field="o.date_approve" t-options="{'widget': 'datetime', 'date_only': True}"/></t>
+            <t t-if="o.date_order" t-call="web.document_info_item" label.translate="Order Deadline"><span t-field="o.date_order" t-options="{'widget': 'datetime', 'hide_seconds': True}"/></t>
+            <t t-if="o.date_planned" t-call="web.document_info_item" label.translate="Expected Arrival"><span t-field="o.date_planned" t-options="{'widget': 'datetime', 'date_only': True}"/></t>
+            <t t-if="o.user_id" t-call="web.document_info_item" label.translate="Buyer"><span t-field="o.user_id"/></t>
+            <t t-if="o.origin" t-call="web.document_info_item" label.translate="Source"><span t-field="o.origin"/></t>
+        </t>
+    </template>
+
+    <template id="report_rfq_document">
+        <div class="page">
+            <t t-set="status" t-value="False"/>
+            <t t-if="o.state == 'draft'" t-set="status">Draft</t>
+            <t t-if="o.state == 'cancel'" t-set="status">Cancelled</t>
+            <t t-call="web.document_title" title.translate="Request for Quotation" number="o.name" status="status"/>
+            <t t-call="purchase.report_order_header"/>
+            <t t-call="web.document_lines">
+                <thead>
+                    <tr>
+                        <th>Description</th>
+                        <th class="text-end">Expected Arrival</th>
+                        <th class="text-end">Quantity</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr t-foreach="o.order_line" t-as="line">
+                        <td t-field="line.name"/>
+                        <td class="text-end" t-field="line.date_planned" t-options="{'widget': 'datetime', 'date_only': True}"/>
+                        <td class="text-end"><span t-field="line.product_qty"/> <span t-field="line.uom_id.name"/></td>
+                    </tr>
+                </tbody>
+            </t>
+        </div>
+    </template>
+
+    <template id="report_order_document">
+        <div class="page">
+            <t t-set="status" t-value="False"/>
+            <t t-if="o.state == 'draft'" t-set="status">Draft</t>
+            <t t-if="o.state == 'sent'" t-set="status">Draft</t>
+            <t t-if="o.state == 'to approve'" t-set="status">To Approve</t>
+            <t t-if="o.state == 'cancel'" t-set="status">Cancelled</t>
+            <t t-call="web.document_title" title.translate="Purchase Order" number="o.name" status="status"/>
+            <t t-call="purchase.report_order_header"/>
+            <t t-set="has_discount" t-value="[line for line in o.order_line if line.discount]"/>
+            <t t-call="web.document_lines">
+                <thead>
+                    <tr>
+                        <th>Description</th>
+                        <th class="text-end">Arrival</th>
+                        <th class="text-end">Quantity</th>
+                        <th class="text-end">Unit Price</th>
+                        <th t-if="has_discount" class="text-end">Disc. %</th>
+                        <th>Taxes</th>
+                        <th class="text-end">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr t-foreach="o.order_line" t-as="line">
+                        <td t-field="line.name"/>
+                        <td class="text-end" t-field="line.date_planned" t-options="{'widget': 'datetime', 'date_only': True}"/>
+                        <td class="text-end"><span t-field="line.product_qty"/> <span t-field="line.uom_id.name"/></td>
+                        <td class="text-end"><span t-field="line.price_unit" t-options="{'widget': 'float', 'precision': o.currency_id.decimal_places}"/></td>
+                        <td t-if="has_discount" class="text-end"><t t-if="line.discount"><span t-field="line.discount"/></t></td>
+                        <td><t t-foreach="line.tax_ids" t-as="tax"><t t-out="tax.tax_label or tax.name"/><br t-if="not tax_last"/></t></td>
+                        <td class="text-end" t-field="line.price_subtotal"/>
+                    </tr>
+                </tbody>
+            </t>
+            <t t-call="web.document_totals">
+                <t t-call="web.document_total_row" label.translate="Untaxed Amount"><span t-field="o.amount_untaxed"/></t>
+                <t t-call="web.document_total_row" label.translate="Taxes"><span t-field="o.amount_tax"/></t>
+                <t t-call="web.document_total_grand" label.translate="Total"><span t-field="o.amount_total"/></t>
+            </t>
+            <t t-call="web.document_signatures">
+                <t t-call="web.document_signature" label.translate="Authorised by"/>
+                <t t-call="web.document_signature" label.translate="Vendor Acceptance"/>
+            </t>
+        </div>
+    </template>
+
+    <template id="report_rfq">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="o">
+                    <div t-att-class="None if o_first else 'page-break-before'">
+                        <t t-call="purchase.report_rfq_document"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_order">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="o">
+                    <div t-att-class="None if o_first else 'page-break-before'">
+                        <t t-call="purchase.report_order_document"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_report_rfq" model="ir.actions.report">
+        <field name="name">Request for Quotation</field>
+        <field name="model">purchase.order</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">purchase.report_rfq</field>
+        <field name="print_report_name">'Quotation request - ' + (object.name or 'Draft')</field>
+        <field name="binding_model_id" ref="purchase.model_purchase_order"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_purchase_order" model="ir.actions.report">
+        <field name="name">Purchase Order</field>
+        <field name="model">purchase.order</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">purchase.report_order</field>
+        <field name="print_report_name">'Purchase Order - ' + (object.name or 'Draft')</field>
+        <field name="binding_model_id" ref="purchase.model_purchase_order"/>
+        <field name="binding_type">report</field>
+    </record>
+</erp>

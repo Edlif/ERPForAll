@@ -72,6 +72,12 @@ export function fitColumns(columns: readonly { width: number; min: number; max?:
 }
 /** Frames to wait for an off-screen list to be mounted before giving up on content sizing (about 2 s at 60 Hz). */
 const AUTO_LAYOUT_FRAMES = 120;
+/**
+  How long after its first measure a list measures again when the content of its cells changes.
+ *  After this time the layout stays as it is, so an
+ *  edit or a new page never moves the columns. 
+ */
+const LATE_CONTENT_MS = 8000;
 
 /** Columns the user resized by hand, per widths map (so they survive a redraw): they keep a fixed width, the spare room
  *  goes to the last flexible column that was not. When every column is pinned the table is as wide as its columns. */
@@ -79,7 +85,7 @@ const pinned = new WeakMap<Map<string, number>, Set<string>>();
 type Spec = { width: number; min: number; max?: number };
 /** What the last measure found, per widths map: each automatic column's rule-bound spec (so a resized window refits
  *  without measuring again), whether the list had no record then, and the room the columns were fitted to. */
-const measures = new WeakMap<Map<string, number>, { specs: Map<string, Spec>; empty: boolean; room: number }>();
+const measures = new WeakMap<Map<string, number>, { specs: Map<string, Spec>; empty: boolean; room: number; at?: number }>();
 const wideWatchers = new WeakMap<Element, ResizeObserver>();
 /** A table wider than its list (columns widened by hand) scrolls sideways; otherwise the list does not scroll, so the
  *  header can stick to the page (client.css). The slack covers the rounding of the fitted widths, one pixel per column. */
@@ -185,11 +191,31 @@ export function resizeColumns(table: HTMLTableElement, columns: readonly ListCol
   let pending = false;
   // A table on a hidden notebook page is attached but has no layout: the width watcher measures it once it is shown.
   const laidOut = (): boolean => table.isConnected && !table.closest("[hidden]");
+  let late: MutationObserver | undefined, lateFrame = false;
+  /** Measures once more, on the next frame, when cell content arrives after the first measure (LATE_CONTENT_MS). Only
+   *  the rows are watched: the header's resize handles and the column widths are this function's own changes. The
+   *  time of the first measure is kept with the widths, so a list redrawn meanwhile (a sub-list redraws on every
+   *  change of its form) still follows its late content. */
+  const followLateContent = (): void => {
+    if (late || state.at === undefined || typeof MutationObserver !== "function") return;
+    late = new MutationObserver(() => {
+      if (state.at === undefined || performance.now() - state.at > LATE_CONTENT_MS) { late?.disconnect(); return; }
+      if (lateFrame || pending) return;
+      lateFrame = true;
+      requestAnimationFrame(() => {
+        lateFrame = false;
+        if (!laidOut() || pending) return;
+        forget(); pending = true; settleNow();
+      });
+    });
+    for (const body of table.tBodies) late.observe(body, { subtree: true, childList: true, characterData: true });
+  };
   const settleNow = (): boolean => {
     if (!pending) return true;
     if (!laidOut()) return false;
     pending = false;
     measureNow(); refit();
+    state.at ??= performance.now(); followLateContent();
     return true;
   };
   const start = (): void => {
@@ -197,7 +223,7 @@ export function resizeColumns(table: HTMLTableElement, columns: readonly ListCol
     table.classList.add("list-auto-layout");
   };
   // A list redrawn with records after it was measured empty (a sub-list's first line) measures them.
-  if (complete() && !(state.empty && hasRecords())) apply();
+  if (complete() && !(state.empty && hasRecords())) { apply(); followLateContent(); }
   else { forget(); start(); }
   // An owner that attaches the table later (a sub-list in a form) gets the measure and the width watcher on a frame.
   let watched: Element | undefined;

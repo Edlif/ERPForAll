@@ -262,7 +262,7 @@ fn spec_field_047_rejected_conditions() {
     let err = compile_where(&cond("upper", Operator::In, Value::list(["X"])), &ctx).unwrap_err();
     assert!(
         err.message()
-            .starts_with("Field has no SQL representation because it is not stored"),
+            .ends_with("this field cannot be searched, because it is not stored."),
         "{err}"
     );
     // property conditions arrive later, with a clear message
@@ -492,7 +492,7 @@ fn spec_rel_077_x2many_cannot_be_used_as_sql_column() {
     assert_eq!(err2.kind(), ErrorKind::Programming);
     assert!(
         err2.message()
-            .starts_with("Field has no SQL representation because it is not stored"),
+            .ends_with("this field cannot be searched, because it is not stored."),
         "{err2}"
     );
 }

@@ -978,10 +978,12 @@ async fn spec_dom_031_search_time_errors() {
         .search(&mut tx, &dom(json!([["upper", "=", "X"]])))
         .await
         .unwrap_err();
-    assert!(
-        err.message()
-            .starts_with("Field has no SQL representation because it is not stored in condition"),
-        "{err}"
+    // the field and model in plain words: no internal value form, and no operator (the condition
+    // was rewritten from `=` to `in` before the refusal)
+    assert_eq!(
+        err.message(),
+        "A condition cannot use the field upper of test_orm.noname: this field cannot be searched, \
+         because it is not stored."
     );
     drop(tx);
     h.cleanup().await.unwrap();

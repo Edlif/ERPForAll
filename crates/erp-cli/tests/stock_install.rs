@@ -364,8 +364,9 @@ fn storage_capacity_refuses_a_product_of_another_company() {
 }
 
 /// Installed defaults feed operation-type configuration; the sequence remains administrator-editable.
+/// A type made after the install (not by it) gets gapless numbering, which needs no database object.
 #[test]
-fn operation_types_use_installed_locations_and_standard_sequences() {
+fn operation_types_use_installed_locations_and_gapless_run_time_sequences() {
     run(async {
         let db = TestDb::create().await.unwrap();
         let orm = install(&db).await;
@@ -453,7 +454,11 @@ fn operation_types_use_installed_locations_and_standard_sequences() {
             .unwrap();
         assert_eq!(
             sequence.cell(&mut tx, "implementation").await.unwrap(),
-            Cell::Str("standard".into())
+            Cell::Str("no_gap".into())
+        );
+        assert_eq!(
+            sequence.cell(&mut tx, "wait_mode").await.unwrap(),
+            Cell::Str("lock_timeout".into())
         );
         assert_eq!(
             sequence.cell(&mut tx, "prefix").await.unwrap(),

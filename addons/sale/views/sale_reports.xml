@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+The printed sales documents, built on the shared document parts of the web addon
+     : one template for the quotation and the sales order (the
+     title follows the state) and the same data as a pro-forma invoice. Both are in the Print menu of
+     sales orders. Laid out anew from what the reference's order document shows. 
+-->
+<erp>
+    <template id="report_saleorder_document">
+        <div class="page">
+            <t t-set="kind">Quotation</t>
+            <t t-set="status" t-value="False"/>
+            <t t-set="date_label">Quotation Date</t>
+            <t t-if="o.state == 'draft'" t-set="status">Draft</t>
+            <t t-if="o.state == 'cancel'" t-set="status">Cancelled</t>
+            <t t-if="o.state == 'sale'" t-set="kind">Sales Order</t>
+            <t t-if="o.state == 'sale'" t-set="date_label">Order Date</t>
+            <t t-if="o.state == 'cancel'" t-set="kind">Cancelled Quotation</t>
+            <t t-if="proforma" t-set="kind">Pro-Forma Invoice</t>
+            <t t-if="proforma" t-set="date_label">Issued Date</t>
+            <t t-call="web.document_title" title="kind" number="o.name" status="status"/>
+            <t t-call="web.document_addresses">
+                <t t-call="web.document_address" address="o.partner_id" label.translate="Customer"/>
+                <t t-if="o.partner_invoice_id.id != o.partner_id.id and o.partner_invoice_id.id == o.partner_shipping_id.id"
+                   t-call="web.document_address" address="o.partner_invoice_id" label.translate="Invoice and Delivery Address"/>
+                <t t-elif="o.partner_invoice_id.id != o.partner_id.id" t-call="web.document_address"
+                   address="o.partner_invoice_id" label.translate="Invoice Address"/>
+                <t t-if="o.partner_shipping_id.id != o.partner_id.id and o.partner_invoice_id.id != o.partner_shipping_id.id"
+                   t-call="web.document_address" address="o.partner_shipping_id" label.translate="Delivery Address"/>
+            </t>
+            <t t-call="web.document_info">
+                <t t-if="o.date_order" t-call="web.document_info_item" label="date_label"><span t-field="o.date_order" t-options="{'widget': 'date'}"/></t>
+                <t t-if="o.validity_date and o.state in ('draft', 'sent')" t-call="web.document_info_item" label.translate="Expiration"><span t-field="o.validity_date"/></t>
+                <t t-if="o.commitment_date" t-call="web.document_info_item" label.translate="Delivery Date"><span t-field="o.commitment_date" t-options="{'widget': 'date'}"/></t>
+                <t t-if="o.user_id" t-call="web.document_info_item" label.translate="Salesperson"><span t-field="o.user_id"/></t>
+                <t t-if="o.client_order_ref" t-call="web.document_info_item" label.translate="Your Reference"><span t-field="o.client_order_ref"/></t>
+                <t t-if="o.origin" t-call="web.document_info_item" label.translate="Source Document"><span t-field="o.origin"/></t>
+            </t>
+            <!-- The discount and tax columns show only when a line has one. -->
+            <t t-set="discounted" t-value="[line for line in o.order_line if line.discount]"/>
+            <t t-set="taxed" t-value="[line for line in o.order_line if line.tax_ids]"/>
+            <t t-set="columns" t-value="4 + (1 if discounted else 0) + (1 if taxed else 0)"/>
+            <t t-call="web.document_lines">
+                <thead>
+                    <tr>
+                        <th>Description</th>
+                        <th class="text-end">Quantity</th>
+                        <th class="text-end">Unit Price</th>
+                        <th t-if="discounted" class="text-end">Disc. %</th>
+                        <th t-if="taxed">Taxes</th>
+                        <th class="text-end">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <t t-foreach="o.order_line" t-as="line">
+                        <t t-if="line.display_type in ('line_section', 'line_subsection')" t-call="web.document_line_section" columns="columns" text="line.name"/>
+                        <t t-elif="line.display_type == 'line_note'" t-call="web.document_line_note" columns="columns" text="line.name"/>
+                        <tr t-else="">
+                            <td t-field="line.name"/>
+                            <td class="text-end"><span t-field="line.product_uom_qty"/> <span t-field="line.product_uom_id.name"/></td>
+                            <td class="text-end"><span t-field="line.price_unit" t-options="{'widget': 'float', 'precision': o.currency_id.decimal_places}"/></td>
+                            <td t-if="discounted" class="text-end"><span t-if="line.discount" t-field="line.discount"/></td>
+                            <td t-if="taxed"><t t-foreach="line.tax_ids" t-as="tax"><t t-out="tax.invoice_label or tax.name"/><br t-if="not tax_last"/></t></td>
+                            <td class="text-end" t-field="line.price_subtotal"/>
+                        </tr>
+                    </t>
+                </tbody>
+            </t>
+            <!-- A row per tax group. A line's tax amount is one number: when a line has taxes of
+                 two groups it cannot be split, and one row of taxes is printed instead. -->
+            <t t-set="mixed" t-value="[line for line in o.order_line if line.tax_ids and len(line.tax_ids.tax_group_id.ids) &gt; 1]"/>
+            <t t-call="web.document_totals">
+                <t t-call="web.document_total_row" label.translate="Untaxed Amount"><span t-field="o.amount_untaxed"/></t>
+                <t t-if="taxed and not mixed">
+                    <t t-foreach="o.order_line.tax_ids.tax_group_id" t-as="group">
+                        <t t-call="web.document_total_row" label="group.name"><span t-out="sum([line.price_tax for line in o.order_line if line.tax_ids and group.id in line.tax_ids.tax_group_id.ids])" t-options="{'widget': 'monetary', 'display_currency': o.currency_id}"/></t>
+                    </t>
+                </t>
+                <t t-if="mixed or (o.amount_tax and not taxed)">
+                    <t t-call="web.document_total_row" label.translate="Taxes"><span t-field="o.amount_tax"/></t>
+                </t>
+                <t t-call="web.document_total_grand" label.translate="Total"><span t-field="o.amount_total"/></t>
+            </t>
+            <!--
+shortcut: the terms are a rich-text field and the engine does not render HTML fields yet,
+                 so every tag is removed (a paragraph end and a line break leave a space),
+                 the character entities of plain text are decoded (the ampersand last) and the white space
+                 is collapsed: the terms print as one plain paragraph without bold, lists or links; replace
+                 this with the HTML output when the engine has it. 
+            -->
+            <t t-set="terms" t-value="(o.note or '').replace('&lt;/p&gt;', ' &lt;/p&gt;').replace('&lt;br', ' &lt;br').split('&lt;')"/>
+            <t t-set="terms" t-value="terms[0] + ''.join([part.split('&gt;', 1)[-1] for part in terms[1:]])"/>
+            <t t-set="terms" t-value="' '.join(terms.replace('&amp;nbsp;', ' ').replace('&amp;lt;', '&lt;').replace('&amp;gt;', '&gt;').replace('&amp;quot;', '&quot;').replace('&amp;#39;', &quot;'&quot;).replace('&amp;amp;', '&amp;').split())"/>
+            <t t-if="terms" t-call="web.document_note" label.translate="Terms and Conditions"><span t-out="terms"/></t>
+            <t t-if="o.state != 'cancel'" t-call="web.document_signatures">
+                <t t-call="web.document_signature" label.translate="Customer Signature"/>
+                <t t-call="web.document_signature" label.translate="Date"/>
+            </t>
+        </div>
+    </template>
+
+    <template id="report_saleorder">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="o">
+                    <div t-att-class="None if o_first else 'page-break-before'">
+                        <t t-call="sale.report_saleorder_document" proforma="False"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_saleorder_pro_forma">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="o">
+                    <div t-att-class="None if o_first else 'page-break-before'">
+                        <t t-call="sale.report_saleorder_document" proforma="True"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_report_saleorder" model="ir.actions.report">
+        <field name="name">Quotation / Order</field>
+        <field name="model">sale.order</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">sale.report_saleorder</field>
+        <field name="print_report_name">('Quotation' if object.state in ('draft', 'sent') else 'Cancelled Quotation' if object.state == 'cancel' else 'Order') + ' - ' + (object.name or 'Draft')</field>
+        <field name="binding_model_id" ref="sale.model_sale_order"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_saleorder_pro_forma" model="ir.actions.report">
+        <field name="name">PRO-FORMA Invoice</field>
+        <field name="model">sale.order</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">sale.report_saleorder_pro_forma</field>
+        <field name="print_report_name">'Pro-Forma Invoice - ' + (object.name or 'Draft')</field>
+        <field name="binding_model_id" ref="sale.model_sale_order"/>
+        <field name="binding_type">report</field>
+    </record>
+</erp>

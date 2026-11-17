@@ -31,11 +31,26 @@ const POINTS_PER_PIXEL: f64 = 0.75;
 /// The largest side of an image, in points (the document's own bound).
 const IMAGE_POINTS_MAX: f64 = 14400.0;
 
+/// The user's offset from UTC at a timestamp (seconds since the epoch).
+#[derive(Clone)]
+pub(crate) struct UtcOffsets(Arc<dyn Fn(i64) -> Option<i32> + Send + Sync>);
+impl UtcOffsets {
+    /// The offset at `unix`, within 18 hours either way.
+    pub(crate) fn at(&self, unix: i64) -> Option<i32> {
+        (self.0)(unix).filter(|seconds| (-64_800..=64_800).contains(seconds))
+    }
+}
+impl std::fmt::Debug for UtcOffsets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UtcOffsets(..)")
+    }
+}
+
 /// What an evaluation needs besides the program, the context and the records.
 #[derive(Debug, Clone)]
 pub struct EvalOptions {
     formats: LangFormat,
-    utc_offset: i32,
+    utc_offset: UtcOffsets,
     primary: [u8; 3],
     secondary: [u8; 3],
     limits: Limits,
@@ -45,7 +60,7 @@ impl Default for EvalOptions {
     fn default() -> Self {
         Self {
             formats: LangFormat::default(),
-            utc_offset: 0,
+            utc_offset: UtcOffsets(Arc::new(|_: i64| Some(0))),
             primary: [13, 110, 253],
             secondary: [108, 117, 125],
             limits: Limits::default(),
@@ -66,8 +81,18 @@ impl EvalOptions {
                 reason: "UTC offset must be within 18 hours",
             });
         }
-        self.utc_offset = seconds;
+        self.utc_offset = UtcOffsets(Arc::new(move |_: i64| Some(seconds)));
         Ok(self)
+    }
+    /// The user's timezone: `offset` gives its offset from UTC, in seconds, at a timestamp (in
+    /// seconds since 1970-01-01 UTC), so a timestamp in summer and one in winter each print in
+    /// their own local time. `None`, or an offset of more than 18 hours, stops the document.
+    pub fn with_utc_offsets(
+        mut self,
+        offset: impl Fn(i64) -> Option<i32> + Send + Sync + 'static,
+    ) -> Self {
+        self.utc_offset = UtcOffsets(Arc::new(offset));
+        self
     }
     /// The colours `text-primary` and `text-secondary`/`text-muted` print in.
     pub fn with_theme_colors(mut self, primary: [u8; 3], secondary: [u8; 3]) -> Self {
@@ -538,7 +563,7 @@ impl<'p> Run<'p> {
         let options: &'p EvalOptions = self.options;
         widget::Env {
             formats: &options.formats,
-            utc_offset: options.utc_offset,
+            utc_offset: &options.utc_offset,
             records: self.records,
         }
     }

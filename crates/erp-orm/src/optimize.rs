@@ -479,9 +479,9 @@ impl<'a> Rewriter<'a> {
             if let Some(path) = field.related {
                 return self.search_related(field, path, operator, value).map(Some);
             }
-            return Err(self.invalid(format!(
-                "Field has no SQL representation because it is not stored in condition \
-                 {condition:?}"
+            return Err(self.invalid(erp_sql::filter::not_stored_message(
+                self.spec.name,
+                field.name,
             )));
         }
         if matches!(field.ty, FieldType::Boolean)

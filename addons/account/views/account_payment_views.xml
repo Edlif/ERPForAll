@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Payments (Accounting > Customers > Payments, Accounting > Vendors > Payments), the method lines of a
+     journal, and the Register Payment dialog opened from confirmed invoices and bills. -->
+<erp>
+  <record id="view_account_payment_list" model="ir.ui.view">
+    <field name="name">account.payment.list</field>
+    <field name="model">account.payment</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="date"/>
+        <field name="name" string="Number"/>
+        <field name="journal_id"/>
+        <field name="payment_method_line_id"/>
+        <field name="partner_id"/>
+        <field name="memo"/>
+        <field name="amount_signed" string="Amount"/>
+        <field name="currency_id"/>
+        <field name="state" widget="badge"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_account_payment_form" model="ir.ui.view">
+    <field name="name">account.payment.form</field>
+    <field name="model">account.payment</field>
+    <field name="arch" type="xml">
+      <form>
+        <header>
+          <button name="action_post" type="object" string="Confirm" class="btn-primary" invisible="state != 'draft'"/>
+          <button name="action_cancel" type="object" string="Cancel" invisible="state != 'draft'"/>
+          <button name="action_draft" type="object" string="Reset to Draft" invisible="state not in ('canceled', 'rejected')"/>
+          <button name="action_validate" type="object" string="Mark as Reconciled" invisible="state != 'paid'"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,paid,reconciled"/>
+        </header>
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="display_name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="payment_type" readonly="state != 'draft'"/>
+              <field name="partner_type" readonly="state != 'draft'"/>
+              <field name="partner_id" readonly="state != 'draft'"/>
+              <field name="amount" readonly="state != 'draft'"/>
+              <field name="currency_id" readonly="state != 'draft'"/>
+              <field name="date" readonly="state != 'draft'"/>
+              <field name="memo"/>
+            </group>
+            <group>
+              <field name="journal_id" readonly="state != 'draft'"/>
+              <field name="payment_method_line_id" readonly="state != 'draft'"/>
+              <field name="company_id" readonly="1"/>
+              <field name="move_id" readonly="1" invisible="not move_id"/>
+              <field name="outstanding_account_id" readonly="1" invisible="not move_id"/>
+              <field name="destination_account_id" readonly="state != 'draft'"/>
+              <field name="is_reconciled" readonly="1" invisible="state == 'draft'"/>
+              <field name="is_matched" readonly="1" invisible="state == 'draft'"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_account_payment_search" model="ir.ui.view">
+    <field name="name">account.payment.search</field>
+    <field name="model">account.payment</field>
+    <field name="arch" type="xml">
+      <search>
+        <field name="name"/>
+        <field name="partner_id"/>
+        <field name="memo"/>
+        <field name="journal_id"/>
+        <filter name="draft" string="Draft" domain="[('state', '=', 'draft')]"/>
+        <filter name="paid" string="Paid" domain="[('state', '=', 'paid')]"/>
+        <filter name="reconciled" string="Reconciled" domain="[('state', '=', 'reconciled')]"/>
+        <separator/>
+        <filter name="inbound" string="Received" domain="[('payment_type', '=', 'inbound')]"/>
+        <filter name="outbound" string="Sent" domain="[('payment_type', '=', 'outbound')]"/>
+        <group>
+          <filter name="groupby_partner" string="Partner" context="{'group_by': 'partner_id'}"/>
+          <filter name="groupby_journal" string="Journal" context="{'group_by': 'journal_id'}"/>
+          <filter name="groupby_state" string="Status" context="{'group_by': 'state'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_account_payments" model="ir.actions.act_window">
+    <field name="name">Customer Payments</field>
+    <field name="res_model">account.payment</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_account_payment_list"/>
+    <field name="search_view_id" ref="view_account_payment_search"/>
+    <field name="domain">[('partner_type', '=', 'customer')]</field>
+    <field name="context">{'default_partner_type': 'customer', 'default_payment_type': 'inbound'}</field>
+  </record>
+  <record id="action_account_payments_payable" model="ir.actions.act_window">
+    <field name="name">Vendor Payments</field>
+    <field name="res_model">account.payment</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_account_payment_list"/>
+    <field name="search_view_id" ref="view_account_payment_search"/>
+    <field name="domain">[('partner_type', '=', 'supplier')]</field>
+    <field name="context">{'default_partner_type': 'supplier', 'default_payment_type': 'outbound'}</field>
+  </record>
+
+  <menuitem id="menu_action_account_payments_receivable" name="Payments" parent="menu_finance_receivables" action="action_account_payments" sequence="15"/>
+  <menuitem id="menu_action_account_payments_payable" name="Payments" parent="menu_finance_payables" action="action_account_payments_payable" sequence="15"/>
+
+  <!-- The method lines of a journal, shown on the journal form. -->
+  <record id="view_account_payment_method_line_list" model="ir.ui.view">
+    <field name="name">account.payment.method.line.list</field>
+    <field name="model">account.payment.method.line</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="payment_type"/>
+        <field name="payment_method_id"/>
+        <field name="name"/>
+        <field name="payment_account_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_account_payment_method_line_form" model="ir.ui.view">
+    <field name="name">account.payment.method.line.form</field>
+    <field name="model">account.payment.method.line</field>
+    <field name="arch" type="xml">
+      <form string="Payment Method">
+        <sheet>
+          <group>
+            <field name="payment_method_id"/>
+            <field name="name"/>
+            <field name="payment_account_id"/>
+            <field name="sequence"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_account_payment_register_form" model="ir.ui.view">
+    <field name="name">account.payment.register.form</field>
+    <field name="model">account.payment.register</field>
+    <field name="arch" type="xml">
+      <form string="Register Payment" record_mode="record">
+        <group>
+          <group>
+            <field name="journal_id" required="1"/>
+            <field name="payment_method_line_id" required="1"/>
+            <field name="partner_id" readonly="1"/>
+            <field name="group_payment"/>
+          </group>
+          <group>
+            <field name="amount_due" readonly="1"/>
+            <field name="amount" readonly="not single_payment"/>
+            <field name="currency_id" invisible="1"/>
+            <field name="payment_type" invisible="1"/>
+            <field name="company_id" invisible="1"/>
+            <field name="payment_date"/>
+            <field name="communication" readonly="not single_payment"/>
+            <field name="single_payment" invisible="1"/>
+          </group>
+        </group>
+        <field name="invoice_ids" widget="many2many_tags"/>
+        <footer>
+          <button name="action_create_payments" type="object" string="Pay" class="btn-primary"/>
+          <button special="cancel" string="Cancel"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+  <!-- The dialog as a window action; the Register Payment button of a document opens it on that document. -->
+  <record id="action_account_payment_register" model="ir.actions.act_window">
+    <field name="name">Register Payment</field>
+    <field name="res_model">account.payment.register</field>
+    <field name="view_mode">form</field>
+    <field name="target">new</field>
+    <field name="view_id" ref="view_account_payment_register_form"/>
+  </record>
+</erp>

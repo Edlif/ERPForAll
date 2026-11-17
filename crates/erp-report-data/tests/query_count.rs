@@ -13,14 +13,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
+use erp_expr::EvalContext;
 use erp_fields::{ErrorKind, FieldType, Value};
 use erp_orm::{
     BeginOptions, GroupSet, Operation, PrincipalBuilder, Resolution, Transaction, UserId,
 };
 use erp_registry::{AddonDescriptor, FieldDecl, ModelDecl, Registry};
 use erp_report::{
-    Language, Limits, PlanContext, PrefetchPlan, ReportLimits, ReportProgram, TemplateSource,
+    DocumentOptions, EvalOptions, Language, Limits, Node, PageSetup, PlanContext, PrefetchPlan,
+    ReportLimits, ReportProgram, TemplateSource,
 };
 use erp_report_data::{DataError, field_info, load};
 use erp_test_models::base_users;
@@ -72,19 +75,52 @@ fn decls() -> [ModelDecl; 4] {
     ]
 }
 
-fn plan_of(registry: &Registry, arch: &str) -> PrefetchPlan {
+fn program_of(arch: &str) -> ReportProgram {
     let sources = [TemplateSource::new("test.report", arch)];
-    let program = ReportProgram::compile(
+    ReportProgram::compile(
         "test.report",
         &sources,
         &Language::new("en_US").unwrap(),
         ReportLimits::default(),
     )
-    .unwrap();
-    program
+    .unwrap()
+}
+
+fn plan_of(registry: &Registry, arch: &str) -> PrefetchPlan {
+    program_of(arch)
         .prefetch_plan(&PlanContext::new(DOC), &|model: &str, field: &str| {
             field_info(registry, model, field)
         })
+        .unwrap()
+}
+
+/// The text `program` prints for the documents `docs` of `store` (adjacent text is one node).
+fn printed(program: &ReportProgram, store: erp_report::RecordStore, docs: &[i64]) -> String {
+    let store = Arc::new(store);
+    let context = EvalContext::standard().with_var("docs", store.recordset(DOC, docs));
+    let page = PageSetup::new(595.0, 842.0, 0.0).unwrap();
+    let document = program
+        .evaluate(
+            &context,
+            &store,
+            &EvalOptions::default(),
+            DocumentOptions::new("test", "test", page),
+        )
+        .unwrap();
+    document
+        .nodes()
+        .iter()
+        .filter_map(|node| match node {
+            Node::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn user_principal() -> erp_orm::Principal {
+    PrincipalBuilder::user(UserId::new(DEMO).unwrap())
+        .resolution(Resolution::in_id_order(GroupSet::default(), [], NonZeroU64::MIN).unwrap())
+        .build()
         .unwrap()
 }
 
@@ -390,6 +426,89 @@ async fn an_unprintable_field_type_is_refused_by_name() {
     assert_eq!(
         error.to_string(),
         format!("report data: {DOC}.meta is a {declared} field, which reports cannot print")
+    );
+    drop(tx);
+    h.cleanup().await.unwrap();
+}
+
+/// A relation printed as itself shows the display name of its target to a user who may read the
+/// record holding it but not the target's model, as a form does (the ORM's many2one read). Any
+/// other field of that target keeps the user's rights and is refused.
+#[tokio::test]
+async fn a_printed_relation_shows_the_name_of_a_target_the_user_may_not_read() {
+    let policy = DomainPolicy::builder(Otherwise::Allow)
+        .deny(PARTNER, Operation::Read)
+        .build()
+        .unwrap();
+    let h = Harness::builder([&base_users::ADDON, &ADDON])
+        .with_decls(decls())
+        .policy(policy)
+        .build()
+        .await
+        .expect("harness");
+    let made = batch(&h, 3).await;
+    let arch = "<div><t t-foreach=\"docs\" t-as=\"o\"><span t-field=\"o.partner_id\"/></t></div>";
+    let program = program_of(arch);
+    let plan = plan_of(h.registry(), arch);
+
+    let mut tx = h
+        .orm()
+        .begin_opts(BeginOptions::for_principal(user_principal()))
+        .await
+        .unwrap();
+    let env = tx.env();
+    assert!(!env.su());
+    let store = load(
+        &mut tx,
+        &env,
+        &plan,
+        &[("docs", made.docs.as_slice())],
+        ReportLimits::default(),
+        Limits::default(),
+    )
+    .await
+    .unwrap();
+    drop(tx);
+    // the batch gives document n the n-th partner of its pool, named "Partner <n>"
+    let expected: String = (0..made.docs.len())
+        .map(|n| format!("Partner {n}"))
+        .collect();
+    assert_eq!(printed(&program, store, &made.docs), expected);
+
+    // a field of the partner itself is still read with the user's rights
+    let plan = plan_of(
+        h.registry(),
+        "<div><t t-foreach=\"docs\" t-as=\"o\"><span t-out=\"o.partner_id.name\"/></t></div>",
+    );
+    let mut tx = h
+        .orm()
+        .begin_opts(BeginOptions::for_principal(user_principal()))
+        .await
+        .unwrap();
+    let env = tx.env();
+    let error = load(
+        &mut tx,
+        &env,
+        &plan,
+        &[("docs", made.docs.as_slice())],
+        ReportLimits::default(),
+        Limits::default(),
+    )
+    .await
+    .unwrap_err();
+    let DataError::Orm(error) = error else {
+        panic!("expected the ORM's error, got {error}");
+    };
+    assert_eq!(error.kind(), ErrorKind::Access, "{error}");
+    let spec = h.registry().model(PARTNER).unwrap();
+    assert_eq!(
+        error.message(),
+        format!(
+            "Your access rights do not let you {} '{}' ({}) records.",
+            Operation::Read.as_str(),
+            spec.description,
+            spec.name
+        )
     );
     drop(tx);
     h.cleanup().await.unwrap();

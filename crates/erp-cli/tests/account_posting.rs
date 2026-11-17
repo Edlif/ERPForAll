@@ -419,6 +419,17 @@ async fn entry_total_body() {
     )
     .await
     .unwrap();
+    // the Journal Entries action as a release before 1.3 stored it: limited to miscellaneous entries
+    let stale = tx
+        .execute(
+            "UPDATE ir_act_window a SET domain = '[(''move_type'', ''='', ''entry'')]' \
+             FROM ir_model_data d \
+             WHERE d.module = 'account' AND d.name = 'action_move_journal_line' AND a.id = d.res_id",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale, 1, "the Journal Entries action is in the database");
     tx.execute(
         "UPDATE ir_module_module SET latest_version = '1.2.0' WHERE name = 'account'",
         &[],
@@ -454,7 +465,21 @@ async fn entry_total_body() {
         .await
         .unwrap()[0]
         .get(0);
-    assert_eq!(version, "1.3.0");
+    assert_eq!(version, "1.4.0");
+    let domain: Option<String> = tx
+        .query(
+            "SELECT a.domain FROM ir_act_window a JOIN ir_model_data d ON a.id = d.res_id \
+             WHERE d.module = 'account' AND d.name = 'action_move_journal_line'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(
+        domain.as_deref(),
+        Some("[]"),
+        "the upgrade clears the domain an earlier release stored: the list shows every entry"
+    );
     tx.rollback().await.unwrap();
     drop(tx);
     drop(upgraded);

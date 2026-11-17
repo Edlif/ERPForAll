@@ -10,20 +10,25 @@
     <field name="priority" eval="10"/>
     <field name="arch" type="xml">
       <list>
-        <field name="sequence"/>
+        <!--
+The total with taxes and
+             the delivered and invoiced quantities are on the line form; the list keeps what is read on the order, in
+             the order of the lines' sequence (not a column). 
+        -->
+        <field name="sequence" invisible="1"/>
         <field name="display_type" invisible="1"/>
         <field name="product_id"/>
         <field name="name" required="0"/>
         <field name="product_uom_qty"/>
         <field name="product_uom_id"/>
         <field name="price_unit"/>
-        <field name="discount"/>
+        <field name="discount" string="Disc. %"/>
         <field name="tax_ids" widget="many2many_tags"/>
         <field name="currency_id" invisible="1"/>
         <field name="price_subtotal"/>
-        <field name="price_total"/>
-        <field name="qty_delivered"/>
-        <field name="qty_invoiced"/>
+        <field name="price_total" invisible="1"/>
+        <field name="qty_delivered" invisible="1"/>
+        <field name="qty_invoiced" invisible="1"/>
       </list>
     </field>
   </record>

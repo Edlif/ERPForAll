@@ -89,6 +89,9 @@
     <field name="view_id" ref="view_move_list"/>
     <field name="search_view_id" ref="view_move_search"/>
     <!-- New creates a miscellaneous entry. -->
+    <!-- Named, although empty: an upgrade writes only the fields a record names, and a database installed before
+         this change still holds the old domain (seen on the dev/testing server on 2026-11-17: two rows). -->
+    <field name="domain">[]</field>
     <field name="context">{'default_move_type': 'entry'}</field>
   </record>
 

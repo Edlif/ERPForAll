@@ -2142,6 +2142,7 @@ dependencies = [
 name = "erp-report-data"
 version = "0.1.0"
 dependencies = [
+ "erp-expr",
  "erp-fields",
  "erp-orm",
  "erp-registry",

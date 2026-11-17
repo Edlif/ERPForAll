@@ -28,7 +28,7 @@ pub(crate) enum Piece {
 }
 pub(crate) struct Env<'a> {
     pub(crate) formats: &'a LangFormat,
-    pub(crate) utc_offset: i32,
+    pub(crate) utc_offset: &'a crate::evaluate::UtcOffsets,
     pub(crate) records: &'a RecordStore,
 }
 struct Currency {
@@ -177,8 +177,14 @@ fn date_parts(
         }),
         ExprValue::DateTime(stamp) => {
             let stamp = if shift {
+                let offset = env
+                    .utc_offset
+                    .at(stamp.assume_utc().unix_timestamp())
+                    .ok_or_else(|| {
+                        at.evaluate("the user's timezone gives no offset of at most 18 hours for a timestamp")
+                    })?;
                 stamp
-                    .checked_add(time::Duration::seconds(i64::from(env.utc_offset)))
+                    .checked_add(time::Duration::seconds(i64::from(offset)))
                     .ok_or_else(|| {
                         at.evaluate("a timestamp leaves the calendar in the user's timezone")
                     })?

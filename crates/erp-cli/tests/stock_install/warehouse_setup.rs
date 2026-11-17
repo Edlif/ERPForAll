@@ -70,8 +70,10 @@ const TYPES: &str = "SELECT t.generated_role || '|' || (t.name->>'en_US') || '|'
     LEFT JOIN stock_picking_type ret ON ret.id = t.return_picking_type_id \
     WHERE w.id = $1 ORDER BY t.generated_role COLLATE \"C\"";
 
-/// The one-step topology of a warehouse with short name `code` (to 028, 030, 110).
-fn expected(code: &str) -> (Vec<String>, Vec<String>) {
+/// The one-step topology of a warehouse with short name `code` (to 028, 030, 110),
+/// its types numbered by `numbering`: `standard` when an install or upgrade made them, `no_gap` when
+/// they were made while the server runs.
+fn expected(code: &str, numbering: &str) -> (Vec<String>, Vec<String>) {
     let p = code.replace(' ', "").to_uppercase();
     let l = |role: &str, name: &str, usage: &str, active: bool, barcode: &str, parent: &str| {
         let replenish = role == "lot_stock_id";
@@ -129,7 +131,7 @@ fn expected(code: &str) -> (Vec<String>, Vec<String>) {
              ret: &str| {
         let (src, dst) = ends;
         format!(
-            "{role}|{name}|{kind}|{active}|{p}{short}|{code}/{short}/|5|standard|true|{src}|{dst}|{ret}|true|true|true"
+            "{role}|{name}|{kind}|{active}|{p}{short}|{code}/{short}/|5|{numbering}|true|{src}|{dst}|{ret}|true|true|true"
         )
     };
     let types = vec![
@@ -209,18 +211,20 @@ fn expected(code: &str) -> (Vec<String>, Vec<String>) {
     (locations, types)
 }
 
-/// Assert the generated one-step topology of `warehouse`, named `name` with short name `code`.
+/// Assert the generated one-step topology of `warehouse`, named `name` with short name `code`, its
+/// types numbered by `numbering` (see [`expected`]).
 pub(super) async fn assert_topology(
     tx: &mut erp_orm::Transaction,
     warehouse: i64,
     name: &str,
     code: &str,
+    numbering: &str,
 ) {
     assert_eq!(
         rows(tx, WAREHOUSE, warehouse).await,
         [format!("{name}|{code}|true|one_step|ship_only|true")]
     );
-    let (locations, types) = expected(code);
+    let (locations, types) = expected(code, numbering);
     assert_eq!(rows(tx, LOCATIONS, warehouse).await, locations);
     assert_eq!(rows(tx, TYPES, warehouse).await, types);
 }
@@ -277,7 +281,7 @@ fn install_gives_every_company_its_warehouse_and_a_receipt_can_be_drafted() {
             .get(0);
         assert_eq!(name, "Main Company");
         let warehouse = warehouse_of(&mut tx, company).await;
-        assert_topology(&mut tx, warehouse, "Main Company", "Main").await;
+        assert_topology(&mut tx, warehouse, "Main Company", "Main", "standard").await;
         // the overview shows the active types: receipts and deliveries
         assert_eq!(
             rows(
@@ -369,7 +373,7 @@ fn a_new_company_gets_its_warehouse_named_after_it() {
             .get(0);
         let partner = partner.expect("a new company has its contact");
         let warehouse = warehouse_of(&mut tx, northwind).await;
-        assert_topology(&mut tx, warehouse, "Northwind Traders", "North").await;
+        assert_topology(&mut tx, warehouse, "Northwind Traders", "North", "no_gap").await;
         // an administrator shortens the derived short name
         env.records("ir.config_parameter")
             .unwrap()
@@ -382,7 +386,7 @@ fn a_new_company_gets_its_warehouse_named_after_it() {
             .unwrap();
         let contoso = create(&mut tx, &env, "res.company", company("Contoso Ltd")).await;
         let warehouse = warehouse_of(&mut tx, contoso).await;
-        assert_topology(&mut tx, warehouse, "Contoso Ltd", "Con").await;
+        assert_topology(&mut tx, warehouse, "Contoso Ltd", "Con", "no_gap").await;
         // a warehouse with its own locations keeps them and still takes the company's values
         let mut roots = Vec::new();
         for name in ["R1", "R2"] {

@@ -228,3 +228,25 @@ test("a list first measured without records is measured again once records arriv
  resizeColumns(third.t,[{name:"name",label:"Name"},{name:"login",label:"Login"}],widths)();
  expect([widths.get("name"),widths.get("login")]).toEqual([300,100]);
 });
+test("a column measured on a placeholder is measured again when its cell content arrives",async()=>{
+ // An amount cell shows a sentence until its currency is known: measured then, the column froze at its upper bound.
+ const widths=new Map<string,number>(),host=document.createElement("div");document.body.append(host);
+ Object.defineProperty(host,"clientWidth",{configurable:true,value:840});
+ const t=document.createElement("table");t.innerHTML='<thead><tr><th>Name</th><th>Amount</th></tr></thead><tbody><tr class="x2many-row"><td>A line</td><td><span>Loading currency presentation…</span></td></tr></tbody>';host.append(t);
+ const [name,amount]=[...t.querySelectorAll("th")];
+ vi.spyOn(name!,"getBoundingClientRect").mockReturnValue({width:200} as DOMRect);
+ const measured=vi.spyOn(amount!,"getBoundingClientRect").mockReturnValue({width:400} as DOMRect);
+ resizeColumns(t,[{name:"name",label:"Name"},{name:"amount",label:"Amount",kind:"monetary"}],widths,{selector:false,actions:false});
+ const frame=():Promise<void>=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
+ await frame();expect(widths.get("amount")).toBe(180);
+ measured.mockReturnValue({width:100} as DOMRect);t.querySelector("td span")!.textContent="$ 4,250.00";
+ await frame();await frame();
+ expect(widths.get("amount")).toBe(100);expect(t.style.tableLayout).toBe("fixed");
+ // the same list drawn again within the time still follows its late content (a sub-list redraws with its form)
+ const again=document.createElement("table");again.innerHTML=t.innerHTML;again.querySelector("colgroup")?.remove();for(const handle of again.querySelectorAll(".column-resize-handle"))handle.remove();host.replaceChildren(again);
+ const [,amount2]=[...again.querySelectorAll("th")];vi.spyOn(again.querySelector("th")!,"getBoundingClientRect").mockReturnValue({width:200} as DOMRect);
+ vi.spyOn(amount2!,"getBoundingClientRect").mockReturnValue({width:120} as DOMRect);
+ resizeColumns(again,[{name:"name",label:"Name"},{name:"amount",label:"Amount",kind:"monetary"}],widths,{selector:false,actions:false});
+ expect(widths.get("amount")).toBe(100);again.querySelector("td span")!.textContent="$ 14,250.00";
+ await frame();await frame();expect(widths.get("amount")).toBe(120);
+});

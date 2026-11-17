@@ -156,7 +156,7 @@ fn account_demo_ledger_and_journals_load_with_demo() {
         assert_eq!(
             rows[0],
             [
-                "account.account=20",
+                "account.account=22",
                 "account.account.tag=3",
                 "account.journal=6",
                 "account.journal.group=1",
@@ -169,6 +169,8 @@ fn account_demo_ledger_and_journals_load_with_demo() {
             [
                 "101100 Main Bank Account asset_cash [Liquidity Review]",
                 "101200 Petty Cash asset_cash [Liquidity Review]",
+                "101300 Outstanding Receipts asset_current []",
+                "101400 Outstanding Payments asset_current []",
                 "121000 Trade Receivables asset_receivable [Operating Activities]",
                 "131000 Goods for Resale asset_current []",
                 "141000 Prepaid Rent asset_prepayments [Premises Costs]",

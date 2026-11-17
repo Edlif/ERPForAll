@@ -134,6 +134,93 @@ const DOCUMENT: &str = r#"<t t-name="test_documents.report_sample">
 </t></t>
 </t>"#;
 
+/// An invoice-shaped document: the full column set of an invoice with amounts in the style of a
+/// currency that groups by dots (`Rp 12.500.000,00`), a row per tax group in the totals, a long
+/// number next to a status, and the company letterhead with a logo and a full address.
+const INVOICE: &str = r#"<t t-name="test_documents.report_invoice_sample">
+<t t-call="web.html_container"><t t-call="web.external_layout">
+<t t-foreach="docs" t-as="o"><div class="page">
+    <t t-call="web.document_title" title.translate="Vendor Credit Note" number="'BILL/2026/11/000042/BANDUNG-UTARA-WAREHOUSE'" status.translate="Cancelled"/>
+    <t t-call="web.document_addresses">
+        <t t-call="web.document_address" address="o" label.translate="Vendor"/>
+    </t>
+    <t t-call="web.document_info">
+        <t t-call="web.document_info_item" label.translate="Bill Date">12/11/2026</t>
+        <t t-call="web.document_info_item" label.translate="Due Date">12/12/2026</t>
+        <t t-call="web.document_info_item" label.translate="Reference">INV-88231</t>
+    </t>
+    <t t-call="web.document_lines">
+        <thead><tr><th>Description</th><th class="text-end">Quantity</th><th class="text-end">Unit Price</th><th class="text-end">Disc. %</th><th>Taxes</th><th class="text-end">Amount</th></tr></thead>
+        <tbody>
+            <t t-call="web.document_line_section" columns="6" text="'Office furniture'"/>
+            <tr t-foreach="5" t-as="n">
+                <td>Executive desk, walnut veneer, 180 x 90 cm, delivered and assembled</td>
+                <td class="text-end">1.250,00 Units</td>
+                <td class="text-end">Rp&#160;12.500.000,00</td>
+                <td class="text-end">10,00</td>
+                <td>PPN 11%<br/>PPnBM 10%</td>
+                <td class="text-end">Rp&#160;14.062.500.000,00</td>
+            </tr>
+        </tbody>
+    </t>
+    <t t-call="web.document_totals">
+        <t t-call="web.document_total_row" label.translate="Untaxed Amount">Rp&#160;70.312.500.000,00</t>
+        <t t-call="web.document_total_row" label.translate="PPN">Rp&#160;7.734.375.000,00</t>
+        <t t-call="web.document_total_row" label.translate="PPnBM">Rp&#160;7.031.250.000,00</t>
+        <t t-call="web.document_total_grand" label.translate="Total">Rp&#160;85.078.125.000,00</t>
+    </t>
+</div></t>
+</t></t>
+</t>"#;
+
+/// A small PNG (a solid colour), as a company logo.
+fn test_png(width: u32, height: u32) -> Vec<u8> {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+        out.extend(u32::try_from(data.len()).unwrap().to_be_bytes());
+        let start = out.len();
+        out.extend(kind);
+        out.extend(data);
+        let mut crc = !0u32;
+        for b in &out[start..] {
+            crc ^= u32::from(*b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        out.extend((!crc).to_be_bytes());
+    }
+    let row: Vec<u8> = std::iter::once(0)
+        .chain([8, 109, 113].repeat(width as usize))
+        .collect();
+    let raw = row.repeat(height as usize);
+    let mut z = vec![0x78, 0x01];
+    for (i, block) in raw.chunks(65_535).enumerate() {
+        z.push(u8::from((i + 1) * 65_535 >= raw.len()));
+        let len = u16::try_from(block.len()).unwrap();
+        z.extend(len.to_le_bytes());
+        z.extend((!len).to_le_bytes());
+        z.extend(block);
+    }
+    let (mut a, mut b) = (1u32, 0u32);
+    for byte in &raw {
+        a = (a + u32::from(*byte)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    z.extend(((b << 16) | a).to_be_bytes());
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = width.to_be_bytes().to_vec();
+    ihdr.extend(height.to_be_bytes());
+    ihdr.extend([8, 2, 0, 0, 0]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &z);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
 /// Every shared document part prints: the title row, both address blocks with the partner's
 /// address and tax ID, an information row that wraps after four items, a lines table whose header
 /// repeats on every page while no row is split across two pages, the totals and the closing
@@ -182,46 +269,91 @@ fn the_shared_document_parts_print_a_complete_document() {
             .await
             .unwrap()
             .ids()[0];
+        // The letterhead of a company with a logo and a full address.
         tx.env()
-            .records("ir.ui.view")
+            .records("res.company")
             .unwrap()
-            .create(
+            .browse(vec![1])
+            .unwrap()
+            .write(
                 &mut tx,
-                vec![
-                    RawVals::new()
-                        .set_cell("name", Cell::Str("test_documents.report_sample".into()))
-                        .set_cell("type", Cell::Str("qweb".into()))
-                        .set_cell("key", Cell::Str("test_documents.report_sample".into()))
-                        .set_cell("arch_db", Cell::Str(DOCUMENT.into())),
-                ],
+                RawVals::new()
+                    .set_cell("street", Cell::Str("Jalan Merdeka 12".into()))
+                    .set_cell("zip", Cell::Str("40111".into()))
+                    .set_cell("city", Cell::Str("Bandung".into()))
+                    .set_cell("phone", Cell::Str("+62 22 555 0100".into()))
+                    .set_cell("email", Cell::Str("office@example.com".into()))
+                    .set_cell("vat", Cell::Str("01.234.567.8-901.000".into()))
+                    .set_cell("logo", Cell::Bytes(test_png(160, 64).into())),
             )
             .await
             .unwrap();
+        let mut documents = Vec::new();
+        for (key, arch) in [
+            ("test_documents.report_sample", DOCUMENT),
+            ("test_documents.report_invoice_sample", INVOICE),
+        ] {
+            tx.env()
+                .records("ir.ui.view")
+                .unwrap()
+                .create(
+                    &mut tx,
+                    vec![
+                        RawVals::new()
+                            .set_cell("name", Cell::Str(key.into()))
+                            .set_cell("type", Cell::Str("qweb".into()))
+                            .set_cell("key", Cell::Str(key.into()))
+                            .set_cell("arch_db", Cell::Str(arch.into())),
+                    ],
+                )
+                .await
+                .unwrap();
+            tx.env()
+                .records("ir.actions.report")
+                .unwrap()
+                .create(
+                    &mut tx,
+                    vec![
+                        RawVals::new()
+                            .set_cell("name", Cell::Str("Sample Document".into()))
+                            .set_cell("model", Cell::Str("res.partner".into()))
+                            .set_cell("report_type", Cell::Str("qweb-pdf".into()))
+                            .set_cell("report_name", Cell::Str(key.into())),
+                    ],
+                )
+                .await
+                .unwrap();
+            let report = erp_addon_base::report_print::find(&mut tx, key)
+                .await
+                .unwrap();
+            documents.push(
+                erp_addon_base::report_print::prepare(&mut tx, &report, &[partner])
+                    .await
+                    .unwrap(),
+            );
+        }
+        // Phone and email without a website or tax ID: the contact block ends on their line.
         tx.env()
-            .records("ir.actions.report")
+            .records("res.company")
             .unwrap()
-            .create(
-                &mut tx,
-                vec![
-                    RawVals::new()
-                        .set_cell("name", Cell::Str("Sample Document".into()))
-                        .set_cell("model", Cell::Str("res.partner".into()))
-                        .set_cell("report_type", Cell::Str("qweb-pdf".into()))
-                        .set_cell(
-                            "report_name",
-                            Cell::Str("test_documents.report_sample".into()),
-                        ),
-                ],
-            )
+            .browse(vec![1])
+            .unwrap()
+            .write(&mut tx, RawVals::new().set_cell("vat", Cell::Null))
             .await
             .unwrap();
         let report = erp_addon_base::report_print::find(&mut tx, "test_documents.report_sample")
             .await
             .unwrap();
-        let document = erp_addon_base::report_print::prepare(&mut tx, &report, &[partner])
+        let contacts = erp_addon_base::report_print::prepare(&mut tx, &report, &[partner])
             .await
             .unwrap();
         tx.rollback().await.unwrap();
+        let contacts = erp_report::render_html(&contacts, &[]).unwrap();
+        let at = contacts.find("office@example.com").unwrap();
+        let block = &contacts[at..at + contacts[at..].find("</div>").unwrap()];
+        assert!(!block.contains("<br"), "{block}");
+        let invoice = documents.pop().unwrap();
+        let document = documents.pop().unwrap();
 
         let html = erp_report::render_html(&document, &[]).unwrap();
         for text in [
@@ -248,6 +380,8 @@ fn the_shared_document_parts_print_a_complete_document() {
         }
         // The section and the note span the three columns of the lines table.
         assert_eq!(html.matches("colspan=\"3\"").count(), 2, "{html}");
+        // The letterhead carries the logo.
+        assert!(html.contains("aria-label=\"Logo\""), "{html}");
 
         let fonts = repo_addons().join("report_fonts");
         let engine =
@@ -284,8 +418,32 @@ fn the_shared_document_parts_print_a_complete_document() {
                 .unwrap_or_else(|| panic!("line {n} is printed"));
             assert!(pages[page].contains(&end), "line {n} ends on page {page}");
         }
+        // The invoice-shaped sample fits one page: the full column set, a long number beside its
+        // status, and a total row per tax group.
+        let invoice_pdf = engine.render(&invoice).unwrap();
+        let invoice_pages = page_texts(invoice_pdf.bytes());
+        assert_eq!(invoice_pages.len(), 1, "{invoice_pages:?}");
+        for text in [
+            "VendorCreditNoteBILL/2026/11/000042/BANDUNG-UTARA-WAREHOUSE",
+            "Cancelled",
+            "DescriptionQuantityUnitPriceDisc.%TaxesAmount",
+            "PPN11%PPnBM10%",
+            "PPNRp7.734.375.000,00",
+            "TotalRp85.078.125.000,00",
+        ] {
+            assert!(
+                invoice_pages[0].contains(text),
+                "{text}: {}",
+                invoice_pages[0]
+            );
+        }
         // Kept for a look at the layout.
         let out = Path::new(env!("CARGO_TARGET_TMPDIR"));
         fs::write(out.join("report-documents-sample.pdf"), pdf.bytes()).unwrap();
+        fs::write(
+            out.join("report-documents-invoice.pdf"),
+            invoice_pdf.bytes(),
+        )
+        .unwrap();
     });
 }

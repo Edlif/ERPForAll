@@ -1029,9 +1029,9 @@ struct Wanted {
     amount_currency: Decimal,
 }
 
-/// The receivable or payable account (`wanted` is the account type) of an invoice of `company`
-/// that has none yet: see [`sync_terms`].
-async fn fallback_account(
+/// The receivable or payable account (`wanted` is the account type) of an invoice or a payment of
+/// `company` that has none yet: see [`sync_terms`].
+pub(crate) async fn fallback_account(
     tx: &mut Transaction,
     env: &Env,
     company: i64,

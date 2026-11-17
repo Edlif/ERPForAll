@@ -99,6 +99,7 @@ struct Header {
     currency_name: String,
     reference: Option<String>,
     move_type: String,
+    payment: bool,
 }
 
 impl Header {
@@ -124,11 +125,14 @@ impl Header {
         )
     }
 
-    /// The numbering kind of the entry: a credit note asks for the refund chain, which the journal
-    /// gives only when it keeps one (`R` before the code; else the document chain); everything
-    /// else is a document (reference). Payments come with their slice.
+    /// The numbering kind of the entry: a credit note asks for the refund chain and a payment's
+    /// entry the payment chain, which the journal gives only when it keeps one (`R` or `P` before
+    /// the code; else the document chain); everything else is a document (reference
+    /// ).
     fn sequence_kind(&self) -> &'static str {
-        if crate::invoice::is_refund(&self.move_type) {
+        if self.payment {
+            "payment"
+        } else if crate::invoice::is_refund(&self.move_type) {
             "refund"
         } else {
             "document"
@@ -473,7 +477,8 @@ async fn read_headers(tx: &mut Transaction, ids: &[i64]) -> Result<Vec<Header>> 
              j.sequence_reset::text, \
              EXISTS (SELECT 1 FROM account_move p WHERE p.journal_id = m.journal_id \
                      AND p.state = 'posted'), \
-             cur.active, cur.name::text, m.ref::text, m.move_type::text \
+             cur.active, cur.name::text, m.ref::text, m.move_type::text, \
+             m.origin_payment_id IS NOT NULL \
              FROM account_move m \
              JOIN res_company co ON co.id = m.company_id \
              JOIN account_journal j ON j.id = m.journal_id \
@@ -511,6 +516,7 @@ async fn read_headers(tx: &mut Transaction, ids: &[i64]) -> Result<Vec<Header>> 
             currency_name: row.try_get(14).map_err(db)?,
             reference: row.try_get(15).map_err(db)?,
             move_type: row.try_get(16).map_err(db)?,
+            payment: row.try_get(17).map_err(db)?,
         });
     }
     Ok(headers)

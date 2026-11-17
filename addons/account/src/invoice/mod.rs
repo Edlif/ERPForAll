@@ -17,6 +17,7 @@ pub mod post;
 mod settings;
 mod sync;
 
+pub(crate) use sync::fallback_account as partner_account;
 pub use sync::{sync_lines, sync_lines_redated};
 
 use erp_sdk::Command;

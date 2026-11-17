@@ -31,6 +31,7 @@ pub fn includes_initial_balance(account_type: &str) -> bool {
     name = "account.account",
     description = "Account",
     order = "id",
+    rec_names_search = ["name", "code"],
     parent_store = true,
     parent_name = "parent_id",
     company_access = direct(field = "company_ids", branch = "ancestor", empty = "deny"),
@@ -58,6 +59,7 @@ pub struct AccountAccount {
         size = 64,
         compute = "_compute_code",
         inverse = "_inverse_code",
+        search_method = "_search_code",
         string = "Code"
     )]
     pub code: Option<Arc<str>>,
@@ -266,6 +268,50 @@ impl AccountAccount {
             out.set(index, AccountAccount::CODE, code)?;
         }
         Ok(())
+    }
+
+    /// A condition on the code matches the code row of the active company's tree: the row of an
+    /// ancestor-or-self of the active company, since rows are kept for root companies only. A
+    /// negative operator is the negation of its positive form, so it also matches accounts that
+    /// have no code in that tree, as `= False` does.
+    #[search_method]
+    fn _search_code(
+        req: &FieldSearchRequest<'_>,
+        ctx: &mut FieldSearchContext<'_>,
+    ) -> Result<Domain> {
+        use erp_sdk::domain::Value as D;
+        let company = ctx.env().company_id()?.ok_or_else(|| {
+            Error::validation("Account codes belong to a company: select an active company first.")
+        })?;
+        let operator = req.operator();
+        let positive = operator.positive();
+        if !matches!(
+            positive,
+            Operator::Eq
+                | Operator::In
+                | Operator::Like
+                | Operator::ILike
+                | Operator::EqLike
+                | Operator::EqILike
+        ) {
+            return Err(Error::validation(format!(
+                "Accounts cannot be searched by code with the operator '{}'.",
+                operator.as_str()
+            )));
+        }
+        let in_tree = Domain::field("company_id")?.parent_of(company);
+        let matched = if positive == Operator::Eq && matches!(req.operand(), D::Bool(false)) {
+            // `code = False`: no code row in the tree
+            !Domain::field("code_mapping_ids")?.any(in_tree)
+        } else {
+            let code = Domain::condition("code", positive, req.operand().clone())?;
+            Domain::field("code_mapping_ids")?.any(in_tree & code)
+        };
+        Ok(if operator.is_negative() {
+            !matched
+        } else {
+            matched
+        })
     }
 
     /// Writing the code stores it for the root company of the active company, whichever branch

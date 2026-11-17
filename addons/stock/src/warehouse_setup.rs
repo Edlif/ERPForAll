@@ -452,12 +452,14 @@ fn type_roles(g: &Generated, multi_locations: bool) -> Result<[TypeRole; 8]> {
 }
 
 /// Create the eight operation types of every generated warehouse in one create (each with its
-/// own standard sequence, topology ADR A1), then record the generated identities and link the
+/// own sequence, topology ADR A1: standard during an addon install or upgrade, gapless when the
+/// warehouse is made while the server runs), then record the generated identities and link the
 /// warehouses and the receipt and delivery returns in set-based statements. The types' insert and
-/// the identity updates are set-based; each type still costs its access check, one `ir.sequence`
-/// insert and one `CREATE SEQUENCE`, whose lock entry is held until the transaction ends. An
-/// upgrade that provisions many companies at once therefore needs `max_locks_per_transaction`
-/// room for eight sequences per company (not measured).
+/// the identity updates are set-based; each type still costs its access check and one
+/// `ir.sequence` insert, and during an install or upgrade one `CREATE SEQUENCE`, whose lock entry
+/// is held until the transaction ends. An upgrade that provisions many companies at once
+/// therefore needs `max_locks_per_transaction` room for eight sequences per company (not
+/// measured).
 pub(crate) async fn create_operation_types(
     records: &Records,
     tx: &mut Transaction,

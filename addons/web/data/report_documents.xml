@@ -32,10 +32,9 @@ The parts of a printed business document (invoice, order, delivery slip), for an
     <!-- One address block. Arguments: `address` (a res.partner record), `label`. -->
     <template id="document_address">
         <div class="col-6">
-            <div class="small text-muted mb-1" t-out="label"/>
-            <!-- one block with line breaks, so the address reads as one set of tight lines -->
-            <div class="mb-1"><strong t-out="address.display_name"/><t t-if="address.street"><br/><span t-field="address.street"/></t><t t-if="address.street2"><br/><span t-field="address.street2"/></t><t t-if="address.zip or address.city"><br/><span t-if="address.zip" t-field="address.zip"/> <span t-if="address.city" t-field="address.city"/></t><t t-if="address.state_id or address.country_id"><br/><span t-if="address.state_id" t-field="address.state_id.name"/><t t-if="address.state_id and address.country_id">, </t><span t-if="address.country_id" t-field="address.country_id.name"/></t></div>
-            <div t-if="address.vat" class="small"><span class="text-muted">Tax ID</span> <span t-field="address.vat"/></div>
+            <div class="small text-muted mb-2" t-out="label"/>
+            <!-- one block with line breaks, so the address and its tax ID read as one set of lines -->
+            <div class="mb-1"><strong t-out="address.display_name"/><t t-if="address.street"><br/><span t-field="address.street"/></t><t t-if="address.street2"><br/><span t-field="address.street2"/></t><t t-if="address.zip or address.city"><br/><span t-if="address.zip" t-field="address.zip"/> <span t-if="address.city" t-field="address.city"/></t><t t-if="address.state_id or address.country_id"><br/><span t-if="address.state_id" t-field="address.state_id.name"/><t t-if="address.state_id and address.country_id">, </t><span t-if="address.country_id" t-field="address.country_id.name"/></t><t t-if="address.vat"><br/><span class="text-muted">Tax ID</span> <span t-field="address.vat"/></t></div>
         </div>
     </template>
 
@@ -50,7 +49,7 @@ The parts of a printed business document (invoice, order, delivery slip), for an
     <!-- One labelled value of the information row. Argument: `label`; the body is the value. -->
     <template id="document_info_item">
         <div class="col-3">
-            <div class="small text-muted mb-1" t-out="label"/>
+            <div class="small text-muted mb-2" t-out="label"/>
             <div class="fw-bold mb-2"><t t-out="0"/></div>
         </div>
     </template>
@@ -113,7 +112,7 @@ The parts of a printed business document (invoice, order, delivery slip), for an
     <!-- A note or terms block. Argument: `label` (a value or False); the body is the text. -->
     <template id="document_note">
         <div class="mb-3 avoid-page-break-inside">
-            <div t-if="label" class="small fw-bold mb-1" t-out="label"/>
+            <div t-if="label" class="small fw-bold mb-2" t-out="label"/>
             <div class="small"><t t-out="0"/></div>
         </div>
     </template>

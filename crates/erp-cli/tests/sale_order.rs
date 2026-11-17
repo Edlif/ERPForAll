@@ -26,6 +26,11 @@ mod moves;
 #[path = "sale_order/prices.rs"]
 mod prices;
 
+#[path = "support/report_access.rs"]
+mod report_access;
+#[path = "sale_order/reports.rs"]
+mod reports;
+
 #[path = "sale_order/screens.rs"]
 mod screens;
 

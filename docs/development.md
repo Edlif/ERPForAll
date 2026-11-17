@@ -1,7 +1,7 @@
 # Developing ERPForAll
 
 This guide is a map for people changing ERPForAll or writing addons for it. Installing and running a server is in
-the [installation guide](install.md); running one in production is in the [deployment guide](deployment.md). The
+the [installation guide](install.md); running one for real use is in the [deployment guide](deployment.md). The
 rules for contributions (licence, sign-off, pull requests) and the build and test commands are in
 [CONTRIBUTING.md](../CONTRIBUTING.md); they are not repeated here.
 

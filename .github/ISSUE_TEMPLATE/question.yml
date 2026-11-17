@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Question
+description: Ask how something works or how to do something
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions often get more answers in the Q&A category of Discussions, where others can find them
+        later. Use this form for a question about a specific part of the code or the documentation.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you have tried or read
+      description: Commands, documentation pages or code you looked at.

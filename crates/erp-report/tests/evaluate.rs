@@ -777,6 +777,32 @@ fn datetime_fields_shift_to_the_user_offset() {
 }
 
 #[test]
+fn datetime_fields_shift_by_the_offset_of_their_own_timestamp() {
+    // 2026-10-15 14:30:00 UTC is 1_792_074_600: the zone answers for that instant only.
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    let zone = EvalOptions::default().with_utc_offsets(move |unix| {
+        log.lock().unwrap().push(unix);
+        Some(7 * 3600)
+    });
+    let arch = "<p><span t-field='doc.create_date'/></p>";
+    assert_eq!(
+        print_order(arch, &zone).unwrap(),
+        r#"flow(block[]("10/15/2026 21:30:00"))"#
+    );
+    assert_eq!(*seen.lock().unwrap(), vec![1_792_074_600]);
+    // An unknown instant or an offset past 18 hours stops the document.
+    for offset in [None, Some(19 * 3600)] {
+        let err = print_order(
+            arch,
+            &EvalOptions::default().with_utc_offsets(move |_| offset),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("timezone"), "{err}");
+    }
+}
+
+#[test]
 fn selection_fields_print_their_label() {
     assert_eq!(
         order("<p><span t-field='doc.state'/></p>"),
@@ -827,6 +853,19 @@ fn many2one_fields_print_the_display_name() {
     assert_eq!(
         order("<p><span t-field='doc.line_ids'/></p>"),
         r#"flow(block[]("Desk, Chair"))"#
+    );
+}
+
+#[test]
+fn a_comprehension_iterates_the_records_of_a_relation() {
+    assert_eq!(
+        order(
+            "<p><t t-out=\"', '.join([line.name for line in doc.line_ids])\"/>|<t \
+             t-out='sum([line.qty for line in doc.line_ids if line.qty > 2])'/>|<t \
+             t-out='[line.id for line in doc.line_ids if line.order_id == doc]'/>|<t \
+             t-out='[line for line in doc.carrier_id]'/></p>"
+        ),
+        r#"flow(block[]("Desk, Chair|5|[31, 32]|[]"))"#
     );
 }
 
@@ -1130,6 +1169,30 @@ fn a_translate_argument_of_a_call_is_a_term() {
     assert_eq!(
         dump(&evaluate(&program, &context).unwrap()),
         r#"flow(block[]("Date d'échéance") block[]("Due Date") block[]("Paid on 3"))"#
+    );
+}
+
+/// the report)
+#[test]
+fn a_translated_argument_is_printed_as_text() {
+    let french = Language::new("fr_FR")
+        .unwrap()
+        .with_term("Total", "Total {{ secret }} #{ secret }")
+        .with_term("Open", "Ouvert {{");
+    let sources = [
+        TemplateSource::new(
+            "test.report",
+            "<div><t t-call='test.item' label.translate='Total'/><t t-call='test.item' \
+             label.translate='Open'/></div>",
+        ),
+        TemplateSource::new("test.item", "<p t-out='label'/>"),
+    ];
+    let program =
+        ReportProgram::compile("test.report", &sources, &french, ReportLimits::default()).unwrap();
+    let context = EvalContext::standard().with_var("secret", ExprValue::str("leaked"));
+    assert_eq!(
+        dump(&evaluate(&program, &context).unwrap()),
+        r#"flow(block[]("Total {{ secret }} #{ secret }") block[]("Ouvert {{"))"#
     );
 }
 

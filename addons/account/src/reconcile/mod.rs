@@ -11,8 +11,8 @@
 //! matches) and bounded by database CHECKs, so an over-applied match fails whatever path wrote it.
 //!
 //! Built in this cut: posted items in the company's currency on accounts that allow reconciliation,
-//! partial and full matching, the residual and matching number of an item, and the amount due and
-//! payment status of an invoice. Refused by name until later slices: unmatching, items in
+//! partial and full matching, the residual and matching number of an item, the amount due and
+//! payment status of an invoice, and unmatching. Refused by name until later slices: items in
 //! another currency, items of drafts, write-offs, cash-basis taxes and early-payment discounts.
 //! Open-item rows are created when an item is first matched (an unmatched item reads its own
 //! amounts), not yet by the line triggers. Developer page.
@@ -21,17 +21,17 @@ mod apply;
 mod lines;
 pub(crate) mod plan;
 
-pub use apply::reconcile_lines;
+pub use apply::{reconcile_lines, unreconcile_partials};
 
 use erp_sdk::prelude::*;
 
-/// The group whose members may match journal items (the posting group).
+/// The group whose members may match and unmatch journal items (the posting group).
 pub use crate::moves::POSTER_GROUP as RECONCILER_GROUP;
 
 /// A match of part or all of a debit item with a credit item.
 ///
-/// Rows are written only by the reconciliation service ([`reconcile_lines`]); deleting one is
-/// refused.
+/// Rows are written only by the reconciliation service ([`reconcile_lines`]); deleting one goes
+/// through [`unreconcile_partials`].
 #[model(
     name = "account.partial.reconcile",
     description = "Partial Reconcile",

@@ -669,6 +669,8 @@ pub(crate) enum Iter {
     Chars(String, usize),
     Keys(Map, usize),
     Bytes(Vec<u8>, usize),
+    /// A recordset yields its records one by one, as Python iterates a recordset.
+    Records(Arc<dyn ExprObject>, usize, usize),
 }
 
 impl Iter {
@@ -678,6 +680,10 @@ impl Iter {
             ExprValue::Str(s) => Ok(Iter::Chars(s, 0)),
             ExprValue::Dict(m) => Ok(Iter::Keys(m, 0)),
             ExprValue::Bytes(b) => Ok(Iter::Bytes(b, 0)),
+            ExprValue::Object(o) if o.is_record() => {
+                let len = o.record_ids().map_or(0, |ids| ids.len());
+                Ok(Iter::Records(o, len, 0))
+            }
             other => Err(ExprError::type_error(format!(
                 "'{}' object is not iterable",
                 other.type_name()
@@ -708,6 +714,16 @@ impl Iter {
                 let item = b.get(*i).map(|&byte| ExprValue::Int(i64::from(byte)));
                 *i += 1;
                 item
+            }
+            Iter::Records(o, len, i) => {
+                if *i >= *len {
+                    None
+                } else {
+                    let index = i64::try_from(*i)
+                        .map_err(|_| ExprError::overflow("recordset length out of range"))?;
+                    *i += 1;
+                    Some(o.get_item(&ExprValue::Int(index), budget)?)
+                }
             }
         };
         match item {

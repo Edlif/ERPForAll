@@ -280,9 +280,9 @@ pub mod report {
     pub use erp_expr::EvalContext;
     pub use erp_report::{
         AttachmentPolicy, Diagnostic, DocTree, DocumentOptions, EvalOptions, FieldInfo,
-        HelperDependencies, Language, Limits, Node, PageSetup, PlanContext, ProfileKind,
-        RecordStore, ReportError, ReportLimits, ReportProgram, RestrictedField, TemplateSource,
-        Validation, check_attachment, render_html, validate_arch,
+        HelperDependencies, LangFormat, Language, Limits, Node, PageSetup, PlanContext,
+        ProfileKind, RecordStore, ReportError, ReportLimits, ReportProgram, RestrictedField,
+        TemplateSource, Validation, check_attachment, render_html, validate_arch,
     };
     /// The data stage under the caller's rights: `load_records` fills the store a program
     /// evaluates from; `field_info` describes the registry's fields to the planner.

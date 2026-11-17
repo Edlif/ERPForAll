@@ -50,7 +50,7 @@ impl AccountMove {
 }
 
 /// What a draft of `kind` is called before it has a number.
-fn draft_label(kind: Option<&str>) -> Result<&'static str> {
+pub(crate) fn draft_label(kind: Option<&str>) -> Result<&'static str> {
     Ok(match kind {
         Some("entry") => "Draft Entry",
         Some("out_invoice") => "Draft Invoice",

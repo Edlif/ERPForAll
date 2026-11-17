@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+The printed inventory documents of a transfer, built on the shared document parts of the web addon
+     : the delivery slip that goes with the goods, the receipt
+     of what came in, and the picking operations sheet for the warehouse worker. All three are in the
+     Print menu of transfers. A draft or cancelled transfer says so in its title row. 
+-->
+<erp>
+    <!-- Title, partner address and dates: the same top of the delivery slip and the receipt. -->
+    <template id="report_picking_head">
+        <t t-set="status" t-value="False"/>
+        <t t-if="o.state == 'draft'" t-set="status">Draft</t>
+        <t t-if="o.state == 'cancel'" t-set="status">Cancelled</t>
+        <t t-call="web.document_title" title="title" number="o.name" status="status"/>
+        <t t-if="o.partner_id" t-call="web.document_addresses">
+            <t t-call="web.document_address" address="o.partner_id" label="party"/>
+        </t>
+        <t t-call="web.document_info">
+            <t t-if="o.origin" t-call="web.document_info_item" label.translate="Source Document"><span t-field="o.origin"/></t>
+            <t t-if="o.state != 'done'" t-call="web.document_info_item" label.translate="Scheduled Date"><span t-field="o.scheduled_date" t-options="{'hide_seconds': True}"/></t>
+            <t t-if="o.state == 'done' and o.date_done" t-call="web.document_info_item" label.translate="Date of Transfer"><span t-field="o.date_done" t-options="{'hide_seconds': True}"/></t>
+            <t t-call="web.document_info_item" label.translate="Operation Type"><span t-field="o.picking_type_id.name"/></t>
+            <t t-if="o.backorder_id" t-call="web.document_info_item" label.translate="Back Order of"><span t-field="o.backorder_id.name"/></t>
+        </t>
+    </template>
+
+    <!-- Ordered and delivered (or received) quantity of each move, with the lots and serial numbers
+         of its lines under the product. The delivered (received) quantity is filled in only once the
+         transfer is done; a back order of the remainder is named under the table. -->
+    <template id="report_picking_quantities">
+        <t t-call="web.document_lines">
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th class="text-end">Ordered</th>
+                    <th class="text-end" t-out="done_label"/>
+                </tr>
+            </thead>
+            <tbody>
+                <tr t-foreach="o.move_ids" t-as="move">
+                    <td>
+                        <span t-field="move.product_id"/>
+                        <t t-foreach="move.move_line_ids" t-as="line"><t t-if="line.lot_id or line.lot_name"><br/><small class="text-muted">Lot/Serial Number: <t t-out="line.lot_id.name or line.lot_name"/></small></t></t>
+                    </td>
+                    <td class="text-end"><span t-field="move.product_uom_qty" t-options="{'widget': 'float', 'precision': move.product_unit_digits}"/> <span t-field="move.uom_id.name"/></td>
+                    <td class="text-end"><t t-if="o.state == 'done'"><span t-field="move.quantity" t-options="{'widget': 'float', 'precision': move.product_unit_digits}"/> <span t-field="move.uom_id.name"/></t></td>
+                </tr>
+            </tbody>
+        </t>
+        <t t-if="o.backorder_ids" t-call="web.document_note" label.translate="Back Order">
+            The remaining quantities are on back order <t t-foreach="o.backorder_ids" t-as="back"><strong t-out="back.name"/><t t-if="not back_last">, </t></t>.
+        </t>
+    </template>
+
+    <template id="report_deliveryslip_document">
+        <div class="page">
+            <t t-set="done_label">Delivered</t>
+            <t t-call="stock.report_picking_head" title.translate="Delivery Slip" party.translate="Customer"/>
+            <t t-call="stock.report_picking_quantities"/>
+            <t t-call="web.document_signatures">
+                <t t-call="web.document_signature" label.translate="Delivered by"/>
+                <t t-call="web.document_signature" label.translate="Received by (name and signature)"/>
+            </t>
+        </div>
+    </template>
+
+    <template id="report_receipt_document">
+        <div class="page">
+            <t t-set="done_label">Received</t>
+            <t t-call="stock.report_picking_head" title.translate="Receipt" party.translate="Vendor"/>
+            <t t-call="stock.report_picking_quantities"/>
+            <t t-call="web.document_signatures">
+                <t t-call="web.document_signature" label.translate="Received by"/>
+            </t>
+        </div>
+    </template>
+
+    <!-- The warehouse worker's sheet: one row per operation line (a move without lines yet is one
+         row from its own locations), where to take it from, where to put it, how much to move and
+         a box to write the quantity done in when the transfer is still open. -->
+    <template id="report_picking_operations_document">
+        <div class="page">
+            <t t-set="status" t-value="False"/>
+            <t t-if="o.state == 'draft'" t-set="status">Draft</t>
+            <t t-if="o.state == 'cancel'" t-set="status">Cancelled</t>
+            <t t-call="web.document_title" title.translate="Picking Operations" number="o.name" status="status"/>
+            <t t-if="o.partner_id" t-call="web.document_addresses">
+                <t t-call="web.document_address" address="o.partner_id" label.translate="Partner"/>
+            </t>
+            <t t-call="web.document_info">
+                <t t-if="o.origin" t-call="web.document_info_item" label.translate="Source Document"><span t-field="o.origin"/></t>
+                <t t-call="web.document_info_item" label.translate="Operation Type"><span t-field="o.picking_type_id.name"/></t>
+                <t t-call="web.document_info_item" label.translate="Scheduled Date"><span t-field="o.scheduled_date" t-options="{'hide_seconds': True}"/></t>
+                <t t-if="o.date_deadline" t-call="web.document_info_item" label.translate="Deadline"><span t-field="o.date_deadline" t-options="{'hide_seconds': True}"/></t>
+            </t>
+            <!-- the lot column shows when any line has a lot or a lot name (a lot name is read line by line) -->
+            <t t-set="lotted" t-value="[line for line in o.move_line_ids if line.lot_id or line.lot_name]"/>
+            <t t-call="web.document_lines">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th t-if="lotted">Lot/Serial Number</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th class="text-end">To Move</th>
+                        <th class="text-end">Done</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <t t-foreach="o.move_ids" t-as="move">
+                        <t t-if="move.move_line_ids">
+                            <tr t-foreach="move.move_line_ids" t-as="line">
+                                <td>
+                                    <span t-field="line.product_id"/>
+                                    <t t-if="line.product_id.barcode"><br/><small class="text-muted">Barcode: <t t-out="line.product_id.barcode"/></small></t>
+                                </td>
+                                <td t-if="lotted"><t t-if="line.lot_id or line.lot_name" t-out="line.lot_id.name or line.lot_name"/></td>
+                                <td><span t-field="line.location_id"/></td>
+                                <td><span t-field="line.location_dest_id"/></td>
+                                <td class="text-end"><span t-field="line.quantity" t-options="{'widget': 'float', 'precision': line.product_unit_digits}"/> <span t-field="line.uom_id.name"/></td>
+                                <td class="text-end"><t t-if="o.state == 'done'"><span t-field="line.quantity" t-options="{'widget': 'float', 'precision': line.product_unit_digits}"/></t><t t-else="">______</t></td>
+                            </tr>
+                        </t>
+                        <tr t-else="">
+                            <td>
+                                <span t-field="move.product_id"/>
+                                <t t-if="move.product_id.barcode"><br/><small class="text-muted">Barcode: <t t-out="move.product_id.barcode"/></small></t>
+                            </td>
+                            <td t-if="lotted"/>
+                            <td><span t-field="move.location_id"/></td>
+                            <td><span t-field="move.location_dest_id"/></td>
+                            <td class="text-end"><span t-field="move.product_uom_qty" t-options="{'widget': 'float', 'precision': move.product_unit_digits}"/> <span t-field="move.uom_id.name"/></td>
+                            <td class="text-end"><t t-if="o.state == 'done'"><span t-field="move.quantity" t-options="{'widget': 'float', 'precision': move.product_unit_digits}"/></t><t t-else="">______</t></td>
+                        </tr>
+                    </t>
+                </tbody>
+            </t>
+        </div>
+    </template>
+
+    <template id="report_deliveryslip">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="o">
+                    <div t-att-class="None if o_first else 'page-break-before'">
+                        <t t-call="stock.report_deliveryslip_document"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_receipt">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="o">
+                    <div t-att-class="None if o_first else 'page-break-before'">
+                        <t t-call="stock.report_receipt_document"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_picking_operations">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <t t-foreach="docs" t-as="o">
+                    <div t-att-class="None if o_first else 'page-break-before'">
+                        <t t-call="stock.report_picking_operations_document"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_report_deliveryslip" model="ir.actions.report">
+        <field name="name">Delivery Slip</field>
+        <field name="model">stock.picking</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">stock.report_deliveryslip</field>
+        <field name="print_report_name">'Delivery Slip - ' + object.name</field>
+        <field name="binding_model_id" ref="stock.model_stock_picking"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_receipt" model="ir.actions.report">
+        <field name="name">Receipt</field>
+        <field name="model">stock.picking</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">stock.report_receipt</field>
+        <field name="print_report_name">'Receipt - ' + object.name</field>
+        <field name="binding_model_id" ref="stock.model_stock_picking"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_picking_operations" model="ir.actions.report">
+        <field name="name">Picking Operations</field>
+        <field name="model">stock.picking</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">stock.report_picking_operations</field>
+        <field name="print_report_name">'Picking Operations - ' + object.name</field>
+        <field name="binding_model_id" ref="stock.model_stock_picking"/>
+        <field name="binding_type">report</field>
+    </record>
+</erp>

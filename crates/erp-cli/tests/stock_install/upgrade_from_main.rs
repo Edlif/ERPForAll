@@ -722,7 +722,8 @@ fn stock_upgrade_from_1_7_gives_each_company_without_one_its_warehouse() {
             (second, "Second Company", "Secon"),
         ] {
             let warehouse = super::warehouse_setup::warehouse_of(&mut tx, company).await;
-            super::warehouse_setup::assert_topology(&mut tx, warehouse, name, code).await;
+            super::warehouse_setup::assert_topology(&mut tx, warehouse, name, code, "standard")
+                .await;
         }
         let snapshot = super::warehouse_setup::topology_image(&mut tx).await;
         tx.rollback().await.unwrap();

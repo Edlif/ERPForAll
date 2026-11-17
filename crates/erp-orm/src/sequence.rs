@@ -242,15 +242,36 @@ pub(crate) async fn create_backing_sequence(
     let sql = format!(
         "CREATE SEQUENCE IF NOT EXISTS {quoted} INCREMENT BY {increment} START WITH {start}"
     );
-    tx.execute(&sql, &[]).await?;
+    tx.execute(&sql, &[])
+        .await
+        .map_err(|e| refused_privilege(e, "create"))?;
     Ok(())
+}
+
+/// A backing-sequence statement the database refused for missing privilege (`42501`): a server
+/// whose database role may not create, change or remove schema objects while it runs. Named as
+/// a user error, since the "No gap" implementation needs no such object; every other error is
+/// returned as it is.
+fn refused_privilege(error: Error, action: &str) -> Error {
+    if error.sqlstate() != Some("42501") {
+        return error;
+    }
+    Error::user(format!(
+        "This server's database role cannot {action} database sequences while the server runs, \
+         so a sequence with the \"Standard\" implementation cannot be set up or changed here. Use \
+         the \"No gap\" implementation instead: it needs no database sequence."
+    ))
+    .with_sqlstate(Some("42501".to_owned()))
+    .with_source(error)
 }
 
 /// Drop a backing PostgreSQL sequence.
 pub(crate) async fn drop_backing_sequence(tx: &mut Transaction, name: SequenceName) -> Result<()> {
     let quoted = name.quoted();
     let sql = format!("DROP SEQUENCE IF EXISTS {quoted} RESTRICT");
-    tx.execute(&sql, &[]).await?;
+    tx.execute(&sql, &[])
+        .await
+        .map_err(|e| refused_privilege(e, "remove"))?;
     Ok(())
 }
 
@@ -276,7 +297,9 @@ pub(crate) async fn alter_backing_sequence(
         return Ok(());
     }
     let sql = format!("ALTER SEQUENCE {quoted} {}", parts.join(" "));
-    tx.execute(&sql, &[]).await?;
+    tx.execute(&sql, &[])
+        .await
+        .map_err(|e| refused_privilege(e, "change"))?;
     Ok(())
 }
 
@@ -1050,4 +1073,28 @@ pub async fn next_by_id_with_wait_mode(
         Some(wait_mode),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A missing privilege on a backing sequence is a named user error without internal names;
+    /// any other database error passes unchanged.
+    #[test]
+    fn a_refused_backing_sequence_is_named_and_other_errors_pass() {
+        let denied = Error::new(ErrorKind::Database, "permission denied for schema public")
+            .with_sqlstate(Some("42501".to_owned()));
+        let named = refused_privilege(denied, "create");
+        assert_eq!(named.kind(), ErrorKind::UserError);
+        assert_eq!(named.sqlstate(), Some("42501"));
+        assert!(named.message().contains("cannot create database sequences"));
+        assert!(named.message().contains("\"No gap\""));
+        assert!(!named.message().contains("public"), "{}", named.message());
+        let other =
+            Error::new(ErrorKind::Database, "duplicate").with_sqlstate(Some("42P07".into()));
+        let passed = refused_privilege(other, "create");
+        assert_eq!(passed.kind(), ErrorKind::Database);
+        assert_eq!(passed.message(), "duplicate");
+    }
 }

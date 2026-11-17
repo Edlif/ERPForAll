@@ -9,7 +9,7 @@ use erp_fields::{Date, Decimal};
 
 use super::*;
 
-fn dec(text: &str) -> Decimal {
+pub(super) fn dec(text: &str) -> Decimal {
     text.parse().unwrap()
 }
 
@@ -42,7 +42,7 @@ async fn create(tx: &mut Transaction, model: &str, vals: RawVals) -> i64 {
         .ids()[0]
 }
 
-async fn tax(tx: &mut Transaction, company: i64, name: &str, percent: &str) -> i64 {
+pub(super) async fn tax(tx: &mut Transaction, company: i64, name: &str, percent: &str) -> i64 {
     // a tax needs a tax group, and a plain install ships none
     let group = create(
         tx,
@@ -74,7 +74,7 @@ async fn tax(tx: &mut Transaction, company: i64, name: &str, percent: &str) -> i
 }
 
 /// A product in Units at the sales price `price` with the sales taxes `taxes`.
-async fn product(tx: &mut Transaction, name: &str, price: &str, taxes: &[i64]) -> i64 {
+pub(super) async fn product(tx: &mut Transaction, name: &str, price: &str, taxes: &[i64]) -> i64 {
     let unit = xmlid(tx, "uom", "product_uom_unit").await;
     create(
         tx,
@@ -109,7 +109,7 @@ async fn try_line(
     .await
 }
 
-async fn add_line(tx: &mut Transaction, order: &Records, vals: RawVals) -> Records {
+pub(super) async fn add_line(tx: &mut Transaction, order: &Records, vals: RawVals) -> Records {
     tx.env()
         .records("sale.order.line")
         .unwrap()
