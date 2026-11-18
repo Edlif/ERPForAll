@@ -878,7 +878,14 @@ async fn chosen_line(tx: &mut Transaction, env: &Env, line: i64) -> Result<(i64,
     Ok((
         line,
         inbound,
-        shown(tx, env, "account.payment.method.line", line).await?,
+        // the message is about one journal's dialog: the plain name, as the dropdown shows it
+        shown(
+            tx,
+            &env.with_context([("hide_payment_journal_id", Value::Int(1))]),
+            "account.payment.method.line",
+            line,
+        )
+        .await?,
     ))
 }
 

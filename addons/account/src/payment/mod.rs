@@ -146,6 +146,9 @@ pub struct AccountPaymentMethodLine {
     /// The method's code.
     #[field(char, related = "payment_method_id.code", string = "Code")]
     pub code: Option<Arc<str>>,
+    /// "<name> (<journal name>)", the plain name under the context key `hide_payment_journal_id`.
+    #[field(char, compute = "_compute_display_name")]
+    pub display_name: Option<Arc<str>>,
 }
 
 /// The demo outstanding accounts on the manual lines of the demo bank and cash journals where none
@@ -162,6 +165,44 @@ const DEMO_OUTSTANDING: &str = "UPDATE account_payment_method_line l SET payment
 
 #[methods(AccountPaymentMethodLine, addon = "account")]
 impl AccountPaymentMethodLine {
+    /// The journal's name is part of the line's name and readable by every internal user, so it is
+    /// read with elevated rights; a view that already shows the journal asks for the plain name.
+    #[compute(depends = ["name", "journal_id"], depends_context = ["hide_payment_journal_id"])]
+    async fn _compute_display_name(
+        this: &RecordSet<AccountPaymentMethodLine>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, AccountPaymentMethodLine>,
+    ) -> Result<()> {
+        let hide = matches!(
+            this.env().context().get("hide_payment_journal_id"),
+            Some(Value::Bool(true)) | Some(Value::Int(1..))
+        );
+        let names = this.mapped(tx, AccountPaymentMethodLine::NAME).await?;
+        let journals = this
+            .mapped(tx, AccountPaymentMethodLine::JOURNAL_ID)
+            .await?;
+        let env = this.env().sudo(true);
+        for (i, (name, journal)) in names.into_iter().zip(journals).enumerate() {
+            let name = name.as_deref().unwrap_or_default().to_owned();
+            let label = match journal {
+                Some(journal) if !hide => {
+                    let record = env.records("account.journal")?.browse([journal.get()])?;
+                    match record.cell(tx, "name").await? {
+                        Cell::Str(journal_name) => format!("{name} ({journal_name})"),
+                        _ => name,
+                    }
+                }
+                _ => name,
+            };
+            out.set(
+                i,
+                AccountPaymentMethodLine::DISPLAY_NAME,
+                Some(Arc::<str>::from(label)),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Demo data entry point: the manual lines of the demo bank and cash journals book to the demo
     /// outstanding accounts (inbound to receipts, outbound to payments) where none is set.
     #[method]

@@ -1415,3 +1415,82 @@ async fn foreign_body() {
     drop(orm);
     db.cleanup().await.unwrap();
 }
+
+/// `hide_payment_journal_id`; the read by an employee without journal access is not covered, the
+/// harness has no restricted user here and the compute reads the journal with elevated rights)
+#[test]
+fn a_method_line_is_named_with_its_journal_unless_the_journal_is_hidden() {
+    big_stack(line_name_body);
+}
+
+async fn line_name_body() {
+    let (_db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    let bank = bank_journal(&mut tx, company, "BNK7").await;
+    let line = line_of(&mut tx, bank, "inbound").await;
+    let lines = tx
+        .env()
+        .records("account.payment.method.line")
+        .unwrap()
+        .browse([line])
+        .unwrap();
+    assert_eq!(
+        string(&lines, &mut tx, "display_name").await,
+        "Manual Payment (BNK7)"
+    );
+    let hidden = lines
+        .clone()
+        .with_context([("hide_payment_journal_id", Value::Int(1))]);
+    assert_eq!(
+        string(&hidden, &mut tx, "display_name").await,
+        "Manual Payment"
+    );
+}
+
+/// direction: the view field carries the domain, and that domain finds exactly one line)
+#[test]
+fn the_dialog_method_dropdown_is_limited_to_its_journal_and_direction() {
+    big_stack(dropdown_body);
+}
+
+async fn dropdown_body() {
+    let (_db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    let bank = bank_journal(&mut tx, company, "BNK8").await;
+    let cash = money_journal(&mut tx, company, "CSH8", "cash").await;
+    let env = tx.env().with_company(company).unwrap();
+    let views = erp_addon_web::metadata_test_support::test_get_views(
+        &env,
+        &mut tx,
+        "account.payment.register",
+        vec![Value::list([Value::False, Value::str("form")])],
+        32 * 1024 * 1024,
+    )
+    .await
+    .unwrap();
+    let text = erp_sdk::serde_json::to_value(views).unwrap().to_string();
+    let at = text.find("payment_method_line_id").expect("field served");
+    assert!(
+        text.contains("journal_id") && text[at..].contains("payment_type"),
+        "the method field carries a journal and direction domain: {text}"
+    );
+    let lines = env.records("account.payment.method.line").unwrap();
+    for (journal, direction) in [(bank, "inbound"), (bank, "outbound"), (cash, "inbound")] {
+        let found = lines
+            .search(
+                &mut tx,
+                &Domain::and([
+                    Domain::condition("journal_id", Operator::Eq, journal).unwrap(),
+                    Domain::condition("payment_type", Operator::Eq, direction).unwrap(),
+                ]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            found.ids(),
+            vec![line_of(&mut tx, journal, direction).await]
+        );
+    }
+}

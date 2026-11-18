@@ -1119,6 +1119,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "reads the global lock-wait setting of journal entry numbering; the framework reads its own configuration, and a user who posts needs no settings group; the value is a bounded number and is not returned to the caller (a later release)",
     ),
     (
+        "account/payment/mod.rs::_compute_display_name",
+        1,
+        "reads the journal's name for a payment method line's display name \"<line> (<journal>)\"; the journal name is part of the line's name, which every internal user may read, so a user without journal access still sees it; only the name is read (C36-PAY-METHOD-LIST)",
+    ),
+    (
         "erp-orm/audit/persist.rs::audited_superuser_env",
         1,
         "the environment of a flagged server action's run, returned only after the elevation was recorded for the audit row; the caller's own right to run the action was checked first by base",

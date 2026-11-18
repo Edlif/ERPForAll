@@ -49,7 +49,9 @@
             </group>
             <group>
               <field name="journal_id" readonly="state != 'draft'"/>
-              <field name="payment_method_line_id" readonly="state != 'draft'"/>
+              <field name="payment_method_line_id" readonly="state != 'draft'"
+                     domain="[('journal_id', '=', journal_id), ('payment_type', '=', payment_type)]"
+                     context="{'hide_payment_journal_id': 1}"/>
               <field name="company_id" readonly="1"/>
               <field name="move_id" readonly="1" invisible="not move_id"/>
               <field name="outstanding_account_id" readonly="1" invisible="not move_id"/>
@@ -147,7 +149,9 @@
         <group>
           <group>
             <field name="journal_id" required="1"/>
-            <field name="payment_method_line_id" required="1"/>
+            <field name="payment_method_line_id" required="1"
+                   domain="[('journal_id', '=', journal_id), ('payment_type', '=', payment_type)]"
+                   context="{'hide_payment_journal_id': 1}"/>
             <field name="partner_id" readonly="1"/>
             <field name="group_payment"/>
           </group>
