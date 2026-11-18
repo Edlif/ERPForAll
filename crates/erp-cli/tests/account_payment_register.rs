@@ -1446,9 +1446,44 @@ async fn line_name_body() {
         string(&hidden, &mut tx, "display_name").await,
         "Manual Payment"
     );
+    // Several lines in one recordset, two on one journal and one on another: each names its own.
+    let cash = money_journal(&mut tx, company, "CSH7", "cash").await;
+    let lines = [
+        line_of(&mut tx, bank, "inbound").await,
+        line_of(&mut tx, cash, "inbound").await,
+        line_of(&mut tx, bank, "outbound").await,
+    ];
+    let names = tx
+        .env()
+        .records("account.payment.method.line")
+        .unwrap()
+        .browse(lines)
+        .unwrap()
+        .cells(&mut tx, "display_name")
+        .await
+        .unwrap();
+    let cash_name = string(
+        &tx.env()
+            .records("account.journal")
+            .unwrap()
+            .browse([cash])
+            .unwrap(),
+        &mut tx,
+        "name",
+    )
+    .await;
+    assert_eq!(
+        names,
+        [
+            Cell::Str("Manual Payment (BNK7)".into()),
+            Cell::Str(format!("Manual Payment ({cash_name})").into()),
+            Cell::Str("Manual Payment (BNK7)".into()),
+        ]
+    );
 }
 
-/// direction: the view field carries the domain, and that domain finds exactly one line)
+/// plain-name context; a hand-built search on the same two conditions finds exactly one line, the
+/// served domain string itself is not evaluated)
 #[test]
 fn the_dialog_method_dropdown_is_limited_to_its_journal_and_direction() {
     big_stack(dropdown_body);
@@ -1470,11 +1505,27 @@ async fn dropdown_body() {
     )
     .await
     .unwrap();
-    let text = erp_sdk::serde_json::to_value(views).unwrap().to_string();
-    let at = text.find("payment_method_line_id").expect("field served");
-    assert!(
-        text.contains("journal_id") && text[at..].contains("payment_type"),
-        "the method field carries a journal and direction domain: {text}"
+    let served = erp_sdk::serde_json::to_value(views).unwrap();
+    let node = served["views"][0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["field"]["name"] == "payment_method_line_id")
+        .unwrap_or_else(|| panic!("the method field is served: {served}"));
+    // The served form of `[('journal_id', '=', journal_id), ('payment_type', '=', payment_type)]`.
+    let lit =
+        |s: &str| erp_sdk::serde_json::json!({"kind":"literal","value":{"kind":"str","value":s}});
+    let name = |s: &str| erp_sdk::serde_json::json!({"kind":"name","name":s});
+    let expected = erp_sdk::serde_json::json!({"schema":1,"nodes":[
+        lit("journal_id"), lit("="), name("journal_id"), {"kind":"tuple","items":[0,1,2]},
+        lit("payment_type"), lit("="), name("payment_type"), {"kind":"tuple","items":[4,5,6]},
+        {"kind":"list","items":[3,7]},
+    ]});
+    assert_eq!(node["options"]["domain"], expected, "served domain: {node}");
+    assert_eq!(
+        node["options"]["context"]["nodes"][0],
+        lit("hide_payment_journal_id"),
+        "served context: {node}"
     );
     let lines = env.records("account.payment.method.line").unwrap();
     for (journal, direction) in [(bank, "inbound"), (bank, "outbound"), (cash, "inbound")] {

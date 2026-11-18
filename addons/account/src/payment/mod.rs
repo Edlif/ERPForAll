@@ -181,18 +181,42 @@ impl AccountPaymentMethodLine {
         let journals = this
             .mapped(tx, AccountPaymentMethodLine::JOURNAL_ID)
             .await?;
-        let env = this.env().sudo(true);
+        // One elevated read of every distinct journal name, none when the plain name is asked for.
+        // A journal not saved yet (negative id) has no stored name: its lines keep the plain name.
+        let mut ids: Vec<i64> = journals
+            .iter()
+            .flatten()
+            .map(|j| j.get())
+            .filter(|id| *id > 0)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut journal_names = std::collections::HashMap::new();
+        if !hide && !ids.is_empty() {
+            let records = this
+                .env()
+                .sudo(true)
+                .records("account.journal")?
+                .browse(ids)?;
+            for (id, cell) in records
+                .ids()
+                .into_iter()
+                .zip(records.cells(tx, "name").await?)
+            {
+                let Cell::Str(journal_name) = cell else {
+                    return Err(Error::invariant(format!(
+                        "The name of journal {id} is not text, so the payment method line label \
+                         cannot be built."
+                    )));
+                };
+                journal_names.insert(id, journal_name);
+            }
+        }
         for (i, (name, journal)) in names.into_iter().zip(journals).enumerate() {
             let name = name.as_deref().unwrap_or_default().to_owned();
-            let label = match journal {
-                Some(journal) if !hide => {
-                    let record = env.records("account.journal")?.browse([journal.get()])?;
-                    match record.cell(tx, "name").await? {
-                        Cell::Str(journal_name) => format!("{name} ({journal_name})"),
-                        _ => name,
-                    }
-                }
-                _ => name,
+            let label = match journal.and_then(|j| journal_names.get(&j.get())) {
+                Some(journal_name) => format!("{name} ({journal_name})"),
+                None => name,
             };
             out.set(
                 i,
