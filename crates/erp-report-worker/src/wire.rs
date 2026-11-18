@@ -2,9 +2,9 @@
 //! The messages of the frame protocol. A document crosses the pipe as plain values and is admitted
 //! again by the worker through `DocumentBuilder`: the worker trusts no frame.
 use erp_report::{
-    Alignment, CrossAlignment, DocTree, DocumentBuilder, DocumentOptions, LayoutFailure, LimitKind,
-    Limits, Node, NodeId, PageCounter, PageSetup, PdfStandard, RenderDate, ReportError, Style,
-    TableLook,
+    Alignment, CrossAlignment, DocTree, DocumentBuilder, DocumentOptions, ImageFit, LayoutFailure,
+    LimitKind, Limits, Node, NodeId, PageCounter, PageSetup, PdfStandard, PictureQuality,
+    RenderDate, ReportError, Style, TableLook, Vector,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -37,16 +37,24 @@ pub struct Hello {
     pub protocol: u32,
     /// The shipped font store, an absolute path.
     pub font_directory: String,
+    /// `(package name, absolute path)` of each optional font package installed on the node.
+    pub optional_fonts: Vec<(String, String)>,
     /// `(limit name, value)` for every document limit, lowered from the defaults.
     pub limits: Vec<(String, u64)>,
     /// Bytes of address space allowed beyond the memory cap and the size at start.
     pub address_space_headroom: u64,
 }
 impl Hello {
-    pub fn new(font_directory: String, limits: Limits, address_space_headroom: u64) -> Self {
+    pub fn new(
+        font_directory: String,
+        optional_fonts: Vec<(String, String)>,
+        limits: Limits,
+        address_space_headroom: u64,
+    ) -> Self {
         Self {
             protocol: crate::PROTOCOL_VERSION,
             font_directory,
+            optional_fonts,
             limits: LimitKind::ALL
                 .into_iter()
                 .map(|kind| (kind.to_string(), limits.get(kind) as u64))
@@ -353,12 +361,32 @@ enum WireNode<'a> {
     PageCurrent,
     #[serde(rename = "o")]
     PageTotal,
-    /// Picture bytes (a CBOR byte string), width and height in points, alternative text.
+    /// Picture bytes (a CBOR byte string), width and height in points, alternative text, fit
+    /// (0 contain, 1 cover; protocol 8).
     #[serde(rename = "m")]
-    Image(WireBytes<'a>, Option<f64>, Option<f64>, Cow<'a, str>),
+    Image(WireBytes<'a>, Option<f64>, Option<f64>, Cow<'a, str>, u8),
+    /// The box of a picture that could not be read: width and height in points, alternative text
+    /// and the reason returned as a warning (protocol 8).
+    #[serde(rename = "x")]
+    Placeholder(f64, f64, Cow<'a, str>, Cow<'a, str>),
     /// A table cell: its child, colspan and rowspan (protocol 6). The builder admits the spans again.
     #[serde(rename = "s")]
     Cell(u32, u64, u64),
+    /// A generated graphic, a barcode or a QR code (protocol 9), as the numbers it is made from: box
+    /// width and height, rectangles `[x, y, width, height]`, colour, printed width and height in
+    /// points, alternative text, the text under it. Never markup: the worker writes its own from the
+    /// numbers, under the same checks as the server.
+    #[serde(rename = "v")]
+    Vector(
+        f64,
+        f64,
+        Cow<'a, [[f64; 4]]>,
+        [u8; 3],
+        Option<f64>,
+        Option<f64>,
+        Cow<'a, str>,
+        Option<Cow<'a, str>>,
+    ),
 }
 /// size, bold, italic, underline, colour, padding, alignment (0 start, 1 centre, 2 end), keep together,
 /// space above and below, fill, rules above and below, table look (0 lined, 1 bordered, 2 borderless)
@@ -389,6 +417,8 @@ struct WireOptions<'a> {
     date: (i32, u8, u8),
     /// 0 PDF 1.7, 1 PDF/A-3b
     standard: u8,
+    /// Resolution pictures are embedded at (pixels per inch) and JPEG quality (protocol 8).
+    pictures: (u16, u8),
 }
 
 fn later(feature: &'static str) -> ReportError {
@@ -526,23 +556,51 @@ impl<'a> WireDocument<'a> {
                     data,
                     width,
                     height,
+                    fit,
                     alt,
                 } => WireNode::Image(
                     WireBytes(Cow::Borrowed(data)),
                     *width,
                     *height,
                     Cow::Borrowed(alt),
+                    match fit {
+                        ImageFit::Contain => 0,
+                        ImageFit::Cover => 1,
+                        _ => return Err(later("picture fit over the render worker protocol")),
+                    },
+                ),
+                Node::Placeholder {
+                    width,
+                    height,
+                    alt,
+                    reason,
+                } => WireNode::Placeholder(
+                    *width,
+                    *height,
+                    Cow::Borrowed(alt),
+                    Cow::Borrowed(reason),
                 ),
                 Node::Cell {
                     child,
                     colspan,
                     rowspan,
                 } => WireNode::Cell(index(child)?, *colspan as u64, *rowspan as u64),
-                Node::Vector { .. } => {
-                    return Err(later(
-                        "barcode or QR graphic over the render worker protocol",
-                    ));
-                }
+                Node::Vector {
+                    vector,
+                    width,
+                    height,
+                    alt,
+                    caption,
+                } => WireNode::Vector(
+                    vector.width(),
+                    vector.height(),
+                    Cow::Borrowed(vector.rectangle_list()),
+                    vector.color(),
+                    *width,
+                    *height,
+                    Cow::Borrowed(alt),
+                    caption.as_deref().map(Cow::Borrowed),
+                ),
                 _ => {
                     return Err(later(
                         "document node of a newer kind over the render worker protocol",
@@ -577,6 +635,7 @@ impl<'a> WireDocument<'a> {
                     PdfStandard::PdfA3b => 1,
                     _ => return Err(later("PDF standard over the render worker protocol")),
                 },
+                pictures: (options.pictures().dpi(), options.pictures().jpeg_quality()),
             },
         })
     }
@@ -645,12 +704,40 @@ impl<'a> WireDocument<'a> {
                 WireNode::PageCurrent => Node::PageCounter(PageCounter::Current),
                 WireNode::PageTotal => Node::PageCounter(PageCounter::Total),
                 // the builder probes the picture against the limits again: the worker trusts no frame
-                WireNode::Image(data, width, height, alt) => Node::Image {
+                WireNode::Image(data, width, height, alt, fit) => Node::Image {
                     data: data.0.into_owned().into(),
                     width,
                     height,
+                    fit: match fit {
+                        0 => ImageFit::Contain,
+                        1 => ImageFit::Cover,
+                        _ => {
+                            return Err(ReportError::InvalidDocument {
+                                reason: "unknown picture fit in a document frame",
+                            });
+                        }
+                    },
                     alt: alt.into_owned(),
                 },
+                // sizes and the length of the reason are checked by the builder, as in process
+                WireNode::Placeholder(width, height, alt, reason) => Node::Placeholder {
+                    width,
+                    height,
+                    alt: alt.into_owned(),
+                    reason: reason.into_owned(),
+                },
+                // The graphic is made again from its numbers: box, count, finiteness and "inside the
+                // box" are checked by `Vector::rectangles`, the printed size and the lowered
+                // rectangle limit by the builder.
+                WireNode::Vector(wide, high, rectangles, color, width, height, alt, caption) => {
+                    Node::Vector {
+                        vector: Vector::rectangles(wide, high, &rectangles, color)?,
+                        width,
+                        height,
+                        alt: alt.into_owned(),
+                        caption: caption.map(Cow::into_owned),
+                    }
+                }
                 // spans and the "only inside a Table" rule are checked by the builder, as in process
                 WireNode::Cell(child, colspan, rowspan) => {
                     let span = |value: u64| {
@@ -676,6 +763,8 @@ impl<'a> WireDocument<'a> {
         let wire = self.options;
         let (width, height, margins) = wire.page;
         let (year, month, day) = wire.date;
+        // floor and bound of both values are checked again: the worker trusts no frame
+        let (dpi, jpeg_quality) = wire.pictures;
         let options = DocumentOptions::new(
             wire.id.into_owned(),
             wire.title.into_owned(),
@@ -684,6 +773,7 @@ impl<'a> WireDocument<'a> {
         .with_language(&wire.language)?
         .with_fonts(wire.fonts.into_iter().map(Cow::into_owned).collect())?
         .with_date(RenderDate::new(year, month, day)?)
+        .with_pictures(PictureQuality::new(dpi, jpeg_quality)?)
         .with_standard(match wire.standard {
             0 => PdfStandard::Pdf17,
             1 => PdfStandard::PdfA3b,

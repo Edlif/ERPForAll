@@ -229,6 +229,7 @@ fn spans_and_vectors_in_the_preview() {
             width: None,
             height: None,
             alt: "code <1>".into(),
+            caption: None,
         })
         .unwrap();
     let body = b

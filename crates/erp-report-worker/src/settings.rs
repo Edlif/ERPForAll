@@ -165,6 +165,7 @@ impl WorkerCommand {
 pub struct PoolSettings {
     command: WorkerCommand,
     font_directory: PathBuf,
+    optional_fonts: Vec<(String, PathBuf)>,
     limits: Limits,
     values: [u64; 15],
     backtrace: bool,
@@ -175,6 +176,7 @@ impl PoolSettings {
         Self {
             command,
             font_directory: font_directory.into(),
+            optional_fonts: Vec::new(),
             limits: Limits::default(),
             values: Setting::ALL.map(Setting::default),
             backtrace: false,
@@ -194,6 +196,16 @@ impl PoolSettings {
         self.values[setting.index()] = value;
         Ok(self)
     }
+    /// The directory of an optional font package installed on this node, by the package's name
+    /// (`report_fonts_cjk`). The engine of each worker checks the name and the files.
+    pub fn with_optional_fonts(
+        mut self,
+        package: impl Into<String>,
+        directory: impl Into<PathBuf>,
+    ) -> Self {
+        self.optional_fonts.push((package.into(), directory.into()));
+        self
+    }
     /// The document limits every worker of the pool enforces.
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
@@ -212,6 +224,9 @@ impl PoolSettings {
     }
     pub fn font_directory(&self) -> &Path {
         &self.font_directory
+    }
+    pub fn optional_fonts(&self) -> &[(String, PathBuf)] {
+        &self.optional_fonts
     }
     pub fn limits(&self) -> Limits {
         self.limits

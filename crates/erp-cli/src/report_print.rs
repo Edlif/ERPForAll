@@ -111,7 +111,8 @@ fn layout_error(error: &ReportError) -> Error {
 }
 
 /// The settings of `[report]`: the font store (the configured directory, else the
-/// `report_fonts` directory of an addons path) and each named pool setting.
+/// `report_fonts` directory of an addons path), the optional `report_fonts_cjk` package where
+/// `cjk_font_directory` names it, and each named pool setting.
 ///
 /// # Errors
 ///
@@ -136,13 +137,27 @@ fn pool_settings(config: &ServerConfig) -> Result<std::result::Result<PoolSettin
         let setting = Setting::from_name(name).ok_or_else(|| {
             let known: Vec<&str> = Setting::ALL.iter().map(|s| s.name()).collect();
             Error::validation(format!(
-                "[report] {name} is not a report setting; the settings are font_directory, {}",
+                "[report] {name} is not a report setting; the settings are font_directory, \
+                 cjk_font_directory, {}",
                 known.join(", ")
             ))
         })?;
         settings = settings
             .with(setting, *value)
             .map_err(|e| Error::validation(format!("[report] {e}")))?;
+    }
+    // The optional package is installed where it is configured; without it a document that names
+    // one of its families is refused by name and every other document prints.
+    let cjk = erp_report_typst::OptionalFonts::Cjk.package();
+    if let Some(path) = &report.cjk_font_directory {
+        if !path.is_dir() {
+            return Ok(Err(format!(
+                "Printing is not available on this server: the optional font package {cjk} {} \
+                 is not a directory (report.cjk_font_directory).",
+                path.display()
+            )));
+        }
+        settings = settings.with_optional_fonts(cjk, path);
     }
     Ok(match fonts {
         Some(path) if path.is_dir() => Ok(settings),
@@ -441,8 +456,10 @@ impl WebReport for ReportRuntime {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "tests")]
     use super::*;
     use erp_fields::ErrorKind;
+    use erp_report_typst::OptionalFonts;
 
     /// A document the frame or the worker refuses is the user's error and says what cannot be
     /// printed; only workers that do not start read as the server being unavailable
@@ -452,10 +469,10 @@ mod tests {
         for (error, feature) in [
             (
                 ReportError::Unsupported {
-                    feature: "barcode or QR graphic over the render worker protocol",
+                    feature: "document node of a newer kind over the render worker protocol",
                     task: "a later release",
                 },
-                "barcode or QR graphic",
+                "document node of a newer kind",
             ),
             (
                 ReportError::InvalidDocument {
@@ -502,5 +519,52 @@ mod tests {
             "{}",
             failed.message()
         );
+    }
+
+    /// the printing-unavailable message naming the package and the key, and an existing one is
+    /// handed to the pool settings)
+    #[test]
+    fn a_missing_cjk_font_directory_is_named_by_package_and_key() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, value) in [
+            ("runtime-url", "postgresql://r:x@127.0.0.1:5548/erp\n"),
+            ("owner-url", "postgresql://o:x@127.0.0.1:5548/erp\n"),
+            (
+                "proxy-token",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+            ),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, value).unwrap();
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+                .unwrap();
+        }
+        std::fs::create_dir(dir.path().join("fonts")).unwrap();
+        let load = |report: &str| {
+            let text = format!(
+                "database='erp'\ndatabase_url_file='runtime-url'\nowner_database_url_file='owner-url'\n\
+                 bind='127.0.0.1:18069'\npublic_origin='https://erp.example.test'\n\
+                 proxy_mode='authenticated'\ntrusted_proxies=['127.0.0.1/32']\n\
+                 proxy_token_file='proxy-token'\naddons_path=['addons']\nassets_manifest='m.json'\n\
+                 [report]\nfont_directory='fonts'\n{report}"
+            );
+            let path = dir.path().join("server.toml");
+            std::fs::write(&path, text).unwrap();
+            ServerConfig::load(&path).unwrap()
+        };
+        let message = pool_settings(&load("cjk_font_directory='absent'\n"))
+            .unwrap()
+            .err()
+            .unwrap();
+        assert!(
+            message.contains(OptionalFonts::Cjk.package())
+                && message.contains("is not a directory (report.cjk_font_directory)"),
+            "{message}"
+        );
+        std::fs::create_dir(dir.path().join("cjk")).unwrap();
+        let settings = pool_settings(&load("cjk_font_directory='cjk'\n"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(settings.optional_fonts().len(), 1);
     }
 }

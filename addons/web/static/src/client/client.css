@@ -3627,3 +3627,17 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .record-form-chatter .is-overdue .erp-mail-activity-rows { border-color: var(--danger-line); }
 .record-form-chatter .is-today .erp-mail-activity-rows { border-color: var(--warning-line); }
 .record-form-chatter .erp-mail-activity > .erp-mail-activity-done { padding-top: 4px; }
+
+/* Form pass follow-ups (review of 2026-11-18) */
+.record-form:not(.settings-form) .many2one-readonly > .many2one-open-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+@media (hover: none) { .record-form:not(.settings-form) .many2one-readonly > button.many2one-open-btn { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; } }
+.record-form:not(.settings-form) .x2many-table .many2one-readonly > .many2one-open-btn:hover { color: var(--accent); text-decoration: underline; }
+.record-form :is(.form-title-heading, .form-title-field) .many2one-readonly { font-size: 26px; font-weight: 600; min-height: 48px; }
+@media (max-width: 640px) { .record-form :is(.form-title-heading, .form-title-field) .many2one-readonly { font-size: 23px; } }
+.x2many-table .field-readonly .many2many-tags .relation-chip { flex: 0 0 auto; }
+.x2many-table .field-readonly .many2many-tags .relation-chip:last-child { flex: 0 1 auto; min-width: 0; }
+/* Chatter pass follow-ups (review of 2026-11-18) */
+.record-form-chatter .erp-mail-chatter .erp-mail-activity-form-bar > button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+/* Register Payment dialog: the Documents tags stay on one line. */
+.wizard-dialog .many2many-tags .tag-list { flex-wrap: nowrap; overflow: hidden; }

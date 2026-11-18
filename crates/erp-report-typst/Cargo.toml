@@ -18,6 +18,8 @@ typst-layout = "=0.15.1"
 typst-pdf = "=0.15.1"
 comemo = "=0.5.1"
 rayon = "=1.12.0"
+# Decode, scale down and encode pictures before layout (picture.rs); the renderer links the same crate.
+image = { workspace = true, features = ["gif", "webp"] }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,3 +28,7 @@ serde_json.workspace = true
 # Templates through the whole library (tests/evaluated.rs); the renderer itself links no evaluator.
 erp-expr.workspace = true
 lopdf = { version = "=0.45.0", default-features = false }
+# The scan check (tests/scan.rs): a printed page is rasterised and its barcodes and QR codes are
+# read back by a decoder that shares no code with the generator.
+hayro = "=0.8.0"
+rxing = { version = "=0.9.4", default-features = false, features = ["decoders", "oned", "qrcode", "encoding_rs"] }

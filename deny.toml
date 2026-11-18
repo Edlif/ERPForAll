@@ -36,6 +36,11 @@ ignore = [
     # (a lock change takes a full run of its own).
     { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, reached only through object_store under erp-blob; followed by DEPS.CHRONO-0543" },
     { id = "RUSTSEC-2026-0542", reason = "humantime is unmaintained (wraps chrono), reached only through object_store under erp-blob; followed by DEPS.CHRONO-0543" },
+    # wasmi 2.0.0 and wasmi_core 2.0.0, yanked upstream on 2026-11-18 (no advisory). A dev-dependency of
+    # erp-ui-compiler-cli only (tests); never shipped. Removed with the lock update to the next wasmi release (a lock
+    # change takes a full run of its own).
+    { crate = "wasmi@2.0.0", reason = "yanked 2026-11-18, dev-dependency of erp-ui-compiler-cli tests only; lock update follows" },
+    { crate = "wasmi_core@2.0.0", reason = "yanked 2026-11-18 with wasmi 2.0.0, dev-dependency only; lock update follows" },
     # The report engine's Typst dependencies (Licences; reviewed again at every Typst upgrade).
     { id = "RUSTSEC-2026-0194", reason = "quick-xml under citationberg (CSL/bibliography parsing): the report World never serves a bibliography or CSL file" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader under citationberg (CSL parsing): unreachable, no bibliography or CSL input" },

@@ -2,7 +2,8 @@
 #![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 //! The style of a block crosses the worker frame field for field.
 use erp_report::{
-    CrossAlignment, DocumentBuilder, DocumentOptions, Limits, Node, PageSetup, Style, TableLook,
+    CrossAlignment, DocumentBuilder, DocumentOptions, ImageFit, LimitKind, Limits, Node, PageSetup,
+    PictureQuality, ReportError, Style, TableLook,
 };
 use erp_report_worker::WireDocument;
 
@@ -56,6 +57,8 @@ fn page_margins_survive_the_worker_frame_side_by_side() {
 }
 
 /// A picture (the letterhead logo) crosses the worker frame byte for byte, as one CBOR byte string.
+///
+/// picture over the per-document count is refused by name there too)
 #[test]
 fn a_picture_survives_the_worker_frame() {
     const PNG: [u8; 67] = [
@@ -71,12 +74,17 @@ fn a_picture_survives_the_worker_frame() {
             data: PNG.to_vec().into(),
             width: None,
             height: Some(34.0),
+            fit: ImageFit::Cover,
             alt: "Logo".into(),
         })
         .unwrap();
     let page = PageSetup::new(595.0, 842.0, 40.0).unwrap();
+    let pictures = PictureQuality::new(300, 70).unwrap();
     let tree = b
-        .finish(body, DocumentOptions::new("p", "P", page))
+        .finish(
+            body,
+            DocumentOptions::new("p", "P", page).with_pictures(pictures),
+        )
         .unwrap();
     let wire = WireDocument::from_tree(&tree).unwrap();
     let mut encoded = Vec::new();
@@ -90,15 +98,90 @@ fn a_picture_survives_the_worker_frame() {
         data,
         width,
         height,
+        fit,
         alt,
     } = &back.nodes()[back.body().index()]
     else {
         panic!("the body is no longer a picture");
     };
     assert_eq!(
-        (&data[..], *width, *height, alt.as_str()),
-        (&PNG[..], None, Some(34.0), "Logo")
+        (&data[..], *width, *height, *fit, alt.as_str()),
+        (&PNG[..], None, Some(34.0), ImageFit::Cover, "Logo")
     );
+    // the resolution and the JPEG quality of the document cross with it (protocol 8)
+    assert_eq!(back.options().pictures(), pictures);
+
+    // the worker admits the frame under its own limits: a picture over the count is refused there
+    let two = |limits: Limits| {
+        let mut b = DocumentBuilder::new(Limits::default());
+        let picture = |b: &mut DocumentBuilder| {
+            b.add(Node::Image {
+                data: PNG.to_vec().into(),
+                width: None,
+                height: None,
+                fit: ImageFit::Contain,
+                alt: String::new(),
+            })
+            .unwrap()
+        };
+        let children = vec![picture(&mut b), picture(&mut b)];
+        let body = b.add(Node::Flow { children }).unwrap();
+        let page = PageSetup::new(595.0, 842.0, 40.0).unwrap();
+        let tree = b
+            .finish(body, DocumentOptions::new("p", "P", page))
+            .unwrap();
+        WireDocument::from_tree(&tree).unwrap().into_tree(limits)
+    };
+    two(Limits::default()).unwrap();
+    let e = two(Limits::default().lowered(LimitKind::Images, 1).unwrap()).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            ReportError::DocumentLimit {
+                kind: LimitKind::Images,
+                actual: 2,
+                max: 1
+            }
+        ),
+        "{e:?}"
+    );
+    assert_eq!(e.to_string(), "report limit images exceeded: 2 > 1");
+}
+
+/// frame with its size, its alternative text and its reason)
+#[test]
+fn a_placeholder_survives_the_worker_frame() {
+    let mut b = DocumentBuilder::new(Limits::default());
+    let body = b
+        .add(Node::Placeholder {
+            width: 36.0,
+            height: 24.0,
+            alt: "Seal".into(),
+            reason: "the picture at t:1 cannot be read".into(),
+        })
+        .unwrap();
+    let page = PageSetup::new(595.0, 842.0, 40.0).unwrap();
+    let tree = b
+        .finish(body, DocumentOptions::new("p", "P", page))
+        .unwrap();
+    let back = WireDocument::from_tree(&tree)
+        .unwrap()
+        .into_tree(Limits::default())
+        .unwrap();
+    let Node::Placeholder {
+        width,
+        height,
+        alt,
+        reason,
+    } = &back.nodes()[back.body().index()]
+    else {
+        panic!("the body is no longer a placeholder");
+    };
+    assert_eq!(
+        (*width, *height, alt.as_str(), reason.as_str()),
+        (36.0, 24.0, "Seal", "the picture at t:1 cannot be read")
+    );
+    assert_eq!(back.options().pictures(), PictureQuality::default());
 }
 
 /// The row alignment of a grid crosses the worker frame (protocol 5): a letterhead whose name is

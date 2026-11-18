@@ -1,0 +1,74 @@
+[
+  {
+    "family": "Noto Sans SC",
+    "file": "NotoSansSC.ttf",
+    "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 17772300,
+    "upstream_filename": "NotoSansSC[wght].ttf"
+  },
+  {
+    "family": "Noto Sans SC",
+    "file": "licenses/notosanssc-OFL.txt",
+    "sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosanssc/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4388,
+    "upstream_filename": "OFL.txt"
+  },
+  {
+    "family": "Noto Sans TC",
+    "file": "NotoSansTC.ttf",
+    "sha256": "864727d210d54f2537bbe23b3a839436c3992af72de9322af5270897246bd44f",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 11941968,
+    "upstream_filename": "NotoSansTC[wght].ttf"
+  },
+  {
+    "family": "Noto Sans TC",
+    "file": "licenses/notosanstc-OFL.txt",
+    "sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosanstc/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4388,
+    "upstream_filename": "OFL.txt"
+  },
+  {
+    "family": "Noto Sans JP",
+    "file": "NotoSansJP.ttf",
+    "sha256": "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 9589900,
+    "upstream_filename": "NotoSansJP[wght].ttf"
+  },
+  {
+    "family": "Noto Sans JP",
+    "file": "licenses/notosansjp-OFL.txt",
+    "sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosansjp/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4388,
+    "upstream_filename": "OFL.txt"
+  },
+  {
+    "family": "Noto Sans KR",
+    "file": "NotoSansKR.ttf",
+    "sha256": "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf",
+    "license": "OFL-1.1",
+    "bytes": 10414588,
+    "upstream_filename": "NotoSansKR[wght].ttf"
+  },
+  {
+    "family": "Noto Sans KR",
+    "file": "licenses/notosanskr-OFL.txt",
+    "sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+    "source": "https://raw.githubusercontent.com/google/fonts/cc39c4c2c304bc368c9b7c311ea2bcc6013299fe/ofl/notosanskr/OFL.txt",
+    "license": "OFL-1.1",
+    "bytes": 4388,
+    "upstream_filename": "OFL.txt"
+  }
+]

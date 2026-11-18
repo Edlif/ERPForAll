@@ -5,6 +5,7 @@
 //! memory cap of `erp-report-worker`), and record text must not reach it any other way.
 mod encode;
 mod fonts;
+mod picture;
 mod world;
 use erp_report::{
     DocTree, LayoutEngine, LayoutFailure, LimitKind, Limits, PdfStandard, RenderIdentity,
@@ -24,6 +25,8 @@ use typst::{
 use typst_layout::{Page, PagedDocument};
 use typst_pdf::{PdfOptions, PdfStandards, Timestamp};
 use world::ReportWorld;
+
+pub use fonts::OptionalFonts;
 /// Renderer identity reported with every result: the fixed renderer source version and the pinned engine.
 pub const RENDERER: &str = "erp-print-v1+typst-0.15.1";
 /// Evictions performed in this process; observed by tests only.
@@ -138,6 +141,21 @@ impl TypstEngine {
             #[cfg(test)]
             panic_next: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+    /// Gives an optional font package its directory on this node, so that documents can name its
+    /// families. The package's manifest is compiled in; a file of the directory is parsed only when
+    /// its bytes have the compiled SHA-256. Without this call a document that names one of the
+    /// package's families fails with a `Font` error that names the package.
+    ///
+    /// # Errors
+    /// `Font` when the directory cannot be opened, is not a directory, or the package already has one.
+    pub fn with_optional_fonts(
+        mut self,
+        package: OptionalFonts,
+        directory: impl AsRef<Path>,
+    ) -> Result<Self, ReportError> {
+        self.fonts.add_optional(package, directory.as_ref())?;
+        Ok(self)
     }
     /// Release memoized document state at a batch boundary, also called after errors.
     pub fn finish_batch(&self) {

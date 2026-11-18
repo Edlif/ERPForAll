@@ -397,7 +397,10 @@ async function startApp(path: string) {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
     const method = url.split("/").pop()!, body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
     calls.push({ method, body });
-    if (method === "erp_load_web_menus") return reply({ wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: "Notes", action_id: 20, children: [], icon: null }] });
+    if (method === "erp_load_web_menus") return reply({ wire_major: 1, registry_version: "r1", roots: [10, 11], nodes: [
+      { module: null, id: 10, parent_id: null, label: "Notes", action_id: 20, children: [], icon: null },
+      { module: null, id: 11, parent_id: null, label: "Other", action_id: 21, children: [], icon: null }
+    ] });
     if (method === "erp_load_web_action" || method === "erp_load_web_action_views") {
       const action = { wire_major: 1, id: 20, name: "Notes", model: "t.note", target: "current", views: [{ id: 2, type: "list" }, { id: 6, type: "graph" }], domain: null, context: null };
       return reply(method === "erp_load_web_action_views" ? { action, views: full } : action);
@@ -529,4 +532,14 @@ test("a bar opens its records as a list and the way back restores the chart", as
   root.querySelector<HTMLButtonElement>(".breadcrumb-origin")!.click();
   await ready(root);
   expect(window.location.href).toBe(chartAddress);
+});
+
+/// (partial: a related list opened under another menu keeps that menu in its breadcrumb trail)
+test("a bar opens its records as a list under another menu and keeps that menu link", async () => {
+  const { root } = await startApp("/erp/action-20?view_type=graph&graph_mode=bar&graph_stacked=0&menu=11");
+  await ready(root);
+  const bar = [...root.querySelectorAll<SVGRectElement>(".graph-bar")].find(node => node.querySelector("title")!.textContent === "Normal / Draft: 10")!;
+  bar.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await vi.waitFor(() => expect(root.querySelector(".list-table")).not.toBeNull());
+  expect([...root.querySelectorAll(".form-breadcrumb-path button.link")].map(link => link.textContent)).toEqual(["Other", "Notes"]);
 });

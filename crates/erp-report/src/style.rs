@@ -6,7 +6,7 @@ const PROPERTIES: &str = "width height max-width max-height font-size font-weigh
     page-break-before page-break-after page-break-inside margin margin-top margin-right \
     margin-bottom margin-left padding padding-top padding-right padding-bottom padding-left \
     border border-top border-right border-bottom border-left border-width border-style \
-    border-color border-collapse";
+    border-color border-collapse object-fit";
 const COLORS: &str = "transparent black white red green blue gray grey yellow orange purple navy \
     silver maroon teal aqua fuchsia lime olive";
 pub(crate) fn known(name: &str) -> bool {
@@ -38,6 +38,7 @@ pub(crate) fn valid(name: &str, value: &str) -> bool {
         "color" | "background-color" | "border-color" => color(value),
         "text-align" => one_of("left right start end center justify"),
         "vertical-align" => one_of("top middle bottom baseline"),
+        "object-fit" => one_of("contain cover fill none scale-down"),
         "line-height" => value == "normal" || number(value, false) || length(value, false),
         "white-space" => one_of("normal nowrap pre pre-wrap pre-line"),
         "display" => one_of("none block inline-block"),

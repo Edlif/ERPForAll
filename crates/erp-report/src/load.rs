@@ -262,7 +262,8 @@ impl<'p> DataStage<'p> {
     ///
     /// A record that was not asked for or comes twice, a missing or extra field and a missing
     /// display name are [`ReportError::Data`] errors. A binary value over an image limit is a
-    /// [`ReportError::Image`] naming the record and the field.
+    /// [`ReportError::Image`] naming the record and the field; bytes that are no picture are kept
+    /// (the evaluator prints a placeholder for them).
     pub fn supply(&mut self, records: Vec<LoadedRecord>) -> Result<(), ReportError> {
         let Some(pending) = self.pending.pop_front() else {
             return Err(data("no read is pending"));
@@ -291,16 +292,17 @@ impl<'p> DataStage<'p> {
                         "{model}({id}).{field} is missing from its read"
                     )));
                 };
-                // a binary value the plan reads is an image; empty bytes are the unset value
-                if let Some(bytes) = value.bytes().filter(|bytes| !bytes.is_empty()) {
-                    probe_image(bytes, &self.document).map_err(|error| ReportError::Image {
-                        reason: match error {
-                            ReportError::Image { reason } => {
-                                format!("{model}({id}).{field}: {reason}")
-                            }
-                            other => format!("{model}({id}).{field}: {other}"),
-                        },
-                    })?;
+                // A binary value the plan reads is a picture; empty bytes are the unset value. One
+                // over a picture limit is refused here, by record and field. Bytes that are no
+                // picture are kept: where a template prints them, an empty box and a warning
+                // stand for them, so one bad picture does not stop the print.
+                if let Some(bytes) = value.bytes().filter(|bytes| !bytes.is_empty())
+                    && let Err(error @ ReportError::DocumentLimit { .. }) =
+                        probe_image(bytes, &self.document)
+                {
+                    return Err(ReportError::Image {
+                        reason: format!("{model}({id}).{field}: {error}"),
+                    });
                 }
             }
             if let Some(extra) = record.fields.keys().find(|f| !read.fields.contains(*f)) {

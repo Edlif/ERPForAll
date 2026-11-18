@@ -304,6 +304,17 @@ pub trait MethodCodec: Send + Sync {
     /// is itself a recordset (`create`) is rebuilt in their environment.
     fn decode_result(&self, records: &Records, json: &str) -> Result<Box<dyn Any + Send>>;
 
+    /// Check a result a WebAssembly implementation answered (decoded by
+    /// [`MethodCodec::decode_result`]) against the wire arguments it was called with, before typed
+    /// code sees it. Nothing to check by default; a codec whose result must fit its arguments
+    /// says so here (`default_get`: only the fields that were asked for).
+    ///
+    /// # Errors
+    /// `Validation` naming what does not fit.
+    fn admit_result(&self, _args_json: &str, _result: &(dyn Any + Send)) -> Result<()> {
+        Ok(())
+    }
+
     /// Parse the arguments, run entry `index` of `chain` (and, through its `super()`, the rest) and
     /// serialise the result.
     fn call_native<'a>(
@@ -997,6 +1008,9 @@ impl<A: Send + 'static, R: Send + 'static> Super<A, R> {
 pub struct DynSuper {
     chain: Chain,
     next: usize,
+    /// What the `super()` calls of this layer answered, kept for `copy` and `upsert` so the layer's
+    /// own answer can be checked against it ([`check_super_ids`]).
+    answers: Arc<Mutex<Vec<String>>>,
 }
 
 impl DynSuper {
@@ -1029,9 +1043,60 @@ impl DynSuper {
                     self.chain.method
                 )));
             }
-            invoke_json(self.chain, self.next, tx, records, args_json).await
+            let method = self.chain.method;
+            let answer = invoke_json(self.chain, self.next, tx, records, args_json).await?;
+            if matches!(method, "copy" | "upsert") {
+                self.answers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(answer.clone());
+            }
+            Ok(answer)
         })
     }
+}
+
+/// The record ids of a `copy` answer (a list of ids) or an `upsert` answer (a list of
+/// `[id, outcome, previous_version, version]`), in order; `None` when it has neither form.
+fn answer_ids(method: &str, answer: &str) -> Option<Vec<i64>> {
+    if method == "copy" {
+        return serde_json::from_str(answer).ok();
+    }
+    let rows: Vec<(i64, serde_json::Value, serde_json::Value, serde_json::Value)> =
+        serde_json::from_str(answer).ok()?;
+    Some(rows.into_iter().map(|row| row.0).collect())
+}
+
+/// A WebAssembly layer over `copy` or `upsert` answers the records its `super()` copied or
+/// upserted, in order, and no other: its caller then writes to "the copy" with its own rights, so
+/// an id the layer picked (the source record, one id twice, a stranger's record) would let it
+/// redirect those writes. The transaction is poisoned, as for a `create` that lies.
+fn check_super_ids(
+    tx: &mut Transaction,
+    method: &str,
+    answers: &Mutex<Vec<String>>,
+    answer: &str,
+) -> Result<()> {
+    if !matches!(method, "copy" | "upsert") {
+        return Ok(());
+    }
+    let made: Option<Vec<i64>> = answers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|a| answer_ids(method, a))
+        .collect::<Option<Vec<_>>>()
+        .map(|all| all.concat());
+    let given = answer_ids(method, answer);
+    if given.is_some() && given == made {
+        return Ok(());
+    }
+    let error = Error::validation(format!(
+        "a WASM {method} answered the records {given:?}, but the {method} it continued made \
+         {made:?}: it must answer exactly those, in that order"
+    ));
+    tx.poison(&error);
+    Err(error)
 }
 
 /// [`wire_gaps`] of a built chain, for the refusal of a wire call (an error path: the indexes are
@@ -1081,11 +1146,18 @@ fn invoke_json<'a>(
     }
     match target {
         MethodDispatchTarget::Wasm(invoker) => {
+            let method = chain.method;
+            let answers = Arc::new(Mutex::new(Vec::new()));
             let sup = DynSuper {
                 chain,
                 next: index + 1,
+                answers: Arc::clone(&answers),
             };
-            Box::pin(async move { invoker.invoke(tx, records, args_json, sup).await })
+            Box::pin(async move {
+                let answer = invoker.invoke(tx, records, args_json, sup).await?;
+                check_super_ids(tx, method, &answers, &answer)?;
+                Ok(answer)
+            })
         }
         MethodDispatchTarget::Native(imp) => match chain.codec {
             Some(codec) => codec.call_native(chain, index, tx, records, args_json),
@@ -1170,12 +1242,17 @@ pub(crate) fn invoke<'a, A: Send + 'static, R: Send + 'static>(
                 return Err(plan.reject(tx).await);
             }
             let json = codec.encode_args(Box::new(args))?;
+            let method = chain.method;
+            let answers = Arc::new(Mutex::new(Vec::new()));
             let sup = DynSuper {
                 chain,
                 next: index + 1,
+                answers: Arc::clone(&answers),
             };
             let answer = invoker.invoke(tx, records, &json, sup).await?;
             let boxed = codec.decode_result(records, &answer)?;
+            check_super_ids(tx, method, &answers, &answer)?;
+            codec.admit_result(&json, boxed.as_ref())?;
             boxed.downcast::<R>().map(|b| *b).map_err(|_| {
                 Error::programming(format!(
                     "method result of a WebAssembly implementation does not have the type {}",

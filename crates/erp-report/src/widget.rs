@@ -3,7 +3,8 @@
 //! document's language (design §5.3). Widgets that need a document
 //! node or data this slice does not have are refused by name.
 use crate::{
-    ReportError,
+    Limits, ModuleGrid, QrLevel, ReportError,
+    code::{self, CodeAsk, PrintedCode},
     format::{self, LangFormat},
     program::{At, FORMATS_TASK},
     records::{FieldValue, Kind, RecordStore, SymbolPosition},
@@ -25,11 +26,15 @@ pub(crate) enum Piece {
         data: std::sync::Arc<[u8]>,
         max: [Option<f64>; 2],
     },
+    /// A barcode or QR code at its printed size.
+    Code(PrintedCode),
 }
 pub(crate) struct Env<'a> {
     pub(crate) formats: &'a LangFormat,
     pub(crate) utc_offset: &'a crate::evaluate::UtcOffsets,
     pub(crate) records: &'a RecordStore,
+    pub(crate) limits: &'a Limits,
+    pub(crate) grid: ModuleGrid,
 }
 struct Currency {
     symbol: String,
@@ -324,14 +329,149 @@ fn raw(
                 max: [side("max_width")?, side("max_height")?],
             }]));
         }
-        "image_url" | "barcode" => {
-            return unsupported("image_url and barcode widgets", "a later release");
+        "barcode" => return barcode(env, value, options, at),
+        "image_url" => {
+            return unsupported(
+                "images read by their path while printing",
+                "a later release",
+            );
         }
         "contact" | "duration" | "relative" | "float_time" => {
             return unsupported("contact, duration and relative widgets", FORMATS_TASK);
         }
         other => return Err(at.evaluate(format!("unknown widget `{other}`"))),
     })
+}
+/// Most pixels of the `width` or `height` option of a code, and of their product in points
+/// (1,200,000 square pixels): the bounds of the reference.
+const CODE_PIXELS_MAX: i64 = 10_000;
+const CODE_AREA_MAX: f64 = 1_200_000.0 * 0.75 * 0.75;
+/// A code's refusal with the template line it came from.
+pub(crate) fn placed(error: ReportError, at: &At) -> ReportError {
+    match error {
+        ReportError::Code { symbology, reason } => {
+            at.evaluate(format!("{symbology} code: {reason}"))
+        }
+        other => other,
+    }
+}
+/// The width and height of an `img_style` of a code, in points: absolute lengths only, since a code
+/// is sized before the page is laid out. Any other declaration is refused by name.
+fn code_style(style: &str, at: &At) -> Result<[Option<f64>; 2], ReportError> {
+    let mut sides = [None, None];
+    for declaration in style.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+        let (name, value) = declaration.split_once(':').ok_or_else(|| {
+            at.evaluate(format!(
+                "`{declaration}` in the img_style of a code is not `name: value`"
+            ))
+        })?;
+        let (name, value) = (name.trim(), value.trim());
+        let side = match name {
+            "width" => 0,
+            "height" => 1,
+            _ => {
+                return Err(at.evaluate(format!(
+                    "the img_style of a code takes width and height; got `{name}`"
+                )));
+            }
+        };
+        match crate::look::length(value, false) {
+            Some(crate::look::Size::Points(points)) if points > 0.0 => sides[side] = Some(points),
+            _ => {
+                return Err(at.evaluate(format!(
+                    "the {name} of a code must be a length in px, pt, mm, cm or in; got `{value}`"
+                )));
+            }
+        }
+    }
+    Ok(sides)
+}
+/// The `barcode` widget, with the options of the reference: `symbology` (`Code128` unless given,
+/// `auto` for EAN by its digits), `width` and `height` in pixels (600 by 100), `humanreadable`,
+/// `quiet`, `img_style` (the printed width and height) and `img_alt`; and ours: `barLevel` for a QR
+/// code and `dpi` for the printer the code is sized for. An empty value prints nothing.
+fn barcode(env: &Env<'_>, value: &ExprValue, options: Option<&Map>, at: &At) -> Printed {
+    let text = match value {
+        ExprValue::None | ExprValue::Bool(false) => return Ok(None),
+        ExprValue::Str(text) if text.is_empty() => return Ok(None),
+        ExprValue::Str(text) => text.clone(),
+        ExprValue::Int(number) => number.to_string(),
+        other => {
+            return Err(at.evaluate(format!(
+                "the barcode widget prints a text or a whole number, got a value of type {}",
+                other.type_name()
+            )));
+        }
+    };
+    let whole = |name: &str, default: i64| match option(options, name) {
+        None => Ok(default),
+        Some(ExprValue::Int(number)) => Ok(*number),
+        Some(ExprValue::Bool(flag)) => Ok(i64::from(*flag)),
+        Some(_) => Err(at.evaluate(format!("widget option `{name}` must be a whole number"))),
+    };
+    let string = |name: &str| match option(options, name) {
+        None => Ok(None),
+        Some(ExprValue::Str(text)) => Ok(Some(text.as_str())),
+        Some(_) => Err(at.evaluate(format!("widget option `{name}` must be a string"))),
+    };
+    // As in the reference: 0 is off, any other whole number is on.
+    let flag = |name: &str, default: bool| whole(name, i64::from(default)).map(|n| n != 0);
+    let pixels = |name: &str, default: i64| match whole(name, default)? {
+        // A pixel is 0.75 points, as for an image.
+        pixels @ 1..=CODE_PIXELS_MAX => Ok(pixels as f64 * 0.75),
+        _ => Err(at.evaluate(format!(
+            "widget option `{name}` must be a number of pixels in 1..={CODE_PIXELS_MAX}"
+        ))),
+    };
+    if option(options, "mask").is_some_and(|mask| !matches!(mask, ExprValue::Bool(false))) {
+        return Err(at.evaluate("widget option `mask` (a picture over a QR code) is not printed"));
+    }
+    let styled = match string("img_style")? {
+        Some(style) => code_style(style, at)?,
+        None => [None, None],
+    };
+    let level = match string("barLevel")? {
+        None => QrLevel::default(),
+        Some(name) => QrLevel::from_name(name).ok_or_else(|| {
+            at.evaluate(format!(
+                "widget option `barLevel` must be L, M, Q or H; got `{name}`"
+            ))
+        })?,
+    };
+    let grid = match option(options, "dpi") {
+        None => env.grid,
+        Some(_) => ModuleGrid::from_given(whole("dpi", 0)?).map_err(|error| placed(error, at))?,
+    };
+    let (wide, high) = (pixels("width", 600)?, pixels("height", 100)?);
+    if wide * high > CODE_AREA_MAX {
+        return Err(at.evaluate(format!(
+            "widget options `width` and `height` of a code multiply to at most {} pixels",
+            CODE_AREA_MAX / (0.75 * 0.75)
+        )));
+    }
+    // The style is the printed box; one side of it keeps the proportion of the two options, and
+    // without it the options are the box, a pixel being 0.75 points.
+    let (width, height) = match styled {
+        [Some(width), Some(height)] => (width, height),
+        [Some(width), None] => (width, width * high / wide),
+        [None, Some(height)] => (height * wide / high, height),
+        [None, None] => (wide, high),
+    };
+    let ask = CodeAsk {
+        symbology: string("symbology")?.unwrap_or("Code128"),
+        value: &text,
+        width,
+        height,
+        human_readable: flag("humanreadable", false)?,
+        quiet: flag("quiet", true)?,
+        level,
+        grid,
+    };
+    let mut printed = code::print(&ask, env.limits).map_err(|error| placed(error, at))?;
+    if let Some(alt) = string("img_alt")? {
+        printed.alt = alt.to_owned();
+    }
+    Ok(Some(vec![Piece::Code(printed)]))
 }
 fn widget_option<'a>(options: Option<&'a Map>, at: &At) -> Result<Option<&'a str>, ReportError> {
     match option(options, "widget") {

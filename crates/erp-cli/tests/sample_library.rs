@@ -1484,6 +1484,13 @@ fn sample_library_reports_are_listed_and_print_a_book() {
         assert_eq!(file, "Book sheet - The Printed Atlas.pdf");
         let html = erp_report::render_html(&document, &[]).unwrap();
         assert!(html.contains("The Printed Atlas"), "{html}");
+        // The sheet prints the ISBN as a code with its digits under it. This one does not end in
+        // its EAN check digit, so `auto` prints it as Code 128 instead of refusing the sheet.
+        assert!(
+            html.contains("aria-label=\"Barcode 9780000000017\""),
+            "{html}"
+        );
+        assert!(html.contains(">9780000000017</span></span>"), "{html}");
         let fonts = repo_addons().join("report_fonts");
         let engine =
             erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();

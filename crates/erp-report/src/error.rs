@@ -183,6 +183,13 @@ pub enum ReportError {
     },
     #[error("report image: {reason}")]
     Image { reason: String },
+    /// A barcode or QR code that cannot be printed as asked: a value the symbology does not carry,
+    /// a wrong check digit, a box too small for a readable module.
+    #[error("report {symbology} code: {reason}")]
+    Code {
+        symbology: &'static str,
+        reason: String,
+    },
     /// `document` is the caller's safe document id. `reason` holds the renderer's diagnostics for the
     /// operator and may quote layout input; `Display` never prints it.
     #[error("report layout {kind:?} for {document}: {}", .kind.note())]

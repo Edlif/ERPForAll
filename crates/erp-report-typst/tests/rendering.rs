@@ -4,7 +4,7 @@ use erp_report::{
     Alignment, CrossAlignment, DocTree, DocumentBuilder, DocumentOptions, LayoutEngine, LimitKind,
     Limits, Node, PageCounter, PageSetup, PdfStandard, RenderDate, ReportError, Style,
 };
-use erp_report_typst::{RENDERER, TypstEngine};
+use erp_report_typst::{OptionalFonts, RENDERER, TypstEngine};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,22 @@ fn fonts() -> PathBuf {
 }
 fn engine() -> TypstEngine {
     TypstEngine::new(fonts(), Limits::default()).unwrap()
+}
+/// The optional Chinese, Japanese and Korean package, which no release ships under `addons/`.
+fn cjk_fonts() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../optional-assets/report_fonts_cjk")
+}
+fn engine_with_cjk() -> TypstEngine {
+    engine()
+        .with_optional_fonts(OptionalFonts::Cjk, cjk_fonts())
+        .unwrap()
+}
+/// One line of text that asks for `family`.
+fn family_document(family: &str, text: &str) -> DocTree {
+    let mut b = DocumentBuilder::new(Limits::default());
+    let body = b.add(Node::Text(text.into())).unwrap();
+    let options = options().with_fonts(vec![family.into()]).unwrap();
+    b.finish(body, options).unwrap()
 }
 fn options() -> DocumentOptions {
     DocumentOptions::new(
@@ -440,43 +456,13 @@ fn read_line(pdf: &lopdf::Document, page: lopdf::ObjectId) -> Line {
     line
 }
 
-/// file is read, and the message names the optional font addon's task)
-#[test]
-fn cjk_families_are_refused_by_name_with_their_addon_task() {
-    for family in [
-        "Noto Sans SC",
-        "Noto Sans TC",
-        "Noto Sans JP",
-        "Noto Sans KR",
-    ] {
-        let mut b = DocumentBuilder::new(Limits::default());
-        let body = b.add(Node::Text("text".into())).unwrap();
-        let options = options().with_fonts(vec![family.into()]).unwrap();
-        let error = engine()
-            .render(&b.finish(body, options).unwrap())
-            .unwrap_err();
-        assert!(matches!(error, ReportError::Font { .. }), "{error}");
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "report font: family {family:?} is not in the shipped font manifest; the Chinese, Japanese and Korean families come as a separate optional addon (a later release)"
-            )
-        );
-    }
-}
-
 /// missing-glyph box is shown, right-to-left runs are marked and laid out from the right, and the
 /// text layer matches as far as the family allows; reading-order extraction with pdfium and the
 /// raster are evidence outside this test, and the raster has no reviewer besides the implementer)
 #[test]
 fn shipped_language_fixtures_use_their_fonts() {
     use Order::{LeftToRight, RightToLeft, Shaped};
-    let hebrew = ("שלום", "עולם");
-    let mixed = format!("{} ERP 2026 {}", hebrew.0, hebrew.1);
-    let reversed = |word: &str| word.chars().rev().collect::<String>();
-    // In a right-to-left paragraph the Latin run keeps its own order between the two words, and the
-    // first word is the rightmost.
-    let mixed_on_page = format!("{}ERP2026{}", reversed(hebrew.1), reversed(hebrew.0));
+    let mixed = mixed_hebrew();
     let arabic = "مرحبا بالعالم";
     let fixtures: [(&str, &str, &str, Order); 8] = [
         ("he", "Noto Sans Hebrew", "שלום עולם", RightToLeft),
@@ -489,6 +475,24 @@ fn shipped_language_fixtures_use_their_fonts() {
         ("hi", "Noto Sans Devanagari", "नमस्ते दुनिया", LeftToRight),
         ("en", "Noto Sans", "Invoice total 1,250.00", LeftToRight),
     ];
+    assert_fixtures(engine, &fixtures);
+}
+
+const HEBREW: (&str, &str) = ("שלום", "עולם");
+/// Two Hebrew words around a Latin run.
+fn mixed_hebrew() -> String {
+    format!("{} ERP 2026 {}", HEBREW.0, HEBREW.1)
+}
+
+/// Renders each `(language, family, text, order)` fixture with a fresh engine from `engine` and
+/// checks the embedded font, the glyphs, the direction and the text layer.
+fn assert_fixtures(engine: fn() -> TypstEngine, fixtures: &[(&str, &str, &str, Order)]) {
+    use Order::{LeftToRight, RightToLeft, Shaped};
+    let mixed = mixed_hebrew();
+    let reversed = |word: &str| word.chars().rev().collect::<String>();
+    // In a right-to-left paragraph the Latin run keeps its own order between the two words, and the
+    // first word is the rightmost.
+    let mixed_on_page = format!("{}ERP2026{}", reversed(HEBREW.1), reversed(HEBREW.0));
     let artifacts = std::env::var_os("ERP_REPORT_ARTIFACTS").map(PathBuf::from);
     let mut failures = Vec::new();
     for (index, (language, family, text, order)) in fixtures.iter().enumerate() {
@@ -547,6 +551,98 @@ fn shipped_language_fixtures_use_their_fonts() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// families is a Font error naming the family and the package, for each of the four families; that
+/// no file is read is asserted by the unit test of the font store)
+/// optional package is not installed, and the message names that package)
+#[test]
+fn optional_family_without_its_package_names_the_package() {
+    let families = OptionalFonts::Cjk.families().unwrap();
+    assert_eq!(
+        families,
+        [
+            "Noto Sans SC",
+            "Noto Sans TC",
+            "Noto Sans JP",
+            "Noto Sans KR"
+        ]
+    );
+    for family in families {
+        let error = engine()
+            .render(&family_document(&family, "ERP"))
+            .unwrap_err();
+        assert!(matches!(error, ReportError::Font { .. }), "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "report font: family {family:?} is in the optional font package report_fonts_cjk, which is not installed on this node"
+            )
+        );
+    }
+}
+
+/// a second directory for the same package are refused when they are given)
+#[test]
+fn optional_package_directory_is_checked_when_given() {
+    let absent = std::env::temp_dir().join(format!("erp-report-no-cjk-{}", std::process::id()));
+    let Err(error) = engine().with_optional_fonts(OptionalFonts::Cjk, &absent) else {
+        panic!("an absent directory was accepted");
+    };
+    assert!(matches!(error, ReportError::Font { .. }), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "report font: cannot open optional font package report_fonts_cjk"
+    );
+    let Err(error) =
+        engine().with_optional_fonts(OptionalFonts::Cjk, cjk_fonts().join("fonts.json"))
+    else {
+        panic!("a file was accepted as the package directory");
+    };
+    assert!(matches!(error, ReportError::Font { .. }), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "report font: optional font package report_fonts_cjk is not a directory"
+    );
+    let Err(error) = engine_with_cjk().with_optional_fonts(OptionalFonts::Cjk, cjk_fonts()) else {
+        panic!("a second directory was accepted");
+    };
+    assert!(matches!(error, ReportError::Font { .. }), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "report font: optional font package report_fonts_cjk already has a directory"
+    );
+}
+
+/// SHA-256 is a digest mismatch, and a directory without the file is a read failure; the default
+/// families still render from an engine with such a directory)
+#[test]
+fn optional_package_files_are_admitted_by_the_compiled_digest() {
+    let path = std::env::temp_dir().join(format!("erp-report-bad-cjk-{}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(path.join("NotoSansJP.ttf"), b"not the shipped font").unwrap();
+    let engine = engine()
+        .with_optional_fonts(OptionalFonts::Cjk, &path)
+        .unwrap();
+    let changed = engine
+        .render(&family_document("Noto Sans JP", "ERP"))
+        .unwrap_err();
+    let absent = engine
+        .render(&family_document("Noto Sans KR", "ERP"))
+        .unwrap_err();
+    let default = engine.render(&family_document("Noto Sans", "ERP"));
+    std::fs::remove_dir_all(path).unwrap();
+    assert!(matches!(changed, ReportError::Font { .. }), "{changed}");
+    assert_eq!(
+        changed.to_string(),
+        "report font: NotoSansJP.ttf has a digest mismatch (font package report_fonts_cjk)"
+    );
+    assert!(matches!(absent, ReportError::Font { .. }), "{absent}");
+    assert_eq!(
+        absent.to_string(),
+        "report font: cannot read NotoSansKR.ttf of font package report_fonts_cjk"
+    );
+    assert_eq!(default.unwrap().page_count(), 1);
 }
 
 /// option exists in the public API yet)

@@ -21,7 +21,8 @@
 //! not a promoted temporary.
 //!
 //! Hand-registered core methods have no `#[methods]` block; their wire records are in
-//! `BUILTIN_WIRE` (gaps and seals) and `wire.rs` (codecs).
+//! `BUILTIN_WIRE` (the seals of the two module-system hooks) and `wire.rs` (the codecs of every
+//! other one, since WASM.WIRE-NATIVE.CORE-CODECS).
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -238,33 +239,6 @@ fn sealed() -> WireForm {
     WireForm::Sealed(WireSeal::Attribute)
 }
 
-fn copy_gap() -> WireForm {
-    WireForm::Gap(&["`Option<ValueMap>` (argument 1)", "`Records` (result)"])
-}
-
-fn copy_data_gap() -> WireForm {
-    WireForm::Gap(&[
-        "`Option<ValueMap>` (argument 1)",
-        "`Vec<Option<ValueMap>>` (result)",
-    ])
-}
-
-fn default_get_gap() -> WireForm {
-    WireForm::Gap(&["`ValueMap` (result)"])
-}
-
-fn exists_gap() -> WireForm {
-    WireForm::Gap(&["`Records` (result)"])
-}
-
-fn filtered_domain_gap() -> WireForm {
-    WireForm::Gap(&["`Domain` (argument 1)", "`Records` (result)"])
-}
-
-fn upsert_gap() -> WireForm {
-    WireForm::Gap(&["`UpsertCall` (argument 1)", "`UpsertResult` (result)"])
-}
-
 macro_rules! builtin_wire {
     ($name:ident, $method:expr, $probe:path) => {
         static $name: MethodWireImpl = MethodWireImpl {
@@ -286,29 +260,13 @@ builtin_wire!(
     crate::model_hooks::REGISTER_HOOK,
     sealed
 );
-// Core methods whose types carry records, value maps or domains: their codecs and guest helpers
-// come with WASM.WIRE-NATIVE.CORE-CODECS.
-builtin_wire!(COPY_WIRE, "copy", copy_gap);
-builtin_wire!(COPY_DATA_WIRE, "copy_data", copy_data_gap);
-builtin_wire!(DEFAULT_GET_WIRE, "default_get", default_get_gap);
-builtin_wire!(EXISTS_WIRE, "exists", exists_gap);
-builtin_wire!(FILTERED_DOMAIN_WIRE, "filtered_domain", filtered_domain_gap);
-builtin_wire!(UPSERT_WIRE, "upsert", upsert_gap);
 
 /// Wire records of the hand-registered core methods that have no codec: the seals of `init` and
-/// `_register_hook`, and the named gaps of `copy`, `copy_data`, `default_get`, `exists`,
-/// `filtered_domain` and `upsert`. A core method in neither this list nor `wire.rs` is refused
-/// by the dispatch build as "no wire record" when a chain crosses.
-pub(crate) static BUILTIN_WIRE: [&MethodWireImpl; 8] = [
-    &INIT_WIRE,
-    &REGISTER_HOOK_WIRE,
-    &COPY_WIRE,
-    &COPY_DATA_WIRE,
-    &DEFAULT_GET_WIRE,
-    &EXISTS_WIRE,
-    &FILTERED_DOMAIN_WIRE,
-    &UPSERT_WIRE,
-];
+/// `_register_hook`. Every other core method has its codec in `wire.rs` (`copy`, `copy_data`,
+/// `default_get`, `exists`, `filtered_domain` and `upsert` since WASM.WIRE-NATIVE.CORE-CODECS;
+/// they were named gaps here before). A core method in neither this list nor `wire.rs` is
+/// refused by the dispatch build as "no wire record" when a chain crosses.
+pub(crate) static BUILTIN_WIRE: [&MethodWireImpl; 2] = [&INIT_WIRE, &REGISTER_HOOK_WIRE];
 
 /// One row of [`SEALED_ON_MODEL`]: core methods sealed on one model.
 pub(crate) struct ModelSeal {
@@ -343,6 +301,8 @@ const CORE_RECORD_METHODS: &[&str] = &[
     "default_get",
     "name_create",
     "upsert",
+    "exists",
+    "filtered_domain",
 ];
 
 macro_rules! model_seal {
@@ -358,13 +318,13 @@ macro_rules! model_seal {
 
 /// Core methods sealed per model (WASM.WIRE-NATIVE review, SHOULD-3).
 ///
-/// The core's own codecs (`action_archive`, `action_unarchive`, `create`, `write`, `unlink`,
-/// `name_create`, `wire.rs`) hold on every model, so without this list a package that extends
-/// `res.users` could wrap `action_archive` and swallow a deactivation. A chain on one of these
-/// models that crosses into a package and names one of these methods is refused whatever its
-/// native entries say. `ir.rule` is not here: no Rust model of that name exists yet; add its row
-/// when one does. `copy_data` and `upsert` have no codec yet; they are listed so the list stays
-/// closed when WASM.WIRE-NATIVE.CORE-CODECS gives them one.
+/// The core's own codecs (`wire.rs`) hold on every model, so without this list a package that
+/// extends `res.users` could wrap `action_archive` and swallow a deactivation. A chain on one of
+/// these models that crosses into a package and names one of these methods is refused whatever
+/// its native entries say. `ir.rule` is not here: no Rust model of that name exists yet; add its
+/// row when one does. Every core method with a codec is on the list: `exists` and
+/// `filtered_domain` joined it with their codecs (WASM.WIRE-NATIVE.CORE-CODECS), so a package
+/// cannot answer for which users, groups, access rows, keys or parameters exist or match.
 pub(crate) static SEALED_ON_MODEL: [ModelSeal; 5] = [
     model_seal!("res.users"),
     model_seal!("res.groups"),
@@ -444,7 +404,7 @@ mod tests {
     use erp_fields::{Value, ValueMap};
 
     #[test]
-    fn the_core_gap_types_have_no_wire_form() {
+    fn the_core_method_types_have_no_serde_wire_form() {
         assert!(!(&WireProbe::<Option<ValueMap>>::new()).wire_ok());
         assert!(!(&WireProbe::<Vec<Option<ValueMap>>>::new()).wire_ok());
         assert!(!(&WireProbe::<ValueMap>::new()).wire_ok());

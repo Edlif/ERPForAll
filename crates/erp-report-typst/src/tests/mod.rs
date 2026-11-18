@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+mod pictures;
 use super::*;
 use erp_report::{DocumentBuilder, DocumentOptions, Node, PageSetup, Style};
 use typst::{
@@ -306,7 +307,7 @@ fn missing_font_is_a_font_error() {
     assert!(matches!(error, ReportError::Font { .. }), "{error}");
     assert_eq!(
         error.to_string(),
-        "report font: cannot read shipped asset NotoSans-Italic.ttf"
+        "report font: cannot read NotoSans-Italic.ttf of font package report_fonts"
     );
 }
 
@@ -403,7 +404,7 @@ fn font_store_refuses_bad_assets_and_loads_lazily() {
     assert!(matches!(error, ReportError::Font { .. }), "{error}");
     assert_eq!(
         error.to_string(),
-        "report font: shipped asset NotoSans-Italic.ttf has a digest mismatch"
+        "report font: NotoSans-Italic.ttf has a digest mismatch (font package report_fonts)"
     );
     let small = Limits::default().lowered(LimitKind::FontBytes, 1).unwrap();
     let error = TypstEngine::new(fonts(), small)
@@ -422,6 +423,33 @@ fn font_store_refuses_bad_assets_and_loads_lazily() {
         engine.fonts.loaded_files(),
         ["NotoSans-Italic.ttf", "NotoSans.ttf"]
     );
+}
+
+/// One line of Korean text in Noto Sans KR.
+fn korean(engine: &TypstEngine) -> Result<RenderResult, ReportError> {
+    let mut b = DocumentBuilder::new(Limits::default());
+    let body = b.add(Node::Text("한국어 상품".into())).unwrap();
+    let options = DocumentOptions::new(
+        "safe-id",
+        "Fixture",
+        PageSetup::new(400.0, 500.0, 35.0).unwrap(),
+    )
+    .with_fonts(vec!["Noto Sans KR".into()])
+    .unwrap();
+    engine.render(&b.finish(body, options).unwrap())
+}
+
+/// when the package has no directory)
+#[test]
+fn optional_family_reads_no_file_without_its_package() {
+    let engine = engine();
+    let error = korean(&engine).unwrap_err();
+    assert!(matches!(error, ReportError::Font { .. }), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "report font: family \"Noto Sans KR\" is in the optional font package report_fonts_cjk, which is not installed on this node"
+    );
+    assert!(engine.fonts.loaded_files().is_empty());
 }
 
 /// other name is refused before a file is read, naming WorkerPool and)

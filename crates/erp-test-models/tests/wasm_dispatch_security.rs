@@ -325,16 +325,17 @@ async fn an_exposed_method_is_callable() {
         ids: vec![],
         args_json: r#"[["qty"]]"#.to_owned(),
     };
-    // the builtin has no wire form, so the dispatcher refuses it further down; what matters is
-    // that the exposure gate let it through
+    // the exposure gate lets it through, and since the core codec of `default_get`
+    // (WASM.WIRE-NATIVE.CORE-CODECS) the dispatcher runs it in the wire form: a values object
+    // comes back (before, the call ended at the dispatcher for want of a wire form)
     let answer = probe(&w, &mut tx, &records, request).await;
+    let values = answer
+        .as_ref()
+        .unwrap_or_else(|e| panic!("the exposed builtin runs: {e:?}"));
+    let values: serde_json::Value = serde_json::from_str(values).unwrap();
     assert!(
-        !matches!(&answer, Err((BoundaryErrorKind::AccessDenied, _))),
-        "{answer:?}"
-    );
-    assert!(
-        matches!(&answer, Err((BoundaryErrorKind::InvalidArgument, m)) if m.contains("through its wire form")),
-        "the call reached the dispatcher: {answer:?}"
+        values.is_object(),
+        "default_get answers a values object: {values}"
     );
     // the addon's own definition passes the exposure check (the chain has no `shout` in this
     // fixture ORM, so the call then fails for another reason than access)

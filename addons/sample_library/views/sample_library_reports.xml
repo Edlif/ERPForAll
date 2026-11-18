@@ -17,6 +17,17 @@
                     <strong t-else="" class="text-danger">On loan</strong>
                 </div>
             </div>
+            <!-- Codes on a document: the ISBN as a barcode with its digits under it (an ISBN-13 is an
+                 EAN-13; `auto` prints any other value as Code 128), and the book's web page as a QR
+                 code. Each is sized by its printed box and stays whole on its page. -->
+            <div class="row align-items-center mb-3" t-if="doc.isbn or doc.website">
+                <div class="col-8">
+                    <span t-if="doc.isbn" t-field="doc.isbn" t-options="{'widget': 'barcode', 'symbology': 'auto', 'humanreadable': 1, 'img_style': 'width:60mm;height:18mm'}"/>
+                </div>
+                <div class="col-4 text-end">
+                    <span t-if="doc.website" t-field="doc.website" t-options="{'widget': 'barcode', 'symbology': 'QR', 'barLevel': 'M', 'img_style': 'width:24mm;height:24mm'}"/>
+                </div>
+            </div>
             <div class="p-3 mb-3" style="background-color: #f4f6f8">
                 <table class="table table-sm table-borderless">
                     <tbody>

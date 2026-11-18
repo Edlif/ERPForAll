@@ -2,8 +2,8 @@
 #![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 //! Images, trusted vectors and table spans through the native renderer.
 use erp_report::{
-    DocumentBuilder, DocumentOptions, LayoutEngine, Limits, Node, NodeId, PageSetup, ReportError,
-    Vector,
+    DocumentBuilder, DocumentOptions, ImageFit, LayoutEngine, Limits, Node, NodeId, PageSetup,
+    ReportError, Vector,
 };
 use erp_report_typst::TypstEngine;
 use std::{path::Path, sync::Arc};
@@ -80,6 +80,7 @@ fn image(data: Vec<u8>, alt: &str) -> Node {
         data: Arc::from(data),
         width: Some(60.0),
         height: None,
+        fit: ImageFit::Contain,
         alt: alt.into(),
     }
 }
@@ -148,21 +149,67 @@ fn raster_images_reach_the_pdf() {
     assert!(out.warnings().is_empty(), "{:?}", out.warnings());
 }
 
-/// before layout)
+/// as an empty box with its alternative text and a returned warning; the document is printed)
 #[test]
-fn corrupt_raster_is_an_image_error() {
+fn a_corrupt_raster_prints_a_placeholder_with_a_warning() {
     let mut data = png(8, 8);
     let idat = data.windows(4).position(|w| w == b"IDAT").unwrap();
     data.truncate(idat + 10);
     let mut b = DocumentBuilder::new(Limits::default());
-    let body = b.add(image(data, "broken")).unwrap();
-    let e = render(b, body).unwrap_err();
-    assert!(matches!(e, ReportError::Image { .. }), "{e:?}");
+    let broken = b.add(image(data, "Broken seal")).unwrap();
+    let text = b.add(Node::Text("after the box".into())).unwrap();
+    let body = b
+        .add(Node::Flow {
+            children: vec![broken, text],
+        })
+        .unwrap();
+    let out = render(b, body).unwrap();
+    let [warning] = out.warnings() else {
+        panic!("one warning, got {:?}", out.warnings());
+    };
     assert!(
-        e.to_string()
-            .starts_with("report image: image node 0 cannot be decoded: "),
-        "{e}"
+        warning.starts_with("image node 0: the decoder cannot read it: ")
+            && warning.ends_with("; an empty box is printed"),
+        "{warning}"
     );
+    let text = &page_texts(out.bytes())[0];
+    let words: String = text.split_whitespace().collect();
+    assert!(words.contains("Brokenseal"), "{text:?}");
+    assert!(text.contains("after the box"), "{text:?}");
+    assert!(raster_objects(out.bytes()).is_empty());
+}
+
+/// alternative text and returns its reason as the warning)
+#[test]
+fn a_placeholder_node_prints_its_box_and_returns_its_reason() {
+    let reason =
+        "the picture at sale.report:7 cannot be read (not a picture); an empty box is printed";
+    let mut b = DocumentBuilder::new(Limits::default());
+    let body = b
+        .add(Node::Placeholder {
+            width: 48.0,
+            height: 30.0,
+            alt: "Seal".into(),
+            reason: reason.into(),
+        })
+        .unwrap();
+    let out = render(b, body).unwrap();
+    assert_eq!(out.warnings(), [reason]);
+    assert!(page_texts(out.bytes())[0].contains("Seal"));
+    assert!(raster_objects(out.bytes()).is_empty());
+}
+
+/// once, as stored when they have no more pixels than their box needs)
+#[test]
+fn equal_pictures_are_embedded_once() {
+    let mut b = DocumentBuilder::new(Limits::default());
+    let children = (0..5)
+        .map(|_| b.add(image(png(7, 5), "logo")).unwrap())
+        .collect();
+    let body = b.add(Node::Flow { children }).unwrap();
+    let out = render(b, body).unwrap();
+    assert_eq!(raster_objects(out.bytes()), vec![(7, 5)]);
+    assert!(out.warnings().is_empty(), "{:?}", out.warnings());
 }
 
 /// warning; its markup never reaches the renderer)
@@ -198,6 +245,7 @@ fn trusted_vectors_draw() {
                 width: Some(100.0),
                 height: Some(50.0),
                 alt: "barcode".into(),
+                caption: None,
             })
             .unwrap();
         let out = render(b, body).unwrap();

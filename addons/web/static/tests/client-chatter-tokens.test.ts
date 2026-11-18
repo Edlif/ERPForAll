@@ -2,28 +2,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "vitest";
+import { lastRule } from "./support/stylesheet.js";
 
 const clientCss = readFileSync(resolve(process.cwd(), "..", "addons/web/static/src/client/client.css"), "utf8");
 const threadViewCss = readFileSync(resolve(process.cwd(), "packages/mail-thread-view/src/thread-view.css"), "utf8");
 const builtinTs = readFileSync(resolve(process.cwd(), "packages/mail-thread-view/src/builtin.ts"), "utf8");
 
-const normal = (text: string): string => text.replace(/\s+/g, " ").trim();
-
-const rulesIn = (stylesheet: string, selector: string): string[] => {
-  const wanted = normal(selector);
-  const bodies: string[] = [];
-  const css = stylesheet.replace(/\/\*[\s\S]*?\*\//g, "");
-  for (const chunk of css.split("}")) {
-    const open = chunk.lastIndexOf("{");
-    if (open < 0) continue;
-    const selectors = chunk.slice(0, open).split("{").pop()!.split(",").map(normal);
-    if (selectors.includes(wanted)) bodies.push(chunk.slice(open + 1));
-  }
-  if (bodies.length === 0) throw new Error(`Stylesheet has no top-level rule for ${selector}`);
-  return bodies;
-};
-
-const lastIn = (stylesheet: string, selector: string): string => rulesIn(stylesheet, selector).at(-1)!;
+const lastIn = (stylesheet: string, selector: string): string =>
+  lastRule(stylesheet, selector, { media: "any" }).body;
 
 /// (partial: chatter and thread view styles use design tokens)
 test("chatter and mail attachment thumbnails use token radius instead of raw pixels", () => {
@@ -75,4 +61,10 @@ test("planned activities sit in one panel without a rule down the side, and the 
   // The state titles of overdue and today lose their filled band: this selector outranks their own rules.
   expect(lastIn(clientCss, ".record-form-chatter .erp-mail-activity-group .erp-mail-activity-group-title")).toMatch(/background:\s*transparent/);
   expect(lastIn(clientCss, '.record-form-chatter .erp-mail-chatter[data-kind="note"] .erp-mail-send:hover')).toMatch(/background:\s*var\(--accent-hover\)/);
+});
+
+test("activity form bar buttons share the same focus ring as activity fields", () => {
+  const barFocus = lastIn(clientCss, ".record-form-chatter .erp-mail-chatter .erp-mail-activity-form-bar > button:focus-visible");
+  expect(barFocus).toMatch(/outline:\s*2px solid var\(--focus\)/);
+  expect(barFocus).toMatch(/outline-offset:\s*1px/);
 });

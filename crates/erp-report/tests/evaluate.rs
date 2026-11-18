@@ -10,9 +10,9 @@
 use erp_expr::{EvalContext, ExprValue};
 use erp_report::{
     Alignment, AttachmentPolicy, DocTree, DocumentOptions, EvalOptions, FieldInfo, FieldValue,
-    LangFormat, Language, LimitKind, Limits, Node, NodeId, PageCounter, PageSetup, ProfileKind,
-    RecordStore, ReportError, ReportLimits, ReportProgram, Style, TableLook, TemplateSource,
-    probe_image, render_html,
+    ImageFit, LangFormat, Language, LimitKind, Limits, Node, NodeId, PageCounter, PageSetup,
+    ProfileKind, RecordStore, ReportError, ReportLimits, ReportProgram, Style, TableLook,
+    TemplateSource, probe_image, render_html,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -133,6 +133,7 @@ fn dump_node(doc: &DocTree, id: &NodeId, out: &mut String) {
             width,
             height,
             alt,
+            ..
         } => out.push_str(&format!(
             "image[{width:?} {height:?} {alt:?} {} bytes]",
             data.len()
@@ -227,6 +228,7 @@ fn images(doc: &DocTree) -> Vec<ImageParts> {
                 width,
                 height,
                 alt,
+                ..
             } => Some((*width, *height, alt.clone(), data.to_vec())),
             _ => None,
         })
@@ -939,8 +941,8 @@ fn what_later_slices_add_is_refused_by_task() {
             "report html field content requires a later release",
         ),
         (
-            "<p><span t-field='doc.name' t-options=\"{'widget': 'barcode'}\"/></p>",
-            "report image_url and barcode widgets requires a later release",
+            "<p><span t-field='doc.name' t-options=\"{'widget': 'image_url'}\"/></p>",
+            "report images read by their path while printing requires a later release",
         ),
         (
             "<p><span t-field='doc.partner_id' t-options=\"{'widget': 'contact'}\"/></p>",
@@ -1884,6 +1886,151 @@ fn an_image_field_prints_as_an_image_node_at_the_size_asked() {
     }
 }
 
+/// The box and the fit of every picture of a document, in document order.
+fn boxes(doc: &DocTree) -> Vec<(Option<f64>, Option<f64>, ImageFit)> {
+    doc.nodes()
+        .iter()
+        .filter_map(|node| match node {
+            Node::Image {
+                width, height, fit, ..
+            } => Some((*width, *height, *fit)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// also when that enlarges it; the document side)
+/// never stretched; the centred print is in the renderer tests)
+/// contain; the crop is in the renderer tests)
+#[test]
+fn declared_sides_size_a_picture_and_two_of_them_are_its_box() {
+    // the logo is 200 by 100 pixels: 150 by 75 points
+    for (arch, width, height, fit) in [
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' height='200'/></p>",
+            300.0,
+            150.0,
+            ImageFit::Contain,
+        ),
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' width='48' height='48'/></p>",
+            36.0,
+            36.0,
+            ImageFit::Contain,
+        ),
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' style='width: 48px; height: 48px; object-fit: cover'/></p>",
+            36.0,
+            36.0,
+            ImageFit::Cover,
+        ),
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' style='width: 48px; height: 48px; object-fit: fill'/></p>",
+            36.0,
+            36.0,
+            ImageFit::Contain,
+        ),
+        // a maximum shrinks the box, both sides alike
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' width='48' height='48' style='max-width: 24px; object-fit: cover'/></p>",
+            18.0,
+            18.0,
+            ImageFit::Cover,
+        ),
+        // without a box there is nothing to cover: the picture keeps its proportions
+        (
+            "<p><img t-att-src='image_data_uri(doc.logo)' style='width: 48px; object-fit: cover'/></p>",
+            36.0,
+            18.0,
+            ImageFit::Cover,
+        ),
+    ] {
+        let doc = order_doc(arch, &EvalOptions::default()).unwrap();
+        assert_eq!(boxes(&doc), [(Some(width), Some(height), fit)], "{arch}");
+    }
+}
+
+/// carries the reason, and the document is built; the printed box and the returned warning are
+/// in the renderer tests)
+#[test]
+fn an_unreadable_picture_is_a_placeholder_box_and_not_an_error() {
+    for (arch, width, height) in [
+        (
+            "<p><img src='data:image/png;base64,AAAA' alt='Seal'/></p>",
+            72.0,
+            72.0,
+        ),
+        (
+            "<p><img src='data:image/png;base64,AAAA' alt='Seal' width='48' height='32'/></p>",
+            36.0,
+            24.0,
+        ),
+        (
+            "<p><img src='data:image/png;base64,AAAA' alt='Seal' style='max-height: 40px'/></p>",
+            30.0,
+            30.0,
+        ),
+    ] {
+        let doc = order_doc(arch, &EvalOptions::default()).unwrap();
+        let found: Vec<_> = doc
+            .nodes()
+            .iter()
+            .filter_map(|node| match node {
+                Node::Placeholder {
+                    width,
+                    height,
+                    alt,
+                    reason,
+                } => Some((*width, *height, alt.as_str(), reason.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [(
+                width,
+                height,
+                "Seal",
+                "the picture at test.report:1 cannot be read (image bytes are not PNG, JPEG, GIF, \
+                 WebP or SVG); an empty box is printed"
+            )],
+            "{arch}"
+        );
+        assert_eq!(images(&doc), [], "{arch}");
+    }
+    // the preview shows the same box and lists the reason above the page
+    let doc = order_doc(
+        "<p><img src='data:image/png;base64,AAAA' alt='Seal' width='48' height='32'/></p>",
+        &EvalOptions::default(),
+    )
+    .unwrap();
+    let page = render_html(&doc, &[]).unwrap();
+    assert!(
+        page.contains(
+            "<span class=\"erp-image\" role=\"img\" aria-label=\"Seal\" \
+             style=\"width:36pt;height:24pt;\">Seal</span>"
+        ),
+        "{page}"
+    );
+    assert!(
+        page.contains(
+            "<li>the picture at test.report:1 cannot be read (image bytes are not PNG, JPEG, \
+             GIF, WebP or SVG); an empty box is printed</li>"
+        ),
+        "{page}"
+    );
+    // a size outside the document's bound is still refused
+    let err = order_doc(
+        "<p><img src='data:image/png;base64,AAAA' width='0'/></p>",
+        &EvalOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "test.report:1: the width and height of an image must be in (0, 14400] points"
+    );
+}
+
 #[test]
 fn an_embedded_image_is_decoded_and_an_img_without_a_source_prints_nothing() {
     for size in [(4, 2), (5, 2), (6, 2)] {
@@ -1970,10 +2117,6 @@ fn an_image_that_cannot_be_printed_is_an_error_naming_why() {
             "report image: an embedded image must be `data:image/<type>;base64,<data>`",
         ),
         (
-            "<p><img src='data:image/png;base64,AAAA'/></p>",
-            "report image: image bytes are not PNG, JPEG, GIF, WebP or SVG",
-        ),
-        (
             "<p><img t-att-src='image_data_uri(doc.logo)' width='0'/></p>",
             "test.report:1: the width and height of an image must be in (0, 14400] points",
         ),
@@ -1996,8 +2139,9 @@ fn an_image_that_cannot_be_printed_is_an_error_naming_why() {
     )
     .unwrap_err();
     assert!(matches!(err, ReportError::Expression { .. }), "{err:?}");
+    // an embedded picture whose data is not base64 is the template's mistake: still an error
     let err = order_doc(
-        "<p><img src='data:image/png;base64,AAAA'/></p>",
+        "<p><img src='data:image/png;base64,A'/></p>",
         &EvalOptions::default(),
     )
     .unwrap_err();

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Image admission and trusted vectors. Raster dimensions are read from the container header so the
-//! pixel cap holds before any decoder runs; SVG bytes from users are never trusted (Decision 7).
+//! Image admission and trusted vectors. Raster dimensions, the EXIF orientation of a JPEG and its
+//! coding are read from the container header, so the pixel cap holds before any decoder runs; SVG bytes from users are never trusted (Decision 7).
 use crate::{LimitKind, Limits, ReportError};
 use std::sync::Arc;
 
@@ -15,22 +15,47 @@ pub enum ImageFormat {
     /// User or uploaded SVG: printed by the in-process engine as a placeholder with a warning.
     UntrustedSvg,
 }
+/// How a picture sits in a box whose proportions differ from its own. Its proportions are kept
+/// either way: a picture is never stretched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ImageFit {
+    /// Scaled to fit inside the box and centred in it.
+    #[default]
+    Contain,
+    /// Scaled to fill the box; what falls outside is cut off, equally on both sides.
+    Cover,
+}
 /// Detected format and header dimensions (zero for SVG, which has no pixel grid).
 #[derive(Debug, Clone, Copy)]
 pub struct ImageInfo {
     format: ImageFormat,
     width: u32,
     height: u32,
+    orientation: u8,
+    conversion: Option<&'static str>,
 }
 impl ImageInfo {
     pub fn format(&self) -> ImageFormat {
         self.format
     }
+    /// Pixels across as the picture is seen: after the EXIF orientation of a JPEG.
     pub fn width(&self) -> u32 {
         self.width
     }
+    /// Pixels down as the picture is seen: after the EXIF orientation of a JPEG.
     pub fn height(&self) -> u32 {
         self.height
+    }
+    /// The EXIF orientation of a JPEG, `1..=8`; `1` (stored as seen) for every other picture.
+    pub fn orientation(&self) -> u8 {
+        self.orientation
+    }
+    /// Why the stored bytes cannot be embedded as they are, as the name of their kind (a CMYK
+    /// JPEG, a lossless JPEG): a renderer decodes such a picture and encodes it again, or prints
+    /// a placeholder naming the kind. `None` for a picture every PDF reader shows.
+    pub fn conversion(&self) -> Option<&'static str> {
+        self.conversion
     }
 }
 fn image(reason: &str) -> ReportError {
@@ -64,8 +89,57 @@ fn png(d: &[u8]) -> Option<(u32, u32)> {
     let h = u32::from_be_bytes(d.get(20..24)?.try_into().ok()?);
     Some((w, h))
 }
-fn jpeg(d: &[u8]) -> Option<(u32, u32)> {
+/// The EXIF orientation (`1..=8`) in the payload of an APP1 segment: tag 0x0112 of the first
+/// image directory. `None` when the payload is not EXIF, is cut short or holds no such tag.
+fn exif_orientation(payload: &[u8]) -> Option<u8> {
+    let tiff = payload.strip_prefix(b"Exif\0\0")?;
+    let little = match tiff.get(..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    let short = |at: usize| -> Option<u16> {
+        let bytes: [u8; 2] = tiff.get(at..at.checked_add(2)?)?.try_into().ok()?;
+        Some(if little {
+            u16::from_le_bytes(bytes)
+        } else {
+            u16::from_be_bytes(bytes)
+        })
+    };
+    let long = |at: usize| -> Option<u32> {
+        let bytes: [u8; 4] = tiff.get(at..at.checked_add(4)?)?.try_into().ok()?;
+        Some(if little {
+            u32::from_le_bytes(bytes)
+        } else {
+            u32::from_be_bytes(bytes)
+        })
+    };
+    (short(2)? == 42).then_some(())?;
+    let directory = usize::try_from(long(4)?).ok()?;
+    // At most 65535 entries of 12 bytes; a read past the payload ends the walk.
+    for entry in 0..usize::from(short(directory)?) {
+        let at = directory
+            .checked_add(2)?
+            .checked_add(entry.checked_mul(12)?)?;
+        if short(at)? == 0x0112 {
+            // one SHORT: it sits in the first two bytes of the value field
+            let value = short(at.checked_add(8)?)?;
+            return u8::try_from(value).ok().filter(|v| (1..=8).contains(v));
+        }
+    }
+    None
+}
+/// What the header of a JPEG says: the stored frame size, the EXIF orientation and whether the
+/// coding is one a PDF reader may not show.
+struct Jpeg {
+    width: u32,
+    height: u32,
+    orientation: u8,
+    conversion: Option<&'static str>,
+}
+fn jpeg(d: &[u8]) -> Option<Jpeg> {
     let mut at = 2;
+    let mut orientation = 1;
     loop {
         if *d.get(at)? != 0xFF {
             return None;
@@ -77,14 +151,35 @@ fn jpeg(d: &[u8]) -> Option<(u32, u32)> {
         }
         // SOF0..SOF15 carry the frame size; C4 (DHT), C8 (JPG) and CC (DAC) share the range.
         if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
-            return Some((be16(d, at + 7)?, be16(d, at + 5)?));
+            let (precision, components) = (*d.get(at + 4)?, *d.get(at + 9)?);
+            // Baseline, extended and progressive Huffman coding of 8-bit grey or colour samples is
+            // what every PDF reader decodes; anything else is converted before it is embedded.
+            let conversion = match (marker, precision, components) {
+                (0xC0..=0xC2, 8, 1 | 3) => None,
+                (_, _, 4) => Some("CMYK JPEG"),
+                (0xC0..=0xC2, _, 1 | 3) => Some("JPEG with samples wider than 8 bits"),
+                (0xC0..=0xC2, ..) => Some("JPEG with an unusual number of colour components"),
+                (0xC3 | 0xC7 | 0xCB | 0xCF, ..) => Some("lossless JPEG"),
+                (0xC9..=0xCE, ..) => Some("arithmetic-coded JPEG"),
+                _ => Some("hierarchical JPEG"),
+            };
+            return Some(Jpeg {
+                width: be16(d, at + 7)?,
+                height: be16(d, at + 5)?,
+                orientation,
+                conversion,
+            });
         }
         if (0xD8..=0xDA).contains(&marker) {
             return None; // no frame header before the image data
         }
-        at = at
-            .checked_add(2)?
-            .checked_add(usize::try_from(be16(d, at + 2)?).ok()?)?;
+        let length = usize::try_from(be16(d, at + 2)?).ok()?;
+        if marker == 0xE1
+            && let Some(found) = d.get(at + 4..at + 2 + length).and_then(exif_orientation)
+        {
+            orientation = found;
+        }
+        at = at.checked_add(2)?.checked_add(length)?;
     }
 }
 /// Skip GIF data sub-blocks starting at `at`; the position after the zero-length terminator.
@@ -159,10 +254,20 @@ fn looks_like_svg(d: &[u8]) -> bool {
 /// Encoded size is checked first, then the pixel count (`width * height`, refused on overflow).
 pub fn probe_image(data: &[u8], limits: &Limits) -> Result<ImageInfo, ReportError> {
     limits.check(LimitKind::ImageBytes, data.len())?;
+    let (mut orientation, mut conversion) = (1, None);
     let (format, size) = if data.starts_with(b"\x89PNG\r\n\x1a\n") {
         (ImageFormat::Png, png(data))
     } else if data.starts_with(&[0xFF, 0xD8]) {
-        (ImageFormat::Jpeg, jpeg(data))
+        let header = jpeg(data);
+        if let Some(header) = &header {
+            (orientation, conversion) = (header.orientation, header.conversion);
+        }
+        // Orientations 5 to 8 turn the picture a quarter: it is seen as high as it is stored wide.
+        let size = header.map(|header| match header.orientation {
+            5..=8 => (header.height, header.width),
+            _ => (header.width, header.height),
+        });
+        (ImageFormat::Jpeg, size)
     } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
         (ImageFormat::Gif, gif(data).transpose()?)
     } else if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
@@ -172,6 +277,8 @@ pub fn probe_image(data: &[u8], limits: &Limits) -> Result<ImageInfo, ReportErro
             format: ImageFormat::UntrustedSvg,
             width: 0,
             height: 0,
+            orientation: 1,
+            conversion: None,
         });
     } else {
         return Err(image("image bytes are not PNG, JPEG, GIF, WebP or SVG"));
@@ -193,6 +300,8 @@ pub fn probe_image(data: &[u8], limits: &Limits) -> Result<ImageInfo, ReportErro
         format,
         width,
         height,
+        orientation,
+        conversion,
     })
 }
 /// The value of one base64 character of the standard alphabet.
@@ -247,16 +356,20 @@ pub(crate) fn embedded_bytes(value: &str, limits: &Limits) -> Result<Vec<u8>, Re
     base64(data.as_bytes()).ok_or_else(|| image("the data of an embedded image is not base64"))
 }
 /// A vector graphic whose SVG markup ERPForAll writes itself from numbers, so the in-process engine
-/// may parse it. There is no constructor from SVG text: caller bytes go through `Node::Image`.
-#[derive(Debug, Clone)]
+/// may parse it. There is no constructor from SVG text: caller bytes go through `Node::Image`. The
+/// numbers stay with it: they, never the markup, are what crosses to a render worker.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Vector {
     svg: Arc<[u8]>,
     width: f64,
     height: f64,
+    rectangles: Arc<[[f64; 4]]>,
+    color: [u8; 3],
 }
 impl Vector {
     /// Filled rectangles `[x, y, width, height]` inside a `width` × `height` box, in one RGB colour:
-    /// the shape of every 1D barcode and QR code.
+    /// the shape of every 1D barcode and QR code. A rectangle is positive in size and lies inside
+    /// the box; there are at most `vector_rectangles` of them (the hard bound of that limit).
     pub fn rectangles(
         width: f64,
         height: f64,
@@ -269,8 +382,24 @@ impl Vector {
                 "vector box must be finite and in (0, 14400] units each way",
             ));
         }
+        Limits::default().check(LimitKind::VectorRectangles, rectangles.len())?;
         if rectangles.iter().flatten().any(|v| !v.is_finite()) {
             return Err(crate::error::invalid("vector rectangles must be finite"));
+        }
+        // The slack forgives the rounding of an edge that is computed, not a rectangle outside.
+        const SLACK: f64 = 1e-6;
+        let inside = |[x, y, w, h]: &[f64; 4]| {
+            *x >= 0.0
+                && *y >= 0.0
+                && *w > 0.0
+                && *h > 0.0
+                && x + w <= width + SLACK
+                && y + h <= height + SLACK
+        };
+        if !rectangles.iter().all(inside) {
+            return Err(crate::error::invalid(
+                "vector rectangles must have a positive size and lie inside the vector box",
+            ));
         }
         use std::fmt::Write;
         let [r, g, b] = color;
@@ -286,6 +415,8 @@ impl Vector {
             svg: svg.into_bytes().into(),
             width,
             height,
+            rectangles: rectangles.into(),
+            color,
         })
     }
     /// The generated SVG markup.
@@ -297,5 +428,18 @@ impl Vector {
     }
     pub fn height(&self) -> f64 {
         self.height
+    }
+    /// The rectangles the vector was made from, `[x, y, width, height]` each.
+    pub fn rectangle_list(&self) -> &[[f64; 4]] {
+        &self.rectangles
+    }
+    pub fn color(&self) -> [u8; 3] {
+        self.color
+    }
+    /// Bytes the vector holds: its markup and its rectangles.
+    pub(crate) fn payload(&self) -> usize {
+        self.svg
+            .len()
+            .saturating_add(std::mem::size_of_val(&*self.rectangles))
     }
 }

@@ -1,0 +1,22 @@
+ERPForAll optional report font assets: Chinese, Japanese and Korean
+
+The manifest, inventory, tools and documentation are provided under MIT OR Apache-2.0.
+The Noto font files are third-party assets under the SIL Open Font License 1.1.
+Their complete, unmodified copyright and licence notices are retained separately:
+
+Noto Sans SC: licenses/notosanssc-OFL.txt
+Noto Sans TC: licenses/notosanstc-OFL.txt
+Noto Sans JP: licenses/notosansjp-OFL.txt
+Noto Sans KR: licenses/notosanskr-OFL.txt
+
+Source repository: https://github.com/google/fonts
+Source commit: cc39c4c2c304bc368c9b7c311ea2bcc6013299fe
+Source directories: ofl/notosanssc, ofl/notosanstc, ofl/notosansjp, ofl/notosanskr.
+
+Exact pinned source URLs and SHA-256 hashes are in fonts.json and
+source-inventory.json. Font bytes were not modified or subsetted. Only local
+filenames were simplified; internal font names were not changed. No font was
+copied from a system installation.
+
+This notice records the font assets only. It supplies no legal approval for
+separate renderer dependencies or their embedded data.

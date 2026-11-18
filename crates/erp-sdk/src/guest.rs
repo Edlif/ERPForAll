@@ -4,25 +4,27 @@
 //! handles, method and compute signatures. The ORM, registry and database crates are not linked;
 //! what an addon reads and writes at run time goes through the host bridge (`rt`): `RecordSet::get`,
 //! `set` and `Super::call` are `orm-host` imports; the rest of the native surface is not available
-//! in a component yet and does not compile, so no value is faked.
+//! in a component yet and does not compile, so no value is faked. The argument and result types
+//! of the core methods a component overrides (`wire`) carry the native names and their wire form.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
 mod rt;
+mod wire;
 pub use rt::{
     GuestMethod, call_by_name, find_guest_method, from_boundary, run_compute, run_method,
     to_boundary,
 };
+pub use wire::{Domain, UpsertCall, UpsertOutcome, UpsertResult, UpsertedRow, ValueMap};
 
 pub use erp_fields::TextCollation;
 pub use erp_fields::money;
 pub use erp_fields::{
     BigInt, Blob, Cell, ColumnType, Condition, Date, DateRange, DateTime, DatetimeRange, Decimal,
     Digits, Error, ErrorKind, FieldType, FieldValue, ImageBounds, IndexKind, OnDelete, Range,
-    RangeBounds, RangeValue, RealId, RecId, Result, TimestampTz, Uuid, Value, ValueMap, Xid8,
-    serde_json,
+    RangeBounds, RangeValue, RealId, RecId, Result, TimestampTz, Uuid, Value, Xid8, serde_json,
 };
 use erp_fields::{IntoFieldValue, RefType, ValueFor, kinds};
 pub use erp_macros::{addon, extend, methods, model, model_ref};
@@ -789,9 +791,9 @@ pub mod prelude {
 
     pub use crate::{
         Assign, Batch, BigInt, Cell, ComputeSuper, Date, DateRange, DateTime, DatetimeRange,
-        Decimal, Env, Error, Field, Many2one, OnchangeResult, RawVals, ReadTx, RecId, RecordSet,
-        Records, Result, Super, TimestampTz, Transaction, Uuid, Vals, Value, X2many, Xid8, extend,
-        methods, model,
+        Decimal, Domain, Env, Error, Field, Many2one, OnchangeResult, RawVals, ReadTx, RecId,
+        RecordSet, Records, Result, Super, TimestampTz, Transaction, UpsertCall, UpsertOutcome,
+        UpsertResult, Uuid, Vals, Value, X2many, Xid8, extend, methods, model,
     };
 }
 

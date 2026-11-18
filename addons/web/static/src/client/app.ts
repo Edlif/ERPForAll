@@ -2761,7 +2761,9 @@ export class HumanApp {
         const menus = this.menuTrail(related.origin);
         // An origin that is a page of the menu's own action (a dashboard, a pivot, a chart) takes the place of the menu's last
         // link: both name that page ("Dashboard › Accounting Dashboard"), and only the origin crumb brings it back as it was left.
-        if (!related.origin.id) menus.pop();
+        // Drop the last menu link only when that menu opens the origin's action (a hand-typed route under another menu keeps it).
+        const leaf = related.origin.menu ? this.menus.get(Number(related.origin.menu)) : [...this.menus.values()].find(item => String(item.action) === related.origin.action);
+        if (!related.origin.id && leaf && String(leaf.action) === related.origin.action) menus.pop();
         for (const item of menus) trail.append(item, el("span", "›", "form-breadcrumb-divider"));
         trail.append(this.originCrumb(related), el("span", "›", "form-breadcrumb-divider"));
         title.className = "breadcrumb-current form-breadcrumb-record"; title.setAttribute("aria-current", "page");

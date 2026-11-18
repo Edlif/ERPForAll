@@ -16,6 +16,7 @@
 //! - the `qweb-html` converter ([`render_html`]): the same `DocTree` as an escaped HTML preview page.
 mod asset;
 mod attachment;
+mod code;
 mod corpus;
 mod doc_limits;
 mod document;
@@ -34,16 +35,18 @@ mod records;
 mod style;
 mod validate;
 mod widget;
-pub use asset::{ImageFormat, ImageInfo, Vector, probe_image};
+pub use asset::{ImageFit, ImageFormat, ImageInfo, Vector, probe_image};
 pub use attachment::{
     AttachmentPolicy, FieldInfo, HelperDependencies, RestrictedField, TemplateSource,
     check_attachment,
 };
+pub use code::{Code, CodeGraphic, ModuleGrid, QrLevel, Symbology};
 pub use corpus::{CorpusError, CorpusReport, scan_corpus};
 pub use doc_limits::{LimitKind, Limits};
 pub use document::{
-    Alignment, CrossAlignment, DocTree, DocumentBuilder, DocumentOptions, Node, NodeId,
-    PageCounter, PageSetup, PdfStandard, RenderDate, Style, TableLook,
+    Alignment, CODE_CAPTION_POINTS, CrossAlignment, DocTree, DocumentBuilder, DocumentOptions,
+    Node, NodeId, PageCounter, PageSetup, PdfStandard, PictureQuality, RenderDate, Style,
+    TableLook,
 };
 pub use engine::{LayoutEngine, RenderIdentity, RenderResult};
 pub use error::{Diagnostic, LayoutFailure, ProfileKind, ReportError, WorkerCrash};

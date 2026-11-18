@@ -17,10 +17,16 @@ pub enum LimitKind {
     EvictionInterval,
     FontBytes,
     WorkerThreads,
+    /// Pictures in one document.
+    Images,
+    /// Bytes of the value of one barcode or QR code.
+    CodeBytes,
+    /// Rectangles of one generated vector (a barcode's bars, a QR code's runs of dark modules).
+    VectorRectangles,
 }
 impl LimitKind {
     /// Every kind, in declaration order: what a render worker receives with its start message.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 13] = [
         Self::Nodes,
         Self::Bytes,
         Self::Depth,
@@ -31,6 +37,9 @@ impl LimitKind {
         Self::EvictionInterval,
         Self::FontBytes,
         Self::WorkerThreads,
+        Self::Images,
+        Self::CodeBytes,
+        Self::VectorRectangles,
     ];
     /// The kind whose `Display` text is `name`.
     pub fn from_name(name: &str) -> Option<Self> {
@@ -52,6 +61,11 @@ impl LimitKind {
             Self::EvictionInterval => 64,
             Self::FontBytes => 20 * 1024 * 1024,
             Self::WorkerThreads => 4,
+            Self::Images => 10_000,
+            // The most bytes a QR code holds (version 40, error correction level L).
+            Self::CodeBytes => 2_953,
+            // Above the most runs of dark modules a QR code can have (177 rows of 89).
+            Self::VectorRectangles => 16_384,
         }
     }
     const fn name(self) -> &'static str {
@@ -66,6 +80,9 @@ impl LimitKind {
             Self::EvictionInterval => "eviction_interval",
             Self::FontBytes => "font_bytes",
             Self::WorkerThreads => "worker_threads",
+            Self::Images => "images",
+            Self::CodeBytes => "code_bytes",
+            Self::VectorRectangles => "vector_rectangles",
         }
     }
 }

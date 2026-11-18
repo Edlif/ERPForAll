@@ -212,10 +212,12 @@ fn page_texts(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// What one print gave: the text of each PDF page and the file name.
+/// What one print gave: the text of each PDF page, the file name, and the alternative text of
+/// each barcode or QR code of the document the render worker laid out.
 struct Printed {
     pages: Vec<String>,
     file: String,
+    codes: Vec<String>,
 }
 
 async fn print(tx: &mut Transaction, report: &str, ids: &[i64], keep: &str) -> Printed {
@@ -233,15 +235,23 @@ async fn print(tx: &mut Transaction, report: &str, ids: &[i64], keep: &str) -> P
         .unwrap();
     let fonts = addons_dir().join("report_fonts");
     let engine = erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
-    let pdf = engine
-        .render(&report_frame::through_frame(&document))
-        .unwrap();
+    let framed = report_frame::through_frame(&document);
+    let codes = framed
+        .nodes()
+        .iter()
+        .filter_map(|node| match node {
+            erp_report::Node::Vector { alt, .. } => Some(alt.clone()),
+            _ => None,
+        })
+        .collect();
+    let pdf = engine.render(&framed).unwrap();
     // Kept in the test scratch folder for a look at the layout.
     let out = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(out.join(format!("stock-{keep}.pdf")), pdf.bytes()).unwrap();
     Printed {
         pages: page_texts(pdf.bytes()),
         file,
+        codes,
     }
 }
 
@@ -387,6 +397,8 @@ async fn body() {
     call(&mut tx, company, delivery, "action_confirm").await;
     let slip = print(&mut tx, "stock.report_deliveryslip", &[delivery], "slip").await;
     assert!(!slip.pages[0].contains("Draft"), "{}", slip.pages[0]);
+    // The delivery slip goes to the customer: it carries no code (as in the reference).
+    assert!(slip.codes.is_empty(), "{:?}", slip.codes);
     // No seconds in the dates: the hour and minute end the scheduled date.
     assert!(
         !slip.pages[0].contains("ScheduledDate") || {
@@ -427,6 +439,13 @@ async fn body() {
         !sheet.pages[0].contains("Lot/SerialNumber"),
         "no lot column without a lot: {}",
         sheet.pages[0]
+    );
+    // render worker frame; that such a code reads is the scan check of erp-report-typst)
+    assert_eq!(sheet.codes.len(), 1, "{:?}", sheet.codes);
+    assert!(
+        sheet.codes[0].starts_with("Barcode ") && sheet.codes[0].ends_with("OUT/0001"),
+        "{:?}",
+        sheet.codes
     );
 
     // A receipt that is ready (lines from the vendor) and then validated: the received quantity is

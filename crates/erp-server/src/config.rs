@@ -89,7 +89,8 @@ struct RawConfig {
     /// The attachment store table. Its keys are validated by `erp-blob`, which
     /// reads this same file; here it is only allowed to exist.
     attachments: Option<toml::Value>,
-    /// The report render pool: `font_directory` and the pool settings by name.
+    /// The report render pool: `font_directory`, `cjk_font_directory` and the pool
+    /// settings by name.
     /// Names and bounds are checked by the composition root, which knows the settings.
     report: Option<toml::Value>,
 }
@@ -98,6 +99,9 @@ struct RawConfig {
 pub struct ReportConfig {
     /// The shipped font store; `None`: the `report_fonts` directory of an addons path.
     pub font_directory: Option<PathBuf>,
+    /// The optional Chinese, Japanese and Korean font package (`report_fonts_cjk`); `None`: not
+    /// installed on this node, and a document that names one of its families is refused by name.
+    pub cjk_font_directory: Option<PathBuf>,
     /// `(setting, value)` in file order.
     pub settings: Vec<(String, u64)>,
 }
@@ -113,11 +117,16 @@ fn read_report(
         .ok_or_else(|| ConfigError::Report("must be a table".to_owned()))?;
     let mut config = ReportConfig::default();
     for (key, value) in table {
-        if key == "font_directory" {
+        if key == "font_directory" || key == "cjk_font_directory" {
             let path = value
                 .as_str()
-                .ok_or_else(|| ConfigError::Report("font_directory must be a path".to_owned()))?;
-            config.font_directory = Some(resolve(Path::new(path)));
+                .ok_or_else(|| ConfigError::Report(format!("{key} must be a path")))?;
+            let path = Some(resolve(Path::new(path)));
+            if key == "font_directory" {
+                config.font_directory = path;
+            } else {
+                config.cjk_font_directory = path;
+            }
             continue;
         }
         let number = value
@@ -673,4 +682,43 @@ fn sql_object_role(
         return Err(ConfigError::SqlObjectRole(key));
     }
     Ok(Some(role.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "tests")]
+    use super::*;
+
+    fn table(text: &str) -> Option<toml::Value> {
+        Some(toml::from_str(text).unwrap())
+    }
+
+    /// like `font_directory` against the configuration file's directory, and a non-path is refused
+    /// naming the key)
+    #[test]
+    fn cjk_font_directory_is_read_resolved_and_refused_when_not_a_path() {
+        let base = Path::new("/etc/erp");
+        let resolve = |value: &Path| {
+            if value.is_absolute() {
+                value.to_path_buf()
+            } else {
+                base.join(value)
+            }
+        };
+        let config = read_report(
+            table("font_directory = 'fonts'\ncjk_font_directory = 'cjk'\nworkers = 2\n"),
+            resolve,
+        )
+        .unwrap();
+        assert_eq!(config.cjk_font_directory, Some(base.join("cjk")));
+        assert_eq!(config.font_directory, Some(base.join("fonts")));
+        assert_eq!(config.settings, vec![("workers".to_owned(), 2)]);
+        let absolute = read_report(table("cjk_font_directory = '/opt/cjk'\n"), resolve).unwrap();
+        assert_eq!(absolute.cjk_font_directory, Some(PathBuf::from("/opt/cjk")));
+        let refused = read_report(table("cjk_font_directory = 3\n"), resolve).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "[report]: cjk_font_directory must be a path"
+        );
+    }
 }

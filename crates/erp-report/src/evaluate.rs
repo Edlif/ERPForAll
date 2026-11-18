@@ -7,9 +7,10 @@
 //! changes no text style and a block element that changes nothing and holds only blocks emit no
 //! node, their content stands in their place (design §4.3). Content is never dropped by this.
 use crate::{
-    Alignment, Diagnostic, DocTree, DocumentBuilder, DocumentOptions, Limits, Node, NodeId,
-    PageCounter, ReportError, ReportProgram, Style,
+    Alignment, Diagnostic, DocTree, DocumentBuilder, DocumentOptions, ImageFit, Limits, ModuleGrid,
+    Node, NodeId, PageCounter, QrLevel, ReportError, ReportProgram, Style,
     asset::embedded_bytes,
+    code::{CodeAsk, PrintedCode},
     format::LangFormat,
     limits::millis,
     look::{self, Look, Role, Size, Tint},
@@ -28,8 +29,13 @@ const VECTORS_TASK: &str = "a later release";
 const IMAGE_HELPER: &str = "image_data_uri";
 /// Points of one CSS pixel: the natural size of an image is its pixel size at 96 per inch.
 const POINTS_PER_PIXEL: f64 = 0.75;
+/// The address of a generated code on this site, as an `<img>` source.
+const CODE_PATH: &str = "/report/barcode";
 /// The largest side of an image, in points (the document's own bound).
 const IMAGE_POINTS_MAX: f64 = 14400.0;
+/// Side of the box that stands for an unreadable picture without a declared size, in points: a
+/// layout default like the natural size of a picture, the same box a user SVG prints as.
+const PLACEHOLDER_POINTS: f64 = 72.0;
 
 /// The user's offset from UTC at a timestamp (seconds since the epoch).
 #[derive(Clone)]
@@ -54,6 +60,7 @@ pub struct EvalOptions {
     primary: [u8; 3],
     secondary: [u8; 3],
     limits: Limits,
+    grid: ModuleGrid,
 }
 impl Default for EvalOptions {
     /// `en_US` formats, UTC, the default theme colours and the default document limits.
@@ -64,6 +71,7 @@ impl Default for EvalOptions {
             primary: [13, 110, 253],
             secondary: [108, 117, 125],
             limits: Limits::default(),
+            grid: ModuleGrid::default(),
         }
     }
 }
@@ -103,6 +111,12 @@ impl EvalOptions {
     /// Lowered document limits (nodes, bytes, depth, pages).
     pub fn with_document_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
+        self
+    }
+    /// The printer resolution barcodes and QR codes are sized for unless a code names its own
+    /// (`dpi` in its options); 300 dots per inch by default.
+    pub fn with_code_grid(mut self, grid: ModuleGrid) -> Self {
+        self.grid = grid;
         self
     }
 }
@@ -565,6 +579,8 @@ impl<'p> Run<'p> {
             formats: &options.formats,
             utc_offset: &options.utc_offset,
             records: self.records,
+            limits: &options.limits,
+            grid: options.grid,
         }
     }
     fn ops(
@@ -911,6 +927,32 @@ impl<'p> Run<'p> {
                 self.charge(bytes.len())?;
                 bytes.into()
             }
+            // A code by its address on this site: generated here, nothing is fetched.
+            (None, Some(source)) if source.starts_with(CODE_PATH) => {
+                let sides = |name: &str| {
+                    let written = attrs.style(name).or_else(|| attrs.get(name))?;
+                    match written.parse::<u32>() {
+                        Ok(pixels) => Some(f64::from(pixels) * POINTS_PER_PIXEL),
+                        Err(_) => match look::length(written, false) {
+                            Some(Size::Points(points)) => Some(points),
+                            _ => None,
+                        },
+                    }
+                };
+                let alt = attrs.get("alt").map(str::to_owned);
+                let grid = self.options.grid;
+                let mut code = code_by_path(
+                    source,
+                    [sides("width"), sides("height")],
+                    grid,
+                    &self.options.limits,
+                )
+                .map_err(|error| widget::placed(error, at))?;
+                if let Some(alt) = alt {
+                    code.alt = alt;
+                }
+                return self.code(code, out);
+            }
             // The data stage does not read an image by its path yet.
             (None, Some(_)) => {
                 return Err(ReportError::Unsupported {
@@ -939,20 +981,88 @@ impl<'p> Run<'p> {
             sides("max-height"),
         ];
         let alt = attrs.get("alt").unwrap_or_default().to_owned();
-        self.picture(data, wanted, alt, at, out)
+        // `object-fit: cover` fills the box and crops; every other value keeps the whole picture
+        // inside the box. A picture is never stretched, whatever the style asks.
+        let fit = match attrs.style("object-fit") {
+            Some("cover") => ImageFit::Cover,
+            _ => ImageFit::Contain,
+        };
+        self.picture(data, wanted, fit, alt, at, out)
     }
-    /// An image node of `data`: `[width, height, max-width, max-height]` in points size it, the
-    /// side that is not given follows the image's proportions, and nothing given is its natural
-    /// size (a pixel is 0.75 points). A user SVG has no pixel size: it takes what is given.
+    /// A barcode or QR code at the size it was fitted to.
+    fn code(&mut self, code: PrintedCode, out: &mut Vec<Item>) -> Result<(), ReportError> {
+        self.node(
+            Node::Vector {
+                vector: code.vector,
+                width: Some(code.width),
+                height: Some(code.height),
+                alt: code.alt,
+                caption: code.caption,
+            },
+            false,
+            out,
+        )
+    }
+    /// A picture node of `data`. `[width, height, max-width, max-height]` in points size it:
+    /// nothing given is its natural size (a pixel is 0.75 points, after the EXIF orientation of a
+    /// JPEG); one side given and the other follows its proportions; both given and they are a box
+    /// the picture is fitted in by `fit`, never stretched. A maximum shrinks both sides alike and
+    /// never enlarges. A user SVG has no pixel size: it takes what is given.
+    ///
+    /// Bytes that are no picture print as an empty box of the declared size, and the box carries
+    /// the reason for the warning list of the print: one bad picture does not stop a document. A
+    /// picture over a limit still refuses it.
     fn picture(
         &mut self,
         data: Arc<[u8]>,
         [width, height, max_width, max_height]: [Option<f64>; 4],
+        fit: ImageFit,
         alt: String,
         at: &At,
         out: &mut Vec<Item>,
     ) -> Result<(), ReportError> {
-        let info = probe_image(&data, &self.options.limits)?;
+        let sized = |sides: [Option<f64>; 2]| {
+            if sides
+                .into_iter()
+                .flatten()
+                .any(|side| !side.is_finite() || side <= 0.0 || side > IMAGE_POINTS_MAX)
+            {
+                return Err(at.evaluate(format!(
+                    "the width and height of an image must be in (0, {IMAGE_POINTS_MAX}] points"
+                )));
+            }
+            Ok(())
+        };
+        let info = match probe_image(&data, &self.options.limits) {
+            Ok(info) => info,
+            Err(ReportError::Image { reason }) => {
+                let wide = width.or(max_width).or(height).or(max_height);
+                let high = height.or(max_height).or(width).or(max_width);
+                sized([wide, high])?;
+                let reason = format!(
+                    "the picture at {}:{} cannot be read ({reason}); an empty box is printed",
+                    at.template, at.line
+                );
+                // the node keeps a bounded reason; a template name is the only long part
+                let kept = reason
+                    .char_indices()
+                    .map(|(index, c)| index + c.len_utf8())
+                    .take_while(|end| *end <= crate::document::PLACEHOLDER_REASON_BYTES)
+                    .last()
+                    .unwrap_or(0);
+                return self.node(
+                    Node::Placeholder {
+                        width: wide.unwrap_or(PLACEHOLDER_POINTS),
+                        height: high.unwrap_or(PLACEHOLDER_POINTS),
+                        alt,
+                        reason: reason[..kept].to_owned(),
+                    },
+                    false,
+                    out,
+                );
+            }
+            Err(other) => return Err(other),
+        };
         let natural = (info.width() > 0 && info.height() > 0).then(|| {
             (
                 f64::from(info.width()) * POINTS_PER_PIXEL,
@@ -978,20 +1088,13 @@ impl<'p> Run<'p> {
             }
             None => (width.or(max_width), height.or(max_height)),
         };
-        if [width, height]
-            .into_iter()
-            .flatten()
-            .any(|side| !side.is_finite() || side <= 0.0 || side > IMAGE_POINTS_MAX)
-        {
-            return Err(at.evaluate(format!(
-                "the width and height of an image must be in (0, {IMAGE_POINTS_MAX}] points"
-            )));
-        }
+        sized([width, height])?;
         self.node(
             Node::Image {
                 data,
                 width,
                 height,
+                fit,
                 alt,
             },
             false,
@@ -1352,8 +1455,9 @@ impl<'p> Run<'p> {
                             max: [wide, high],
                         } => {
                             let sides = [None, None, wide, high];
-                            self.picture(data, sides, String::new(), at, kids)?;
+                            self.picture(data, sides, ImageFit::Contain, String::new(), at, kids)?;
                         }
+                        Piece::Code(code) => self.code(code, kids)?,
                     }
                 }
                 Ok(true)
@@ -1628,4 +1732,120 @@ impl<'p> Run<'p> {
         }
         Ok(())
     }
+}
+
+/// One `%XX`-escaped part of an address; `+` is a space in a query.
+fn unescape(part: &str, plus_is_space: bool) -> Option<String> {
+    let bytes = part.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                let hex = part.get(i + 1..i + 3)?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            }
+            b'+' if plus_is_space => {
+                out.push(b' ');
+                i += 1;
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+/// The code of an `<img>` source `/report/barcode/<type>/<value>?…` or
+/// `/report/barcode/?barcode_type=…&value=…`, with the parameters of the reference: `width` and
+/// `height` in pixels (600 by 100, at most 10,000 each and 1,200,000 together), `humanreadable`,
+/// `quiet`, `barLevel`, `barBorder`; and ours, `dpi`. `sides`
+/// are the width and height the element itself gives, in points: they win over the parameters.
+fn code_by_path(
+    source: &str,
+    sides: [Option<f64>; 2],
+    grid: ModuleGrid,
+    limits: &Limits,
+) -> Result<PrintedCode, ReportError> {
+    let refuse = |reason: String| ReportError::Code {
+        symbology: "barcode",
+        reason,
+    };
+    let malformed = || refuse(format!("`{source}` is not the address of a code"));
+    let rest = source.strip_prefix(CODE_PATH).ok_or_else(malformed)?;
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let mut symbology = None;
+    let mut value = None;
+    match path.trim_matches('/').split_once('/') {
+        Some((kind, text)) => {
+            symbology = Some(unescape(kind, false).ok_or_else(malformed)?);
+            value = Some(unescape(text, false).ok_or_else(malformed)?);
+        }
+        None if path.trim_matches('/').is_empty() => {}
+        None => return Err(malformed()),
+    }
+    let (mut width, mut height) = (600, 100);
+    let (mut human_readable, mut quiet) = (false, true);
+    let mut level = QrLevel::default();
+    let mut grid = grid;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (name, text) = pair.split_once('=').unwrap_or((pair, ""));
+        let text = unescape(text, true).ok_or_else(malformed)?;
+        let whole = |text: &str, low: u32, high: u32| match text.parse::<u32>() {
+            Ok(number) if (low..=high).contains(&number) => Ok(number),
+            _ => Err(refuse(format!(
+                "parameter `{name}` must be a whole number in {low}..={high}; got `{text}`"
+            ))),
+        };
+        match name {
+            "barcode_type" => symbology = Some(text),
+            "value" => value = Some(text),
+            "width" => width = whole(&text, 1, 10_000)?,
+            "height" => height = whole(&text, 1, 10_000)?,
+            "humanreadable" => human_readable = whole(&text, 0, u32::MAX)? != 0,
+            "quiet" => quiet = whole(&text, 0, u32::MAX)? != 0,
+            "barLevel" => {
+                level = QrLevel::from_name(&text).ok_or_else(|| {
+                    refuse(format!(
+                        "parameter `barLevel` must be L, M, Q or H; got `{text}`"
+                    ))
+                })?;
+            }
+            "dpi" => grid = ModuleGrid::new(whole(&text, 0, u32::MAX)?)?,
+            // The border of a QR code is its quiet zone: 4 modules, or none with `quiet=0`.
+            "barBorder" => {
+                if whole(&text, 0, 4)? == 0 {
+                    quiet = false;
+                }
+            }
+            _ => {
+                return Err(refuse(format!(
+                    "parameter `{name}` of a code address is not printed"
+                )));
+            }
+        }
+    }
+    let (Some(symbology), Some(value)) = (symbology, value) else {
+        return Err(malformed());
+    };
+    if u64::from(width) * u64::from(height) > 1_200_000 {
+        return Err(refuse(
+            "parameters `width` and `height` of a code multiply to at most 1200000 pixels".into(),
+        ));
+    }
+    crate::code::print(
+        &CodeAsk {
+            symbology: &symbology,
+            value: &value,
+            width: sides[0].unwrap_or(f64::from(width) * POINTS_PER_PIXEL),
+            height: sides[1].unwrap_or(f64::from(height) * POINTS_PER_PIXEL),
+            human_readable,
+            quiet,
+            level,
+            grid,
+        },
+        limits,
+    )
 }

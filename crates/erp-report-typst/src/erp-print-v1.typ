@@ -54,8 +54,23 @@
     table(columns: n.weights.map(w => if w == 0 { auto } else { w * 1fr }), fill: (x, y) => if y < hrows { rgb("#f1f3f5") }, ..head, ..body)
   }
   else if n.kind == "list" { if n.ordered { enum(..children) } else { list(..children) } }
-  else if n.kind == "image" { image(n.data, format: n.format, width: if n.width == auto { auto } else { n.width * 1pt }, height: if n.height == auto { auto } else { n.height * 1pt }, alt: n.alt) }
-  else if n.kind == "vector" { image(n.data, format: "svg", width: if n.width == auto { auto } else { n.width * 1pt }, height: if n.height == auto { auto } else { n.height * 1pt }, alt: n.alt) }
+  // A picture has a box (`width`, `height`) and the size it is drawn at inside it (`fitted`), both from encode.rs:
+  // the whole picture in the middle of its box, or the box filled and what falls outside cut off (`clip`). It is
+  // never stretched: `fitted` has the picture's proportions, and the pixels are drawn into exactly that size. It
+  // never runs past what holds it: the box shrinks, both sides alike, into the width of its cell, column or page
+  // body and the height of the page body.
+  else if n.kind == "image" { layout(size => {
+    let k = calc.min(1, size.width / (n.width * 1pt), size.height / (n.height * 1pt))
+    let picture = image(n.data, format: n.format, width: n.fitted.at(0) * k * 1pt, height: n.fitted.at(1) * k * 1pt, fit: "stretch", alt: n.alt)
+    if n.exact { picture } else { block(width: n.width * k * 1pt, height: n.height * k * 1pt, clip: n.clip, place(center + horizon, picture)) }
+  }) }
+  // A generated code: sized by encode.rs with one scale both ways (`fit: "contain"` says so again). The text a
+  // person reads sits centred under it in figures of equal width, and the two never part: a box does not break.
+  else if n.kind == "vector" {
+    let code = image(n.data, format: "svg", fit: "contain", width: n.width * 1pt, height: n.height * 1pt, alt: n.alt)
+    if n.caption == none { code }
+    else { box(width: n.width * 1pt, align(center, stack(dir: ttb, spacing: 2pt, code, text(size: n.caption_size * 1pt, number-width: "tabular", n.caption)))) }
+  }
   else if n.kind == "placeholder" { box(width: n.width * 1pt, height: n.height * 1pt, stroke: 0.5pt + gray, inset: 2pt, clip: true, text(n.alt)) }
   else if n.kind == "cell" { table.cell(colspan: n.colspan, rowspan: n.rowspan, breakable: n.breakable, children.first()) }
   else if n.kind == "rule" { line(length: 100%) }

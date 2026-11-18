@@ -19,6 +19,8 @@ The separately packaged Noto fonts in addons/report_fonts remain under the
 SIL Open Font License 1.1. Their original copyright and licence notices are
 in addons/report_fonts/licenses/; exact sources and hashes are in that
 package's inventories. The project's licence does not replace those terms.
+The same holds for the optional Chinese, Japanese and Korean Noto fonts in
+optional-assets/report_fonts_cjk (notices in its licenses/ directory).
 
 The report adapter's dependency data has licences separate from crate code:
 

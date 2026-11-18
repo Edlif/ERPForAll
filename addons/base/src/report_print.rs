@@ -20,8 +20,8 @@ use erp_sdk::auth::user_context;
 use erp_sdk::prelude::*;
 use erp_sdk::report::{
     DataError, DocTree, DocumentOptions, EvalContext, EvalOptions, LangFormat, Language, Limits,
-    Node, PageSetup, PlanContext, ReportError, ReportLimits, ReportProgram, TemplateSource,
-    field_info, load_records,
+    Node, PageSetup, PictureQuality, PlanContext, ReportError, ReportLimits, ReportProgram,
+    TemplateSource, field_info, load_records,
 };
 use erp_sdk::{FieldType, Operation, access::GroupId};
 
@@ -415,6 +415,7 @@ async fn evaluate_run(
     let store = load(tx, report, &program, ids, &companies, &[]).await?;
     let page = page_of(tx, report, company).await?;
     let options = locale.options.clone();
+    let pictures = locale.pictures;
     let model = report.model.clone();
     let id = format!("report-{}", report.id);
     let name = report.name.clone();
@@ -425,7 +426,8 @@ async fn evaluate_run(
                 let context = EvalContext::standard()
                     .with_var("docs", store.recordset(&model, docs))
                     .with_var("company", store.recordset("res.company", &companies));
-                let document = DocumentOptions::new(id.clone(), name.clone(), page.clone());
+                let document = DocumentOptions::new(id.clone(), name.clone(), page.clone())
+                    .with_pictures(pictures);
                 program.evaluate(&context, &store, &options, document)
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -440,6 +442,9 @@ async fn evaluate_run(
 struct Locale {
     language: Language,
     options: EvalOptions,
+    /// The resolution and the JPEG quality pictures are embedded at: two system parameters of the
+    /// database (`base.report_image_dpi`, `base.report_image_jpeg_quality`), read once per print.
+    pictures: PictureQuality,
 }
 
 /// The [`Locale`] of the user `tx` runs as.
@@ -512,7 +517,29 @@ async fn locale(tx: &mut Transaction, report: &PrintReport) -> Result<Locale> {
                 .ok()
                 .map(|instant| zone.to_offset(instant).seconds())
         });
-    Ok(Locale { language, options })
+    let dpi = erp_sdk::params::get_int(tx, &crate::ADDON, crate::report_job::IMAGE_DPI_KEY).await?;
+    let quality =
+        erp_sdk::params::get_int(tx, &crate::ADDON, crate::report_job::IMAGE_JPEG_QUALITY_KEY)
+            .await?;
+    // The declarations hold both inside the floor and the bound of a document; a value that is
+    // not (a declaration changed without the document model) is refused here, never clamped.
+    let pictures = match (u16::try_from(dpi), u8::try_from(quality)) {
+        (Ok(dpi), Ok(quality)) => {
+            PictureQuality::new(dpi, quality).map_err(|e| report_error(report, &e))?
+        }
+        _ => {
+            return Err(Error::validation(format!(
+                "Report '{}': the picture resolution {dpi} or JPEG quality {quality} of the \
+                 system parameters is out of range.",
+                report.name
+            )));
+        }
+    };
+    Ok(Locale {
+        language,
+        options,
+        pictures,
+    })
 }
 
 /// Compile `root` from the database templates, or from `inline` (key, arch) when given.

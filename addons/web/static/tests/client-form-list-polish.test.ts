@@ -4,26 +4,17 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "vitest";
+import { lastRule, rulesOf } from "./support/stylesheet.js";
 
 const clientCss = readFileSync(resolve(process.cwd(), "..", "addons/web/static/src/client/client.css"), "utf8");
 const normal = (text: string): string => text.replace(/\s+/g, " ").trim();
 /** Bodies of the top-level rules whose selector list names `selector` (later rules last). */
 const rulesFor = (selector: string, required = true): string[] => {
-  const wanted = normal(selector);
-  const bodies: string[] = [];
-  const css = clientCss.replace(/\/\*[\s\S]*?\*\//g, "");
-  // Each "}" closes one rule; the text after the last "{" before it is the body, the text before that "{" (after any
-  // enclosing at-rule's "{") is the selector list.
-  for (const chunk of css.split("}")) {
-    const open = chunk.lastIndexOf("{");
-    if (open < 0) continue;
-    const selectors = chunk.slice(0, open).split("{").pop()!.split(",").map(normal);
-    if (selectors.includes(wanted)) bodies.push(chunk.slice(open + 1));
-  }
+  const bodies = rulesOf(clientCss, selector).map((r) => r.body);
   if (required && bodies.length === 0) throw new Error(`client.css has no top-level rule for ${selector}`);
   return bodies;
 };
-const last = (selector: string): string => rulesFor(selector).at(-1)!;
+const last = (selector: string): string => lastRule(clientCss, selector, { media: "any" }).body;
 
 test("a read-only boolean toggle keeps a visible track, off and on", () => {
   expect(last(".field-readonly input[type=checkbox].boolean-toggle")).toMatch(/background:\s*var\(--input-line\)\s*!important/);
@@ -202,4 +193,24 @@ test("the open notebook tab carries its accent edge inside one hairline outline"
 test("a tags field and its input sit on the form's row height", () => {
   expect(last(".record-form:not(.settings-form) .field-label .many2many-tags .tag-list")).toMatch(/min-height:\s*var\(--form-row-height\)/);
   expect(last(".record-form:not(.settings-form) .field-label .many2many-tags .tag-list > input")).toMatch(/min-height:\s*0/);
+});
+
+// Form pass follow-ups (review of 2026-11-18): relation link cue, relation in a title, tag chips, hover in a line cell.
+test("a read-only relation link, title relation, and tag chips in a line cell", () => {
+  // 5a: focus-visible ring on the relation open button.
+  expect(last(".record-form:not(.settings-form) .many2one-readonly > .many2one-open-btn:focus-visible")).toMatch(/outline:\s*2px solid var\(--focus\)/);
+  // 5a: touch devices underline the relation link (inside @media (hover: none)).
+  expect(rulesFor(".record-form:not(.settings-form) .many2one-readonly > button.many2one-open-btn").some(body => /text-decoration:\s*underline/.test(body))).toBe(true);
+  // 5b: hover colour in a line cell.
+  expect(last(".record-form:not(.settings-form) .x2many-table .many2one-readonly > .many2one-open-btn:hover")).toMatch(/color:\s*var\(--accent\)/);
+  // 6: a read-only relation in the title takes the title's size (selector contains :is(), so match stylesheet text).
+  expect(clientCss).toMatch(/\.record-form :is\(\.form-title-heading, \.form-title-field\) \.many2one-readonly \{[^}]*font-size:\s*26px/);
+  expect(clientCss).toMatch(/max-width:\s*640px[^}]*\.record-form :is\(\.form-title-heading, \.form-title-field\) \.many2one-readonly \{[^}]*font-size:\s*23px/);
+  // 7: tag chips in a line cell do not all shrink.
+  expect(last(".x2many-table .field-readonly .many2many-tags .relation-chip")).toMatch(/flex:\s*0 0 auto/);
+  expect(last(".x2many-table .field-readonly .many2many-tags .relation-chip:last-child")).toMatch(/flex:\s*0 1 auto/);
+});
+
+test("the Documents tags in a wizard dialog stay on one line", () => {
+  expect(last(".wizard-dialog .many2many-tags .tag-list")).toMatch(/flex-wrap:\s*nowrap/);
 });

@@ -950,6 +950,17 @@ impl WasmMethod {
         sup: DynSuper,
     ) -> Result<String> {
         let addon = &*self.addon;
+        // what `default_get` and `copy_data` answer becomes create values: an addon without the
+        // capabilities of a create does not run them (WASM.WIRE-NATIVE.CORE-CODECS)
+        if let Some(missing) =
+            crate::bridge::answer_capability_gap(&self.method, addon.capabilities)
+        {
+            return Err(Error::access(format!(
+                "WASM addon '{}': its '{}' of '{}' needs the capability `{missing}`, because what \
+                 it answers becomes the values of a create",
+                addon.name, self.method, self.model
+            )));
+        }
         let create_input_count = if self.kind == ImplKind::Override && self.method == "create" {
             addon.limits.check_payload(args_json.len()).map_err(|e| {
                 Error::new(

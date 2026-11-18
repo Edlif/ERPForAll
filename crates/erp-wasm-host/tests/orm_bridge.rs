@@ -360,7 +360,63 @@ async fn super_call_needs_the_capabilities_of_the_running_method() {
             .expect_err("create"),
         "orm:create",
     );
+    // the core methods a package overrides since WASM.WIRE-NATIVE.CORE-CODECS: an upsert creates
+    // and writes and its rows are values (so `orm:unlink` too), a copy creates, the filters and
+    // `default_get` read
+    for (method, capability) in [
+        ("upsert", "orm:create"),
+        ("copy", "orm:create"),
+        ("copy_data", "orm:create"),
+        ("filtered_domain", "orm:read"),
+        ("exists", "orm:read"),
+        ("default_get", "orm:read"),
+    ] {
+        denied(
+            &b.super_call("m", method, &[1], "[]")
+                .await
+                .expect_err(method),
+            capability,
+        );
+    }
+    let (creates, rec_creates) = bridge(caps.with(OrmOp::Create), Limits::default());
+    denied(
+        &creates
+            .super_call("m", "upsert", &[], "[]")
+            .await
+            .expect_err("upsert without write"),
+        "orm:write",
+    );
+    let (writes, rec_writes) = bridge(
+        caps.with(OrmOp::Create).with(OrmOp::Write),
+        Limits::default(),
+    );
+    denied(
+        &writes
+            .super_call("m", "upsert", &[], "[]")
+            .await
+            .expect_err("upsert without unlink"),
+        "orm:unlink",
+    );
+    // reading what they copy or upsert needs `orm:read` too: `copy_data` answers the records'
+    // values, an upsert answer says which rows existed
+    let (blind, rec_blind) = bridge(
+        caps.with(OrmOp::Create)
+            .with(OrmOp::Write)
+            .with(OrmOp::Unlink),
+        Limits::default(),
+    );
+    for method in ["copy_data", "copy", "upsert"] {
+        denied(
+            &blind
+                .super_call("m", method, &[1], "[]")
+                .await
+                .expect_err(method),
+            "orm:read",
+        );
+    }
     assert!(rec.calls().is_empty(), "nothing reached the backend");
+    assert!(rec_creates.calls().is_empty() && rec_writes.calls().is_empty());
+    assert!(rec_blind.calls().is_empty());
     // a method with no capability mapping, and a private one, still reach the backend (the
     // backend pins the name to the running method)
     let err = b

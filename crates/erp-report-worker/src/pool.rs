@@ -246,7 +246,12 @@ struct Ended {
 impl Worker {
     /// Start a process and take it through `hello` and `ready`. The error is the cause, for the
     /// operator.
-    fn start(settings: &PoolSettings, directory: &Path, fonts: &str) -> Result<Self, String> {
+    fn start(
+        settings: &PoolSettings,
+        directory: &Path,
+        fonts: &str,
+        optional_fonts: &[(String, String)],
+    ) -> Result<Self, String> {
         let command = settings.command();
         let mut process = Command::new(command.program());
         // The whole environment of a worker: nothing is inherited, no PATH, no locale.
@@ -319,6 +324,7 @@ impl Worker {
         );
         let hello = Request::Hello(Hello::new(
             fonts.to_owned(),
+            optional_fonts.to_vec(),
             settings.limits(),
             settings.get(Setting::AddressSpaceHeadroomBytes),
         ));
@@ -595,6 +601,8 @@ impl State {
 struct Shared {
     settings: PoolSettings,
     fonts: String,
+    /// `(package, canonical directory)` of each optional font package.
+    optional_fonts: Vec<(String, String)>,
     /// The workers' working directory: empty and read-only, removed with the pool.
     directory: tempfile::TempDir,
     state: Mutex<State>,
@@ -632,7 +640,12 @@ impl Shared {
                 }
                 state.live += 1;
                 drop(state);
-                let started = Worker::start(settings, self.directory.path(), &self.fonts);
+                let started = Worker::start(
+                    settings,
+                    self.directory.path(),
+                    &self.fonts,
+                    &self.optional_fonts,
+                );
                 state = lock(&self.state);
                 match started {
                     Ok(worker) => {
@@ -711,21 +724,30 @@ impl std::fmt::Debug for WorkerPool {
     }
 }
 impl WorkerPool {
-    /// Check the font store and make the workers' working directory. No worker is started yet.
+    /// Check the font stores and make the workers' working directory. No worker is started yet.
     pub fn new(settings: PoolSettings) -> Result<Self, ReportError> {
-        let fonts = settings
-            .font_directory()
-            .canonicalize()
-            .map_err(|source| ReportError::Font {
-                reason: "cannot open the font store for the render workers".into(),
-                source: Some(source),
-            })?
-            .into_os_string()
-            .into_string()
-            .map_err(|_| ReportError::Font {
-                reason: "the font store path is not UTF-8".into(),
-                source: None,
-            })?;
+        let canonical = |path: &Path, store: &str| {
+            path.canonicalize()
+                .map_err(|source| ReportError::Font {
+                    reason: format!("cannot open the {store} for the render workers"),
+                    source: Some(source),
+                })?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| ReportError::Font {
+                    reason: format!("the {store} path is not UTF-8"),
+                    source: None,
+                })
+        };
+        let fonts = canonical(settings.font_directory(), "font store")?;
+        let optional_fonts = settings
+            .optional_fonts()
+            .iter()
+            .map(|(package, path)| {
+                let store = format!("optional font package {package}");
+                Ok((package.clone(), canonical(path, &store)?))
+            })
+            .collect::<Result<Vec<_>, ReportError>>()?;
         // Each step is named: an I/O error without its step tells the operator nothing.
         let directory = tempfile::Builder::new()
             .prefix("erp-report-worker-")
@@ -742,6 +764,7 @@ impl WorkerPool {
             shared: Arc::new(Shared {
                 settings,
                 fonts,
+                optional_fonts,
                 directory,
                 state: Mutex::new(State {
                     idle: Vec::new(),

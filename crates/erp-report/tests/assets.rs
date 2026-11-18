@@ -2,8 +2,8 @@
 #![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 //! Image admission, trusted vectors and table spans of the native report document.
 use erp_report::{
-    DocumentBuilder, DocumentOptions, ImageFormat, LimitKind, Limits, Node, NodeId, PageSetup,
-    ReportError, Style, Vector, probe_image,
+    DocumentBuilder, DocumentOptions, ImageFit, ImageFormat, LimitKind, Limits, Node, NodeId,
+    PageSetup, PictureQuality, ReportError, Style, Vector, probe_image,
 };
 use std::sync::Arc;
 
@@ -26,6 +26,7 @@ fn image_node(data: Vec<u8>) -> Node {
         data: Arc::from(data),
         width: None,
         height: None,
+        fit: ImageFit::Contain,
         alt: "logo".into(),
     }
 }
@@ -185,6 +186,7 @@ fn image_nodes_are_admitted_under_the_builder_limits() {
             data: Arc::from(png_header(5, 5)),
             width: Some(f64::NAN),
             height: None,
+            fit: ImageFit::Contain,
             alt: String::new(),
         })
         .unwrap_err();
@@ -206,6 +208,200 @@ fn image_nodes_are_admitted_under_the_builder_limits() {
             ..
         }
     ));
+}
+
+/// A JPEG header: the start marker, an EXIF segment holding `orientation` when one is given, then
+/// the frame header `marker` of a picture 400 wide and 300 high with `components` colour
+/// components of `precision` bits.
+fn jpeg_header(orientation: Option<u16>, marker: u8, precision: u8, components: u8) -> Vec<u8> {
+    let mut d = vec![0xFF, 0xD8];
+    if let Some(orientation) = orientation {
+        // "Exif", a big-endian TIFF header, a directory of one entry: tag 0x0112, one SHORT.
+        let mut exif = b"Exif\0\0MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01".to_vec();
+        exif.extend(orientation.to_be_bytes());
+        exif.extend([0; 6]);
+        d.extend([0xFF, 0xE1]);
+        d.extend((exif.len() as u16 + 2).to_be_bytes());
+        d.extend(exif);
+    }
+    d.extend([0xFF, marker, 0x00, 0x11, precision, 0x01, 0x2C, 0x01, 0x90]);
+    d.push(components);
+    d
+}
+
+/// as it is seen; the upright print is in the renderer tests)
+#[test]
+fn the_exif_orientation_of_a_jpeg_gives_its_size_as_seen() {
+    for (orientation, size, read) in [
+        (None, (400, 300), 1),
+        (Some(1), (400, 300), 1),
+        (Some(3), (400, 300), 3),
+        (Some(6), (300, 400), 6),
+        (Some(8), (300, 400), 8),
+        // a value outside 1..=8 is no orientation
+        (Some(9), (400, 300), 1),
+    ] {
+        let header = jpeg_header(orientation, 0xC0, 8, 3);
+        let info = probe_image(&header, &Limits::default()).unwrap();
+        assert_eq!(
+            (info.width(), info.height(), info.orientation()),
+            (size.0, size.1, read),
+            "{orientation:?}"
+        );
+        assert_eq!(info.conversion(), None);
+    }
+    // a cut EXIF segment is no orientation, not an error
+    let mut cut = jpeg_header(Some(6), 0xC0, 8, 3);
+    cut[10] = b'X';
+    let info = probe_image(&cut, &Limits::default()).unwrap();
+    assert_eq!(
+        (info.width(), info.height(), info.orientation()),
+        (400, 300, 1)
+    );
+    // every other format is stored as it is seen
+    let info = probe_image(&png_header(10, 20), &Limits::default()).unwrap();
+    assert_eq!((info.orientation(), info.conversion()), (1, None));
+}
+
+/// conversion and the placeholder are in the renderer tests)
+#[test]
+fn a_jpeg_coding_no_reader_shows_is_named_from_the_header() {
+    for (marker, precision, components, kind) in [
+        (0xC0, 8, 1, None),
+        (0xC0, 8, 3, None),
+        (0xC1, 8, 3, None),
+        (0xC2, 8, 3, None),
+        (0xC0, 8, 4, Some("CMYK JPEG")),
+        (0xC2, 8, 4, Some("CMYK JPEG")),
+        (0xC1, 12, 3, Some("JPEG with samples wider than 8 bits")),
+        (
+            0xC0,
+            8,
+            2,
+            Some("JPEG with an unusual number of colour components"),
+        ),
+        (0xC3, 8, 3, Some("lossless JPEG")),
+        (0xC9, 8, 3, Some("arithmetic-coded JPEG")),
+        (0xC5, 8, 3, Some("hierarchical JPEG")),
+    ] {
+        let header = jpeg_header(None, marker, precision, components);
+        let info = probe_image(&header, &Limits::default()).unwrap();
+        assert_eq!(
+            info.conversion(),
+            kind,
+            "{marker:#x} {precision} {components}"
+        );
+        assert_eq!((info.width(), info.height()), (400, 300));
+    }
+}
+
+/// one over the limit is refused by name; the worker's own admission is in the worker tests)
+#[test]
+fn the_pictures_of_a_document_are_limited() {
+    assert_eq!(LimitKind::from_name("images"), Some(LimitKind::Images));
+    assert_eq!(Limits::default().get(LimitKind::Images), 10_000);
+    let mut b = DocumentBuilder::new(limited(LimitKind::Images, 2));
+    b.add(image_node(png_header(5, 5))).unwrap();
+    b.add(image_node(png_header(5, 5))).unwrap();
+    let e = b.add(image_node(png_header(5, 5))).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            ReportError::DocumentLimit {
+                kind: LimitKind::Images,
+                actual: 3,
+                max: 2
+            }
+        ),
+        "{e:?}"
+    );
+    assert_eq!(e.to_string(), "report limit images exceeded: 3 > 2");
+    // a box that stands for a picture is no picture
+    b.add(Node::Placeholder {
+        width: 10.0,
+        height: 10.0,
+        alt: String::new(),
+        reason: "unreadable".into(),
+    })
+    .unwrap();
+}
+
+/// bounded reason; the evaluator and the renderer halves are in their tests)
+#[test]
+fn a_placeholder_needs_a_size_and_a_reason() {
+    let node = |width: f64, reason: &str| Node::Placeholder {
+        width,
+        height: 20.0,
+        alt: "seal".into(),
+        reason: reason.into(),
+    };
+    let mut b = DocumentBuilder::new(Limits::default());
+    b.add(node(30.0, "unreadable")).unwrap();
+    b.add(node(30.0, &"r".repeat(512))).unwrap();
+    for (bad, message) in [
+        (
+            node(0.0, "unreadable"),
+            "invalid report document: image and vector sizes must be finite and in (0, 14400] points",
+        ),
+        (
+            node(30.0, ""),
+            "invalid report document: a placeholder needs a reason of 1..=512 bytes",
+        ),
+        (
+            node(30.0, &"r".repeat(513)),
+            "invalid report document: a placeholder needs a reason of 1..=512 bytes",
+        ),
+    ] {
+        let e = b.add(bad).unwrap_err();
+        assert!(matches!(e, ReportError::InvalidDocument { .. }), "{e:?}");
+        assert_eq!(e.to_string(), message);
+    }
+}
+
+/// floor and a bound; the system parameters that set them are the base addon's)
+#[test]
+fn picture_resolution_and_quality_have_a_floor_and_a_bound() {
+    let default = PictureQuality::default();
+    assert_eq!((default.dpi(), default.jpeg_quality()), (200, 85));
+    assert_eq!(PictureQuality::DPI, (200, 72, 600));
+    assert_eq!(PictureQuality::JPEG_QUALITY, (85, 50, 100));
+    let page = PageSetup::new(400.0, 500.0, 35.0).unwrap();
+    assert_eq!(
+        DocumentOptions::new("d", "D", page.clone()).pictures(),
+        default
+    );
+    for (dpi, jpeg) in [(72, 50), (600, 100)] {
+        let set = PictureQuality::new(dpi, jpeg).unwrap();
+        assert_eq!((set.dpi(), set.jpeg_quality()), (dpi, jpeg));
+        let options = DocumentOptions::new("d", "D", page.clone()).with_pictures(set);
+        assert_eq!(options.pictures(), set);
+    }
+    for (dpi, jpeg, message) in [
+        (
+            71,
+            85,
+            "invalid report document: the picture resolution must be 72 to 600 pixels per inch",
+        ),
+        (
+            601,
+            85,
+            "invalid report document: the picture resolution must be 72 to 600 pixels per inch",
+        ),
+        (
+            200,
+            49,
+            "invalid report document: the JPEG quality of pictures must be 50 to 100",
+        ),
+        (
+            200,
+            101,
+            "invalid report document: the JPEG quality of pictures must be 50 to 100",
+        ),
+    ] {
+        let e = PictureQuality::new(dpi, jpeg).unwrap_err();
+        assert!(matches!(e, ReportError::InvalidDocument { .. }), "{e:?}");
+        assert_eq!(e.to_string(), message);
+    }
 }
 
 /// writes from numbers)

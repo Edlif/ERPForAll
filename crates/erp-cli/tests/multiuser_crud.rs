@@ -60,11 +60,14 @@ fn anonymous_is_refused_on_every_model() {
 }
 
 #[test]
-fn product_and_uom_crud_matrix() {
+fn crud_matrix() {
     run(|fixture| {
         let crud = Crud::new(fixture);
         let (mut mismatches, deferred) = crud.family_matrix();
-        mismatches.extend(crud.mixed_batch());
+        mismatches.extend(Crud::guarded("mixed batch", || crud.mixed_batch()));
+        mismatches.extend(Crud::guarded("internal contact", || {
+            crud.internal_contact_escape()
+        }));
         eprintln!(
             "multiuser CRUD: {deferred} authenticated cells deferred to the CRUD child tasks"
         );

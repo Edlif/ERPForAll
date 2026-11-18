@@ -38,11 +38,16 @@ pub const EXIT_IO: u8 = 5;
 #[non_exhaustive]
 pub struct WorkerSetup {
     font_directory: PathBuf,
+    optional_fonts: Vec<(String, PathBuf)>,
     limits: Limits,
 }
 impl WorkerSetup {
     pub fn font_directory(&self) -> &Path {
         &self.font_directory
+    }
+    /// `(package name, directory)` of each optional font package the pool gave.
+    pub fn optional_fonts(&self) -> &[(String, PathBuf)] {
+        &self.optional_fonts
     }
     pub fn limits(&self) -> Limits {
         self.limits
@@ -112,6 +117,11 @@ pub fn run<E: LayoutEngine>(
     let setup = match hello.limits() {
         Ok(limits) => WorkerSetup {
             font_directory: PathBuf::from(&hello.font_directory),
+            optional_fonts: hello
+                .optional_fonts
+                .iter()
+                .map(|(package, path)| (package.clone(), PathBuf::from(path)))
+                .collect(),
             limits,
         },
         Err(error) => {

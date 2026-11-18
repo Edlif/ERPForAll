@@ -110,6 +110,27 @@ pub enum UpsertOutcome {
     Unchanged,
 }
 
+impl UpsertOutcome {
+    /// The outcome's name in the wire form of `upsert` (`wire.rs`).
+    pub(crate) fn wire_name(self) -> &'static str {
+        match self {
+            Self::Inserted => "inserted",
+            Self::Updated => "updated",
+            Self::Unchanged => "unchanged",
+        }
+    }
+
+    /// The outcome a wire-form name stands for.
+    pub(crate) fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "inserted" => Some(Self::Inserted),
+            "updated" => Some(Self::Updated),
+            "unchanged" => Some(Self::Unchanged),
+            _ => None,
+        }
+    }
+}
+
 /// An upsert on the untyped surface: what overrides of `upsert` receive and pass to `super`.
 /// Built by [`Upsert`] on the typed surface or directly:
 ///
@@ -334,6 +355,21 @@ pub struct UpsertedRow {
 }
 
 impl UpsertedRow {
+    /// A row as a WebAssembly layer answered it (the wire form of `upsert`, `wire.rs`).
+    pub(crate) fn from_wire(
+        id: RecId,
+        outcome: UpsertOutcome,
+        previous_version: Option<i64>,
+        version: Option<i64>,
+    ) -> Self {
+        Self {
+            id,
+            outcome,
+            previous_version,
+            version,
+        }
+    }
+
     /// The record (rows that share a key share it).
     pub fn id(&self) -> RecId {
         self.id
@@ -363,6 +399,11 @@ pub struct UpsertResult {
 }
 
 impl UpsertResult {
+    /// The result a WebAssembly layer answered (the wire form of `upsert`, `wire.rs`).
+    pub(crate) fn from_rows(rows: Vec<UpsertedRow>) -> Self {
+        Self { rows }
+    }
+
     /// One entry per input row, in input order.
     pub fn rows(&self) -> &[UpsertedRow] {
         &self.rows
@@ -448,6 +489,7 @@ impl Records {
         tx.check_capture_create(self, &call.rows)?;
         let before = tx.mutations();
         let guard = tx.guard();
+        let input_rows = call.rows.len();
         let result = match crate::database_generated::check_write_names(
             tx,
             self.spec(),
@@ -461,6 +503,21 @@ impl Records {
             Ok(()) => call_method::<(UpsertCall,), UpsertResult>(tx, self, "upsert", (call,)).await,
             Err(error) => Err(error),
         };
+        // one entry per input row is the contract every caller reads the result by; an override
+        // (native or a package layer) that answers another count is named, never read short
+        let result = result.and_then(|result| {
+            if result.len() == input_rows {
+                Ok(result)
+            } else {
+                Err(upsert_error(
+                    self.spec(),
+                    format!(
+                        "an implementation answered {} results for {input_rows} input rows",
+                        result.len()
+                    ),
+                ))
+            }
+        });
         if let Err(error) = &result {
             tx.poison_after(before, error);
         }
@@ -483,6 +540,25 @@ impl Records {
         accumulate: &[(&str, Option<Value>)],
     ) -> Result<UpsertResult> {
         tx.admit_records(self).await?;
+        let call = self.upsert_call_from_values(tx, key, rows, update, accumulate)?;
+        self.upsert(tx, call).await
+    }
+
+    /// The untyped call of dynamic values: rows converted by the one converter, floors converted
+    /// for their field, generated names refused. Shared by [`Records::upsert_values`] and the
+    /// wire form of `upsert` (`wire.rs`).
+    ///
+    /// # Errors
+    ///
+    /// Conversion errors of values and floors; `Validation` for a generated field name.
+    pub(crate) fn upsert_call_from_values(
+        &self,
+        tx: &Transaction,
+        key: &str,
+        rows: &[BTreeMap<String, Value>],
+        update: &[&str],
+        accumulate: &[(&str, Option<Value>)],
+    ) -> Result<UpsertCall> {
         let spec = self.spec();
         crate::database_generated::check_write_names(
             tx,
@@ -511,7 +587,7 @@ impl Records {
                 }
             };
         }
-        self.upsert(tx, call).await
+        Ok(call)
     }
 }
 

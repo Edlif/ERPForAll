@@ -85,6 +85,11 @@ The printed inventory documents of a transfer, built on the shared document part
             <t t-if="o.state == 'draft'" t-set="status">Draft</t>
             <t t-if="o.state == 'cancel'" t-set="status">Cancelled</t>
             <t t-call="web.document_title" title.translate="Picking Operations" number="o.name" status="status"/>
+            <!-- The transfer's name as a Code 128 for the scanner at the shelf: as large as fits 90 mm,
+                 at the right edge like the status above it. -->
+            <div class="text-end mb-3">
+                <span t-field="o.name" t-options="{'widget': 'barcode', 'img_style': 'width:90mm;height:12mm'}"/>
+            </div>
             <t t-if="o.partner_id" t-call="web.document_addresses">
                 <t t-call="web.document_address" address="o.partner_id" label.translate="Partner"/>
             </t>

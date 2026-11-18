@@ -191,6 +191,9 @@ hmac = "0.13"
 libc = "0.2"
 # length-prefixed CBOR frames between the server and its report render workers
 ciborium = "0.2"
+# QR code modules for report documents (MIT; no dependencies, no unsafe): erp-report draws them as
+# rectangles. The linear barcodes are encoded by erp-report itself.
+qrcodegen = "1.8"
 # Safe OS interfaces (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; already in the graph
 # through erp-bench and tempfile): the node registry's suspend-counting clock (CLOCK_BOOTTIME on
 # Linux, CLOCK_MONOTONIC on Apple), the dev-folder walk by directory descriptor, gethostname

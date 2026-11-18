@@ -1006,7 +1006,10 @@ enum MethodRule {
 /// ([`OrmBridge::with_callable_methods`]): private (`_`) methods and internals are denied; the
 /// methods that change identity or environment are denied; every known mutator family needs the
 /// capability of what it does. Value-carrying mutators also need `orm:unlink`, because their
-/// arguments are JSON the bridge cannot inspect and may hold x2many remove commands.
+/// arguments are JSON the bridge cannot inspect and may hold x2many remove commands. Every core
+/// method that has a wire form (`erp-orm`'s `wire.rs`) has its rule here: `upsert` and
+/// `filtered_domain` got theirs with their codecs (WASM.WIRE-NATIVE.CORE-CODECS), since a method
+/// without a rule is open to any addon that holds `orm:call-method`.
 fn method_rule(method: &str) -> MethodRule {
     let m = method.to_ascii_lowercase();
     if m.starts_with('_') {
@@ -1032,6 +1035,7 @@ fn method_rule(method: &str) -> MethodRule {
             | "fields_get"
             | "default_get"
             | "exists"
+            | "filtered_domain"
             | "web_read"
             | "web_search_read"
             | "web_name_search"
@@ -1048,17 +1052,49 @@ fn method_rule(method: &str) -> MethodRule {
     const CREATE: &[OrmOp] = &[OrmOp::Create, OrmOp::Unlink];
     const WRITE: &[OrmOp] = &[OrmOp::Write, OrmOp::Unlink];
     const LOAD: &[OrmOp] = &[OrmOp::Create, OrmOp::Write, OrmOp::Unlink];
+    const COPY: &[OrmOp] = &[OrmOp::Create, OrmOp::Unlink, OrmOp::Read];
+    const UPSERT: &[OrmOp] = &[OrmOp::Create, OrmOp::Write, OrmOp::Unlink, OrmOp::Read];
     match m.as_str() {
-        "create" | "copy" | "copy_data" | "copy_translations" => MethodRule::Needs(CREATE),
+        "create" | "copy_translations" => MethodRule::Needs(CREATE),
+        // `copy` reads the records it copies; `copy_data` answers their values and creates
+        // nothing itself, but its `default` is values like a create's
+        "copy" | "copy_data" => MethodRule::Needs(COPY),
         "name_create" => MethodRule::Needs(&[OrmOp::Create]),
         "write" | "update" => MethodRule::Needs(WRITE),
         "toggle_active" | "action_archive" | "action_unarchive" => {
             MethodRule::Needs(&[OrmOp::Write])
         }
         "load" | "import_data" => MethodRule::Needs(LOAD),
+        // an upsert creates and writes, its rows are values like a create's, and its answer
+        // says which rows existed and whether their values were equal
+        "upsert" => MethodRule::Needs(UPSERT),
         "unlink" => MethodRule::Needs(&[OrmOp::Unlink]),
         _ => MethodRule::Open,
     }
+}
+
+/// The capability an addon lacks for its own implementation of `method` to run, if any.
+///
+/// What a `default_get` or a `copy_data` implementation answers becomes the values of a create
+/// (`create` asks `default_get` for the fields it was not given, `copy` creates from `copy_data`),
+/// x2many commands included. Passing values to a create needs `orm:create` and `orm:unlink`
+/// ([`method_rule`]); answering them needs the same, or an addon with no capability at all could
+/// put values into every create of the model (WASM.WIRE-NATIVE.CORE-CODECS security review).
+pub(crate) fn answer_capability_gap(
+    method: &str,
+    capabilities: OrmCapabilities,
+) -> Option<&'static str> {
+    const VALUES: [OrmOp; 2] = [OrmOp::Create, OrmOp::Unlink];
+    if !matches!(
+        method.to_ascii_lowercase().as_str(),
+        "default_get" | "copy_data"
+    ) {
+        return None;
+    }
+    VALUES
+        .into_iter()
+        .find(|op| !capabilities.allows(*op))
+        .map(OrmOp::name)
 }
 
 /// Keys that name identity or authority.
@@ -1156,4 +1192,34 @@ fn row_bytes(row: &[(String, ScalarValue)]) -> usize {
             })
         })
         .fold(0usize, usize::saturating_add)
+}
+
+#[cfg(test)]
+mod answer_capability_tests {
+    use super::*;
+
+    #[test]
+    fn value_answers_need_the_capabilities_of_a_create() {
+        let none = OrmCapabilities::NONE
+            .with(OrmOp::CallMethod)
+            .with(OrmOp::Read);
+        let create = none.with(OrmOp::Create);
+        let both = create.with(OrmOp::Unlink);
+        for method in ["default_get", "copy_data", "Default_Get"] {
+            assert_eq!(
+                answer_capability_gap(method, none),
+                Some(OrmOp::Create.name()),
+                "{method}"
+            );
+            assert_eq!(
+                answer_capability_gap(method, create),
+                Some(OrmOp::Unlink.name()),
+                "{method}"
+            );
+            assert_eq!(answer_capability_gap(method, both), None, "{method}");
+        }
+        for method in ["exists", "filtered_domain", "copy", "upsert", "label"] {
+            assert_eq!(answer_capability_gap(method, none), None, "{method}");
+        }
+    }
 }

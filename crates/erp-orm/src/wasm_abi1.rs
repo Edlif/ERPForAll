@@ -7,17 +7,18 @@ use std::collections::VecDeque;
 use std::error::Error as StdError;
 use std::fmt;
 
-use erp_fields::{Cell, Error, ErrorKind, FieldType, RecId, Result, serde_json};
+use erp_fields::{Cell, Error, ErrorKind, FieldType, RecId, Result, ValueMap, serde_json};
 use erp_registry::ModelId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::access::Operation;
 use crate::field_access::FieldOp;
+use crate::upsert::UpsertCall;
 use crate::{Command, Env, RawVals, Records, Transaction};
 
 // Admission limits, not performance measurements. The byte bound preserves the
 // existing host hard payload ceiling; narrower per-addon limits still apply.
-const MAX_PACKET_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_PACKET_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_DEPTH: usize = 64;
 pub(crate) const MAX_VALUE_NODES: usize = 1_000_000;
 const MAX_RECORD_MAPS: usize = 500_000;
@@ -510,6 +511,39 @@ fn inspect(tx: &Transaction, roots: Vec<Pending<'_>>) -> Result<Option<RefusalPl
     Ok(message.map(|message| RefusalPlan { frames, message }))
 }
 
+/// Refuse a field without a form in this ABI among `names`, by name. For values a WebAssembly
+/// implementation answered (`default_get`, `copy_data`): the caller of the method already passed
+/// its access checks, so nothing is disclosed by naming the field here.
+///
+/// # Errors
+/// The typed native refusal naming the first such field.
+pub(crate) fn refuse_native_names<'a>(
+    records: &Records,
+    names: impl Iterator<Item = &'a str>,
+) -> Result<()> {
+    let spec = records.spec();
+    for name in names {
+        if let Some(kind) = spec.field(name).and_then(|field| native_type(&field.ty)) {
+            return Err(native_error(field_message(records, name, kind)));
+        }
+    }
+    Ok(())
+}
+
+/// One root of a field preflight on `records`.
+fn root<'a>(records: &Records, operation: Operation, document: Document<'a>) -> Pending<'a> {
+    Pending {
+        records: records.clone(),
+        operation,
+        document,
+        depth: 0,
+    }
+}
+
+/// The field preflight of a typed call that is about to cross into a WebAssembly layer: the
+/// values of `create` and `write`, and since WASM.WIRE-NATIVE.CORE-CODECS the `default` of `copy`
+/// and `copy_data` (fields of the copies: a create) and the rows, `update` and `accumulate` of
+/// `upsert` (rows are created, the named fields written). Other methods carry no field values.
 pub(crate) fn typed_plan(
     tx: &Transaction,
     records: &Records,
@@ -528,12 +562,7 @@ pub(crate) fn typed_plan(
             Some((rows,)) => inspect(
                 tx,
                 rows.iter()
-                    .map(|row| Pending {
-                        records: records.clone(),
-                        operation: Operation::Create,
-                        document: Document::Raw(row),
-                        depth: 0,
-                    })
+                    .map(|row| root(records, Operation::Create, Document::Raw(row)))
                     .collect(),
             ),
             None => Ok(None),
@@ -541,26 +570,56 @@ pub(crate) fn typed_plan(
         "write" => match args.downcast_ref::<(RawVals,)>() {
             Some((row,)) => inspect(
                 tx,
-                vec![Pending {
-                    records: records.clone(),
-                    operation: Operation::Write,
-                    document: Document::Raw(row),
-                    depth: 0,
-                }],
+                vec![root(records, Operation::Write, Document::Raw(row))],
             ),
+            None => Ok(None),
+        },
+        "copy" | "copy_data" => match args.downcast_ref::<(Option<ValueMap>,)>() {
+            Some((Some(default),)) => {
+                let names: Vec<String> = default.keys().cloned().collect();
+                inspect(
+                    tx,
+                    vec![root(records, Operation::Create, Document::Names(&names))],
+                )
+            }
+            Some((None,)) | None => Ok(None),
+        },
+        "upsert" => match args.downcast_ref::<(UpsertCall,)>() {
+            Some((call,)) => {
+                if call.rows().len() > crate::wire::MAX_WIRE_BATCH {
+                    return Err(limit());
+                }
+                let names: Vec<String> = call
+                    .update()
+                    .chain(call.accumulate().map(|(field, _)| field))
+                    .map(str::to_owned)
+                    .collect();
+                let mut roots: Vec<Pending<'_>> = call
+                    .rows()
+                    .iter()
+                    .map(|row| root(records, Operation::Create, Document::Raw(row)))
+                    .collect();
+                if !names.is_empty() {
+                    roots.push(root(records, Operation::Write, Document::Names(&names)));
+                }
+                inspect(tx, roots)
+            }
             None => Ok(None),
         },
         _ => Ok(None),
     }
 }
 
+/// The field preflight of a call in the wire form (a package's call or its `super()`), for the
+/// methods of [`typed_plan`]. A document that does not have the method's shape is left to the
+/// codec, which refuses it by name.
 pub(crate) fn json_plan(
     tx: &Transaction,
     records: &Records,
     method: &str,
     args: &str,
 ) -> Result<Option<RefusalPlan>> {
-    if !matches!(method, "create" | "write") {
+    if !matches!(method, "create" | "write" | "copy" | "copy_data" | "upsert") {
         return Ok(None);
     }
     if args.len() > MAX_PACKET_BYTES {
@@ -574,33 +633,72 @@ pub(crate) fn json_plan(
     let Some(tuple) = document.as_array().filter(|items| items.len() == 1) else {
         return Ok(None);
     };
-    let roots = if method == "create" {
-        let Some(rows) = tuple[0].as_array() else {
-            return Ok(None);
-        };
-        if rows.len() > crate::wire::MAX_WIRE_BATCH {
-            return Err(limit());
+    // the fields an upsert names outside its rows; declared before the roots that borrow them
+    let mut names: Vec<String> = Vec::new();
+    let mut roots: Vec<Pending<'_>> = Vec::new();
+    match method {
+        "create" => {
+            let Some(rows) = tuple[0].as_array() else {
+                return Ok(None);
+            };
+            if rows.len() > crate::wire::MAX_WIRE_BATCH {
+                return Err(limit());
+            }
+            roots.extend(
+                rows.iter()
+                    .filter_map(serde_json::Value::as_object)
+                    .map(|row| root(records, Operation::Create, Document::Json(row))),
+            );
         }
-        rows.iter()
-            .filter_map(serde_json::Value::as_object)
-            .map(|row| Pending {
-                records: records.clone(),
-                operation: Operation::Create,
-                document: Document::Json(row),
-                depth: 0,
-            })
-            .collect()
-    } else {
-        let Some(row) = tuple[0].as_object() else {
-            return Ok(None);
-        };
-        vec![Pending {
-            records: records.clone(),
-            operation: Operation::Write,
-            document: Document::Json(row),
-            depth: 0,
-        }]
-    };
+        "write" => {
+            let Some(row) = tuple[0].as_object() else {
+                return Ok(None);
+            };
+            roots.push(root(records, Operation::Write, Document::Json(row)));
+        }
+        "copy" | "copy_data" => {
+            // `null` is "no default": nothing to check
+            let Some(default) = tuple[0].as_object() else {
+                return Ok(None);
+            };
+            roots.push(root(records, Operation::Create, Document::Json(default)));
+        }
+        _ => {
+            // upsert: `{"key", "rows", "update", "accumulate"}` (`wire.rs`)
+            let Some(call) = tuple[0].as_object() else {
+                return Ok(None);
+            };
+            if let Some(rows) = call.get("rows").and_then(serde_json::Value::as_array) {
+                if rows.len() > crate::wire::MAX_WIRE_BATCH {
+                    return Err(limit());
+                }
+                roots.extend(
+                    rows.iter()
+                        .filter_map(serde_json::Value::as_object)
+                        .map(|row| root(records, Operation::Create, Document::Json(row))),
+                );
+            }
+            let update = call
+                .get("update")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str);
+            let accumulate = call
+                .get("accumulate")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|pair| pair.as_array()?.first()?.as_str());
+            names.extend(update.chain(accumulate).map(str::to_owned));
+        }
+    }
+    if !names.is_empty() {
+        roots.push(root(records, Operation::Write, Document::Names(&names)));
+    }
+    if roots.is_empty() {
+        return Ok(None);
+    }
     inspect(tx, roots)
 }
 

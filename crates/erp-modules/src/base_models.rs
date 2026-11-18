@@ -349,6 +349,9 @@ fn module_unlink<'a>(
 ) -> BoxFuture<'a, Result<()>> {
     Box::pin(async move {
         if !records.is_empty() {
+            // access first: a caller who may not delete module rows learns nothing about the
+            // state of the rows it named
+            records.check_access(tx, erp_orm::Operation::Unlink).await?;
             let ids = records.ids();
             let rows = tx
                 .query(

@@ -14,12 +14,13 @@
 //!   Typst engine; this crate links no layout engine and no database.
 //!
 //! The frames between them are length-prefixed CBOR ([`Request`], [`Response`]). A document crosses
-//! as [`WireDocument`]: every node kind, spanning table cells included (protocol 6), except the
-//! barcode and QR graphic (`Node::Vector`), which is refused before it is sent.
+//! as [`WireDocument`]: every node kind, spanning table cells (protocol 6) and barcode and QR
+//! graphics (`Node::Vector`, protocol 9) included. A graphic crosses as its rectangles, never as
+//! markup, and the worker makes it again under the same checks.
 //!
 //! Not in this crate yet, each named where it is refused: the cgroup v2 memory cap,
-//! Landlock and seccomp, barcode and QR graphics in a
-//! document frame, and the `pdf-process` and `validate-font` frames.
+//! Landlock and seccomp, and the `pdf-process` and
+//! `validate-font` frames.
 mod frame;
 mod log;
 mod memory;

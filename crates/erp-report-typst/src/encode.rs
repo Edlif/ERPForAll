@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+use crate::picture::Pictures;
 use erp_report::{
-    Alignment, CrossAlignment, DocTree, ImageFormat, Limits, Node, NodeId, PageCounter,
+    Alignment, CrossAlignment, DocTree, ImageFit, ImageFormat, Limits, Node, NodeId, PageCounter,
     ReportError, Style, TableLook, probe_image,
 };
 use typst::{
@@ -9,8 +10,35 @@ use typst::{
 };
 /// Side of the placeholder box of an image without a requested size, in points.
 const PLACEHOLDER_POINTS: f64 = 72.0;
+/// Points of one pixel of a picture printed at its natural size (96 pixels per inch, as on screen).
+const POINTS_PER_PIXEL: f64 = 0.75;
+/// The box that stands for a picture that is not printed.
+fn placeholder(d: &mut Dict, width: f64, height: f64, alt: &str) -> &'static str {
+    sized(d, Some(width), Some(height), alt);
+    "placeholder"
+}
 fn points(value: Option<f64>) -> Value {
     value.map_or(Value::Auto, Value::Float)
+}
+/// Height the text under a code takes with its gap, in points.
+const CAPTION_ROOM: f64 = erp_report::CODE_CAPTION_POINTS * 1.5;
+/// The printed size of a vector: its own proportions at the given width or height, fitted inside
+/// both when both are given, its natural size (one unit a point) when neither is.
+fn vector_size(vector: &erp_report::Vector, width: Option<f64>, height: Option<f64>) -> (f64, f64) {
+    let (wide, high) = (vector.width(), vector.height());
+    let scale = match (width, height) {
+        (Some(w), Some(h)) => (w / wide).min(h / high),
+        (Some(w), None) => w / wide,
+        (None, Some(h)) => h / high,
+        (None, None) => 1.0,
+    };
+    (wide * scale, high * scale)
+}
+/// The size of the text under a code `wide` points across: the house size, or smaller so the text
+/// stays on one line (a figure is about 0.6 of its size wide).
+fn caption_size(caption: &str, wide: f64) -> f64 {
+    let fits = wide / (0.6 * caption.chars().count().max(1) as f64);
+    erp_report::CODE_CAPTION_POINTS.min(fits).max(1.0)
 }
 fn sized(d: &mut Dict, width: Option<f64>, height: Option<f64>, alt: &str) {
     d.insert("width".into(), points(width));
@@ -115,6 +143,7 @@ fn text_len(doc: &DocTree, id: &NodeId, depth: usize) -> usize {
         Some(Node::Image { width, .. } | Node::Vector { width, .. }) => {
             width.map_or(COLUMN_CHARS_MAX, |w| (w / POINTS_PER_CHAR).ceil() as usize)
         }
+        Some(Node::Placeholder { width, .. }) => (width / POINTS_PER_CHAR).ceil() as usize,
         Some(Node::Table { .. } | Node::Grid { .. }) => COLUMN_CHARS_MAX,
         _ => 0,
     }
@@ -233,9 +262,18 @@ fn breaks(doc: &DocTree, id: &NodeId, depth: usize) -> (usize, f64) {
         _ => 0,
     };
     let image = match node {
-        Some(Node::Image { height, .. } | Node::Vector { height, .. }) => {
-            height.unwrap_or(PLACEHOLDER_POINTS)
+        Some(Node::Image { height, .. }) => height.unwrap_or(PLACEHOLDER_POINTS),
+        Some(Node::Vector {
+            vector,
+            width,
+            height,
+            caption,
+            ..
+        }) => {
+            let room = caption.as_ref().map_or(0.0, |_| CAPTION_ROOM);
+            vector_size(vector, *width, *height).1 + room
         }
+        Some(Node::Placeholder { height, .. }) => *height,
         _ => 0.0,
     };
     node.into_iter()
@@ -313,6 +351,7 @@ fn shares(longest: &[usize], numbers: &[bool], body: f64) -> (Vec<f64>, bool) {
 pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String>), ReportError> {
     let mut nodes = Vec::with_capacity(doc.nodes().len());
     let mut warnings = Vec::new();
+    let mut pictures = Pictures::default();
     // Table column shares, and the font scale every node inherits from a compact table above it.
     // Parents come after their children in the arena, so a reverse walk reaches a table first.
     // `inherited` is the size a node's text gets from the nearest styled node above it, so a bare
@@ -527,42 +566,92 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                 data,
                 width,
                 height,
+                fit,
                 alt,
-            } => {
-                let format = match probe_image(data, limits)?.format() {
-                    ImageFormat::Png => ExchangeFormat::Png,
-                    ImageFormat::Jpeg => ExchangeFormat::Jpg,
-                    ImageFormat::Gif => ExchangeFormat::Gif,
-                    ImageFormat::WebP => ExchangeFormat::Webp,
-                    // Decision 7: user SVG is parsed only by an isolated worker; its bytes
-                    // never reach this renderer.
-                    ImageFormat::UntrustedSvg => {
-                        warnings.push(format!(
-                            "image node {index}: SVG from a user or upload is rendered only by the WorkerPool runner (a later release); printed as a placeholder"
-                        ));
-                        sized(
-                            &mut d,
-                            Some(width.unwrap_or(PLACEHOLDER_POINTS)),
-                            Some(height.unwrap_or(PLACEHOLDER_POINTS)),
-                            alt,
-                        );
-                        d.insert("kind".into(), string("placeholder"));
-                        nodes.push(Value::Dict(d));
-                        continue;
-                    }
+            } => 'picture: {
+                let info = probe_image(data, limits)?;
+                // Decision 7: user SVG is parsed only by an isolated worker; its bytes
+                // never reach this renderer.
+                if info.format() == ImageFormat::UntrustedSvg {
+                    warnings.push(format!(
+                        "image node {index}: SVG from a user or upload is rendered only by the WorkerPool runner (a later release); printed as a placeholder"
+                    ));
+                    break 'picture placeholder(
+                        &mut d,
+                        width.unwrap_or(PLACEHOLDER_POINTS),
+                        height.unwrap_or(PLACEHOLDER_POINTS),
+                        alt,
+                    );
+                }
+                // The box of the picture, in points: the sides given, a side that is not given
+                // following the picture's proportions, and its natural size when none is.
+                let natural = (
+                    f64::from(info.width()) * POINTS_PER_PIXEL,
+                    f64::from(info.height()) * POINTS_PER_PIXEL,
+                );
+                let (wide, high) = match (*width, *height) {
+                    (Some(wide), Some(high)) => (wide, high),
+                    (Some(wide), None) => (wide, wide * natural.1 / natural.0),
+                    (None, Some(high)) => (high * natural.0 / natural.1, high),
+                    (None, None) => natural,
+                };
+                let cover = match fit {
+                    ImageFit::Contain => false,
+                    ImageFit::Cover => true,
                     _ => {
                         return Err(ReportError::Unsupported {
-                            feature: "image format",
+                            feature: "picture fit",
                             task: "a later release",
                         });
                     }
                 };
-                let bytes = Bytes::new(data.clone());
-                RasterImage::new(bytes.clone(), format, Smart::Auto).map_err(|e| {
-                    ReportError::Image {
-                        reason: format!("image node {index} cannot be decoded: {e}"),
+                // Scaled down to the pixels the box needs, converted when no reader shows its
+                // coding, then decoded once here, before layout: a picture the decoder refuses
+                // prints as an empty box with a warning, never as a failed document. The decoder
+                // call is memoized, so layout reuses this decode.
+                let options = doc.options().pictures();
+                let ready = pictures
+                    .embed(data, &info, (wide, high), *fit, options, limits)
+                    .and_then(|(bytes, format)| {
+                        let format = match format {
+                            ImageFormat::Png => ExchangeFormat::Png,
+                            ImageFormat::Jpeg => ExchangeFormat::Jpg,
+                            ImageFormat::Gif => ExchangeFormat::Gif,
+                            ImageFormat::WebP => ExchangeFormat::Webp,
+                            _ => return Err("its format is not one the renderer prints".into()),
+                        };
+                        let bytes = Bytes::new(bytes);
+                        let raster = RasterImage::new(bytes.clone(), format, Smart::Auto)
+                            .map_err(|e| format!("the decoder cannot read it: {e}"))?;
+                        Ok((bytes, format, raster.width() >= raster.height()))
+                    });
+                let (bytes, format, landscape) = match ready {
+                    Ok(ready) => ready,
+                    Err(reason) => {
+                        warnings.push(format!(
+                            "image node {index}: {reason}; an empty box is printed"
+                        ));
+                        break 'picture placeholder(&mut d, wide, high, alt);
                     }
-                })?;
+                };
+                // The size the picture is drawn at inside its box, from the proportions of its
+                // header: scaling a picture down to whole pixels shifts the proportions of the
+                // pixels a little, and the picture still fills the place it was given. A decoder
+                // that turned the picture a quarter where the header did not say so (an
+                // orientation in a PNG or WebP) gives the turned proportions.
+                let (across, down) = if landscape == (info.width() >= info.height()) {
+                    natural
+                } else {
+                    (natural.1, natural.0)
+                };
+                let scale = if cover {
+                    f64::max(wide / across, high / down)
+                } else {
+                    f64::min(wide / across, high / down)
+                };
+                let fitted = (across * scale, down * scale);
+                // within a hundredth of a point the picture is its box: no box is drawn around it
+                let exact = (fitted.0 - wide).abs() < 0.01 && (fitted.1 - high).abs() < 0.01;
                 d.insert("data".into(), Value::Bytes(bytes));
                 d.insert(
                     "format".into(),
@@ -573,20 +662,50 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                         _ => "webp",
                     }),
                 );
-                sized(&mut d, *width, *height, alt);
+                d.insert(
+                    "fitted".into(),
+                    array([fitted.0, fitted.1].map(Value::Float)),
+                );
+                d.insert("exact".into(), Value::Bool(exact));
+                d.insert("clip".into(), Value::Bool(cover));
+                sized(&mut d, Some(wide), Some(high), alt);
                 "image"
+            }
+            Node::Placeholder {
+                width,
+                height,
+                alt,
+                reason,
+            } => {
+                warnings.push(reason.clone());
+                placeholder(&mut d, *width, *height, alt)
             }
             Node::Vector {
                 vector,
                 width,
                 height,
                 alt,
+                caption,
             } => {
                 d.insert(
                     "data".into(),
                     Value::Bytes(Bytes::new(vector.svg().clone())),
                 );
-                sized(&mut d, *width, *height, alt);
+                // One scale both ways: a box of another proportion is fitted into, never filled.
+                let (wide, high) = vector_size(vector, *width, *height);
+                sized(&mut d, Some(wide), Some(high), alt);
+                match caption {
+                    Some(caption) => {
+                        d.insert("caption".into(), string(caption));
+                        d.insert(
+                            "caption_size".into(),
+                            Value::Float(caption_size(caption, wide)),
+                        );
+                    }
+                    None => {
+                        d.insert("caption".into(), Value::None);
+                    }
+                }
                 "vector"
             }
             Node::Cell {

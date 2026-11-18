@@ -17,6 +17,9 @@ Source commit: cc39c4c2c304bc368c9b7c311ea2bcc6013299fe
 Source directories: ofl/notosans, ofl/notosansarabic, ofl/notosanshebrew,
 ofl/notosansthai, ofl/notosansdevanagari, ofl/notonaskharabic, ofl/amiri.
 
+Noto Sans SC, TC, JP and KR are not in this package. They and their notices
+are in optional-assets/report_fonts_cjk (see its NOTICE).
+
 Exact pinned source URLs and SHA-256 hashes are in fonts.json and
 source-inventory.json. Font bytes were not modified or subsetted. Only local
 filenames were simplified; internal font names were not changed. No font was

@@ -27,6 +27,7 @@ A current full saved-byte verification is reproducible with `python3 addons/repo
 
 Amiri Regular is an additional Arabic candidate from the same pinned source, without replacing existing assets. Only its Regular face is packaged; Bold, Italic and BoldItalic are not included. Its acquisition evidence is kept in the same acquisition records. No shaping or extraction fix is claimed.
 
-The Chinese, Japanese and Korean families (Noto Sans SC, TC, JP, KR; about 50 MB) are not shipped here: the release
-addon snapshot is bounded at 64 MiB. They come back as a separate optional addon (a later release). A report
-that asks for one of them gets the renderer's named missing-font error.
+The Chinese, Japanese and Korean families (Noto Sans SC, TC, JP, KR; 49,718,756 bytes) are not shipped here: the
+addon files of one release are bounded at 64 MiB. They are the optional package `optional-assets/report_fonts_cjk/`,
+installed separately on the nodes that need them. A report
+that asks for one of them on a node without the package gets a font error that names the package.

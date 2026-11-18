@@ -35,9 +35,16 @@ pub const CHUNK_KEY: &str = "base.report_job_chunk_records";
 pub const JOB_MAX_KEY: &str = "base.report_job_max_records";
 /// How often the client reads the progress of a background print (milliseconds).
 pub const POLL_KEY: &str = "base.report_job_poll_ms";
-/// The four parameters: key, label, default, floor, hard bound (declared in
-/// `system_parameters.rs`).
-pub(crate) const PARAMETERS: [(&str, &str, i64, i64, i64); 4] = [
+/// Pixels per inch a printed picture is embedded at; a picture with more is scaled down.
+pub const IMAGE_DPI_KEY: &str = "base.report_image_dpi";
+/// Quality a picture is encoded at when it is scaled down or converted to a JPEG.
+pub const IMAGE_JPEG_QUALITY_KEY: &str = "base.report_image_jpeg_quality";
+const PICTURE_DPI: (u16, u16, u16) = erp_sdk::report::PictureQuality::DPI;
+const PICTURE_JPEG: (u8, u8, u8) = erp_sdk::report::PictureQuality::JPEG_QUALITY;
+/// The six parameters: key, label, default, floor, hard bound (declared in
+/// `system_parameters.rs`). The two picture values take theirs from the document model, so a
+/// stored value is always one a document accepts.
+pub(crate) const PARAMETERS: [(&str, &str, i64, i64, i64); 6] = [
     (
         SYNC_MAX_KEY,
         "Printing: most records printed at once (more print in the background)",
@@ -65,6 +72,20 @@ pub(crate) const PARAMETERS: [(&str, &str, i64, i64, i64); 4] = [
         1_000,
         250,
         60_000,
+    ),
+    (
+        IMAGE_DPI_KEY,
+        "Printing: resolution of pictures (pixels per inch; larger pictures are scaled down)",
+        PICTURE_DPI.0 as i64,
+        PICTURE_DPI.1 as i64,
+        PICTURE_DPI.2 as i64,
+    ),
+    (
+        IMAGE_JPEG_QUALITY_KEY,
+        "Printing: JPEG quality of scaled-down pictures",
+        PICTURE_JPEG.0 as i64,
+        PICTURE_JPEG.1 as i64,
+        PICTURE_JPEG.2 as i64,
     ),
 ];
 /// Failures and warnings a job keeps listed (the counts stay exact): a storage bound of the row,
@@ -709,6 +730,24 @@ mod tests {
         assert_eq!(tally.failures[0].error.len(), MAX_REASON_BYTES);
         assert_eq!(tally.warnings, vec!["w".to_owned()]);
         assert_eq!(tally.parts, vec![9]);
+    }
+
+    /// and bound of the document model, so every value they can hold is one a document accepts;
+    /// the refusal of a value outside them at save time is the parameter registry's)
+    #[test]
+    fn the_picture_parameters_take_their_bounds_from_the_document_model() {
+        let declared = |key: &str| {
+            PARAMETERS
+                .iter()
+                .find(|(declared, ..)| *declared == key)
+                .map(|(_, _, default, floor, bound)| (*default, *floor, *bound))
+        };
+        assert_eq!(declared(IMAGE_DPI_KEY), Some((200, 72, 600)));
+        assert_eq!(declared(IMAGE_JPEG_QUALITY_KEY), Some((85, 50, 100)));
+        for (dpi, quality) in [(72, 50), (200, 85), (600, 100)] {
+            let set = erp_sdk::report::PictureQuality::new(dpi, quality).unwrap();
+            assert_eq!((set.dpi(), set.jpeg_quality()), (dpi, quality));
+        }
     }
 
     #[test]

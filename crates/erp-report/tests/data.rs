@@ -97,7 +97,15 @@ fn row(model: &str, id: i64) -> Option<Vec<(&'static str, FieldValue)>> {
                 FieldValue::many("sale.order.line", &lines_of(id)),
             ),
             ("amount_total", FieldValue::monetary(100.5, "currency_id")),
-            ("logo", FieldValue::binary(&png(20, 10))),
+            // order 7007 holds a file that is no picture in its picture field
+            (
+                "logo",
+                if id == 7_007 {
+                    FieldValue::binary(b"%PDF-1.7 a file that is no picture")
+                } else {
+                    FieldValue::binary(&png(20, 10))
+                },
+            ),
         ],
         "sale.order.line" => vec![
             ("qty", FieldValue::integer(id % 7)),
@@ -716,6 +724,65 @@ fn a_template_image_over_a_limit_is_an_image_error_naming_the_field() {
     let store = Arc::new(stage.finish().unwrap());
     let context = EvalContext::standard().with_var("docs", store.recordset("sale.order", &[3]));
     assert_eq!(print(&program, &context, &store).unwrap(), ["logo"]);
+}
+
+/// built with a box of the declared size in their place; the printed box and the returned
+/// warning are in the renderer tests)
+#[test]
+fn bytes_that_are_no_picture_pass_the_data_stage_and_become_a_placeholder() {
+    let program = compile(
+        "<div><t t-foreach='docs' t-as='o'><p t-if='o.logo'>set</p><span t-field='o.logo' \
+         t-options=\"{'widget': 'image', 'max_width': 40}\"/></t></div>",
+    );
+    let plan = plan_of(&program);
+    let mut stage = DataStage::new(
+        &plan,
+        &docs(&[7_007]),
+        ReportLimits::default(),
+        Limits::default(),
+    )
+    .unwrap();
+    run(&mut stage).unwrap();
+    let store = Arc::new(stage.finish().unwrap());
+    let context = EvalContext::standard().with_var("docs", store.recordset("sale.order", &[7_007]));
+    let options =
+        DocumentOptions::new("doc-1", "Test", PageSetup::new(595.0, 842.0, 40.0).unwrap());
+    let doc = program
+        .evaluate(&context, &store, &EvalOptions::default(), options)
+        .unwrap();
+    let boxes: Vec<_> = doc
+        .nodes()
+        .iter()
+        .filter_map(|node| match node {
+            Node::Placeholder {
+                width,
+                height,
+                reason,
+                ..
+            } => Some((*width, *height, reason.as_str())),
+            _ => None,
+        })
+        .collect();
+    // 40 pixels are 30 points; the field is still a set value in a test
+    assert_eq!(
+        boxes,
+        [(
+            30.0,
+            30.0,
+            "the picture at test.report:1 cannot be read (image bytes are not PNG, JPEG, GIF, \
+             WebP or SVG); an empty box is printed"
+        )]
+    );
+    assert_eq!(texts(&doc), ["set"]);
+    // a limit is still refused by record and field, whatever the bytes are
+    let small = Limits::default().lowered(LimitKind::ImageBytes, 8).unwrap();
+    let mut stage = DataStage::new(&plan, &docs(&[7_007]), ReportLimits::default(), small).unwrap();
+    let err = run(&mut stage).unwrap_err();
+    assert!(matches!(err, ReportError::Image { .. }), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "report image: sale.order(7007).logo: report limit image_bytes exceeded: 34 > 8"
+    );
 }
 
 #[test]

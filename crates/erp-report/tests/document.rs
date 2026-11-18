@@ -274,6 +274,8 @@ fn every_limit_has_positive_lowerable_bounds() {
         LimitKind::EvictionInterval,
         LimitKind::FontBytes,
         LimitKind::WorkerThreads,
+        LimitKind::CodeBytes,
+        LimitKind::VectorRectangles,
     ] {
         let default = Limits::default();
         let max = default.get(kind);
