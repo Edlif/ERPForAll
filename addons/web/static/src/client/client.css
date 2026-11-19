@@ -468,7 +468,11 @@ button.pager-count:focus-visible {
 .control-panel-list { grid-template-columns: auto minmax(240px, 1fr) minmax(160px, 540px) auto; }
 .breadcrumbs:has(> .selection-box) { flex-wrap: nowrap; }
 
-.action-dropdown > .action-toggle-btn, .print-dropdown > .print-toggle-btn { min-height: var(--list-action-control-size, 32px) !important; padding: 2px 8px !important; font-size: 12px !important; border-radius: var(--radius-control); background: var(--surface) !important; border: 1px solid var(--selected-line) !important; color: var(--selected-text) !important; } /* list selection controls (Actions and Print); the form Actions button stays a plain control; ui-lint: allow important */
+.action-dropdown > .action-toggle-btn, :not(.form-record-menus) > .print-dropdown > .print-toggle-btn { min-height: var(--list-action-control-size, 32px) !important; padding: 2px 8px !important; font-size: 12px !important; border-radius: var(--radius-control); background: var(--surface) !important; border: 1px solid var(--selected-line) !important; color: var(--selected-text) !important; } /* list selection controls (Actions and Print); the form Actions button stays a plain control; ui-lint: allow important */
+.form-record-menus { display: inline-flex; gap: 8px; align-items: center; margin-inline-start: 8px; }
+/* The form Print button is a quiet control like the record menu beside it, not the list selection style. */
+.form-record-menus .print-toggle-btn { min-height: 24px; height: 24px; padding: 0 8px; gap: 4px; font-size: 12px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--muted); }
+.form-record-menus .print-toggle-btn:hover, .form-record-menus .print-toggle-btn[aria-expanded="true"] { background: var(--hover); color: var(--text); }
 .action-menu, .print-menu { top: calc(100% + 4px); min-width: 120px; }
 
 /* Viewport and Sheet */
@@ -2946,7 +2950,7 @@ dialog, .client-block-feedback { box-shadow: var(--shadow-dialog); }
 .control-panel-form:has(> .form-record-smart) .breadcrumbs:has(.breadcrumb-collapsed-dropdown) .breadcrumb-previous { grid-column: 2; }
 .control-panel-form:has(> .form-record-smart) .breadcrumb-previous button { min-height: 0; height: 14px; padding: 0; font-size: 12px; line-height: 14px; }
 .control-panel-form:has(> .form-record-smart) .form-breadcrumb-record { grid-column: 1; grid-row: 2; margin: 0; font-size: 14px; font-weight: 600; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 28ch; }
-.control-panel-form:has(> .form-record-smart) .form-actions-dropdown { grid-column: 2; grid-row: 2; position: relative; display: inline-flex; }
+.control-panel-form:has(> .form-record-smart) .form-record-menus { grid-column: 2; grid-row: 2; position: relative; display: inline-flex; }
 .control-panel-form:has(> .form-record-smart) .form-status-indicator { grid-column: 3; grid-row: 1 / span 2; margin-inline-start: 8px; }
 .control-panel-form .record-menu-btn.record-menu-btn { display: inline-grid; place-items: center; width: 24px; min-width: 24px; height: 24px; min-height: 24px; padding: 0; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--muted); }
 .control-panel-form .record-menu-btn:hover { background: var(--hover); color: var(--text); }
@@ -3076,7 +3080,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .breadcrumb-previous > .breadcrumb-origin ~ .breadcrumb-back svg { display: none; }
 .control-panel-form:has(> .form-record-smart) .form-breadcrumb-record { line-height: 18px; }
 /* The record menu keeps its 24px target; the negative block margin keeps it from making the name's row taller. */
-.control-panel-form:has(> .form-record-smart) .form-actions-dropdown { margin-block: -3px; }
+.control-panel-form:has(> .form-record-smart) .form-record-menus { margin-block: -3px; }
 /* The HTML editor is one block across its group or tab: toolbar, content, status. It never takes the label and value columns. */
 .record-form:not(.settings-form) .html-editor.field-label { display: block; grid-column: 1 / -1; }
 

@@ -81,7 +81,15 @@ fn parameters() -> Result<Vec<ParameterDecl>> {
     ]
     .into_iter()
     .map(|(key, label, default, bounds)| ParameterDecl::integer(key, label, default, bounds))
-    .collect()
+    .collect::<Result<Vec<_>>>()
+    .and_then(|mut all| {
+        all.push(ParameterDecl::boolean(
+            crate::quant_guards::SHOW_EXPECTED_KEY,
+            "Show the on-hand quantity on the Count Sheet",
+            false,
+        )?);
+        Ok(all)
+    })
 }
 
 fn parameter_groups() -> Result<Vec<SettingGroupDecl>> {
@@ -242,6 +250,7 @@ impl StockSettings {
             .chain([
                 crate::move_relations::CHAIN_LIMIT_KEY,
                 crate::warehouse_setup::CODE_LENGTH_KEY,
+                crate::quant_guards::SHOW_EXPECTED_KEY,
             ])
             .map(str::to_owned)
             .collect();

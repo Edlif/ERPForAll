@@ -75,7 +75,7 @@ fn master_models_declare_list_view_and_action() {
     }
 }
 
-/// Models that are created by hand also have a form; the quant list is read-only.
+/// Models that are created by hand also have a form; the quant list and form are read-only.
 #[test]
 fn forms_exist_and_quant_list_is_read_only() {
     for (file, model) in [
@@ -94,6 +94,8 @@ fn forms_exist_and_quant_list_is_read_only() {
     }
     let quant = read("views/stock_quant_views.xml");
     assert!(quant.contains(r#"<list create="false" edit="false" delete="false">"#));
+    assert!(quant.contains(r#"<form string="Stock" create="false" edit="false" delete="false">"#));
+    assert!(quant.contains(r#"<field name="view_mode">list,form</field>"#));
     assert!(quant.contains(r#"context="{'group_by': 'product_id'}""#));
     assert!(quant.contains(r#"context="{'group_by': 'location_id'}""#));
 }

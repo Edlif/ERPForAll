@@ -51,7 +51,7 @@ import "./services.js";
 import { type ServiceController } from "./services.js";
 import { serviceControllers } from "./registry.js";
 import { mountControlPanel } from "./control-panel.js";
-import { printDropdown, printMenuLoader, printRecords } from "./report-print.js";
+import { printDropdown, printRecords } from "./report-print.js";
 import { requestLoading } from "./loading.js";
 import { actionResult } from "./actions.js";
 import { CompanySelector, type CompanyItem } from "./company-selector.js";
@@ -2005,7 +2005,9 @@ export class HumanApp {
           stagedDisposers.push(nextDispose);
         } else if (view.type === "list") {
           const actionHelp = typeof (action as Record<string, unknown>)["help"] === "string" ? (action as Record<string, unknown>)["help"] as string : undefined;
-          const hasForm = !entry || views.some(view => view[1] === "form");
+          // shortcut: an action without a form view gets no New and no row opening (the reference opens the model's
+          // default form, and an editable list adds a row inline); revisit when this client has both.
+          const hasForm = views.some(view => view[1] === "form");
           const canCreate = hasForm && view.canCreate !== false && !isFalsy(context["create"]);
           if (canCreate) controls.append(actionButton("New", () => this.run(() => this.navigate({ ...route, id: undefined, view_type: "form" })), "primary"));
           const list = await this.listView(staging, panel, actionTitle, description, view, route, generation, actionHelp, views as [number | null, string][], {baseDomain: entry?.result.domain ?? actionDomain, context, hasForm, canCreate});
@@ -2013,7 +2015,7 @@ export class HumanApp {
           nextSettle = list.settle;
           stagedDisposers.push(nextDispose);
         } else if (view.type === "kanban") {
-          const hasForm = !entry || views.some(view => view[1] === "form");
+          const hasForm = views.some(view => view[1] === "form");
           const canCreate = hasForm && view.canCreate !== false && !isFalsy(context["create"]);
           if (canCreate) controls.append(actionButton("New", () => this.run(() => this.navigate({ ...route, id: undefined, view_type: "form" })), "primary"));
           const kanban = await this.kanbanView(staging, panel, actionTitle, description, view, route, generation, views as [number | null, string][], {baseDomain: entry?.result.domain ?? actionDomain, context, hasForm});
@@ -4012,7 +4014,7 @@ export class HumanApp {
         surface!.setDisabled(true);
         for (const control of surface!.controls()) control.disabled = true;
         // The record menu lives in the breadcrumb in the default theme, outside `controls`.
-        for (const control of [...controls.querySelectorAll<HTMLButtonElement>("button"), ...actionMenu.querySelectorAll<HTMLButtonElement>("button")]) if (!control.matches(".action-toggle-btn,.form-reload-btn")) control.disabled = true;
+        for (const control of [...controls.querySelectorAll<HTMLButtonElement>("button"), ...actionMenu.querySelectorAll<HTMLButtonElement>("button"), ...(recordMenu?.querySelectorAll<HTMLButtonElement>(".print-dropdown button") ?? [])]) if (!control.matches(".action-toggle-btn,.form-reload-btn")) control.disabled = true;
         saveBtn.disabled = true; discardBtn.disabled = true;
         this.notice(uncertainMethodMessage);
       }
@@ -4216,19 +4218,23 @@ export class HumanApp {
     actionDropdown.append(actionToggle, actionMenu);
     // A menu may only own menu items and separators (the dropdown component sets role="menu" on the panel).
     for (const item of actionMenu.querySelectorAll<HTMLElement>("button")) item.setAttribute("role", "menuitem");
-    // Print entries load at the first opening, at the top of the menu; a dirty record is saved first.
-    const loadPrint = printMenuLoader(this.rpc, state.model, actionMenu, actionMenu.firstChild, report => runFormAction(async () => {
-      actionMenu.classList.remove("open");
+    // Print is its own button before Actions (not mixed with record actions). A dirty or new record is saved first,
+    // as the reference client does before a menu item runs.
+    // shortcut: Print shows on every form (a model without a report says so when opened); hiding it needs the print
+    // bindings in get_views' toolbar, task.
+    const print = printDropdown(this.rpc, state.model, report => runFormAction(async () => {
       refuseUncertain();
-      if (state.dirty && !await trySave()) return;
-      if (!state.id) return;
+      if ((state.dirty || !state.id) && !await trySave()) return;
+      if (!state.id) throw new ClientError("validation", "Save the record before printing it.");
       await printRecords({ rpc: this.rpc, dialogs: this.messages.dialogs }, report, state.model, [state.id]);
-    }), error => this.reportError(error), () => actionMenuDropdown.refresh());
-    const actionMenuDropdown = attachMenuDropdown({ trigger: actionToggle, menu: actionMenu, mode: "class-open", onOpen: () => { duplicateBtn.hidden = !state.id || !canCreate; if (state.id) loadPrint(); } });
-    recordMenu = actionDropdown; updateBreadcrumbs();
+    }), error => this.reportError(error));
+    const recordMenus = el("div", undefined, "form-record-menus");
+    recordMenus.append(print.node, actionDropdown);
+    const actionMenuDropdown = attachMenuDropdown({ trigger: actionToggle, menu: actionMenu, mode: "class-open", onOpen: () => { duplicateBtn.hidden = !state.id || !canCreate; } });
+    recordMenu = recordMenus; updateBreadcrumbs();
     if (smartHost) panel.append(smartHost);
 
-    const stopActionMenu = (): void => actionMenuDropdown.dispose();
+    const stopActionMenu = (): void => { print.dispose(); actionMenuDropdown.dispose(); };
 
     form.addEventListener("submit", event => {
       event.preventDefault();

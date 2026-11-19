@@ -180,6 +180,47 @@ The printed inventory documents of a transfer, built on the shared document part
         </t>
     </template>
 
+    <!-- The count sheet: one document for every selected stock line, grouped by location (a heading row, then
+         the lines of that location), with an empty Counted column to write the counted quantity in. -->
+    <template id="report_inventory">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <div class="mb-3">
+                        <h4 class="mb-2">Count Sheet</h4>
+                    </div>
+                    <t t-set="lotted" t-value="[quant for quant in docs if quant.lot_id]"/>
+                    <t t-set="packaged" t-value="[quant for quant in docs if quant.package_id]"/>
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>Product</th>
+                                <th t-if="lotted">Lot/Serial Number</th>
+                                <th t-if="packaged">Package</th>
+                                <th class="text-end">On Hand</th>
+                                <th class="text-end">Counted</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="docs.location_id" t-as="location">
+                                <tr>
+                                    <td colspan="5"><strong t-out="location.display_name"/></td>
+                                </tr>
+                                <tr t-foreach="[quant for quant in docs if quant.location_id.id == location.id]" t-as="line">
+                                    <td><span t-field="line.product_id"/></td>
+                                    <td t-if="lotted"><span t-if="line.lot_id" t-field="line.lot_id"/></td>
+                                    <td t-if="packaged"><span t-if="line.package_id" t-field="line.package_id"/></td>
+                                    <td class="text-end"><span t-if="line.show_expected_count" t-field="line.quantity"/> <span t-field="line.uom_id"/></td>
+                                    <td class="text-end">______________</td>
+                                </tr>
+                            </t>
+                        </tbody>
+                    </table>
+                </div>
+            </t>
+        </t>
+    </template>
+
     <record id="action_report_deliveryslip" model="ir.actions.report">
         <field name="name">Delivery Slip</field>
         <field name="model">stock.picking</field>
@@ -207,6 +248,15 @@ The printed inventory documents of a transfer, built on the shared document part
         <field name="report_name">stock.report_picking_operations</field>
         <field name="print_report_name">'Picking Operations - ' + object.name</field>
         <field name="binding_model_id" ref="stock.model_stock_picking"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_inventory" model="ir.actions.report">
+        <field name="name">Count Sheet</field>
+        <field name="model">stock.quant</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">stock.report_inventory</field>
+        <field name="binding_model_id" ref="stock.model_stock_quant"/>
         <field name="binding_type">report</field>
     </record>
 </erp>

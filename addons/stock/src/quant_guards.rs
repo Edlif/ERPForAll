@@ -10,6 +10,8 @@ use crate::location::StockLocation;
 use crate::quant::StockQuant;
 use crate::quant_engine::QuantError;
 
+pub const SHOW_EXPECTED_KEY: &str = "stock.show_expected_quantity_count";
+
 /// Columns of the balance projection (9): only the engine writes them.
 const PROJECTION_FIELDS: [&str; 9] = [
     "company_id",
@@ -120,6 +122,20 @@ impl StockQuant {
             }
         }
         sup.call(tx, this.as_records(), ()).await
+    }
+
+    /// `show_expected_count`: the parameter [`SHOW_EXPECTED_KEY`].
+    #[compute(depends = [])]
+    async fn _compute_show_expected_count(
+        this: &RecordSet<StockQuant>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, StockQuant>,
+    ) -> Result<()> {
+        let show = erp_sdk::params::get_bool(tx, &crate::ADDON, SHOW_EXPECTED_KEY).await?;
+        for index in 0..this.ids().len() {
+            out.set(index, StockQuant::SHOW_EXPECTED_COUNT, show)?;
+        }
+        Ok(())
     }
 
     /// `available_quantity`: on hand minus reserved, signed.

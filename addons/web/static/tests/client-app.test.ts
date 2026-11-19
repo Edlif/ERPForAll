@@ -3587,3 +3587,106 @@ test("a related list declared with a dashboard shows no strip and reads no dashb
   expect(root.querySelector(".dashboard-strip")).toBeNull();
   expect(paths.some(path => path.endsWith("erp_read_dashboard"))).toBe(false);
 });
+
+function printFormFetch(order: string[], opts: { reports?: { report: string; name: string }[]; refuseSave?: boolean } = {}): (path: string, init: RequestInit) => Promise<Response> {
+  return vi.fn(async (path: string, init: RequestInit) => {
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    const method = path.split("/").pop()!;
+    if (method === "web_save" || method === "erp_print") order.push(method);
+    if (method === "web_save" && opts.refuseSave) return new Response(JSON.stringify({ name: "erp.exceptions.UserError", message: "The note cannot be saved." }), { status: 422, headers: { "Content-Type": "application/json" } });
+    const value = path.endsWith("get_res_users_settings") ? { homemenu_config: null } : path.endsWith("erp_load_web_menus") ? {
+      wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: "Notes", action_id: 20, children: [], icon: null }]
+    } : (path.endsWith("erp_load_web_action") || path.endsWith("erp_load_web_action_views")) ? actionMetadata(path, {
+      wire_major: 1, id: 20, name: "Notes", model: "test.note", target: "current", views: [{ id: 1, type: "form" }, { id: 2, type: "list" }], domain: null, context: null
+    }, description) : path.endsWith("get_views") ? description
+      : path.endsWith("web_read") ? [{ id: 5, name: "Existing note" }]
+      : path.endsWith("default_get") ? { name: "New note" }
+      : path.endsWith("onchange") ? { value: { name: body.values?.name } }
+      : path.endsWith("web_save") ? [{ id: 5, name: body.vals?.name }]
+      : method === "erp_print_reports" ? (opts.reports ?? [{ report: "test.note.document", name: "Note" }])
+      : method === "erp_print" ? { mode: "sync", url: "/report/pdf/test.note.document/5" }
+      : [];
+    return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+  });
+}
+
+async function openPrintMenu(root: HTMLElement): Promise<HTMLButtonElement> {
+  await vi.waitFor(() => expect(root.querySelector(".form-record-menus .print-toggle-btn")).not.toBeNull());
+  const toggle = root.querySelector<HTMLButtonElement>(".form-record-menus .print-toggle-btn")!;
+  toggle.click();
+  await vi.waitFor(() => expect(root.querySelector(".print-menu .print-report-btn")?.textContent).toBe("Note"));
+  return root.querySelector<HTMLButtonElement>(".print-menu .print-report-btn")!;
+}
+
+test("form Print button lists the reports, Actions holds none, and printing saves a dirty record first", async () => {
+  history.replaceState(null, "", "/erp/action-20?id=5&view_type=form");
+  const order: string[] = [];
+  vi.stubGlobal("fetch", printFormFetch(order));
+  const root = host();
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  await vi.waitFor(() => expect(root.querySelector(".form-actions-dropdown")).not.toBeNull());
+  const toggle = root.querySelector<HTMLButtonElement>(".form-record-menus .print-toggle-btn")!;
+  expect(toggle.textContent).toBe("Print");
+  expect(toggle.compareDocumentPosition(root.querySelector(".form-record-menus .action-toggle-btn")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const entry = await openPrintMenu(root);
+  expect(root.querySelector(".form-action-menu .print-report-btn")).toBeNull();
+
+  const input = root.querySelector<HTMLInputElement>('input[name="name"]')!;
+  input.value = "Edited"; input.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(root.querySelector(".status-badge")?.textContent).toBe("Unsaved changes"));
+  entry.click();
+  await vi.waitFor(() => expect(order).toEqual(["web_save", "erp_print"]));
+});
+
+test("form Print on a new record with no edits saves it first, then prints it", async () => {
+  history.replaceState(null, "", "/erp/action-20?view_type=form");
+  const order: string[] = [];
+  vi.stubGlobal("fetch", printFormFetch(order));
+  const root = host();
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  (await openPrintMenu(root)).click();
+  await vi.waitFor(() => expect(order).toEqual(["web_save", "erp_print"]));
+});
+
+test("form Print prints nothing when the save before it is refused", async () => {
+  history.replaceState(null, "", "/erp/action-20?id=5&view_type=form");
+  const order: string[] = [];
+  vi.stubGlobal("fetch", printFormFetch(order, { refuseSave: true }));
+  const root = host();
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  const entry = await openPrintMenu(root);
+  const input = root.querySelector<HTMLInputElement>('input[name="name"]')!;
+  input.value = "Edited"; input.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(root.querySelector(".status-badge")?.textContent).toBe("Unsaved changes"));
+  entry.click();
+  await vi.waitFor(() => expect(order).toEqual(["web_save"]));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(order).toEqual(["web_save"]);
+});
+
+test("a list-only action has no open cell, no New button and no row navigation", async () => {
+  history.replaceState(null, "", "/erp/action-20");
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    const value = path.endsWith("get_res_users_settings") ? { homemenu_config: null } : path.endsWith("erp_load_web_menus") ? {
+      wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: "Stock", action_id: 20, children: [], icon: null }]
+    } : (path.endsWith("erp_load_web_action") || path.endsWith("erp_load_web_action_views")) ? actionMetadata(path, {
+      wire_major: 1, id: 20, name: "Stock", model: "test.note", target: "current", views: [{ id: 2, type: "list" }], domain: null, context: null
+    }, { ...description, views: description.views.filter(view => view.type === "list") }) : path.endsWith("get_views") ? { ...description, views: description.views.filter(view => view.type === "list") }
+      : path.endsWith("web_search_read") ? { length: 1, records: [{ id: 5, name: "Row" }] }
+      : [];
+    return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+  }));
+  const root = host();
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  await vi.waitFor(() => expect(root.querySelector("table[aria-label=Records] tbody tr")).not.toBeNull());
+  expect(root.querySelector("[data-record-open]")).toBeNull();
+  expect([...root.querySelectorAll("button")].some(item => item.textContent === "New")).toBe(false);
+  root.querySelector<HTMLElement>("table[aria-label=Records] tbody tr td")!.click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(window.location.search).toBe("");
+  expect(root.querySelector(".notification-danger, .client-notification[data-level=danger]")).toBeNull();
+});

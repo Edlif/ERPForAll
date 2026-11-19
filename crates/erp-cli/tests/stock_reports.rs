@@ -684,3 +684,230 @@ async fn body() {
     drop(users);
     db.cleanup().await.unwrap();
 }
+
+#[test]
+fn count_sheet_prints_selected_quants_grouped_by_location() {
+    big_stack(count_sheet_body);
+}
+
+async fn count_sheet_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = one(
+        &mut tx,
+        "SELECT res_id::int8 FROM ir_model_data WHERE module = 'base' AND name = 'main_company'",
+    )
+    .await;
+    let mut tx = {
+        tx.commit().await.unwrap();
+        orm.begin_with(SUPERUSER_ID, Context::new().with_company_id(company))
+            .await
+            .unwrap()
+    };
+
+    let listed = erp_addon_base::report_print::printable(&mut tx, "stock.quant")
+        .await
+        .unwrap();
+    assert!(
+        listed.contains(&(
+            "stock.report_inventory".to_owned(),
+            "Count Sheet".to_owned()
+        )),
+        "{listed:?}"
+    );
+    // The stock action offers the list and the form, and the form view is installed.
+    let action: String = tx
+        .query(
+            "SELECT a.view_mode FROM ir_act_window a JOIN ir_model_data d ON d.model = 'ir.actions.act_window' \
+             AND d.res_id = a.id WHERE d.module = 'stock' AND d.name = 'action_stock_quant'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(action, "list,form");
+    let form_arch: String = tx
+        .query(
+            "SELECT v.arch_db::text FROM ir_ui_view v JOIN ir_model_data d ON d.model = 'ir.ui.view' \
+             AND d.res_id = v.id WHERE d.module = 'stock' AND d.name = 'view_stock_quant_form'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert!(form_arch.contains("name=\"uom_id\""), "{form_arch}");
+
+    let bolt = product(&mut tx, company, "Hex Bolt").await;
+    let nut = product(&mut tx, company, "Wing Nut").await;
+    let shelf_a = one(
+        &mut tx,
+        &format!(
+            "SELECT id FROM stock_location WHERE usage = 'internal' AND company_id = {company} ORDER BY id LIMIT 1"
+        ),
+    )
+    .await;
+    let parent = one(
+        &mut tx,
+        &format!("SELECT location_id::int8 FROM stock_location WHERE id = {shelf_a}"),
+    )
+    .await;
+    let shelf_b = create(
+        &mut tx,
+        company,
+        "stock.location",
+        RawVals::new()
+            .set_cell("name", text("Rack Z9"))
+            .set_cell("usage", text("internal"))
+            .set_cell("location_id", Cell::Id(parent))
+            .set_cell("company_id", Cell::Id(company)),
+    )
+    .await;
+    let lot = create(
+        &mut tx,
+        company,
+        "stock.lot",
+        RawVals::new()
+            .set_cell("name", text("LOT-Z1"))
+            .set_cell("product_id", Cell::Id(bolt))
+            .set_cell("company_id", Cell::Id(company)),
+    )
+    .await;
+    let mut quants = Vec::new();
+    for (product, location, quantity, lot) in [
+        (bolt, shelf_a, "12", Some(lot)),
+        (nut, shelf_b, "7", None),
+        (nut, shelf_a, "3", None),
+    ] {
+        // Balances change only through moves (the ORM refuses a create), so the fixture is SQL.
+        let quantity: Decimal = quantity.parse().unwrap();
+        quants.push(
+            tx.query(
+                "INSERT INTO stock_quant (company_id, product_id, location_id, lot_id, quantity, reserved_quantity, in_date) \
+                 VALUES ($1, $2, $3, $4, $5, 0, now()) RETURNING id",
+                &[&company, &product, &location, &lot, &quantity],
+            )
+            .await
+            .unwrap()[0]
+                .get::<_, i64>(0),
+        );
+    }
+    let a_name: String = tx
+        .query(
+            "SELECT complete_name FROM stock_location WHERE id = $1",
+            &[&shelf_a],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let a: String = a_name.chars().filter(|c| !c.is_whitespace()).collect();
+
+    // Default: a blind count (no On Hand quantity), the Lot column because one line has a lot, no
+    // Package column because none does.
+    let blind = print(&mut tx, "stock.report_inventory", &quants, "count-sheet").await;
+    assert_eq!(blind.pages.len(), 1, "{:?}", blind.pages);
+    let page = &blind.pages[0];
+    has(
+        page,
+        &[
+            "CountSheet",
+            "Product",
+            "Lot/SerialNumber",
+            "OnHand",
+            "Counted",
+        ],
+    );
+    assert!(!page.contains("Package"), "no package used: {page}");
+    for quantity in ["12.00", "7.00", "3.00"] {
+        assert!(
+            !page.contains(quantity),
+            "blind count shows {quantity}: {page}"
+        );
+    }
+    assert_grouped(page, &a);
+
+    // The setting shows On Hand, each quantity with its unit inside its own location's block.
+    tx.env()
+        .records("ir.config_parameter")
+        .unwrap()
+        .call::<(String, Option<bool>), bool>(
+            &mut tx,
+            "set_bool",
+            ("stock.show_expected_quantity_count".to_owned(), Some(true)),
+        )
+        .await
+        .unwrap();
+    // a real print is its own transaction; here the first print cached the switch
+    tx.invalidate_model("stock.quant", None).await.unwrap();
+    let shown = print(
+        &mut tx,
+        "stock.report_inventory",
+        &quants,
+        "count-sheet-on-hand",
+    )
+    .await;
+    let page = &shown.pages[0];
+    assert_grouped(page, &a);
+    for quantity in ["12.00Units", "7.00Units", "3.00Units"] {
+        has(page, &[quantity]);
+    }
+    let (first, second) = if page.find(&a) < page.find("RackZ9") {
+        (&a[..], "RackZ9")
+    } else {
+        ("RackZ9", &a[..])
+    };
+    let (start, split) = (page.find(first).unwrap(), page.find(second).unwrap());
+    let (block_a, block_b) = if first == a {
+        (&page[start..split], &page[split..])
+    } else {
+        (&page[split..], &page[start..split])
+    };
+    assert!(
+        block_a.contains("12.00Units") && block_a.contains("3.00Units"),
+        "{page}"
+    );
+    assert!(
+        block_b.contains("7.00Units") && !block_b.contains("12.00"),
+        "{page}"
+    );
+    db.cleanup().await.unwrap();
+}
+
+/// The page prints each location heading once, each product once per location, and a block reads
+/// heading, product, lot (for the lotted line), next product, in that order.
+fn assert_grouped(page: &str, a: &str) {
+    assert_eq!(
+        page.matches(a).count(),
+        1,
+        "one heading per location: {page}"
+    );
+    assert_eq!(page.matches("RackZ9").count(), 1, "{page}");
+    assert_eq!(page.matches("HexBolt").count(), 1, "{page}");
+    assert_eq!(
+        page.matches("WingNut").count(),
+        2,
+        "one per location: {page}"
+    );
+    let pos = |part: &str| page.find(part).unwrap_or_else(|| panic!("{part}: {page}"));
+    let (heading_a, bolt, lot, last_nut) = (
+        pos(a),
+        pos("HexBolt"),
+        pos("LOT-Z1"),
+        page.find("WingNut").unwrap(),
+    );
+    let rack = pos("RackZ9");
+    if heading_a < rack {
+        // shelf A first: its heading, then Hex Bolt, its lot, Wing Nut, then the other heading and its nut
+        assert!(
+            heading_a < bolt && bolt < lot && lot < last_nut && last_nut < rack,
+            "{page}"
+        );
+        assert!(page.rfind("WingNut").unwrap() > rack, "{page}");
+    } else {
+        // the other location first: its Wing Nut, then shelf A's heading, product, lot and Wing Nut
+        assert!(
+            rack < last_nut && last_nut < heading_a && heading_a < bolt && bolt < lot,
+            "{page}"
+        );
+        assert!(page.rfind("WingNut").unwrap() > lot, "{page}");
+    }
+}

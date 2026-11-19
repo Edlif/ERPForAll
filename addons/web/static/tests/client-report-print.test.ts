@@ -1,7 +1,7 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { DialogService } from "../src/client/dialog-service.js";
-import { loadPrintReports, printDropdown, printMenuLoader, printRecords } from "../src/client/report-print.js";
+import { loadPrintReports, printDropdown, printRecords } from "../src/client/report-print.js";
 import { RpcClient } from "../src/client/transport.js";
 
 let dialogs: DialogService;
@@ -80,27 +80,6 @@ test("a failed print shows its reason and stops reading", async () => {
   expect(reads).toBe(1);
 });
 
-test("the Print entries load once at the first opening, before the given entry", async () => {
-  const { rpc, calls } = fakeRpc(() => [order]);
-  const menu = document.createElement("div");
-  const reload = document.createElement("button"); reload.textContent = "Reload"; menu.append(reload);
-  const pick = vi.fn();
-  const open = printMenuLoader(rpc, "sale.order", menu, reload, pick, () => {});
-  open(); open();
-  await vi.waitFor(() => expect([...menu.querySelectorAll("button")].map(item => item.textContent)).toEqual(["Print Order", "Reload"]));
-  expect(calls).toHaveLength(1);
-  menu.querySelector<HTMLButtonElement>(".print-report-btn")!.click();
-  expect(pick).toHaveBeenCalledWith(order);
-});
-
-test("an otherwise empty menu says no report is available", async () => {
-  const { rpc } = fakeRpc(() => []);
-  const menu = document.createElement("div");
-  printMenuLoader(rpc, "sale.order", menu, null, () => {}, () => {})();
-  await vi.waitFor(() => expect(menu.textContent).toBe("No report available"));
-  expect(menu.querySelector("button")!.disabled).toBe(true);
-});
-
 test("a report list that is not a list is refused", async () => {
   const { rpc } = fakeRpc(() => ({}));
   await expect(loadPrintReports(rpc, "sale.order")).rejects.toThrow("did not answer the report list with a list");
@@ -141,11 +120,39 @@ test("a model without a report says so, and a failed load is reported and tried 
   print.dispose();
 });
 
-test("the form menu loader tells its caller when the entries are in", async () => {
+test("picking a report closes the Print menu and prints with that report", async () => {
   const { rpc } = fakeRpc(() => [order]);
-  const menu = document.createElement("div");
-  const loaded = vi.fn();
-  printMenuLoader(rpc, "sale.order", menu, null, () => {}, () => {}, loaded)();
-  await vi.waitFor(() => expect(loaded).toHaveBeenCalledTimes(1));
-  expect(menu.querySelector(".print-report-btn")!.textContent).toBe("Print Order");
+  const pick = vi.fn();
+  const print = printDropdown(rpc, "sale.order", pick, () => {});
+  document.body.append(print.node);
+  const toggle = print.node.querySelector<HTMLButtonElement>(".print-toggle-btn")!;
+  toggle.click();
+  await vi.waitFor(() => expect(print.node.querySelector(".print-report-btn")).not.toBeNull());
+  print.node.querySelector<HTMLButtonElement>(".print-report-btn")!.click();
+  expect(pick).toHaveBeenCalledWith(order);
+  expect(print.node.querySelector(".print-menu")!.classList.contains("open")).toBe(false);
+  print.dispose();
+});
+
+test("every Print entry is a menu item with its own accessible name", async () => {
+  const { rpc } = fakeRpc(() => [order, { report: "sale.order.quote", name: "Quotation" }]);
+  const print = printDropdown(rpc, "sale.order", () => {}, () => {});
+  document.body.append(print.node);
+  print.node.querySelector<HTMLButtonElement>(".print-toggle-btn")!.click();
+  await vi.waitFor(() => expect(print.node.querySelectorAll(".print-report-btn")).toHaveLength(2));
+  expect([...print.node.querySelectorAll(".print-report-btn")].map(item => item.getAttribute("role"))).toEqual(["menuitem", "menuitem"]);
+  expect([...print.node.querySelectorAll(".print-report-btn")].map(item => item.getAttribute("aria-label"))).toEqual(["Print Order", "Print Quotation"]);
+  print.dispose();
+});
+
+test("a Print button disposed before the reports arrive adds nothing", async () => {
+  let release!: (value: unknown) => void;
+  const rpc = { call: vi.fn(() => new Promise(resolve => { release = resolve; })) } as unknown as RpcClient;
+  const print = printDropdown(rpc, "sale.order", () => {}, () => {});
+  document.body.append(print.node);
+  print.node.querySelector<HTMLButtonElement>(".print-toggle-btn")!.click();
+  print.dispose();
+  release([order]);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(print.node.querySelector(".print-report-btn")).toBeNull();
 });

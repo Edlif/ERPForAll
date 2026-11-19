@@ -133,36 +133,6 @@ export function printJobDialog(services: PrintServices, title: string, id: numbe
   return handle;
 }
 
-/**
- * Returns the `onOpen` hook of a form's record menu: the first opening loads the reports of `model` and adds one
- * entry per report, with the printer icon, before `before` (the reference client lists them at the top of the
- * form's menu); `pick` prints with it and `loaded` runs after the entries are in (to refresh the menu's focus
- * order and size). A failed load, or a failure while adding the entries, is reported and tried again at the next
- * opening.
- */
-export function printMenuLoader(rpc: RpcClient, model: string, menu: HTMLElement, before: Node | null, pick: (report: PrintableReport) => void, report: (error: unknown) => void, loaded: () => void = () => {}): () => void {
-  let started = false;
-  return () => {
-    if (started) return;
-    started = true;
-    void loadPrintReports(rpc, model).then(reports => {
-      // A menu with nothing else to offer says so instead of opening empty.
-      if (!reports.length && !menu.querySelector("button")) {
-        const none = button("No report available", () => {}, "dropdown-item print-report-none");
-        none.disabled = true; none.setAttribute("role", "menuitem");
-        menu.append(none);
-      }
-      for (const entry of reports) {
-        const item = button(`Print ${entry.name}`, () => pick(entry), "dropdown-item print-report-btn has-action-icon");
-        item.prepend(icon("printer"));
-        item.setAttribute("role", "menuitem");
-        menu.insertBefore(item, before);
-      }
-      loaded();
-    }).catch((error: unknown) => { started = false; report(error); });
-  };
-}
-
 export interface PrintDropdown {
   /** The Print button and its menu. */
   readonly node: HTMLElement;
@@ -170,7 +140,7 @@ export interface PrintDropdown {
 }
 
 /**
- * The Print button of a list, beside Actions as in the reference client: a printer icon and "Print", opening one
+ * The Print button of a list or a form, before Actions as in the reference client: a printer icon and "Print", opening one
  * entry per report of `model`. The reports load at the first opening (a list that is never printed asks nothing);
  * a model without one says "No report available". `pick` prints with the chosen report. A failed load is reported
  * and tried again at the next opening.

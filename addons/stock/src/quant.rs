@@ -154,6 +154,23 @@ pub struct StockQuant {
         string = "Available Quantity"
     )]
     pub available_quantity: Decimal,
+    /// Unit of the product, shown beside the quantities (a quant has no unit of its own; not stored).
+    #[field(
+        many2one,
+        comodel = "uom.uom",
+        related = "product_id.uom_id",
+        string = "Unit"
+    )]
+    pub uom_id: Option<RecId>,
+    /// Whether a printed Count Sheet shows the on-hand quantity: the system parameter
+    /// `stock.show_expected_quantity_count` (off: a blind count). Not stored; the report template
+    /// cannot read parameters, so the quant carries the switch.
+    #[field(
+        boolean,
+        compute = "_compute_show_expected_count",
+        string = "Show Expected Count"
+    )]
+    pub show_expected_count: bool,
     /// Incoming date, the FIFO order of the key.
     #[field(
         datetime,
