@@ -108,6 +108,24 @@ export function actionResult(raw: unknown): ActionResult {
       if (typeof value["then_close"] !== "boolean") throw new ClientError("server", "Invalid notification close flag.");
       return { kind: "notification", title, message, level, then_close: value["then_close"] };
     }
+    case "client": {
+      closed(value, ["kind", "id", "name", "tag", "params"]);
+      const name = bounded(value["name"], "client action name", 256), tag = bounded(value["tag"], "client action tag", 64);
+      // Same grammar as the server's declaration (`erp_sdk::client_actions`): <addon>.<name>.
+      if (!name || !/^[a-z0-9_]+\.[a-z][a-z0-9_]*$/.test(tag)) throw new ClientError("server", "Invalid client action name or tag.");
+      const id = value["id"] === null ? null : integer(value["id"], "client action id");
+      if (id === 0) throw new ClientError("server", "Invalid client action id.");
+      const params = object(value["params"], "client action params");
+      // The server bounds the parameters to 16 KiB and six levels; the decoder bounds what it retains too.
+      const check = (item: unknown, depth: number): void => {
+        if (depth > 6) throw new ClientError("server", "Client action params are too deeply nested.");
+        if (item === null || typeof item === "string" || typeof item === "boolean" || typeof item === "number" && Number.isFinite(item)) return;
+        if (Array.isArray(item)) { item.forEach(child => check(child, depth + 1)); return; }
+        for (const child of Object.values(object(item, "client action param"))) check(child, depth + 1);
+      };
+      check(params, 0);
+      return { kind: "client", id, name, tag, params };
+    }
     case "report": {
       closed(value, ["kind", "name", "report", "model", "ids"]);
       const name = bounded(value["name"], "report name", 256), report = bounded(value["report"], "report", 128), model = bounded(value["model"], "report model", 256);

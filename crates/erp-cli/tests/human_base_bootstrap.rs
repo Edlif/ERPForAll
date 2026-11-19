@@ -2179,7 +2179,11 @@ async fn technical_menu_and_views() {
         // Internal users read sequences and their date ranges since the SDK draw checks that read
         // before it writes the counter with the framework's rights (base ir.access rows, as the
         // reference grants them); the screens stay under Settings Administration.
-        if matches!(screen.model, "ir.sequence" | "ir.sequence.date_range") {
+        // Client actions are readable by internal users so a menu opens one in the caller's rights.
+        if matches!(
+            screen.model,
+            "ir.sequence" | "ir.sequence.date_range" | "ir.actions.client"
+        ) {
             assert_eq!(status, 200, "{} internal read: {body}", screen.model);
             read_probes += 1;
             continue;

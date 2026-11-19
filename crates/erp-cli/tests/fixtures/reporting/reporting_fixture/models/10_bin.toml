@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[[model]]
+name = "reporting_fixture.bin"
+description = "Fixture Bin"
+order = "name, id"
+
+[[model.field]]
+name = "name"
+type = "char"
+required = true

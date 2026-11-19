@@ -104,10 +104,16 @@ icon: string | null,
 /** Wire member `action_id`. */
 action_id: WireId | null,
 /**
+ *Wire member `action_kind`.
+ * Which action model `action_id` names; null when the menu has no action. Ids are unique across action models.
+ */
+action_kind: MenuActionKind | null,
+/**
  *Wire member `module`.
  * Nonempty namespace of the oldest menu external ID, or null when absent/empty; never a permission grant.
  */
 module: string | null, };
+export type MenuActionKind = "window" | "client";
 export type ActionTarget = "current" | "main" | "new";
 export type ViewType = "list" | "form" | "search" | "kanban" | "calendar" | "pivot" | "graph" | "gantt" | "activity";
 export type WindowAction = {
@@ -1079,7 +1085,23 @@ level: NotificationLevel,
 /**
  * Whether the dialog closes after the notification.
  */
-then_close: boolean, } | { "kind": "report",
+then_close: boolean, } | { "kind": "client",
+/**
+ * The action's id when it was opened by id (menu, URL); null for a method result.
+ */
+id: WireId | null,
+/**
+ * Action title, displayed as text.
+ */
+name: string,
+/**
+ * Tag declared by an installed addon.
+ */
+tag: string,
+/**
+ * Normalized parameters, at most 16 KiB encoded.
+ */
+params: Record<string, unknown>, } | { "kind": "report",
 /**
  * The report's name, shown while it prints.
  */

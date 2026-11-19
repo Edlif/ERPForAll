@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name = "Dynamic Reports Fixture"
+summary = "Test models and report definitions of the dynamic report tests"
+version = "1.0.0"
+license = "MIT OR Apache-2.0"
+author = "ERPForAll"
+category = "Hidden"
+depends = ["reporting"]
+data = [
+    "security/ir.access.csv",
+    "data/reports.xml",
+]

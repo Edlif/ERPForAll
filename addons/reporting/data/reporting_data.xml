@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+Default report of the definition provider.
+     This one is ours: contacts per country.
+-->
+<erp noupdate="1">
+    <record id="report_partner_country" model="reporting.report">
+        <field name="name">Contacts by Country</field>
+        <field name="comparison" eval="False"/>
+        <field name="date_default">this_year</field>
+    </record>
+    <record id="report_partner_country_count" model="reporting.report.column">
+        <field name="report_id" ref="report_partner_country"/>
+        <field name="name">Contacts</field>
+        <field name="label">count</field>
+        <field name="kind">integer</field>
+        <field name="scale">0</field>
+        <field name="sortable" eval="True"/>
+    </record>
+    <record id="report_partner_country_line" model="reporting.report.line">
+        <field name="report_id" ref="report_partner_country"/>
+        <field name="name">Contacts</field>
+        <field name="code">PARTNERS</field>
+        <field name="groupby">country_id</field>
+    </record>
+    <record id="report_partner_country_line_count" model="reporting.report.expression">
+        <field name="line_id" ref="report_partner_country_line"/>
+        <field name="label">count</field>
+        <field name="model">res.partner</field>
+    </record>
+</erp>

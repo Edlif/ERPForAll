@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Unit tests of `pivot_xlsx.rs` (kept in a test path: the staging guard counts inline test modules as production).
+//! Unit tests of `table_xlsx.rs` (the pivot document first) (kept in a test path: the staging guard counts inline test modules as production).
 use super::*;
-use crate::pivot_export::{Cell, HeaderCell, Row};
 use std::collections::BTreeMap;
 use std::io::Read;
 
@@ -32,8 +31,8 @@ const EMPTY: Cell = Cell {
 };
 
 /// Two header levels and two measures: a Country row axis, Company and Person column groups, and a Total column.
-pub(crate) fn nested() -> Document {
-    Document {
+pub(crate) fn nested() -> TableDocument {
+    TableDocument {
         model: "res.partner".into(),
         title: "Partners".into(),
         headers: vec![
@@ -55,6 +54,7 @@ pub(crate) fn nested() -> Document {
                 header("Score", 6, 1, 1, true),
             ],
         ],
+        notes: Vec::new(),
         rows: vec![
             Row {
                 label: "Total".into(),
@@ -87,8 +87,8 @@ pub(crate) fn nested() -> Document {
 }
 
 /// Slice 1's flat table: one row axis, no column groups, one measure.
-fn flat() -> Document {
-    Document {
+fn flat() -> TableDocument {
+    TableDocument {
         model: "library.book".into(),
         title: "Books".into(),
         headers: vec![
@@ -98,6 +98,7 @@ fn flat() -> Document {
             ],
             vec![header("Count", 1, 1, 1, false)],
         ],
+        notes: Vec::new(),
         rows: vec![
             Row {
                 label: "Total".into(),

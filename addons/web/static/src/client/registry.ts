@@ -76,6 +76,27 @@ export interface WidgetHandle { node: HTMLElement; dispose(): void; captureDraft
 export interface FieldWidget { isEmpty?(value: unknown): boolean; isValid?(value: unknown): boolean; kinds: readonly Field["kind"][]; render: (environment: WidgetEnvironment) => WidgetHandle }
 export interface ServiceEnvironment { /** Authorized Settings presentation and guarded navigation. */ settingsNavigation?: SettingsNavigation; messages?: MessageServices; editorLocale?: EditorLocale; host: HTMLElement; panel?: HTMLElement; controls?: HTMLElement; rpc: RpcClient; companies: readonly Company[]; run: (job: () => Promise<void>) => void; notice: (message: string) => void; context: Record<string, unknown>; registry: string; options: Record<string, unknown> }
 export interface ServiceFactory { model: string; validateOptions(options: Record<string, unknown>): void; create(environment: ServiceEnvironment): Promise<ServiceController> }
+/** The decoded `ir.actions.client` a screen is mounted. */
+export interface ClientActionDescriptor { readonly id: number | null; readonly name: string; readonly tag: string; readonly params: Readonly<Record<string, unknown>> }
+/** What a client action screen receives: the host area, the services a screen needs, its action and the state it left. */
+export interface ClientActionEnvironment {
+  host: HTMLElement; panel: HTMLElement; controls: HTMLElement; rpc: RpcClient; companies: readonly Company[];
+  run: (job: () => Promise<void>) => void; notice: (message: string) => void; messages: MessageServices; editorLocale: EditorLocale;
+  action: ClientActionDescriptor;
+  /** What `captureState` returned when the user left this action, or `null` on a first opening. */
+  restored: unknown;
+  /** Run an action result (a related list, another client action) through the normal navigation; the screen stays in the breadcrumb. */
+  open(result: unknown): Promise<void>;
+}
+/** `dispose` is synchronous and idempotent and the screen ignores late rendering after it; `captureState` returns JSON of at most 16 KiB. */
+export interface ClientActionHandle { dispose(): void; captureState?(): unknown }
+export interface ClientActionFactory { create(environment: ClientActionEnvironment): Promise<ClientActionHandle> }
+export const clientActions = new Registry<ClientActionFactory>("client action");
+/** Bind a client action tag (`<addon>.<name>`, declared on the server by the same addon) to its screen. A second registration of one tag fails. */
+export function registerClientAction(tag: string, factory: ClientActionFactory): void {
+  if (!/^[a-z0-9_]+\.[a-z][a-z0-9_]*$/.test(tag) || tag.length > 64) throw new ClientError("validation", `Invalid client action tag: ${tag.slice(0, 64)}.`);
+  clientActions.add(tag, factory);
+}
 export interface ControlPanelExtension { model: string; component: ComponentClass }
 export const controlPanelExtensions = new Registry<ControlPanelExtension>("control panel extension");
 export function registerControlPanelExtension(key: string, extension: ControlPanelExtension): void { controlPanelExtensions.add(key, extension); }

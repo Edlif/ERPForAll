@@ -1,0 +1,9 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_reporting_report_user,reporting.report.user,model_reporting_report,base.group_user,r,
+access_reporting_report_manager,reporting.report.manager,model_reporting_report,base.group_system,crud,
+access_reporting_report_line_user,reporting.report.line.user,model_reporting_report_line,base.group_user,r,
+access_reporting_report_line_manager,reporting.report.line.manager,model_reporting_report_line,base.group_system,crud,
+access_reporting_report_column_user,reporting.report.column.user,model_reporting_report_column,base.group_user,r,
+access_reporting_report_column_manager,reporting.report.column.manager,model_reporting_report_column,base.group_system,crud,
+access_reporting_report_expression_user,reporting.report.expression.user,model_reporting_report_expression,base.group_user,r,
+access_reporting_report_expression_manager,reporting.report.expression.manager,model_reporting_report_expression,base.group_system,crud,

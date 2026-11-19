@@ -20,6 +20,7 @@ use std::sync::{Arc, OnceLock};
 
 use erp_sdk::jobs::{EnqueueRequest, HandlerRef, JobKindDecl, StepArgs, StepOutcome};
 use erp_sdk::prelude::*;
+use erp_sdk::report::DocTree;
 use erp_sdk::serde_json::{self, Value as Json, json};
 use erp_sdk::{BoxFuture, ErrorKind};
 
@@ -155,6 +156,16 @@ pub trait ReportBackend: Send + Sync + 'static {
         ids: &'a [i64],
     ) -> BoxFuture<'a, Result<RenderedChunk>>;
 
+    /// Lay a finished `document` out as one PDF, in memory: the dynamic report export builds its
+    /// own document and has no `ir.actions.report` record. Bounded by the renderer's own limits.
+    ///
+    /// # Errors
+    /// The renderer's refusals; by default a backend that cannot do it says so.
+    fn layout(&self, document: DocTree) -> BoxFuture<'_, Result<Vec<u8>>> {
+        drop(document);
+        Box::pin(async { Err(Error::user(NO_BACKEND)) })
+    }
+
     /// Merge the parts, in order, into one plain PDF attachment named `name` on job `job`;
     /// returns its id. The parts are the backend's to keep or delete.
     fn merge<'a>(
@@ -185,6 +196,14 @@ fn backend() -> Result<&'static dyn ReportBackend> {
         .get()
         .map(AsRef::as_ref)
         .ok_or_else(|| Error::user(NO_BACKEND))
+}
+
+/// Lay `document` out as a PDF with the installed report runtime (no record, no attachment).
+///
+/// # Errors
+/// `User` when no report runtime is installed; the renderer's refusals.
+pub async fn layout(document: DocTree) -> Result<Vec<u8>> {
+    backend()?.layout(document).await
 }
 
 /// Where a print request goes.

@@ -1431,6 +1431,7 @@ pub(crate) fn serve(args: &ServerArgs) -> Result<()> {
                 .with_attachment_content(Arc::new(crate::attachment_content::BaseAttachmentContent))
                 .with_attachment_policy(Arc::new(crate::attachment_content::BaseAttachmentContent))
                 .with_pivot_export(Arc::new(crate::pivot_export::WebAddonPivotExport))
+                .with_reporting_export(Arc::new(crate::reporting_export::ReportingAddonExport))
                 .with_report(
                     crate::report_print::ReportRuntime::install(&config)
                         .map_err(|e| failed(e.to_string()))?,

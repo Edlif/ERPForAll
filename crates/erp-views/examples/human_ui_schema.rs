@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Renderer,
         MenuTree,
         MenuNode,
+        MenuActionKind,
         ActionTarget,
         ViewType,
         WindowAction,

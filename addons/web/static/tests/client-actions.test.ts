@@ -80,3 +80,19 @@ test("a report result is decoded strictly before it prints", () => {
   refused({...report,report:"a b"}, "server", "Invalid report name, report or model.");
   refused({...report,extra:1}, "unsupported", "Unknown action result member: extra.");
 });
+
+/// (partial: the browser decoder admits the same `client` members as the server normalizer)
+test("client action results keep their tag and params and refuse unknown members and malformed tags", () => {
+  const client = {kind:"client",id:null,name:"Board",tag:"demo.board",params:{report:7,nested:{a:[1,2]}}};
+  expect(decode(client)).toEqual(client);
+  expect(decode({...client,id:30})).toEqual({...client,id:30});
+  refused({...client,context:{}}, "unsupported", "Unknown action result member: context.");
+  const {params: _omitted, ...withoutParams} = client;
+  refused(withoutParams, "server", "Missing action result member: params.");
+  refused({...client,tag:"Demo"}, "server", "Invalid client action name or tag.");
+  refused({...client,tag:"board"}, "server", "Invalid client action name or tag.");
+  refused({...client,id:0}, "server", "Invalid client action id.");
+  refused({...client,params:[1]}, "server", "Invalid client action params.");
+  let deep: unknown = "leaf"; for (let i=0;i<8;i++) deep={child:deep};
+  refused({...client,params:{deep}}, "server", "Client action params are too deeply nested.");
+});

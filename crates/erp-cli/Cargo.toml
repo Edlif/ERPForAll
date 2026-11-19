@@ -33,6 +33,8 @@ erp-addon-stock-mail.workspace = true
 erp-addon-sales_team.workspace = true
 # sales: quotations and sales orders
 erp-addon-sale.workspace = true
+# dynamic reports: options, line tree and engines of the report screen
+erp-addon-reporting.workspace = true
 erp-server.workspace = true
 # `erp report-worker`: the render worker the report pool starts
 erp-report-typst.workspace = true

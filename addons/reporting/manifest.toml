@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name = "Dynamic Reports"
+summary = "Reports as a tree of lines with dates, comparison, unfolding and drill-down"
+category = "Technical"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "web"]
+data = [
+    "security/ir.access.csv",
+    "data/reporting_data.xml",
+    "data/reporting_menus.xml",
+]

@@ -49,7 +49,7 @@ import { RecordState, specification } from "./record.js";
 import { parseRoute, routeUrl, rpcId, type Route, isAddressSizeRefusal } from "./route.js";
 import "./services.js";
 import { type ServiceController } from "./services.js";
-import { serviceControllers } from "./registry.js";
+import { clientActions, serviceControllers, type ClientActionHandle } from "./registry.js";
 import { mountControlPanel } from "./control-panel.js";
 import { printDropdown, printRecords } from "./report-print.js";
 import { requestLoading } from "./loading.js";
@@ -126,7 +126,15 @@ interface Menu {
   children: number[];
   parentId: number | null;
   icon: string | null;
+  /** Which action model `action` names (ids are unique across action models). */
+  kind: "window" | "client";
 }
+
+/** `route.method_action` of a client action result kept by this page; window results use the method-action store. */
+const CLIENT_RESULT_PREFIX = "client:";
+const MAX_CLIENT_STATE_BYTES = 16384;
+type ClientResult = Extract<ActionResult, { kind: "client" }>;
+type MountedClient = { key: string; name: string; handle: ClientActionHandle };
 
 /** The `[id, type]` view requests of a window action, in action order. */
 function actionViews(action: Record<string, unknown>): unknown[][] {
@@ -192,6 +200,12 @@ export class HumanApp {
   private traversalRunning = false;
   private record: RecordState | undefined;
   private service: ServiceController | undefined;
+  /** Client action results kept for their route (`client:<n>`), bounded; and the state each client action left. */
+  private readonly clientResults = new Map<string, ClientResult>();
+  private readonly clientStates = new Map<string, unknown>();
+  private clientCounter = 0;
+  private pendingClient: MountedClient | undefined;
+  private clientMounted: MountedClient | undefined;
   private busy = false;
   private wizard: WizardDialog | undefined;
   private actionPending = false;
@@ -943,7 +957,7 @@ export class HumanApp {
     for (const stop of [...this.disposeWidgets, ...this.disposeListeners, ...this.disposeHeader]) release(stop);
     for (const stop of this.disposeNavMenus) release(stop);
     this.disposeWidgets = []; this.disposeListeners = []; this.disposeHeader = []; this.disposeNavMenus = [];
-    this.record = undefined; this.service = undefined; this.pendingInvocation = undefined; this.methodActions.clear();
+    this.record = undefined; this.service = undefined; this.clientMounted = undefined; this.pendingClient = undefined; this.clientResults.clear(); this.clientStates.clear(); this.pendingInvocation = undefined; this.methodActions.clear();
     release(() => this.messages.dispose());
     if (errors.length) throw new AggregateError(errors, "Application scope cleanup failed.");
   }
@@ -1089,7 +1103,9 @@ export class HumanApp {
       const action = node["action_id"] === null ? null : integer(node["action_id"], "action id");
       const children = array(node["children"], "menu children").map(child => integer(child, "menu child"));
       const module = readMenuModule(node["module"]);
-      this.menus.set(id, { module, id, label: text(node["label"], "menu label"), action, children, parentId, icon });
+      const rawKind = node["action_kind"];
+      if (rawKind !== undefined && rawKind !== null && rawKind !== "window" && rawKind !== "client") throw new ClientError("server", "Invalid menu action kind.");
+      this.menus.set(id, { module, id, label: text(node["label"], "menu label"), action, children, parentId, icon, kind: rawKind === "client" ? "client" : "window" });
     }
     for (const id of array(response["roots"], "menu roots")) {
       this.rootMenuIds.push(integer(id, "root menu"));
@@ -1276,7 +1292,7 @@ export class HumanApp {
   /** Load what a menu entry's navigation would load first, so the click waits only for its data. */
   private async prefetchMenu(menuId: number): Promise<void> {
     const target = this.defaultActionForMenu(menuId);
-    if (!target || this.expired) return;
+    if (!target || this.expired || this.menus.get(target.menu)?.kind === "client") return;
     const action = await this.windowAction(target.action, { background: true });
     if (action["wire_major"] !== 1 || action["target"] !== "current" || action["id"] !== target.action) return;
     await this.viewDescriptions(text(action["model"], "action model"), actionViews(action), { background: true }, this.context, target.action);
@@ -1927,11 +1943,20 @@ export class HumanApp {
       let nextDispose: (() => void) | undefined;
       let nextSettle: (() => void) | undefined;
       let nextRestore: (() => void) | undefined;
+      let nextClient: MountedClient | undefined;
       let panelDispose: (() => void) | undefined;
 
       if (!route.action) {
         this.homeMenuOpen = false;
         staging.append(el("h1", "Apps", "visually-hidden"), this.buildHomeContent());
+      } else if (this.isClientRoute(route)) {
+        this.homeMenuOpen = false;
+        this.pendingClient = undefined;
+        const mountedClient = await this.mountClientAction(route, staging, generation, stagedDisposers);
+        panelDispose = mountedClient.panelDispose;
+        nextService = mountedClient.service;
+        nextDispose = mountedClient.dispose;
+        nextClient = this.pendingClient;
       } else {
         this.homeMenuOpen = false;
         const actionId = rpcId(route.action);
@@ -2052,6 +2077,8 @@ export class HumanApp {
       if (generation !== this.generation || this.expired) {
         return;
       }
+      this.captureClientState();
+      this.clientMounted = nextClient;
       for (const dispose of this.disposeWidgets) dispose();
       this.disposeWidgets = [...(nextDispose ? [nextDispose] : []), ...(panelDispose ? [panelDispose] : [])];
       stagedDisposers.length = 0;
@@ -3478,11 +3505,94 @@ export class HumanApp {
     };
   }
 
+  /** Whether `route` opens an `ir.actions.client`: a kept method result, or a menu entry of that kind. */
+  private isClientRoute(route: Route): boolean {
+    if (!route.action) return false;
+    if (route.method_action?.startsWith(CLIENT_RESULT_PREFIX)) return true;
+    return [...this.menus.values()].some(menu => menu.kind === "client" && String(menu.action) === route.action);
+  }
+
+  private keepClientResult(result: ClientResult): string {
+    const key = `${CLIENT_RESULT_PREFIX}${++this.clientCounter}`;
+    this.clientResults.set(key, result);
+    if (this.clientResults.size > 64) { const oldest = this.clientResults.keys().next().value; if (oldest !== undefined) this.clientResults.delete(oldest); }
+    return key;
+  }
+
+  private async loadClientAction(id: number): Promise<ClientResult> {
+    const result = actionResult(await this.rpc.call("ir.actions.client", "erp_load_web_client_action", { ids: [id], wire_major: 1, context: this.context }));
+    if (result.kind !== "client" || result.id !== id) throw new ClientError("server", "Mismatched client action.");
+    return result;
+  }
+
+  /** Mount the registered screen of a client action into `staging`: an unregistered tag mounts nothing. */
+  private async mountClientAction(route: Route, staging: HTMLElement, generation: number, stagedDisposers: (() => void)[]): Promise<{ panelDispose: () => void; service: ServiceController; handle: ClientActionHandle; dispose: () => void }> {
+    const kept = route.method_action?.startsWith(CLIENT_RESULT_PREFIX) ? this.clientResults.get(route.method_action) : undefined;
+    if (route.method_action?.startsWith(CLIENT_RESULT_PREFIX) && !kept) throw new ClientError("validation", "This client action has expired. Open its originating menu again.");
+    const result = kept ?? await this.loadClientAction(rpcId(route.action!));
+    if (!clientActions.has(result.tag)) throw new ClientError("unsupported", `Client action '${result.tag}' is declared by the server but not registered by this page. Reload the page.`);
+    const factory = clientActions.get(result.tag);
+    const key = route.method_action ?? `${result.tag}:${result.id}`;
+    const mounted = await mountControlPanel(staging, { title: result.name, model: "" }, error => this.reportError(error));
+    stagedDisposers.push(mounted.dispose);
+    const handle = await factory.create({
+      host: staging, panel: mounted.panel, controls: mounted.actions, rpc: this.rpc, companies: this.companies, run: this.run,
+      notice: this.notice, messages: this.messages, editorLocale: this.editorLocale,
+      action: { id: result.id, name: result.name, tag: result.tag, params: result.params },
+      restored: this.clientStates.get(key) ?? null,
+      open: input => this.openFromClientAction(input, generation, result.name)
+    });
+    let disposed = false;
+    const dispose = (): void => { if (disposed) return; disposed = true; handle.dispose(); };
+    stagedDisposers.push(dispose);
+    this.pendingClient = { key, name: result.name, handle };
+    return { panelDispose: mounted.dispose, handle, dispose, service: { busy: () => false, dirty: () => false, save: async () => {}, discard: () => {}, dispose } };
+  }
+
+  /** Keep what the screen being left exports, bounded; a larger state is dropped with a notice and the screen restarts from its defaults. */
+  private captureClientState(): void {
+    const mounted = this.clientMounted;
+    if (!mounted?.handle.captureState) return;
+    try {
+      const state = mounted.handle.captureState();
+      if (state === undefined) return;
+      if (new TextEncoder().encode(JSON.stringify(state)).length > MAX_CLIENT_STATE_BYTES) {
+        this.clientStates.delete(mounted.key);
+        this.messages.notifications.add(`${mounted.name} could not keep its place: its state is over ${MAX_CLIENT_STATE_BYTES} bytes.`, { level: "warning" });
+        return;
+      }
+      this.clientStates.set(mounted.key, structuredClone(state));
+      if (this.clientStates.size > 32) { const oldest = this.clientStates.keys().next().value; if (oldest !== undefined) this.clientStates.delete(oldest); }
+    } catch (error) { this.reportError(error); }
+  }
+
+  /** `open(result)` of a client action screen: a related list or another client action, through the normal navigation. */
+  private async openFromClientAction(input: unknown, generation: number, originLabel: string): Promise<void> {
+    if (generation !== this.generation || this.expired) throw new ClientError("validation", "This screen is no longer the open action. Open it again.");
+    const normalized = actionResult(await this.rpc.call("res.users", "erp_normalize_action_result", { wire_major: 1, result: input, context: this.context }));
+    if (generation !== this.generation || this.expired) return;
+    const origin = { ...this.current };
+    if (normalized.kind === "current_window") {
+      const id = this.methodActions.add({ result: normalized, context: { ...this.context, ...normalized.context }, origin, originLabel });
+      try { await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: id, model: normalized.model, view_type: "list" }); }
+      catch (error) { this.methodActions.remove(id); throw error; }
+      if (this.current.method_action !== id) this.methodActions.remove(id);
+      return;
+    }
+    if (normalized.kind === "client") {
+      const key = this.keepClientResult(normalized);
+      try { await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: key }); }
+      catch (error) { this.clientResults.delete(key); throw error; }
+      return;
+    }
+    throw new ClientError("unsupported", `A client action opens a related list or another client action, not a ${normalized.kind} result.`);
+  }
+
   /** Resolve only actions advertised by the authorized menu tree; normal navigation rechecks access and dirty state. */
   private async openRelatedRecord(model: string, id: number): Promise<void> {
     const generation = this.generation, checked = new Set<number>();
     for (const menu of this.menus.values()) {
-      if (menu.action === null || checked.has(menu.action)) continue;
+      if (menu.action === null || menu.kind === "client" || checked.has(menu.action)) continue;
       checked.add(menu.action);
       const action = await this.windowActionOnly(menu.action);
       // A later user navigation cancels this read-only action discovery.
@@ -3632,6 +3742,15 @@ export class HumanApp {
         await refresh();
         throw error;
       }
+      return;
+    }
+    if (result.kind === "client") {
+      if (source) throw new ClientError("unsupported", "A dialog cannot open a client action yet.");
+      const invocation = this.pendingInvocation;
+      if (!invocation || invocation.caller !== caller || invocation.generation !== binding) throw new ClientError("validation", "The action's source is no longer available for navigation.");
+      const origin = { ...this.current }, key = this.keepClientResult(result);
+      try { await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: key }, false, false, invocation); }
+      catch (error) { this.clientResults.delete(key); await refresh(); throw error; }
       return;
     }
     // Only the identity confirmation carries the operation it answers.

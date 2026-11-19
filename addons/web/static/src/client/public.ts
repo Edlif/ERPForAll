@@ -2,11 +2,11 @@
 // The trusted addon entry surface. Registration precedes shell boot; identities are unique.
 export { Component, signal, onMounted, onWillDestroy } from "@erpforall/elang";
 export {
-  registerFieldWidget, resolveFieldWidget, registerServiceController, registerControlPanelExtension, elangFieldWidget,
+  registerFieldWidget, resolveFieldWidget, registerServiceController, registerClientAction, registerControlPanelExtension, elangFieldWidget,
   registerCogMenuItem, registerSystrayItem, registerCommandProvider, registerCommandCategory, registerCommandSetup,
   registerUserMenuItem, registerDebugSection, registerDebugItemProvider
 } from "./registry.js";
-export type { FieldWidgetProps, WidgetEnvironment, WidgetHandle, WidgetDraft, FieldWidget, ServiceEnvironment, ServiceFactory } from "./registry.js";
+export type { FieldWidgetProps, WidgetEnvironment, WidgetHandle, WidgetDraft, FieldWidget, ServiceEnvironment, ServiceFactory, ClientActionDescriptor, ClientActionEnvironment, ClientActionHandle, ClientActionFactory } from "./registry.js";
 export type { CogMenuItem, CogMenuItemEnvironment } from "./cog-menu.js";
 export { prepareCogMenu, renderCogMenu, getPrintItemAriaLabel } from "./cog-menu.js";
 export type { SystrayItem, SystrayEnvironment, SystrayHandle } from "./systray.js";
@@ -85,6 +85,9 @@ export type { NumericLocale, NumericKind } from "./numeric-values.js";
 export { Chatter } from "./chatter.js";
 export type { ChatterOptions } from "./chatter.js";
 
+export { saveFile } from "./file-save.js";
+export { icon } from "./icons.js";
+export type { IconName } from "./icons.js";
 export { ControlPanel, mountControlPanel } from "./control-panel.js";
 export type { ControlPanelAdapter, ControlPanelDisplayFlags, ControlPanelHandle, ControlPanelMountOptions } from "./control-panel.js";
 export { Pager, parsePagerRange } from "./pager.js";

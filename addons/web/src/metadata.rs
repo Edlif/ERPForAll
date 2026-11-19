@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use erp_addon_base::ir_actions::IrActionsActWindow;
+use erp_addon_base::ir_actions::{IrActionsActWindow, IrActionsClient};
 use erp_addon_base::ir_ui_menu::IrUiMenu;
 use erp_addon_base::ir_ui_view::select::{ViewId, ViewRequest, ViewType};
 use erp_sdk::prelude::*;
@@ -28,6 +28,9 @@ struct WebIrUiMenu {}
 
 #[extend(IrActionsActWindow, addon = "web")]
 struct WebIrActionsActWindow {}
+
+#[extend(IrActionsClient, addon = "web")]
+struct WebIrActionsClient {}
 
 #[extend(Base, addon = "web")]
 struct WebBase {}
@@ -581,6 +584,8 @@ struct MenuRecord {
     icon: Option<String>,
     groups: Vec<erp_sdk::access::GroupId>,
     action: Option<i64>,
+    /// `action` names an `ir.actions.client` (ids are unique across action models).
+    client: bool,
 }
 
 /// Resolve only retained menu IDs. SQL reduces aliases and reads sizes/identities; the trusted
@@ -881,6 +886,8 @@ async fn load_menus(
         .await?;
     let mut entries = admission.vector::<MenuRecord>(rows.len())?;
     let mut requested_actions = admission.vector::<i64>(rows.len())?;
+    // (client action id, menu id): the menu names the refusal for an undeclared tag.
+    let mut requested_client = admission.vector::<(i64, i64)>(rows.len())?;
     for row in &rows {
         let id = value(row, "id")?.clone();
         let id = match id {
@@ -890,15 +897,23 @@ async fn load_menus(
         let action = optional_text(row, "action")?
             .map(parse_action_ref)
             .transpose()?;
+        let mut client = false;
         if let Some((model, action_id)) = &action {
-            if *model != "ir.actions.act_window" {
-                return Err(fail(format!(
-                    "Menu {id} uses unsupported action model '{model}'."
-                )));
+            match *model {
+                "ir.actions.act_window" => requested_actions.push(*action_id),
+                CLIENT_ACTION_MODEL => {
+                    client = true;
+                    requested_client.push((*action_id, id));
+                }
+                _ => {
+                    return Err(fail(format!(
+                        "Menu {id} uses unsupported action model '{model}'."
+                    )));
+                }
             }
-            requested_actions.push(*action_id);
         }
         entries.push(MenuRecord {
+            client,
             id,
             parent: optional_id(row, "parent_id")?,
             sequence: match value(row, "sequence")? {
@@ -1055,6 +1070,7 @@ async fn load_menus(
         }
     }
 
+    allowed_actions.extend(visible_client_actions(env, tx, &requested_client, admission).await?);
     allowed_actions.sort_unstable();
     let mut visible = admission.vector::<MenuRecord>(entries.len())?;
     for entry in entries {
@@ -1134,25 +1150,29 @@ async fn load_menus(
             Ok(index) => modules[index].1.take(),
             Err(_) => None,
         };
-        wire_nodes.push(
-            wire::MenuNode::new(
-                wire_id(entry.id)?,
-                entry
-                    .parent
-                    .filter(|parent| ids.binary_search(parent).is_ok())
-                    .map(wire_id)
-                    .transpose()?,
-                children,
-                entry.label,
-                entry.icon,
-                entry
-                    .action
-                    .filter(|id| allowed_actions.binary_search(id).is_ok())
-                    .map(wire_id)
-                    .transpose()?,
-            )
-            .with_module(module),
-        );
+        let client = entry.client;
+        let node = wire::MenuNode::new(
+            wire_id(entry.id)?,
+            entry
+                .parent
+                .filter(|parent| ids.binary_search(parent).is_ok())
+                .map(wire_id)
+                .transpose()?,
+            children,
+            entry.label,
+            entry.icon,
+            entry
+                .action
+                .filter(|id| allowed_actions.binary_search(id).is_ok())
+                .map(wire_id)
+                .transpose()?,
+        )
+        .with_module(module);
+        wire_nodes.push(if client {
+            node.with_client_action()
+        } else {
+            node
+        });
     }
     let version = admission.format(format_args!("{}", env.registry().generation()))?;
     Ok(wire::MenuTree::new(version, wire_roots, wire_nodes))
@@ -1172,6 +1192,142 @@ fn parse_action_ref(source: &str) -> Result<(&str, i64)> {
         return Err(fail("Menu action identity must be positive."));
     }
     Ok((model, id))
+}
+
+const CLIENT_ACTION_MODEL: &str = "ir.actions.client";
+
+/// The client actions of `requested` (action id, menu id) the caller may read, sorted. Each tag must be
+/// declared by an installed addon; a menu naming another tag fails the whole menu load.
+async fn visible_client_actions(
+    env: &Env,
+    tx: &mut Transaction,
+    requested: &[(i64, i64)],
+    admission: &mut ResponseAdmission,
+) -> Result<Vec<i64>> {
+    if requested.is_empty() || !can_read_model(env, tx, CLIENT_ACTION_MODEL).await? {
+        return Ok(Vec::new());
+    }
+    let mut ids: Vec<i64> = requested.iter().map(|(action, _)| *action).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    source_ids(admission, ids.len())?;
+    let caller = require_model_read(env, tx, CLIENT_ACTION_MODEL).await?;
+    let visible = caller
+        .search_with(
+            tx,
+            &budget_ids_domain(admission, &ids)?,
+            &checked_search_options(MAX_MENU_ROWS + 1)?,
+        )
+        .await?;
+    let visible_ids = visible.ids();
+    if visible_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The tag is framework presentation data, read after the caller's own read check above.
+    let rows = visible
+        .sudo(true)
+        .read_with(tx, &["tag"], Load::Raw)
+        .await?;
+    let tags = erp_sdk::client_actions::registry(env)?;
+    let mut allowed = admission.vector::<i64>(rows.len())?;
+    for row in &rows {
+        let id = match value(row, "id")? {
+            Value::Int(id) if *id > 0 => *id,
+            other => {
+                return Err(Error::invariant(format!(
+                    "client action identity read as {other:?}"
+                )));
+            }
+        };
+        let tag = text_value(row, "tag")?;
+        if tags.get(tag).is_none() {
+            let menu = requested
+                .iter()
+                .find(|(action, _)| *action == id)
+                .map_or(0, |(_, menu)| *menu);
+            return Err(fail(format!(
+                "Menu {menu} opens client action {id} with tag '{}', which no installed addon declares.",
+                tag.chars().take(64).collect::<String>()
+            )));
+        }
+        allowed.push(id);
+    }
+    Ok(allowed)
+}
+
+/// Open one client action by id (3): caller read access, a declared tag, `target = current`,
+/// no context, validated parameters.
+async fn load_client_action(
+    this: &Records,
+    tx: &mut Transaction,
+    wire_major: u64,
+) -> Result<wire::ActionResultEnvelope> {
+    let env = this.env().clone();
+    env.companies()?;
+    if wire_major != 1 {
+        return Err(fail("Unsupported human UI wire major."));
+    }
+    if this.len() != 1 {
+        return Err(fail(
+            "erp_load_web_client_action requires exactly one client action.",
+        ));
+    }
+    this.check_access(tx, Operation::Read).await?;
+    let rows = this
+        .sudo(true)
+        .read_with(
+            tx,
+            &["name", "tag", "target", "context", "params"],
+            Load::Raw,
+        )
+        .await?;
+    let row = rows
+        .first()
+        .ok_or_else(|| Error::invariant("authorized client action disappeared during read"))?;
+    let id = this.ids()[0];
+    let name = text_value(row, "name")?;
+    let tag = text_value(row, "tag")?;
+    let target = optional_text(row, "target")?.unwrap_or("current");
+    if target != "current" {
+        return Err(fail(format!(
+            "Client action {id} has target '{}'; only 'current' is supported.",
+            target.chars().take(32).collect::<String>()
+        )));
+    }
+    if optional_text(row, "context")?.is_some_and(|context| !matches!(context.trim(), "" | "{}")) {
+        return Err(fail(format!(
+            "Client action {id} has a context; a client action is configured through its params."
+        )));
+    }
+    let params = match value(row, "params")? {
+        Value::Json(document) => match &**document {
+            erp_sdk::serde_json::Value::Object(map) => map.clone(),
+            erp_sdk::serde_json::Value::Null => erp_sdk::serde_json::Map::new(),
+            _ => {
+                return Err(fail(format!(
+                    "Client action {id} params must be an object."
+                )));
+            }
+        },
+        Value::False => erp_sdk::serde_json::Map::new(),
+        other => {
+            return Err(Error::invariant(format!(
+                "client action params read as {other:?}"
+            )));
+        }
+    };
+    let params = erp_sdk::client_actions::registry(&env)?
+        .validate(&env, tx, tag, &params)
+        .await?;
+    let params = crate::action_result::bounded_params(params)?;
+    Ok(wire::ActionResultEnvelope::new(
+        wire::ActionResult::Client {
+            id: Some(wire_id(id)?),
+            name: name.to_owned(),
+            tag: tag.to_owned(),
+            params,
+        },
+    ))
 }
 
 async fn load_action(
@@ -3313,6 +3469,21 @@ impl WebIrActionsActWindow {
     }
 }
 
+#[methods(IrActionsClient, addon = "web")]
+impl WebIrActionsClient {
+    /// Open one caller-readable client action whose tag an installed addon declares.
+    #[method]
+    #[rpc(effect = read)]
+    async fn erp_load_web_client_action(
+        this: &RecordSet<IrActionsClient>,
+        tx: &mut Transaction,
+        wire_major: u64,
+    ) -> Result<Value> {
+        let envelope = load_client_action(this.as_records(), tx, wire_major).await?;
+        ResponseAdmission::new().wire(&envelope)
+    }
+}
+
 /// The one refusal of [`load_action_ref`] for a missing, foreign or unreadable action.
 const ACTION_REF_DENIED: &str = "You may not read this window action.";
 
@@ -3393,7 +3564,15 @@ async fn normalize_action_result(
         return Err(fail("Unsupported human UI wire major."));
     }
     let json = crate::action_result::to_json(&result, 1)?;
-    let normalized = crate::action_result::normalize(&json, &RegistryLookup(env))?;
+    let mut normalized = crate::action_result::normalize(&json, &RegistryLookup(env))?;
+    if let wire::ActionResult::Client { tag, params, .. } = &mut normalized {
+        let given: erp_sdk::serde_json::Map<String, erp_sdk::serde_json::Value> =
+            std::mem::take(params).into_iter().collect();
+        let checked = erp_sdk::client_actions::registry(env)?
+            .validate(env, tx, tag, &given)
+            .await?;
+        *params = crate::action_result::bounded_params(checked)?;
+    }
     if let wire::ActionResult::Window { model, .. }
     | wire::ActionResult::CurrentWindow { model, .. }
     | wire::ActionResult::Report { model, .. } = &normalized
@@ -4647,6 +4826,27 @@ pub async fn test_load_menus(
 ) -> Result<wire::MenuTree> {
     let mut admission = ResponseAdmission::with_limits(bytes, MAX_ENCODED_RESPONSE_BYTES)?;
     load_menus(env, tx, &mut admission).await
+}
+
+/// Open one client action by id through the real producer, as the wire envelope.
+#[cfg(feature = "test-support")]
+pub async fn test_load_client_action(
+    env: &Env,
+    tx: &mut Transaction,
+    id: i64,
+) -> Result<wire::ActionResultEnvelope> {
+    let records = env.records("ir.actions.client")?.browse([id])?;
+    load_client_action(&records, tx, 1).await
+}
+
+/// Normalize a method result through the real admission, tag validators included.
+#[cfg(feature = "test-support")]
+pub async fn test_normalize_action_result(
+    env: &Env,
+    tx: &mut Transaction,
+    result: Value,
+) -> Result<wire::ActionResultEnvelope> {
+    normalize_action_result(env, tx, 1, result).await
 }
 
 /// Run the real action producer under a trusted lower test allowance, without transport encoding.

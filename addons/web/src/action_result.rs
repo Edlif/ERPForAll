@@ -25,6 +25,8 @@ const ACT_REPORT: &str = "ir.actions.report";
 /// Most records one report result prints (the print request bounds it again by its setting).
 const MAX_REPORT_IDS: usize = 10_000;
 const NOTIFY_TAG: &str = "display_notification";
+/// Longest client action tag, in bytes (`erp_sdk::client_actions::MAX_TAG_BYTES`).
+const MAX_TAG_BYTES: usize = erp_sdk::client_actions::MAX_TAG_BYTES;
 
 /// Registry questions the pure validator needs answered.
 pub(crate) trait ModelLookup {
@@ -185,7 +187,10 @@ fn dictionary(members: &Map<String, Json>, lookup: &dyn ModelLookup) -> Result<w
             Ok(wire::ActionResult::Close {})
         }
         ACT_WINDOW => window(members, lookup),
-        ACT_CLIENT => notification(members),
+        ACT_CLIENT => match members.get("tag") {
+            Some(Json::String(tag)) if tag == NOTIFY_TAG => notification(members),
+            _ => client(members),
+        },
         ACT_REPORT => report(members, lookup),
         other => Err(fail(format!(
             "Action type '{}' is not supported as a method result.",
@@ -621,6 +626,85 @@ fn context(
     Ok(result)
 }
 
+/// A client action result (4): the shape only. The caller runs the tag's validator
+/// (`erp_sdk::client_actions`), which refuses a tag no installed addon declares, and then
+/// [`bounded_params`].
+fn client(members: &Map<String, Json>) -> Result<wire::ActionResult> {
+    reject_members(
+        members,
+        &["type", "tag", "name", "params", "target", "context"],
+        "client action",
+    )?;
+    let Some(Json::String(tag)) = members.get("tag") else {
+        return Err(fail("A client action result requires a text 'tag'."));
+    };
+    if tag.is_empty() || tag.len() > MAX_TAG_BYTES {
+        return Err(fail(format!(
+            "A client action tag is 1 to {MAX_TAG_BYTES} bytes; got {}.",
+            tag.len()
+        )));
+    }
+    match members.get("target") {
+        None | Some(Json::Null) => {}
+        Some(Json::String(target)) if target == "current" => {}
+        Some(_) => {
+            return Err(fail(
+                "A client action result supports target 'current' only.",
+            ));
+        }
+    }
+    match members.get("context") {
+        None | Some(Json::Null) => {}
+        Some(Json::Object(context)) if context.is_empty() => {}
+        Some(_) => {
+            return Err(fail(
+                "A client action result takes its parameters in 'params', not 'context'.",
+            ));
+        }
+    }
+    let name = match members.get("name") {
+        None | Some(Json::Null) => tag.clone(),
+        Some(Json::String(_)) => {
+            text(members, "name", MAX_TITLE_BYTES, "A client action")?.to_owned()
+        }
+        Some(_) => return Err(fail("A client action 'name' must be text.")),
+    };
+    let params = match members.get("params") {
+        None | Some(Json::Null) => BTreeMap::new(),
+        Some(Json::Object(params)) => params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        Some(_) => return Err(fail("A client action 'params' must be an object.")),
+    };
+    Ok(wire::ActionResult::Client {
+        id: None,
+        name,
+        tag: tag.clone(),
+        params,
+    })
+}
+
+/// The validated parameters of a client action as the wire carries them, at most
+/// [`MAX_RESULT_BYTES`] encoded and [`MAX_RESULT_DEPTH`] deep.
+pub(crate) fn bounded_params(params: Map<String, Json>) -> Result<BTreeMap<String, Json>> {
+    let document = Json::Object(params);
+    depth_of(&document, 1)?;
+    let size = serde_json::to_vec(&document)
+        .map_err(|error| {
+            fail(format!(
+                "Client action params are not serializable: {error}"
+            ))
+        })?
+        .len();
+    if size > MAX_RESULT_BYTES {
+        return Err(fail(format!(
+            "Client action params are {size} bytes; the limit is {MAX_RESULT_BYTES}."
+        )));
+    }
+    let Json::Object(params) = document else {
+        unreachable!("the document was built as an object");
+    };
+    Ok(params.into_iter().collect())
+}
+
 fn notification(members: &Map<String, Json>) -> Result<wire::ActionResult> {
     reject_members(members, &["type", "tag", "params"], "notification")?;
     match members.get("tag") {
@@ -1034,10 +1118,83 @@ mod tests {
                 expected
             );
         }
-        assert_eq!(
-            message(json!({"type": ACT_CLIENT, "tag": "reload", "params": {}})),
-            "Client action tag 'reload' is not supported; only 'display_notification' is."
+    }
+
+    /// registry and validator run in `crates/erp-cli/tests/client_actions.rs`)
+    #[test]
+    fn a_client_action_result_keeps_its_tag_and_params_and_refuses_context_and_other_targets() {
+        let Ok(wire::ActionResult::Client {
+            id,
+            name,
+            tag,
+            params,
+        }) = run(
+            json!({"type": ACT_CLIENT, "tag": "demo.board", "name": "Board",
+            "params": {"report": 7}, "target": "current", "context": {}}),
+        )
+        else {
+            panic!("a declared-shape client action normalizes");
+        };
+        assert!(id.is_none());
+        assert_eq!((name.as_str(), tag.as_str()), ("Board", "demo.board"));
+        assert_eq!(params.get("report"), Some(&json!(7)));
+        // The name defaults to the tag; absent params are empty.
+        let Ok(wire::ActionResult::Client { name, params, .. }) =
+            run(json!({"type": ACT_CLIENT, "tag": "demo.board"}))
+        else {
+            panic!("minimal client action normalizes");
+        };
+        assert_eq!(name, "demo.board");
+        assert!(params.is_empty());
+        for (input, expected) in [
+            (
+                json!({"type": ACT_CLIENT, "tag": "demo.board", "context": {"a": 1}}),
+                "A client action result takes its parameters in 'params', not 'context'.",
+            ),
+            (
+                json!({"type": ACT_CLIENT, "tag": "demo.board", "target": "new"}),
+                "A client action result supports target 'current' only.",
+            ),
+            (
+                json!({"type": ACT_CLIENT, "tag": "demo.board", "params": [1]}),
+                "A client action 'params' must be an object.",
+            ),
+            (
+                json!({"type": ACT_CLIENT, "tag": "demo.board", "res_model": "x"}),
+                "Member 'res_model' is not supported in a client action result.",
+            ),
+            (
+                json!({"type": ACT_CLIENT, "tag": 4}),
+                "A client action result requires a text 'tag'.",
+            ),
+            (
+                json!({"type": ACT_CLIENT, "tag": "a".repeat(65)}),
+                "A client action tag is 1 to 64 bytes; got 65.",
+            ),
+        ] {
+            assert_eq!(message(input), expected);
+        }
+    }
+
+    #[test]
+    fn validated_client_params_are_bounded_in_size_and_depth() {
+        let mut big = Map::new();
+        big.insert("text".into(), json!("x".repeat(MAX_RESULT_BYTES)));
+        assert!(
+            bounded_params(big)
+                .expect_err("oversized params are refused")
+                .to_string()
+                .contains("the limit is 16384")
         );
+        let mut deep = Map::new();
+        deep.insert(
+            "a".into(),
+            json!({"b": {"c": {"d": {"e": {"f": {"g": 1}}}}}}),
+        );
+        assert!(bounded_params(deep).is_err());
+        let mut ok = Map::new();
+        ok.insert("report".into(), json!(7));
+        assert_eq!(bounded_params(ok).expect("small params pass").len(), 1);
     }
 
     #[test]

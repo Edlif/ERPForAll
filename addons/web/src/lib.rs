@@ -75,7 +75,7 @@ mod h18_transport;
 mod h18_transport_unit;
 mod metadata;
 pub mod pivot_export;
-mod pivot_xlsx;
+pub mod table_xlsx;
 mod view_types;
 
 /// `web.menu_icon`: the client's icon picker for a menu's `web_icon` text (`lucide:<name>`).
@@ -332,7 +332,8 @@ pub fn view_type_contributions() -> [erp_sdk::views::ViewTypeContribution; 1] {
 pub mod metadata_test_support {
     pub use crate::metadata::{
         test_get_views, test_load_action, test_load_action_probed, test_load_action_views,
-        test_load_menus, test_load_menus_probed,
+        test_load_client_action, test_load_menus, test_load_menus_probed,
+        test_normalize_action_result,
     };
 }
 

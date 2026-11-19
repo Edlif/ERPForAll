@@ -1,0 +1,5 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_bin_user,bin.user,model_reporting_fixture_bin,base.group_user,crud,
+access_item_user,item.user,model_reporting_fixture_item,base.group_user,crud,"[('restricted', '=', False)]"
+access_item_system,item.system,model_reporting_fixture_item,base.group_system,crud,
+access_secret_system,secret.system,model_reporting_fixture_secret,base.group_system,crud,

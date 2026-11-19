@@ -360,6 +360,10 @@ impl ReportBackend for ReportRuntime {
         })
     }
 
+    fn layout(&self, document: DocTree) -> BoxFuture<'_, Result<Vec<u8>>> {
+        Box::pin(async move { Ok(ReportRuntime::layout(self, document).await?.into_bytes()) })
+    }
+
     fn merge<'a>(
         &'a self,
         tx: &'a mut Transaction,

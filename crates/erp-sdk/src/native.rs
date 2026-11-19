@@ -27,6 +27,10 @@ pub mod sql_objects {
 /// Typed native settings declarations; lifecycle composition binds addon ownership.
 pub mod settings;
 
+/// Client action tags declared by native addons: the server serves an
+/// `ir.actions.client` only for a tag an installed addon declares.
+pub mod client_actions;
+
 /// Declared technical system parameters: registration ([`crate::system_parameters!`]) and typed
 /// reads limited to the caller's dependency closure.
 pub mod params;
@@ -279,10 +283,11 @@ pub mod report {
     /// The context a report program evaluates in (`docs`, `company`, plain values).
     pub use erp_expr::EvalContext;
     pub use erp_report::{
-        AttachmentPolicy, Diagnostic, DocTree, DocumentOptions, EvalOptions, FieldInfo,
-        HelperDependencies, LangFormat, Language, Limits, Node, PageSetup, PictureQuality,
-        PlanContext, ProfileKind, RecordStore, ReportError, ReportLimits, ReportProgram,
-        RestrictedField, TemplateSource, Validation, check_attachment, render_html, validate_arch,
+        Alignment, AttachmentPolicy, Diagnostic, DocTree, DocumentBuilder, DocumentOptions,
+        EvalOptions, FieldInfo, HelperDependencies, ImageFit, LangFormat, Language, Limits, Node,
+        NodeId, PageSetup, PictureQuality, PlanContext, ProfileKind, RecordStore, ReportError,
+        ReportLimits, ReportProgram, RestrictedField, Style, TemplateSource, Validation,
+        check_attachment, render_html, validate_arch,
     };
     /// The data stage under the caller's rights: `load_records` fills the store a program
     /// evaluates from; `field_info` describes the registry's fields to the planner.

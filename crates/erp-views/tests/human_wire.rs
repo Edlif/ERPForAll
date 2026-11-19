@@ -16,7 +16,7 @@ fn roundtrip<T: DeserializeOwned + Serialize>(value: &Value) {
 #[test]
 fn menu_module_is_required_nullable_and_closed() {
     let node = json!({"id":1,"parent_id":null,"children":[],"label":"Workspace",
-        "icon":null,"action_id":2,"module":"workspace"});
+        "icon":null,"action_id":2,"action_kind":"window","module":"workspace"});
     roundtrip::<MenuNode>(&node);
     let mut absent_provenance = node.clone();
     absent_provenance["module"] = Value::Null;
@@ -26,6 +26,17 @@ fn menu_module_is_required_nullable_and_closed() {
     let error = serde_json::from_value::<MenuNode>(missing).unwrap_err();
     assert!(error.is_data());
     assert_eq!(error.to_string(), "missing field `module`");
+    let mut client = node.clone();
+    client["action_kind"] = json!("client");
+    roundtrip::<MenuNode>(&client);
+    let mut missing_kind = node.clone();
+    missing_kind.as_object_mut().unwrap().remove("action_kind");
+    assert_eq!(
+        serde_json::from_value::<MenuNode>(missing_kind)
+            .unwrap_err()
+            .to_string(),
+        "missing field `action_kind`"
+    );
     for (bad, expected) in [
         (
             json!(true),
@@ -199,6 +210,8 @@ fn wizard_footer_and_action_result_shapes_are_closed() {
         json!({"kind":"window","name":"Lend","model":"library.loan","res_id":null,
                "views":[{"id":null,"type":"form"}],"context":{"default_book_id":7}}),
         json!({"kind":"notification","title":null,"message":"Done","level":"success","then_close":true}),
+        json!({"kind":"client","id":30,"name":"Board","tag":"demo.board","params":{"report":7}}),
+        json!({"kind":"client","id":null,"name":"Board","tag":"demo.board","params":{}}),
     ] {
         roundtrip::<ActionResult>(&result);
     }

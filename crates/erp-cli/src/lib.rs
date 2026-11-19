@@ -30,6 +30,7 @@ mod partition_upkeep_tests;
 mod pivot_export;
 mod report_print;
 mod report_worker;
+mod reporting_export;
 pub mod scaffold;
 mod server_runtime;
 

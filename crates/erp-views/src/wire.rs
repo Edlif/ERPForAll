@@ -150,8 +150,11 @@ object!(/// Ordered authorized menu forest.
 object!(/// Menu node; its action remains separately authorized.
     MenuNode { id: WireId, #[serde(deserialize_with="required_nullable")] parent_id: Option<WireId>, children: Vec<WireId>, label: String,
         #[serde(deserialize_with="required_nullable")] icon: Option<String>, #[serde(deserialize_with="required_nullable")] action_id: Option<WireId>,
+        /// Which action model `action_id` names; null when the menu has no action. Ids are unique across action models.
+        #[serde(deserialize_with="required_nullable")] action_kind: Option<MenuActionKind>,
         /// Nonempty namespace of the oldest menu external ID, or null when absent/empty; never a permission grant.
         #[serde(deserialize_with="required_nullable")] module: Option<String> });
+choice!(MenuActionKind { Window, Client });
 choice!(ActionTarget { Current, Main, New });
 choice!(ViewType {
     List,
@@ -1231,6 +1234,20 @@ pub enum ActionResult {
         /// Whether the dialog closes after the notification.
         then_close: bool,
     },
+    /// Mount a registered client action screen (`ir.actions.client`): `tag` names the screen the
+    /// browser's registry binds; `params` are the tag's validated parameters.
+    Client {
+        /// The action's id when it was opened by id (menu, URL); null for a method result.
+        #[serde(deserialize_with = "required_nullable")]
+        id: Option<WireId>,
+        /// Action title, displayed as text.
+        name: String,
+        /// Tag declared by an installed addon.
+        tag: String,
+        /// Normalized parameters, at most 16 KiB encoded.
+        #[cfg_attr(feature = "schema-gen", ts(type = "Record<string, unknown>"))]
+        params: BTreeMap<String, serde_json::Value>,
+    },
     /// Print a report for records (an `ir.actions.report` result): the client sends it through
     /// its print request, which checks the report and the records again.
     Report {
@@ -1554,9 +1571,18 @@ impl MenuNode {
             children,
             label,
             icon,
+            action_kind: action_id.map(|_| MenuActionKind::Window),
             action_id,
             module: None,
         }
+    }
+
+    /// Mark the menu's action as an `ir.actions.client`.
+    pub fn with_client_action(mut self) -> Self {
+        if self.action_id.is_some() {
+            self.action_kind = Some(MenuActionKind::Client);
+        }
+        self
     }
 
     /// Attach this menu's resolved provenance namespace, independently of its parent/action.

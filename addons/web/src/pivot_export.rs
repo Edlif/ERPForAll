@@ -4,7 +4,7 @@
 //! The browser posts the table as it is on screen; the server formats what was posted and reads no
 //! data. This module owns the five declared bounds (`web.pivot_export_*` settings), the typed
 //! document parser (every refusal names the path of the offending value) and the access check; the
-//! workbook itself is written by [`crate::pivot_xlsx`]. The route (`POST /erp/pivot/export`) lives
+//! workbook itself is written by [`crate::table_xlsx`]. The route (`POST /erp/pivot/export`) lives
 //! in `erp-server`, composed in `erp-cli` the way the attachment content route is.
 //!
 //! The document, with `kind` one of `integer`, `float`, `monetary`, `empty`:
@@ -159,50 +159,7 @@ pub async fn request_limit(tx: &mut Transaction) -> Result<usize> {
     Ok(limits(tx).await?.request_bytes)
 }
 
-/// A header cell: its text and how many columns and rows it covers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeaderCell {
-    pub label: String,
-    /// First column of the cell once the header block is laid out (the label column is 0).
-    pub col: usize,
-    pub colspan: u32,
-    pub rowspan: u32,
-    pub bold: bool,
-}
-
-/// What a body cell holds.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CellValue {
-    Empty,
-    Integer(i64),
-    /// A float or monetary value with the number of decimals shown.
-    Decimal(f64, u8),
-}
-
-/// One body cell.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Cell {
-    pub value: CellValue,
-    pub bold: bool,
-}
-
-/// One body row: its header cell and its cells.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Row {
-    pub label: String,
-    pub indent: u32,
-    pub bold: bool,
-    pub cells: Vec<Cell>,
-}
-
-/// The parsed document.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Document {
-    pub model: String,
-    pub title: String,
-    pub headers: Vec<Vec<HeaderCell>>,
-    pub rows: Vec<Row>,
-}
+pub use crate::table_xlsx::{Cell, CellValue, HeaderCell, Row, TableDocument, Workbook};
 
 fn refuse(path: &str, what: impl std::fmt::Display) -> Error {
     Error::validation(format!(
@@ -351,7 +308,7 @@ fn cell(value: &Json, path: &str) -> Result<Cell> {
 }
 
 /// Parse and bound the document. `limits` are the settings; every refusal names a path or a setting.
-fn parse(value: &Json, limits: &Limits) -> Result<Document> {
+fn parse(value: &Json, limits: &Limits) -> Result<TableDocument> {
     let top = object(value, "$", &["model", "title", "headers", "rows"])?;
     let model = model_name(top)?;
     let title = text(top, "$", "title", limits)?;
@@ -471,19 +428,13 @@ fn parse(value: &Json, limits: &Limits) -> Result<Document> {
             format!("column {c} has no header cell"),
         ));
     }
-    Ok(Document {
+    Ok(TableDocument {
         model,
         title,
         headers,
         rows,
+        notes: Vec::new(),
     })
-}
-
-/// The finished workbook and the name to offer for it.
-#[derive(Debug)]
-pub struct Workbook {
-    pub file_name: String,
-    pub bytes: Vec<u8>,
 }
 
 /// A posted document that is JSON of a registered model, not yet checked further. The steps of
@@ -558,7 +509,7 @@ pub async fn authorize(tx: &mut Transaction, posted: &Posted) -> Result<()> {
 /// `Validation`: a malformed document or one over a bound, naming the path or the setting.
 pub fn build(posted: &Posted, limits: &Limits) -> Result<Workbook> {
     let document = parse(&posted.value, limits)?;
-    crate::pivot_xlsx::write(&document)
+    crate::table_xlsx::write(&document)
 }
 
 #[cfg(test)]

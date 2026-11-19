@@ -26,6 +26,7 @@ export const sharedConfig = {
       { find: /^@erpforall\/mail-store$/, replacement: src("./packages/mail-store/src/index.ts") },
       { find: /^@erpforall\/mail-thread-view$/, replacement: src("./packages/mail-thread-view/src/index.ts") },
       { find: /^@erpforall\/store-wire$/, replacement: src("./packages/store-wire/src/index.ts") },
+      { find: /^@erpforall\/client$/, replacement: src("../addons/web/static/src/client/public.ts") },
       { find: /^@erpforall\/elang\/abi$/, replacement: src("./src/runtime/abi-impl.ts") },
       { find: /^@erpforall\/elang$/, replacement: src("./src/index.ts") },
     ],

@@ -1554,6 +1554,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "the five declared bounds of the pivot download (global settings the framework reads for itself); a refusal names the bound and its value (a number an internal user may read in Settings anyway), nothing else of the settings leaves; the read check on the document's model runs with the caller's rights",
     ),
     (
+        "reporting/settings.rs::read",
+        1,
+        "the four declared bounds of dynamic reports (global settings the framework reads for itself, as the pivot download does); a refusal names the bound and its value, nothing else of the settings leaves; every report read (definition, lines, groups, display names) runs with the caller's rights",
+    ),
+    (
         "web/metadata.rs::load_action",
         3,
         "group, model and view-mode columns of the window action the caller opens; the caller's groups and read access on res_model are checked before any value leaves",
@@ -1572,6 +1577,16 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "web/dashboard_settings.rs::read",
         1,
         "the three fixed dashboard settings web.dashboard_max_items, web.dashboard_max_period_days and web.dashboard_periods (global, nonsecret configuration the framework reads for itself, so a dashboard viewer needs no settings group); no business data is read in that environment; the item and day bounds are applied and named in refusals, and the configured period choices are returned to the caller as the strip's period list",
+    ),
+    (
+        "web/metadata.rs::visible_client_actions",
+        1,
+        "the tag column of the client actions a menu names, read only for the rows the caller's own search returned after its read check on ir.actions.client; the tag is matched against the installed addons' declarations and only the action ids leave",
+    ),
+    (
+        "web/metadata.rs::load_client_action",
+        1,
+        "name, tag, target, context and params of the one client action the caller opens, read after its own record read check; target, context and params are then refused or validated by the tag's declaration before anything leaves",
     ),
     (
         "web/metadata.rs::menu_modules",

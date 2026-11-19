@@ -822,8 +822,9 @@ pub const MANIFEST: &[ModelCase] = &[
     base(
         "ir.actions.client",
         "Client Action",
-        NO_ROW_BASIS,
-        ADMIN_READS,
+        // internal users read client actions so a menu can open one in the caller's rights.
+        GRANT_BASIS,
+        ALL_READ,
         Rows::Absent,
         &[],
     ),

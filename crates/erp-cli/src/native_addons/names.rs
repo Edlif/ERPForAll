@@ -25,6 +25,7 @@ pub const LINKED: &[&str] = &[
     "stock_mail",
     "sales_team",
     "sale",
+    "reporting",
 ];
 
 /// The reason for an addon that is only its manifest and its dependency declaration: offering it

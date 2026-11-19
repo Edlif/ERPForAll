@@ -260,12 +260,14 @@ mod content;
 mod password_change;
 mod pivot_export;
 mod report;
+mod reporting_export;
 pub use content::{
     ContentLookup, ContentOpenFailure, ContentOpener, ContentRange, ContentReader, FoundContent,
     WebAttachmentContent,
 };
 pub use pivot_export::{PivotWorkbook, WebPivotExport};
 pub use report::{PrintedReport, ReportFormat, WebReport};
+pub use reporting_export::{ReportingFile, WebReportingExport};
 
 /// Native composition supplies current nonsecret upload policy without coupling HTTP to an addon.
 pub trait WebAttachmentPolicy: Send + Sync {
@@ -394,6 +396,7 @@ pub struct WebApp {
     attachment_content: Option<Arc<dyn WebAttachmentContent>>,
     attachment_policy: Option<Arc<dyn WebAttachmentPolicy>>,
     pivot_export: Option<Arc<dyn WebPivotExport>>,
+    reporting_export: Option<Arc<dyn WebReportingExport>>,
     report: Option<Arc<dyn WebReport>>,
     refreshing: Mutex<()>,
     requests: Arc<Semaphore>,
@@ -447,6 +450,7 @@ impl WebApp {
             attachment_content: None,
             attachment_policy: None,
             pivot_export: None,
+            reporting_export: None,
             report: None,
             refreshing: Mutex::new(()),
             requests: Arc::new(Semaphore::new(crate::startup_limits::RPC_CONCURRENCY)),
@@ -1016,6 +1020,9 @@ impl WebApp {
         }
         if path == routes::PIVOT_EXPORT {
             return self.pivot_export(&parts, body, &auth).await;
+        }
+        if path == routes::REPORTING_EXPORT {
+            return self.reporting_export(&parts, body, &auth).await;
         }
         if let Some(rest) = path.strip_prefix(routes::REPORT_PREFIX) {
             return self.report(&parts, rest, &auth).await;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The workbook of the pivot download: one sheet, header cells merged as drawn,
+//! The workbook of a table download, shared by the pivot and the dynamic reports: one sheet, header cells merged as drawn,
 //! totals bold, numbers written as numbers with a format, every text cell guarded against formula
 //! injection, column widths set from the content within a bound.
 //!
@@ -10,10 +10,66 @@
 //! its characters stay exactly as posted. Every other text cell is a plain string cell too, so no
 //! cell of the file is a formula.
 
-use crate::pivot_export::{CellValue, Document, Workbook};
 use erp_sdk::prelude::*;
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, XlsxError};
 use std::collections::HashMap;
+
+/// A header cell: its text and how many columns and rows it covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderCell {
+    pub label: String,
+    /// First column of the cell once the header block is laid out (the label column is 0).
+    pub col: usize,
+    pub colspan: u32,
+    pub rowspan: u32,
+    pub bold: bool,
+}
+
+/// What a body cell holds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CellValue {
+    Empty,
+    Integer(i64),
+    /// A float or monetary value with the number of decimals shown.
+    Decimal(f64, u8),
+    /// Text, always written as a string cell (never a formula).
+    Text(String),
+}
+
+/// One body cell.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cell {
+    pub value: CellValue,
+    pub bold: bool,
+}
+
+/// One body row: its header cell and its cells.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub label: String,
+    pub indent: u32,
+    pub bold: bool,
+    pub cells: Vec<Cell>,
+}
+
+/// The parsed document: a title, header rows, body rows and, for an extra sheet of notes, label and value pairs
+/// (the pivot has none).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableDocument {
+    pub model: String,
+    pub title: String,
+    pub headers: Vec<Vec<HeaderCell>>,
+    pub rows: Vec<Row>,
+    /// Name and value pairs written to a second sheet "Options" when not empty.
+    pub notes: Vec<(String, String)>,
+}
+
+/// The finished workbook and the name to offer for it.
+#[derive(Debug)]
+pub struct Workbook {
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+}
 
 /// Column width bounds in characters: narrow enough to read a table, wide enough for a label.
 const MIN_WIDTH: f64 = 10.0;
@@ -53,8 +109,9 @@ fn sheet_name(title: &str) -> String {
     }
 }
 
-/// The file name offered for the download: the action title, without path or control characters.
-fn file_name(title: &str) -> String {
+/// The file name offered for the download: `title` without path or control characters, `fallback`
+/// when nothing is left, then `.extension`.
+pub fn download_name(title: &str, extension: &str, fallback: &str) -> String {
     let kept: String = title
         .chars()
         .map(|c| {
@@ -72,13 +129,17 @@ fn file_name(title: &str) -> String {
         .take(FILE_NAME_CHARS)
         .collect();
     format!(
-        "{}.xlsx",
+        "{}.{extension}",
         if kept.trim().is_empty() {
-            "Pivot"
+            fallback
         } else {
             kept.trim()
         }
     )
+}
+
+fn file_name(title: &str) -> String {
+    download_name(title, "xlsx", "Pivot")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -145,17 +206,29 @@ fn width_of(text: &str, indent: usize, bold: bool) -> f64 {
 ///
 /// # Errors
 /// `Internal`: the library refused a value the parser had admitted (a bug, never the caller's).
-pub fn write(document: &Document) -> Result<Workbook> {
+pub fn write(document: &TableDocument) -> Result<Workbook> {
     write_inner(document).map_err(|error| fail(&error))
 }
 
-fn write_inner(document: &Document) -> std::result::Result<Workbook, XlsxError> {
+fn write_inner(document: &TableDocument) -> std::result::Result<Workbook, XlsxError> {
     let mut book = rust_xlsxwriter::Workbook::new();
     let sheet = book.add_worksheet();
     sheet.set_name(sheet_name(&document.title))?;
     let mut styles = Styles::default();
     let depth = document.headers.len();
-    let columns = document.rows[0].cells.len();
+    // a table with no rows still has the columns its header names
+    let columns = document.rows.first().map_or_else(
+        || {
+            document
+                .headers
+                .iter()
+                .flatten()
+                .map(|h| h.col + h.colspan as usize - 1)
+                .max()
+                .unwrap_or(0)
+        },
+        |row| row.cells.len(),
+    );
     let mut widths = vec![MIN_WIDTH; columns + 1];
     let row_of = |r: usize| u32::try_from(r).unwrap_or(u32::MAX);
     let col_of = |c: usize| u16::try_from(c).unwrap_or(u16::MAX);
@@ -196,9 +269,15 @@ fn write_inner(document: &Document) -> std::result::Result<Workbook, XlsxError> 
         widths[0] = widths[0].max(width_of(&row.label, row.indent as usize, row.bold));
         for (j, cell) in row.cells.iter().enumerate() {
             let col = col_of(j + 1);
-            match cell.value {
+            match &cell.value {
                 CellValue::Empty => {}
+                CellValue::Text(text) => {
+                    let format = styles.get(Role::Label, cell.bold, 0, guarded(text));
+                    sheet.write_string_with_format(at, col, text, format)?;
+                    widths[j + 1] = widths[j + 1].max(width_of(text, 0, cell.bold));
+                }
                 CellValue::Integer(whole) => {
+                    let whole = *whole;
                     let format = styles.get(Role::Integer, cell.bold, 0, false);
                     #[allow(
                         clippy::cast_precision_loss,
@@ -208,6 +287,7 @@ fn write_inner(document: &Document) -> std::result::Result<Workbook, XlsxError> 
                     widths[j + 1] = widths[j + 1].max(width_of(&whole.to_string(), 0, cell.bold));
                 }
                 CellValue::Decimal(decimal, digits) => {
+                    let (decimal, digits) = (*decimal, *digits);
                     let format = styles.get(Role::Decimal, cell.bold, digits, false);
                     sheet.write_number_with_format(at, col, decimal, format)?;
                     widths[j + 1] = widths[j + 1].max(width_of(
@@ -221,6 +301,19 @@ fn write_inner(document: &Document) -> std::result::Result<Workbook, XlsxError> 
     }
     for (c, width) in widths.iter().enumerate() {
         sheet.set_column_width(col_of(c), width.clamp(MIN_WIDTH, MAX_WIDTH))?;
+    }
+    if !document.notes.is_empty() {
+        let notes = book.add_worksheet();
+        notes.set_name("Options")?;
+        for (i, (name, value)) in document.notes.iter().enumerate() {
+            let at = row_of(i);
+            let name_format = styles.get(Role::Label, true, 0, guarded(name));
+            notes.write_string_with_format(at, 0, name, name_format)?;
+            let value_format = styles.get(Role::Label, false, 0, guarded(value));
+            notes.write_string_with_format(at, 1, value, value_format)?;
+        }
+        notes.set_column_width(0, 28)?;
+        notes.set_column_width(1, 50)?;
     }
     Ok(Workbook {
         file_name: file_name(&document.title),

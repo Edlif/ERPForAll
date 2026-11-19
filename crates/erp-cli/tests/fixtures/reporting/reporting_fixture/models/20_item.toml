@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[[model]]
+name = "reporting_fixture.item"
+description = "Fixture Item"
+order = "id"
+
+[[model.field]]
+name = "name"
+type = "char"
+required = true
+
+[[model.field]]
+name = "bin_id"
+type = "many2one"
+comodel = "reporting_fixture.bin"
+
+[[model.field]]
+name = "kind"
+type = "selection"
+selection = [["in", "In"], ["out", "Out"]]
+default = "in"
+required = true
+
+[[model.field]]
+name = "qty"
+type = "float"
+
+[[model.field]]
+name = "reserved"
+type = "float"
+
+[[model.field]]
+name = "day"
+type = "date"
+
+# hidden from internal users by their access row's domain
+[[model.field]]
+name = "restricted"
+type = "boolean"
+default = false

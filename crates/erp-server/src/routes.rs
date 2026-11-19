@@ -62,6 +62,8 @@ pub const CONTENT_PREFIX: &str = "/erp/content/";
 pub const REPORT_PREFIX: &str = "/erp/report/";
 /// The pivot view's spreadsheet download (`POST`).
 pub const PIVOT_EXPORT: &str = "/erp/pivot/export";
+/// A dynamic report's PDF or spreadsheet export (`POST`).
+pub const REPORTING_EXPORT: &str = "/erp/reporting/export";
 /// Text that selects the addon static asset branch.
 pub const STATIC_SEGMENT: &str = "/static/";
 
@@ -76,6 +78,7 @@ pub const ROUTES: &[RouteMatch] = &[
     RouteMatch::Exact("/erp/health/ready"),
     RouteMatch::Exact("/erp/client-error"),
     RouteMatch::Exact("/erp/pivot/export"),
+    RouteMatch::Exact("/erp/reporting/export"),
     RouteMatch::Exact("/erp/module/install"),
     RouteMatch::Exact("/erp/module/upgrade"),
     RouteMatch::Exact("/erp/module/uninstall"),
@@ -137,6 +140,7 @@ mod tests {
         HEALTH_READY,
         CLIENT_ERROR,
         PIVOT_EXPORT,
+        REPORTING_EXPORT,
         MODULE_INSTALL,
         MODULE_UPGRADE,
         MODULE_UNINSTALL,

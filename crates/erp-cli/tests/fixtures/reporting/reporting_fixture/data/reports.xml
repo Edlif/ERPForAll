@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+    <record id="stock" model="reporting.report">
+        <field name="name">Fixture Stock</field>
+        <field name="totals_below" eval="True"/>
+        <field name="load_more_limit">10</field>
+    </record>
+    <record id="stock_col_qty" model="reporting.report.column">
+        <field name="report_id" ref="stock"/>
+        <field name="sequence">1</field>
+        <field name="name">Quantity</field>
+        <field name="label">qty</field>
+        <field name="sortable" eval="True"/>
+    </record>
+    <record id="stock_col_reserved" model="reporting.report.column">
+        <field name="report_id" ref="stock"/>
+        <field name="sequence">2</field>
+        <field name="name">Reserved</field>
+        <field name="label">reserved</field>
+    </record>
+    <record id="stock_col_available" model="reporting.report.column">
+        <field name="report_id" ref="stock"/>
+        <field name="sequence">3</field>
+        <field name="name">Available</field>
+        <field name="label">available</field>
+        <field name="sortable" eval="True"/>
+    </record>
+
+    <record id="stock_line_on_hand" model="reporting.report.line">
+        <field name="report_id" ref="stock"/>
+        <field name="sequence">1</field>
+        <field name="name">On Hand</field>
+        <field name="code">ON_HAND</field>
+        <field name="groupby">bin_id, name</field>
+    </record>
+    <record id="stock_on_hand_qty" model="reporting.report.expression">
+        <field name="line_id" ref="stock_line_on_hand"/>
+        <field name="label">qty</field>
+        <field name="model">reporting_fixture.item</field>
+        <field name="field">qty</field>
+        <field name="date_field">day</field>
+        <field name="date_scope">from_beginning</field>
+    </record>
+    <record id="stock_on_hand_reserved" model="reporting.report.expression">
+        <field name="line_id" ref="stock_line_on_hand"/>
+        <field name="label">reserved</field>
+        <field name="model">reporting_fixture.item</field>
+        <field name="field">reserved</field>
+        <field name="date_field">day</field>
+        <field name="date_scope">from_beginning</field>
+    </record>
+    <record id="stock_on_hand_available" model="reporting.report.expression">
+        <field name="line_id" ref="stock_line_on_hand"/>
+        <field name="label">available</field>
+        <field name="engine">formula</field>
+        <field name="formula">qty - reserved</field>
+    </record>
+
+    <record id="stock_line_moves" model="reporting.report.line">
+        <field name="report_id" ref="stock"/>
+        <field name="sequence">2</field>
+        <field name="name">Moves</field>
+        <field name="code">MOVES</field>
+    </record>
+    <record id="stock_moves_qty" model="reporting.report.expression">
+        <field name="line_id" ref="stock_line_moves"/>
+        <field name="label">qty</field>
+        <field name="engine">formula</field>
+        <field name="formula">sum_children</field>
+    </record>
+    <record id="stock_line_in" model="reporting.report.line">
+        <field name="report_id" ref="stock"/>
+        <field name="parent_id" ref="stock_line_moves"/>
+        <field name="name">Incoming</field>
+        <field name="code">IN</field>
+    </record>
+    <record id="stock_in_qty" model="reporting.report.expression">
+        <field name="line_id" ref="stock_line_in"/>
+        <field name="label">qty</field>
+        <field name="model">reporting_fixture.item</field>
+        <field name="field">qty</field>
+        <field name="domain">[["kind", "=", "in"]]</field>
+        <field name="date_field">day</field>
+    </record>
+    <record id="stock_line_out" model="reporting.report.line">
+        <field name="report_id" ref="stock"/>
+        <field name="parent_id" ref="stock_line_moves"/>
+        <field name="name">Outgoing</field>
+        <field name="code">OUT</field>
+    </record>
+    <record id="stock_out_qty" model="reporting.report.expression">
+        <field name="line_id" ref="stock_line_out"/>
+        <field name="label">qty</field>
+        <field name="model">reporting_fixture.item</field>
+        <field name="field">qty</field>
+        <field name="domain">[["kind", "=", "out"]]</field>
+        <field name="date_field">day</field>
+    </record>
+    <record id="stock_line_net" model="reporting.report.line">
+        <field name="report_id" ref="stock"/>
+        <field name="sequence">3</field>
+        <field name="name">Net</field>
+        <field name="code">NET</field>
+        <field name="foldable">never_unfolded</field>
+    </record>
+    <record id="stock_net_qty" model="reporting.report.expression">
+        <field name="line_id" ref="stock_line_net"/>
+        <field name="label">qty</field>
+        <field name="engine">formula</field>
+        <field name="formula">IN.qty - OUT.qty</field>
+    </record>
+    <record id="stock_line_secret" model="reporting.report.line">
+        <field name="report_id" ref="stock"/>
+        <field name="sequence">4</field>
+        <field name="name">Secret</field>
+        <field name="code">SECRET</field>
+        <field name="optional" eval="True"/>
+    </record>
+    <record id="stock_secret_qty" model="reporting.report.expression">
+        <field name="line_id" ref="stock_line_secret"/>
+        <field name="label">qty</field>
+        <field name="model">reporting_fixture.secret</field>
+        <field name="field">amount</field>
+    </record>
+
+    <!-- the same unreadable line, not optional -->
+    <record id="secret" model="reporting.report">
+        <field name="name">Fixture Secret</field>
+    </record>
+    <record id="secret_col_qty" model="reporting.report.column">
+        <field name="report_id" ref="secret"/>
+        <field name="name">Amount</field>
+        <field name="label">qty</field>
+    </record>
+    <record id="secret_line" model="reporting.report.line">
+        <field name="report_id" ref="secret"/>
+        <field name="name">Secret</field>
+        <field name="code">SECRET</field>
+    </record>
+    <record id="secret_line_qty" model="reporting.report.expression">
+        <field name="line_id" ref="secret_line"/>
+        <field name="label">qty</field>
+        <field name="model">reporting_fixture.secret</field>
+        <field name="field">amount</field>
+    </record>
+</erp>
