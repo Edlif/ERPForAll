@@ -30,6 +30,7 @@ pub const LINKED: &[&str] = &[
     "purchase_stock",
     "sales_team",
     "sale",
+    "sale_stock",
     "ai_base",
 ];
 
@@ -43,7 +44,6 @@ pub const DECLARED_ONLY: &str = "declared, no behaviour yet (manifest and depend
 pub const NOT_LINKED: &[(&str, &str)] = &[
     ("delivery", DECLARED_ONLY),
     ("product_expiry", DECLARED_ONLY),
-    ("sale_stock", DECLARED_ONLY),
     ("stock_delivery", DECLARED_ONLY),
     ("stock_dropshipping", DECLARED_ONLY),
     ("stock_landed_costs", DECLARED_ONLY),

@@ -65,7 +65,9 @@ const output = await build({
     plugin.onLoad({ filter: /.*/, namespace: "elang-compiled" }, args => ({ contents: args.path === "boot" ? bootEntry : args.path === "entry" ? templateEntry : modules.get(args.path), loader: "js", resolveDir: path.join(root, "web") }));
   } }],
 });
-const destination = path.join(root, "web/dist/human-ui");
+// Browser acceptance fixtures isolate output; ordinary builds retain the standard destination.
+const destination = process.env.ERP_UI_OUTPUT_DIR ?? path.join(root, "web/dist/human-ui");
+if (!path.isAbsolute(destination)) throw new Error("ERP_UI_OUTPUT_DIR must be an absolute directory path.");
 await mkdir(destination, { recursive: true });
 const assets = [];
 for (const [name, data, content_type] of [["client.js", output.outputFiles[0].contents, "text/javascript; charset=utf-8"], ["client.css", Buffer.concat(styles.flatMap(style => [style, Buffer.from("\n")])), "text/css; charset=utf-8"]]) {

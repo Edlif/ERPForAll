@@ -1068,6 +1068,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "reads the one declared global base.report_barcode_dpi setting for the renderer and returns the validated module grid",
     ),
     (
+        "sale_stock/delivery.rs::create",
+        1,
+        "creates and confirms one outgoing transfer and its exact moves from an authorized, locked quotation; caller-side checks admit its complete line set, product and unit chains, and ship-only route before creation. The private company-scoped environment drops default overrides, retains the caller identity, and returns no Stock records or new access rights to the caller",
+    ),
+    (
         "stock_account/report_value.rs::value",
         1,
         "only stock managers read published cost values for company, product and lot keys of quants aggregated as the caller; scope and row limit are applied before the value read; only summed amounts leave the provider",

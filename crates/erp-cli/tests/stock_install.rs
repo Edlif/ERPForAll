@@ -152,10 +152,9 @@ fn stock_installs_its_default_topology_records() {
             "locations without policy row: {unguarded:?}"
         );
 
-        // none of these ship outside demo data; each company's warehouse and its operation types
-        // are checked by `install_defaults::STOCK` above
+        // Warehouses, operation types and the company-owned ship-only rule ship on install.
+        // These other records require configuration or demo data.
         for table in [
-            "stock_rule",
             "stock_storage_category",
             "stock_package_type",
             "stock_warehouse_orderpoint",

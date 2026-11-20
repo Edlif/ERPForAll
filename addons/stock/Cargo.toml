@@ -37,6 +37,9 @@ erp-addon-stock_account = { workspace = true }
 erp-addon-stock_landed_costs = { workspace = true }
 erp-addon-purchase = { workspace = true }
 erp-addon-purchase_stock = { workspace = true }
+erp-addon-mail = { workspace = true }
+erp-addon-sale = { workspace = true }
+erp-addon-sales_team = { workspace = true }
 erp-addon-sale_stock = { workspace = true }
 erp-addon-stock_dropshipping = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }

@@ -295,6 +295,7 @@ pub struct Cell {
     text: Option<String>,
     scale: u32,
     currency: Option<i64>,
+    drillable: Option<bool>,
 }
 
 impl Cell {
@@ -307,6 +308,7 @@ impl Cell {
             text: None,
             scale,
             currency: None,
+            drillable: None,
         }
     }
     /// An amount in `currency`, at that currency's decimal places.
@@ -324,6 +326,7 @@ impl Cell {
             text: Some(text.into()),
             scale: 0,
             currency: None,
+            drillable: None,
         }
     }
     /// A calendar date, carried as ISO text with the date wire kind.
@@ -376,6 +379,17 @@ impl Cell {
         }
         self
     }
+    /// Record whether this provider supports drilling this cell into its source records.
+    pub(crate) fn with_drillable(mut self, supported: bool) -> Self {
+        self.drillable = Some(supported && self.number.is_some());
+        self
+    }
+    /// Generated totals have their own line IDs and cannot reuse a definition cell's drill.
+    pub(crate) fn suppress_declared_drill(&mut self) {
+        if let Some(supported) = &mut self.drillable {
+            *supported = false;
+        }
+    }
     fn to_json(&self) -> Json {
         let value = match (&self.number, &self.text) {
             (Some(n), _) => json!(format!(
@@ -386,8 +400,12 @@ impl Cell {
             (None, Some(text)) => json!(text),
             (None, None) => Json::Null,
         };
-        json!({"kind": self.kind.as_str(), "value": value, "scale": self.scale,
-               "currency": self.currency, "zero": self.is_zero()})
+        let mut cell = json!({"kind": self.kind.as_str(), "value": value, "scale": self.scale,
+                              "currency": self.currency, "zero": self.is_zero()});
+        if let Some(supported) = self.drillable {
+            cell["drillable"] = Json::Bool(supported);
+        }
+        cell
     }
 }
 

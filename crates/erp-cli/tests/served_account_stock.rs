@@ -150,15 +150,22 @@ async fn served_node_offers_and_installs_account_and_stock() {
             "{name} is refused: {log}"
         );
     }
-    for name in ["sale_stock", "stock_sms"] {
-        assert_eq!(state_of(&start, name), None, "{name} is not offered");
-        assert!(
-            log.contains(&format!(
-                "addon catalogue: {name} is not offered for installation: declared, no behaviour yet"
-            )),
-            "{name}: {log}"
-        );
-    }
+    assert_eq!(
+        state_of(&start, "sale_stock").as_deref(),
+        Some("uninstalled"),
+        "the Sales delivery bridge is offered for explicit installation"
+    );
+    assert_eq!(
+        state_of(&start, "stock_sms"),
+        None,
+        "stock_sms is not offered"
+    );
+    assert!(
+        log.contains(
+            "addon catalogue: stock_sms is not offered for installation: declared, no behaviour yet"
+        ),
+        "stock_sms: {log}"
+    );
     assert!(!log.contains("no Rust sources"), "{log}");
     // A folder with a crate this binary does not link says so (the fixture's `unlinked_native`).
     assert!(
@@ -223,6 +230,11 @@ async fn served_node_offers_and_installs_account_and_stock() {
     let upgraded = lifecycle(&fixture, "/erp/module/upgrade", r#"{"modules":["base"]}"#);
     assert_eq!(upgraded.status, 200, "upgrade base: {}", upgraded.body);
     let after = catalogue(port, &cookies);
+    assert_eq!(
+        state_of(&after, "sale_stock").as_deref(),
+        Some("uninstalled"),
+        "installing Accounting and Inventory and upgrading Base leaves Sales delivery uninstalled"
+    );
     for name in ADDED {
         assert_eq!(
             state_of(&after, name).as_deref(),

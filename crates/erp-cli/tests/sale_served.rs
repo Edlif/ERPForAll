@@ -78,3 +78,66 @@ async fn served_node_installs_the_sales_application_and_opens_its_screens() {
     assert_actions_open(&fixture, &["sale", "sales_team"]).await;
     fixture.cleanup().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sales_bridge_adds_the_warehouse_picker_to_the_served_quotation_form() {
+    let fixture = NativeFixture::start().await;
+    for (modules, has_picker) in [
+        (r#"{"modules":["sale_management"]}"#, false),
+        (r#"{"modules":["sale_stock"]}"#, true),
+    ] {
+        let reply = request_within(
+            fixture.port,
+            "POST",
+            "/erp/module/install",
+            &[
+                ("cookie", &fixture.cookies),
+                ("content-type", "application/json"),
+                ("sec-fetch-site", "same-origin"),
+            ],
+            modules,
+            std::time::Duration::from_secs(600),
+        );
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        let action: i64 = fixture
+            .client
+            .query_one(
+                "SELECT res_id::int8 FROM ir_model_data WHERE module='sale' AND name='action_quotations'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        for mobile in [false, true] {
+            let body = serde_json::json!({
+                "ids": [action], "wire_major": 1, "options": {"mobile": mobile}
+            });
+            let reply = json_post(
+                fixture.port,
+                &fixture.cookies,
+                "/erp/json/2/ir.actions.act_window/erp_load_web_action_views",
+                &body.to_string(),
+            );
+            assert_eq!(reply.status, 200, "{}", reply.body);
+            let bundle: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+            let form = bundle["views"]["views"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|view| view["type"] == "form")
+                .unwrap();
+            let picker = form["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["field"]["name"] == "warehouse_id");
+            assert_eq!(picker.is_some(), has_picker, "mobile={mobile}");
+            if let Some(picker) = picker {
+                assert_eq!(picker["label"], "Warehouse");
+                assert!(picker["options"]["domain"].is_object());
+                assert!(picker["modifiers"]["readonly"].is_object());
+            }
+        }
+    }
+    fixture.cleanup().await;
+}

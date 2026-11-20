@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Warehouses and operation types with immutable company ownership. A new warehouse takes its
 //! company, name, short name and address defaults from the company and gets its generated
-//! locations and operation types (`warehouse_setup`); step changes on an existing warehouse,
-//! routes and rules come later; numbering is's (topology ADR A1).
+//! locations, operation types and the ship-only delivery route (`warehouse_setup`). Step
+//! changes on existing warehouses and other route families are separate topology slices.
 
 use erp_sdk::prelude::*;
 
@@ -569,7 +569,7 @@ impl StockWarehouse {
 
     /// Name, short name and address come from the company when left out.
     /// A warehouse without its own view location gets its generated locations and operation
-    /// types; the warehouse, its topology and its numbering commit together or not at all.
+    /// types, plus its ship-only delivery route. The warehouse and its topology commit together.
     #[method(override)]
     async fn create(
         this: &RecordSet<StockWarehouse>,

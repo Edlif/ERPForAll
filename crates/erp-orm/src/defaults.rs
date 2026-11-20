@@ -75,26 +75,23 @@ async fn base_default_get(
     }
     let empty = Records::empty(records.env().clone(), records.model_id());
     // Base not installed => no stored defaults in ir.default.
-    let (model_defaults, company_fallbacks) =
-        if crate::ir_default::is_available(records.env().registry()) {
-            let mut defaults = crate::ir_default::get_model_defaults(
-                tx,
-                records.env(),
-                records.model_name(),
-                None,
-            )
-            .await?;
-            // Step 5 is the current company's fallback. Without a current company an omitted
-            // property stores no override and every company reads its own fallback, so offering
-            // the shared one would only turn it into a supplied value.
-            let current = !tx.companies(records.env()).await?.is_empty();
-            if current {
-                replace_removed_property_targets(tx, records, names, &mut defaults).await?;
-            }
-            (defaults, current)
-        } else {
-            (Default::default(), false)
-        };
+    let (model_defaults, company_fallbacks) = if records.env().uses_default_overrides()
+        && crate::ir_default::is_available(records.env().registry())
+    {
+        let mut defaults =
+            crate::ir_default::get_model_defaults(tx, records.env(), records.model_name(), None)
+                .await?;
+        // Step 5 is the current company's fallback. Without a current company an omitted
+        // property stores no override and every company reads its own fallback, so offering
+        // the shared one would only turn it into a supplied value.
+        let current = !tx.companies(records.env()).await?.is_empty();
+        if current {
+            replace_removed_property_targets(tx, records, names, &mut defaults).await?;
+        }
+        (defaults, current)
+    } else {
+        (Default::default(), false)
+    };
     // a picture default is admitted under the database's image limits: load them when a requested
     // image field has a default of any kind
     let spec = records.spec();

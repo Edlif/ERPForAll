@@ -641,7 +641,9 @@ async fn drop_warehouses(client: &Client) {
           SELECT id FROM stock_location WHERE generated_warehouse_id IS NOT NULL;
         UPDATE stock_warehouse SET in_type_id = NULL, out_type_id = NULL, int_type_id = NULL,
           pick_type_id = NULL, pack_type_id = NULL, qc_type_id = NULL, store_type_id = NULL,
-          xdock_type_id = NULL;
+          xdock_type_id = NULL, delivery_route_id = NULL;
+        DELETE FROM stock_route WHERE generated_warehouse_id IS NOT NULL
+          AND generated_addon = 'stock' AND generated_role = 'delivery_route_id';
         DELETE FROM stock_picking_type WHERE id IN (SELECT id FROM gone_types);
         DELETE FROM ir_sequence WHERE id IN (SELECT sequence_id FROM gone_types);
         UPDATE stock_location SET generated_warehouse_id = NULL, generated_addon = NULL,
@@ -785,6 +787,150 @@ fn stock_upgrade_from_1_7_gives_each_company_without_one_its_warehouse() {
         drop(tx);
         drop(again);
         drop(sys);
+        drop(client);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn stock_upgrade_from_1_12_fills_missing_direct_delivery_routes_once() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let installed = install(&db).await;
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        let main = tx
+            .query(
+                "SELECT res_id FROM ir_model_data WHERE module='base' AND name='main_company'",
+                &[],
+            )
+            .await
+            .unwrap()[0]
+            .get::<_, i64>(0);
+        let currency = tx
+            .query(
+                "SELECT currency_id FROM res_company WHERE id = $1",
+                &[&main],
+            )
+            .await
+            .unwrap()[0]
+            .get::<_, i64>(0);
+        let legacy = super::warehouse_setup::warehouse_of(&mut tx, main).await;
+        let second = tx
+            .env()
+            .records("res.company")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Custom Shipment".into()))
+                        .set_cell("currency_id", Cell::Id(currency)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let configured = super::warehouse_setup::warehouse_of(&mut tx, second).await;
+        let env = tx.env().with_company(second).unwrap();
+        let custom = env
+            .records("stock.route")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Administrator delivery choice".into()))
+                        .set_cell("company_id", Cell::Id(second)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        tx.commit().await.unwrap();
+        drop(tx);
+        drop(installed);
+
+        let client = db.client().await.unwrap();
+        // Restore just the pre-1.13 shape of an existing warehouse and preserve a separate
+        // configured route. This uses the current binary with a repaired legacy fixture.
+        client
+            .execute(
+                "UPDATE stock_warehouse SET delivery_route_id = CASE WHEN id = $2 THEN $3::int8 END \
+                 WHERE id IN ($1, $2)",
+                &[&legacy, &configured, &custom],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "DELETE FROM stock_route WHERE generated_warehouse_id = $1 AND generated_role = 'delivery_route_id'",
+                &[&legacy],
+            )
+            .await
+            .unwrap();
+        let quantity_action = "SELECT a.params->>'report', quantity.res_id::text
+             FROM ir_model_data shipped
+             JOIN ir_act_client a ON a.id = shipped.res_id
+             CROSS JOIN ir_model_data quantity
+             WHERE shipped.module = 'stock' AND shipped.name = 'action_report_stock_position'
+               AND quantity.module = 'stock' AND quantity.name = 'report_stock_quantity'";
+        let original_action = client.query_one(quantity_action, &[]).await.unwrap();
+        let quantity_report = original_action.get::<_, String>(1);
+        assert_eq!(original_action.get::<_, String>(0), quantity_report);
+        let sys = system(&db);
+        let modules = [ModuleName::new("stock").unwrap()];
+        let mut captured = None;
+        for _ in 0..2 {
+            client
+                .execute(
+                    "UPDATE ir_module_module SET latest_version = '1.12.0' WHERE name = 'stock'",
+                    &[],
+                )
+                .await
+                .unwrap();
+            let upgraded = sys
+                .button_immediate_upgrade(&sys.system_env(Context::new()), &modules)
+                .await
+                .unwrap();
+            assert!(
+                upgraded.post_commit.is_clean(),
+                "{:?}",
+                upgraded.post_commit
+            );
+            let installed_version = client
+                .query_one(
+                    "SELECT latest_version FROM ir_module_module WHERE name = 'stock'",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get::<_, String>(0);
+            assert_eq!(installed_version, "1.13.0");
+            let retained_action = client.query_one(quantity_action, &[]).await.unwrap();
+            assert_eq!(retained_action.get::<_, String>(0), quantity_report);
+            let row = client
+                .query_one(
+                    "SELECT (SELECT delivery_route_id FROM stock_warehouse WHERE id = $2), \
+                       (SELECT r.id FROM stock_warehouse w JOIN stock_rule r ON r.route_id = w.delivery_route_id \
+                        WHERE w.id = $1 AND r.warehouse_id = w.id AND r.company_id = w.company_id \
+                          AND r.location_src_id = w.lot_stock_id AND r.picking_type_id = w.out_type_id \
+                          AND r.action = 'pull' AND r.procure_method = 'make_to_stock' AND r.active)",
+                    &[&legacy, &configured],
+                )
+                .await
+                .unwrap();
+            assert_eq!(row.get::<_, Option<i64>>(0), Some(custom));
+            let rule = row.get::<_, Option<i64>>(1);
+            assert!(
+                rule.is_some(),
+                "the existing one-step warehouse needs a delivery rule"
+            );
+            if let Some(previous) = captured {
+                assert_eq!(rule, Some(previous));
+            }
+            captured = rule;
+            drop(upgraded);
+        }
         drop(client);
         db.cleanup().await.unwrap();
     });

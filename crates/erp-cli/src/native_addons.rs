@@ -33,6 +33,7 @@ pub static DESCRIPTORS: &[&AddonDescriptor] = &[
     &erp_addon_purchase_stock::ADDON,
     &erp_addon_sales_team::ADDON,
     &erp_addon_sale::ADDON,
+    &erp_addon_sale_stock::ADDON,
     &erp_addon_ai_base::ADDON,
 ];
 

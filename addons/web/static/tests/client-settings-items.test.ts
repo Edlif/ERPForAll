@@ -9,19 +9,21 @@ const link: SettingsItem = { kind: "link", key: "base.manage", label: "Manage Us
 const setting = { key: "notes.enabled", label: "Enabled", kind: "boolean", choices: null, writable: true, app: "notes", block: "General", sequence: 100 };
 let refuseRun = false;
 afterEach(() => { refuseRun = false; document.body.replaceChildren(); });
-async function mount(items: unknown, declarations: unknown[] = [], initialApp: string | null = null) {
+async function mount(items: unknown, declarations: unknown[] = [], initialApp: string | null = null, currentCompanyId?: number, sharedOnly = false) {
   const calls: { method: string; args: Record<string, unknown> }[] = [], openTarget = vi.fn(async () => {});
   const rpc = new RpcClient(async (path, init) => {
     const args = JSON.parse(String(init?.body)) as Record<string, unknown>, method = String(path).split("/").at(-1)!;
     calls.push({ method, args });
-    const response = method === "erp_describe" ? { wire_major: 1, registry_version: "r1", scope: args["scope"], declarations, ...(items === undefined ? {} : { items }) }
-      : { wire_major: 1, scope: args["scope"], revision: "revision-one", values: declarations.map(declaration => ({ key: (declaration as { key: string }).key, value: false, source: "stored" })) };
+    const sharedScope = !sharedOnly || (args["scope"] as {kind?: string} | undefined)?.kind === "global";
+    const available = sharedScope ? declarations : [];
+    const response = method === "erp_describe" ? { wire_major: 1, registry_version: "r1", scope: args["scope"], declarations: available, ...(items === undefined ? {} : { items }) }
+      : { wire_major: 1, scope: args["scope"], revision: "revision-one", values: available.map(declaration => ({ key: (declaration as { key: string }).key, value: false, source: "stored" })) };
     return new Response(JSON.stringify(response), { headers: { "Content-Type": "application/json" } });
   }, () => {});
   const host = document.createElement("div"), panel = document.createElement("div"); panel.innerHTML = '<div data-control-search></div>'; document.body.append(host, panel);
   const jobs: Promise<void>[] = [];
   const controller = await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { if (!refuseRun) jobs.push(job()); }, () => {}, {}, ["global", "company"], "r1", undefined, panel, initialApp,
-    { navigation: { roots: [{ id: 1, module: "base", label: "Administration", icon: "lucide:settings" }], openTarget } });
+    { navigation: { ...(currentCompanyId === undefined ? {} : { currentCompanyId }), roots: [{ id: 1, module: "base", label: "Administration", icon: "lucide:settings" }], openTarget } });
   return { host, panel, controller, calls, openTarget, jobs };
 }
 
@@ -164,4 +166,18 @@ test("Inventory keeps deferred features visible and outside scalar saves", async
   host.querySelector<HTMLButtonElement>('[data-setting-key="stock.module_delivery"] button')!.click();
   await vi.waitFor(() => expect(openTarget).toHaveBeenCalledWith({ kind: "action", id: 77, res_id: null }));
   expect(calls.some(call => call.method === "button_immediate_install")).toBe(false);
+});
+
+test("an addon settings menu opens its active company while the general menu opens shared settings", async () => {
+  const scoped = await mount([], [setting], "notes", 1);
+  expect(scoped.calls.find(call => call.method === "erp_describe")?.args["scope"]).toEqual({ kind: "company", company_id: 1 });
+  expect(scoped.host.querySelector('[aria-checked=true]')?.textContent).toBe("One");
+  const shared = await mount([], [setting], null, 1);
+  expect(shared.host.querySelector('[aria-checked=true]')?.getAttribute("data-scope")).toBe("global");
+});
+
+test("shared-only addon settings read just the shared values when entered from a company", async () => {
+  const { host, calls } = await mount([], [setting], "notes", 1, true);
+  expect(host.querySelector('[data-scope="global"]')?.getAttribute("aria-checked")).toBe("true");
+  expect(calls.filter(c => c.method === "erp_read_values").map(c => c.args["scope"])).toEqual([{kind: "global"}]);
 });

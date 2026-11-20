@@ -179,3 +179,10 @@ async fn move_flags_and_done_times(tx: &mut Transaction, _from: &SemverVersion) 
     .await?;
     Ok(())
 }
+
+/// Upgrade previously installed one-step warehouses without replacing administrator routes.
+#[erp_sdk::migration(addon = "stock", version = "1.13", stage = post)]
+async fn ship_only_delivery_routes(tx: &mut Transaction, _from: &SemverVersion) -> Result<()> {
+    let env = tx.env();
+    crate::warehouse_setup::backfill_ship_only_routes(tx, &env).await
+}

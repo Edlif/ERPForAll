@@ -29,6 +29,8 @@ pub struct Env {
     generation_attachments: Arc<crate::generation::GenerationAttachments>,
     principal: Arc<Principal>,
     context: Arc<Context>,
+    /// A native workflow can exclude operator defaults while keeping declared field defaults.
+    ignore_default_overrides: bool,
     /// The company context derived from `context` was refused: reported by every use of the
     /// companies, never by the call that built the environment. Behind an
     /// `Arc` so the rare refusal does not widen every `Env` (and every future holding one).
@@ -156,6 +158,7 @@ impl Env {
             label_reader: None,
             block: None,
             switches: None,
+            ignore_default_overrides: false,
         }
     }
 
@@ -239,6 +242,7 @@ impl Env {
             operation_identity: self.operation_identity.clone(),
             block: self.block.clone(),
             switches: self.switches.clone(),
+            ignore_default_overrides: self.ignore_default_overrides,
         }
     }
 
@@ -265,6 +269,7 @@ impl Env {
             operation_identity: self.operation_identity.clone(),
             block: self.block.clone(),
             switches: self.switches.clone(),
+            ignore_default_overrides: self.ignore_default_overrides,
         }
     }
 
@@ -480,6 +485,7 @@ impl Env {
             operation_identity: self.operation_identity.clone(),
             block: self.block.clone(),
             switches: self.switches.clone(),
+            ignore_default_overrides: self.ignore_default_overrides,
         }
     }
 
@@ -514,6 +520,7 @@ impl Env {
             operation_identity: self.operation_identity.clone(),
             block: self.block.clone(),
             switches,
+            ignore_default_overrides: self.ignore_default_overrides,
         }
     }
 
@@ -608,6 +615,7 @@ impl Env {
             operation_identity: self.operation_identity.clone(),
             block: self.block.clone(),
             switches: self.switches.clone(),
+            ignore_default_overrides: self.ignore_default_overrides,
         }
     }
 
@@ -627,6 +635,7 @@ impl Env {
             label_reader: None,
             block: None,
             switches: None,
+            ignore_default_overrides: self.ignore_default_overrides,
         }
     }
 
@@ -669,7 +678,28 @@ impl Env {
             operation_identity: self.operation_identity.clone(),
             block: self.block.clone(),
             switches: self.switches.clone(),
+            ignore_default_overrides: self.ignore_default_overrides,
         }
+    }
+
+    /// Derive a native workflow environment that applies model field defaults to new records,
+    /// while excluding `default_*` keys and saved `ir.default` overrides. Nested environment
+    /// derivations keep this choice. The original environment and the caller's access remain
+    /// unchanged. Use an ordinary environment to read the caller's persisted source values.
+    #[must_use]
+    pub fn without_default_overrides(&self) -> Self {
+        if self.ignore_default_overrides {
+            return self.clone();
+        }
+        Self {
+            context: Arc::new(self.context.without_defaults()),
+            ignore_default_overrides: true,
+            ..self.clone()
+        }
+    }
+
+    pub(crate) fn uses_default_overrides(&self) -> bool {
+        !self.ignore_default_overrides
     }
 
     /// `with_context(**kw)`: the current context updated with `updates`.
@@ -728,6 +758,11 @@ impl Env {
     }
 
     fn with_context_value(&self, context: Context) -> Self {
+        let context = if self.ignore_default_overrides && context.has_default_keys() {
+            context.without_defaults()
+        } else {
+            context
+        };
         let (principal, company_error) = if self.context.same_company_ids(&context) {
             (Arc::clone(&self.principal), self.company_error.clone())
         } else {
@@ -745,6 +780,7 @@ impl Env {
             operation_identity: self.operation_identity.clone(),
             block: self.block.clone(),
             switches: self.switches.clone(),
+            ignore_default_overrides: self.ignore_default_overrides,
         }
     }
 
@@ -859,6 +895,7 @@ impl PartialEq for Env {
         Arc::ptr_eq(&self.registry, &other.registry)
             && (Arc::ptr_eq(&self.principal, &other.principal) || self.principal == other.principal)
             && self.context == other.context
+            && self.ignore_default_overrides == other.ignore_default_overrides
             && self.company_error == other.company_error
             && self.label_reader == other.label_reader
             && self.block == other.block
@@ -872,6 +909,7 @@ impl Hash for Env {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.principal.hash(state);
         self.context.hash(state);
+        self.ignore_default_overrides.hash(state);
         self.company_error.hash(state);
         self.label_reader.hash(state);
         self.block.hash(state);

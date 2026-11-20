@@ -141,6 +141,13 @@ pub const STOCK: &[(&str, &[&str])] = &[
          LEFT JOIN stock_picking_type t ON t.warehouse_id = w.id GROUP BY w.id ORDER BY w.id",
         &["Main Company/Main/2/8"],
     ),
+    (
+        "SELECT w.code || '/' || s.action || '/' || s.procure_method || '/' || t.code \
+         FROM stock_warehouse w JOIN stock_route r ON r.id = w.delivery_route_id \
+         JOIN stock_rule s ON s.route_id = r.id AND s.company_id = w.company_id \
+         JOIN stock_picking_type t ON t.id = s.picking_type_id ORDER BY w.id, s.id",
+        &["Main/pull/make_to_stock/outgoing"],
+    ),
 ];
 
 /// The Sales privilege and its groups, the access rows, the default team (no "Website" or "Point

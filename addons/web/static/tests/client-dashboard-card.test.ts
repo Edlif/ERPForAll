@@ -543,3 +543,11 @@ test("a figure's action that answers after the user left the page opens nothing"
   expect(window.location.href).toBe(address);
   expect(page.root.querySelector(".home-grid")).not.toBeNull();
 });
+
+test("zero chart values draw no bar above or below the baseline", () => {
+  const value = json(card => { card.chart.points[0]!.value = "0"; });
+  const { node } = dashboardCardWidget(environment(value).env);
+  const bars = node.querySelectorAll(".dashboard-card-chart rect");
+  expect(bars[0]?.getAttribute("height")).toBe("0");
+  expect(Number(bars[1]?.getAttribute("height"))).toBeGreaterThan(0);
+});

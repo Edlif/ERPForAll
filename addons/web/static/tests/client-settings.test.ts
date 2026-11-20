@@ -305,9 +305,9 @@ test("settings show one app at a time, each app with its addon tile, and a searc
   // The first app opens; the other app's settings stay out of the way until it is chosen.
   expect([section("notes").style.display, section("mail_server").style.display]).toEqual(["", "none"]);
   expect(tabs.map(tab => tab.getAttribute("aria-selected"))).toEqual(["true", "false"]);
-  // Every app carries its addon tile (initial on a tone) in the sidebar and in its heading.
-  expect(tabs.map(tab => tab.querySelector<HTMLElement>(".settings-app-icon")?.dataset["letter"])).toEqual(["N", "M"]);
-  expect(section("mail_server").querySelector(".settings-section-title .settings-app-icon")).not.toBeNull();
+  // Apps without a declared icon use the same glyph in the sidebar and section heading.
+  expect(tabs.map(tab => tab.querySelector(".settings-app-icon svg")?.getAttribute("data-icon"))).toEqual(["layout-grid", "layout-grid"]);
+  expect(section("mail_server").querySelector(".settings-section-title .settings-app-icon svg[data-icon=layout-grid]")).not.toBeNull();
   expect(tabs.map(tab => tab.textContent)).toEqual(["Notes", "Mail Server"]);
   tabs[1]!.click();
   expect([section("notes").style.display, section("mail_server").style.display]).toEqual(["none", ""]);

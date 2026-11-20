@@ -620,3 +620,12 @@ test("the screen has no serious structural accessibility violation, open or with
   click(rows(r)[1]?.querySelector("[data-action=caret]"));
   await auditComponent(r.env.host);
 });
+
+test("a formula amount without source records has no cell drill or empty actions menu", async () => {
+  const r = mount(standard({ erp_report_lines: () => linesAnswer([top({ cells: [{ ...cell("9"), drillable: false }] })]) }));
+  await settle();
+  const row = rows(r)[0]!;
+  expect(row.querySelector(".report-cell")?.textContent).toBe("9");
+  expect(row.querySelector("[data-drill]")).toBeNull();
+  expect(row.querySelector(".report-caret")).toBeNull();
+});

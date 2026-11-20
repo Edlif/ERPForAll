@@ -36,7 +36,14 @@ mod reports;
 #[path = "sale_order/screens.rs"]
 mod screens;
 
+#[path = "sale_order/delivery.rs"]
+mod delivery;
+
 fn system(db: &TestDb) -> ModuleSystem {
+    system_with_stock(db, false)
+}
+
+fn system_with_stock(db: &TestDb, stock: bool) -> ModuleSystem {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -57,30 +64,40 @@ fn system(db: &TestDb) -> ModuleSystem {
             (name, snapshot.digest().to_owned())
         })
         .collect();
-    ModuleSystem::builder(db.pool().clone(), index)
-        .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
-        .require_sql_uninstall_guards([&erp_addon_account::reconcile::history_guard::UNINSTALL])
+    let builder = ModuleSystem::builder(db.pool().clone(), index)
         .native_artifact_identities(identities)
         .view_types(erp_addon_web::view_type_contributions())
         .require_core_tables(erp_security::auth::core_tables())
-        .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
-        .code([
-            &erp_addon_base::ADDON,
-            &erp_addon_web::ADDON,
-            &erp_addon_mail::ADDON,
-            &erp_addon_uom::ADDON,
-            &erp_addon_product::ADDON,
-            // auto-installed with product and mail, which sale brings in
-            &erp_addon_product_mail::ADDON,
-            &erp_addon_analytic::ADDON,
-            &erp_addon_account::ADDON,
-            // auto-installed with account and mail, which sale brings in
-            &erp_addon_account_mail::ADDON,
-            &erp_addon_sales_team::ADDON,
-            &erp_addon_sale::ADDON,
-        ])
-        .build()
-        .unwrap()
+        .require_core_tables(erp_addon_base::partner_hierarchy::core_tables());
+    if stock {
+        builder
+            .code(erp_cli::native_addons::DESCRIPTORS.iter().copied())
+            .require_sql_objects(erp_cli::native_addons::SQL_MANIFESTS.iter().copied())
+            .require_sql_uninstall_guards(
+                erp_cli::native_addons::UNINSTALL_MANIFESTS.iter().copied(),
+            )
+    } else {
+        builder
+            .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+            .require_sql_uninstall_guards([&erp_addon_account::reconcile::history_guard::UNINSTALL])
+            .code([
+                &erp_addon_base::ADDON,
+                &erp_addon_web::ADDON,
+                &erp_addon_mail::ADDON,
+                &erp_addon_uom::ADDON,
+                &erp_addon_product::ADDON,
+                // auto-installed with product and mail, which sale brings in
+                &erp_addon_product_mail::ADDON,
+                &erp_addon_analytic::ADDON,
+                &erp_addon_account::ADDON,
+                // auto-installed with account and mail, which sale brings in
+                &erp_addon_account_mail::ADDON,
+                &erp_addon_sales_team::ADDON,
+                &erp_addon_sale::ADDON,
+            ])
+    }
+    .build()
+    .unwrap()
 }
 
 /// Run `body` on a thread with a large stack: a full install chain exceeds the default one.
@@ -548,6 +565,71 @@ fn the_lock_setting_locks_confirmed_orders() {
         act(&mut tx, &quotation, "action_confirm").await.unwrap();
         assert_eq!(text(&mut tx, &quotation, "state").await, "sale");
         assert!(flag(&mut tx, &quotation, "locked").await);
+        tx.rollback().await.unwrap();
+    });
+}
+
+#[test]
+fn late_confirmation_refusal_rolls_back_the_batch_for_an_orm_caller() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let world = world(&mut tx).await;
+        let draft = new_order(&mut tx, &world).await;
+        let sent = new_order(&mut tx, &world).await;
+        act(&mut tx, &sent, "action_quotation_sent").await.unwrap();
+        let records = draft.browse([draft.ids()[0], sent.ids()[0]]).unwrap();
+        let draft_date = draft.cell(&mut tx, "date_order").await.unwrap();
+        let sent_date = sent.cell(&mut tx, "date_order").await.unwrap();
+
+        // An invalid stored switch returns a regular validation error during the final
+        // confirmation step, after the order writes and hook. Do not wrap the call in act().
+        let key = erp_addon_sale::LOCK_CONFIRMED;
+        set_setting(&mut tx, key, Value::Bool(true)).await;
+        assert_eq!(
+            tx.execute(
+                "UPDATE ir_config_setting_value SET value_text = '123' WHERE setting_key = $1",
+                &[&key],
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        let error = records
+            .call::<(), ()>(&mut tx, "action_confirm", ())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation);
+        assert_eq!(
+            error.message(),
+            "Stored setting sale.lock_confirmed_sales is invalid."
+        );
+        assert_eq!(text(&mut tx, &draft, "state").await, "draft");
+        assert_eq!(text(&mut tx, &sent, "state").await, "sent");
+        assert_eq!(draft.cell(&mut tx, "date_order").await.unwrap(), draft_date);
+        assert_eq!(sent.cell(&mut tx, "date_order").await.unwrap(), sent_date);
+        assert!(!flag(&mut tx, &draft, "locked").await);
+        assert!(!flag(&mut tx, &sent, "locked").await);
+
+        // Earlier caller work and the transaction survive. Repair the fixture and retry.
+        assert_eq!(
+            tx.execute(
+                "UPDATE ir_config_setting_value SET value_text = 'true' WHERE setting_key = $1",
+                &[&key],
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        records
+            .call::<(), ()>(&mut tx, "action_confirm", ())
+            .await
+            .unwrap();
+        assert_eq!(text(&mut tx, &draft, "state").await, "sale");
+        assert_eq!(text(&mut tx, &sent, "state").await, "sale");
+        assert!(flag(&mut tx, &draft, "locked").await);
+        assert!(flag(&mut tx, &sent, "locked").await);
         tx.rollback().await.unwrap();
     });
 }

@@ -130,8 +130,6 @@ interface Menu {
   kind: "window" | "client";
 }
 
-/** `route.method_action` of a client action result kept by this page; window results use the method-action store. */
-const CLIENT_RESULT_PREFIX = "client:";
 const MAX_CLIENT_STATE_BYTES = 16384;
 type ClientResult = Extract<ActionResult, { kind: "client" }>;
 type MountedClient = { key: string; name: string; handle: ClientActionHandle };
@@ -203,6 +201,7 @@ export class HumanApp {
   /** Client action results kept for their route (`client:<n>`), bounded; and the state each client action left. */
   private readonly clientResults = new Map<string, ClientResult>();
   private readonly clientStates = new Map<string, unknown>();
+  private readonly clientResultPage = crypto.randomUUID();
   private clientCounter = 0;
   private pendingClient: MountedClient | undefined;
   private clientMounted: MountedClient | undefined;
@@ -2007,6 +2006,7 @@ export class HumanApp {
             registry: this.registry,
             options: widget.options,
             settingsNavigation: {
+              currentCompanyId: this.currentCompanyId,
               roots: this.settingsRootMenuIds.map(id => {
                 const menu = this.menus.get(id);
                 if (!menu) throw new ClientError("server", "Settings root menu is unavailable.");
@@ -3508,12 +3508,14 @@ export class HumanApp {
   /** Whether `route` opens an `ir.actions.client`: a kept method result, or a menu entry of that kind. */
   private isClientRoute(route: Route): boolean {
     if (!route.action) return false;
-    if (route.method_action?.startsWith(CLIENT_RESULT_PREFIX)) return true;
+    // A report drill keeps the source menu in its URL. The method result determines
+    // which view to restore when traversing that history entry.
+    if (route.method_action) return route.method_action.startsWith(this.clientResultPage + ":");
     return [...this.menus.values()].some(menu => menu.kind === "client" && String(menu.action) === route.action);
   }
 
   private keepClientResult(result: ClientResult): string {
-    const key = `${CLIENT_RESULT_PREFIX}${++this.clientCounter}`;
+    const key = `${this.clientResultPage}:${++this.clientCounter}`;
     this.clientResults.set(key, result);
     if (this.clientResults.size > 64) { const oldest = this.clientResults.keys().next().value; if (oldest !== undefined) this.clientResults.delete(oldest); }
     return key;
@@ -3527,8 +3529,8 @@ export class HumanApp {
 
   /** Mount the registered screen of a client action into `staging`: an unregistered tag mounts nothing. */
   private async mountClientAction(route: Route, staging: HTMLElement, generation: number, stagedDisposers: (() => void)[]): Promise<{ panelDispose: () => void; service: ServiceController; handle: ClientActionHandle; dispose: () => void }> {
-    const kept = route.method_action?.startsWith(CLIENT_RESULT_PREFIX) ? this.clientResults.get(route.method_action) : undefined;
-    if (route.method_action?.startsWith(CLIENT_RESULT_PREFIX) && !kept) throw new ClientError("validation", "This client action has expired. Open its originating menu again.");
+    const kept = route.method_action ? this.clientResults.get(route.method_action) : undefined;
+    if (route.method_action && !kept) throw new ClientError("validation", "This client action has expired. Open its originating menu again.");
     const result = kept ?? await this.loadClientAction(rpcId(route.action!));
     if (!clientActions.has(result.tag)) throw new ClientError("unsupported", `Client action '${result.tag}' is declared by the server but not registered by this page. Reload the page.`);
     const factory = clientActions.get(result.tag);
@@ -3579,13 +3581,20 @@ export class HumanApp {
       if (this.current.method_action !== id) this.methodActions.remove(id);
       return;
     }
+    if (normalized.kind === "window" && normalized.res_id !== null) {
+      await this.openWindowDialog(normalized, undefined, generation, async () => {
+        this.captureClientState();
+        await this.navigate(origin, true, true);
+      }, undefined, this.context);
+      return;
+    }
     if (normalized.kind === "client") {
       const key = this.keepClientResult(normalized);
       try { await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: key }); }
       catch (error) { this.clientResults.delete(key); throw error; }
       return;
     }
-    throw new ClientError("unsupported", `A client action opens a related list or another client action, not a ${normalized.kind} result.`);
+    throw new ClientError("unsupported", `This client action cannot open the requested ${normalized.kind} result.`);
   }
 
   /** Resolve only actions advertised by the authorized menu tree; normal navigation rechecks access and dirty state. */

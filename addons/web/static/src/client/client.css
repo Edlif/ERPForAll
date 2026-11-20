@@ -827,24 +827,27 @@ td button.link { border: 0; background: transparent; color: var(--accent); paddi
 .settings-search-box { width: 100%; }
 .settings-search-box .search-input { width: 100%; min-width: 0; min-height: 36px; padding: 7px 12px; border: 1px solid var(--input-line); border-radius: var(--radius-control); }
 .settings-container { display: flex; min-height: calc(100dvh - var(--app-bar-height) - var(--control-panel-height, 61px)); background: var(--surface); }
-.settings-sidebar { width: 15rem; flex-shrink: 0; border-right: 1px solid var(--line); background: var(--surface-subtle); }
-.settings-sidebar-list { display: flex; flex-direction: column; padding: 12px 0; gap: 2px; }
-.settings-app-tab { text-align: left; white-space: normal; overflow-wrap: anywhere; background: transparent; border: 0; border-left: 3px solid transparent; border-radius: 0; padding: 8px 16px; min-height: 40px; font-size: 14px; font-weight: 500; color: var(--text); }
+.settings-sidebar { width: clamp(11rem, 15vw, 14rem); flex-shrink: 0; border-right: 1px solid var(--line); background: var(--surface-subtle); }
+.settings-sidebar-list { display: flex; flex-direction: column; padding: 12px 8px; gap: 2px; }
+.settings-app-tab { text-align: start; white-space: normal; overflow-wrap: anywhere; background: transparent; border: 0; border-left: 3px solid transparent; border-radius: var(--radius-control); padding: 8px 12px; min-height: 40px; font-size: 14px; font-weight: 500; color: var(--text); }
 .settings-app-tab:hover { background: var(--hover); }
 .settings-app-tab.active { background: var(--selected); color: var(--selected-text); font-weight: 600; border-left-color: var(--accent); }
-.settings-content { flex: 1; min-width: 0; padding: 0 0 32px; }
+.settings-content { flex: 1; min-width: 0; padding: 16px clamp(12px, 2vw, 32px) 32px; background: var(--canvas); }
+.settings-section { border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--surface); }
+.settings-section > :first-child { border-start-start-radius: inherit; border-start-end-radius: inherit; }
 .settings-section { margin: 0 0 24px; }
 .settings-section-title { display: flex; align-items: center; box-sizing: border-box; min-height: 52px; font-size: 16px; font-weight: 600; margin: 0; padding: 12px 28px; color: var(--text); overflow-wrap: anywhere; }
 .settings-block-group { margin-bottom: 0; }
 /* A block is a titled band over its boxes: the band carries the structure, the boxes stay quiet. */
 .settings-block-title { display: flex; align-items: center; box-sizing: border-box; min-height: 40px; font-size: 14px; font-weight: 600; color: var(--text); padding: 8px 28px; margin: 0; background: var(--surface-subtle); border-block: 1px solid var(--line); overflow-wrap: anywhere; }
-.settings-blocks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 40px; max-width: 1200px; padding: 24px 28px; }
-.setting-block { display: flex; gap: 12px; align-items: flex-start; min-width: 0; padding: 0 0 0 16px; border-inline-start: 1px solid var(--line); background: var(--surface); }
+.settings-blocks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px clamp(20px, 4vw, 64px); padding: 24px clamp(16px, 2vw, 28px); }
+.setting-block { display: flex; gap: 0; align-items: flex-start; min-width: 0; padding: 0; background: var(--surface); }
+.setting-left-pane:not(:empty) { margin-inline-end: 10px; }
 .setting-left-pane { flex-shrink: 0; display: flex; align-items: center; height: 20px; }
 .setting-right-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .setting-title-row { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 .setting-label-text { display: block; }
-.setting-help { font-size: 13px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.setting-help { max-inline-size: 64ch; font-size: 13px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
 .setting-value-input { margin-top: 4px; width: 100%; max-width: 360px; }
 .setting-value-input input, .setting-value-input select { width: 100%; min-height: 36px; }
 .settings-toggle { display: flex; align-items: center; min-height: 20px; margin: 0; cursor: pointer; }
@@ -894,9 +897,9 @@ mark.highlight { background: var(--highlight); color: inherit; padding: 0 2px; b
   .addon-info-facts dd { margin-bottom: 8px; }
   .control-panel:has(.settings-toolbar) { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
   .control-panel:has(.settings-toolbar) .breadcrumbs { grid-column: 1; grid-row: 1; }
-  .control-panel:has(.settings-toolbar) .settings-toolbar-scope { grid-column: 1 / -1; grid-row: 4; min-width: 0; }
+  .control-panel:has(.settings-toolbar) .settings-toolbar-scope { grid-column: 1 / -1; grid-row: 3; min-width: 0; }
   .control-panel:has(.settings-toolbar) .control-panel-search-area { grid-column: 1 / -1; grid-row: 2; }
-  .control-panel:has(.settings-toolbar) .settings-toolbar-actions { grid-column: 1 / -1; grid-row: 3; }
+  .control-panel:has(.settings-toolbar) .settings-toolbar-actions { grid-column: 2; grid-row: 1; }
   .settings-toolbar { gap: 10px; }
   .settings-search-box .search-input { min-height: 44px; }
   .settings-toggle { min-height: 44px; }
@@ -906,7 +909,7 @@ mark.highlight { background: var(--highlight); color: inherit; padding: 0 2px; b
   .settings-sidebar-list { flex-direction: row; overflow-x: auto; padding: 6px 12px; gap: 6px; }
   .settings-app-tab { border-left: 0; border-bottom: 3px solid transparent; padding: 8px 12px; white-space: nowrap; }
   .settings-app-tab.active { border-left-color: transparent; border-bottom-color: var(--brand, var(--accent)); }
-  .settings-content { padding: 0 0 20px; }
+  .settings-content { padding: 8px 8px 20px; }
   .settings-section-title { padding: 12px 16px; }
   .settings-block-title { padding: 8px 16px; }
   .settings-blocks { grid-template-columns: 1fr; padding: 20px 16px; gap: 24px; }
@@ -3476,14 +3479,21 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
  */
 .kanban-grid:has(.dashboard-card) { grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
 .kanban-card-line:has(> .dashboard-card, > .dashboard-card-error) { overflow: visible; white-space: normal; color: var(--text); }
-.dashboard-card { --dashboard-chart-height: 64px; display: flex; flex-direction: column; gap: 12px; margin-top: 8px; font-size: 13px; }
+.kanban-card:has(.dashboard-card) { container-type: inline-size; box-shadow: none; }
+.kanban-card:has(.dashboard-card) .kanban-card-title { font-size: 18px; line-height: 1.35; }
+.kanban-card-line:has(> .dashboard-card) { flex: 1; display: flex; }
+.dashboard-card { --dashboard-chart-height: 92px; display: grid; width: 100%; grid-template-columns: minmax(0, 1fr); align-content: start; align-items: start; gap: 12px 20px; margin-top: 12px; font-size: 14px; }
+.dashboard-card-chart { grid-column: 1 / -1; }
+@container (min-width: 360px) {
+  .dashboard-card:has(.dashboard-card-buttons):has(.dashboard-card-stats) { grid-template-columns: minmax(96px, 1fr) minmax(172px, 1.6fr); }
+}
 .dashboard-card-empty { display: none; }
 .dashboard-card-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 .dashboard-card-stats { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
-.dashboard-card-stat { display: grid; grid-template-columns: minmax(32px, auto) minmax(0, 1fr) auto; align-items: baseline; gap: 8px; width: 100%; min-height: 28px; padding: 4px 8px; border-radius: var(--radius-control); text-align: start; font-variant-numeric: tabular-nums; transition: background-color var(--motion-fast) ease-out; }
+.dashboard-card-stat { display: grid; grid-template-columns: minmax(2ch, auto) minmax(0, 1fr) auto; align-items: baseline; gap: 8px; width: 100%; min-height: 28px; padding: 4px 8px; border-radius: var(--radius-control); text-align: start; font-variant-numeric: tabular-nums; transition: background-color var(--motion-fast) ease-out; }
 .dashboard-card-stat:hover { background: var(--hover); }
 .dashboard-card-stat-count { font-weight: 600; text-align: end; }
-.dashboard-card-stat-amount { color: var(--muted); text-align: end; white-space: nowrap; }
+.dashboard-card-stat-amount { color: var(--text); text-align: end; white-space: nowrap; }
 .dashboard-card-tone-neutral { --graph-colour: var(--accent); }
 .dashboard-card-tone-warning { --graph-colour: var(--warning); }
 .dashboard-card-tone-danger { --graph-colour: var(--danger); }

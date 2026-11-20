@@ -1275,6 +1275,20 @@ async fn dynamic_report_body() {
     }
     let top = report_lines(&env, &mut tx, &opt).await.unwrap();
     let rows = top["lines"].as_array().unwrap();
+    let hidden_drill = report_drill(
+        &env,
+        &mut tx,
+        &opt,
+        rows[0]["id"].as_str().unwrap(),
+        &json!({"cell": 0}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(hidden_drill.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        hidden_drill.message(),
+        "Line IN has no value in column qty."
+    );
     let mut amounts = std::collections::BTreeMap::new();
     let mut unit_incoming = None;
     let mut flour_net = None;
@@ -1284,13 +1298,21 @@ async fn dynamic_report_body() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|c| c["value"].is_null())
+                .all(|c| c["value"].is_null() && c["drillable"] == false)
         );
         let direction = row["name"].as_str().unwrap();
         let detail = report_expand(&env, &mut tx, &opt, row["id"].as_str().unwrap(), 0)
             .await
             .unwrap();
         for product in detail["lines"].as_array().unwrap() {
+            assert_eq!(product["caret"], json!(["open"]));
+            assert!(
+                product["cells"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|cell| cell["drillable"] == true)
+            );
             let name = product["name"].as_str().unwrap();
             if direction == "Incoming" && name == "Dynamic stock unit" {
                 unit_incoming = Some(product["id"].as_str().unwrap().to_owned());

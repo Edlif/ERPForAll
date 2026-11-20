@@ -236,6 +236,8 @@ pub(super) async fn topology_image(tx: &mut erp_orm::Transaction) -> Vec<String>
         "stock_warehouse",
         "stock_location",
         "stock_picking_type",
+        "stock_route",
+        "stock_rule",
         "ir_sequence",
     ] {
         let sql = format!("SELECT row_to_json(t)::text FROM {table} t ORDER BY id");
@@ -338,6 +340,193 @@ fn install_gives_every_company_its_warehouse_and_a_receipt_can_be_drafted() {
         tx.rollback().await.unwrap();
         drop(tx);
         drop(orm);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn ship_only_warehouse_provisions_an_owned_delivery_route() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let orm = install(&db).await;
+        let company = super::security::xid(&orm, "base", "main_company").await;
+        let customers = super::security::xid(&orm, "stock", "stock_location_customers").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let env = tx.env().with_company(company).unwrap();
+        let main = warehouse_of(&mut tx, company).await;
+        let warehouse_values = |name: &str, code: &str| {
+            RawVals::new()
+                .set_cell("name", Cell::Str(name.into()))
+                .set_cell("code", Cell::Str(code.into()))
+                .set_cell("company_id", Cell::Id(company))
+        };
+        let new = create(
+            &mut tx,
+            &env,
+            "stock.warehouse",
+            warehouse_values("Second one-step site", "SHIP2"),
+        )
+        .await;
+        let multi = create(
+            &mut tx,
+            &env,
+            "stock.warehouse",
+            warehouse_values("Two-step site", "PICK2")
+                .set_cell("delivery_steps", Cell::Str("pick_ship".into())),
+        )
+        .await;
+        let custom_route = create(
+            &mut tx,
+            &env,
+            "stock.route",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Explicit delivery route".into()))
+                .set_cell("company_id", Cell::Id(company)),
+        )
+        .await;
+        let custom = create(
+            &mut tx,
+            &env,
+            "stock.warehouse",
+            warehouse_values("Explicit route site", "CUSTOM")
+                .set_cell("delivery_route_id", Cell::Id(custom_route)),
+        )
+        .await;
+        tx.flush().await.unwrap();
+
+        let mut generated_routes = Vec::new();
+        for warehouse in [main, new] {
+            let route = tx
+                .query(
+                    "SELECT r.id, r.company_id, s.action, s.procure_method,
+                            s.location_src_id = w.lot_stock_id, s.location_dest_id,
+                            s.picking_type_id = w.out_type_id, s.company_id, s.warehouse_id,
+                            r.active AND s.active, s.generated_warehouse_id, s.generated_addon,
+                            s.generated_role, t.code, s.location_dest_id = t.default_location_dest_id
+                     FROM stock_warehouse w JOIN stock_route r ON r.id = w.delivery_route_id
+                     JOIN stock_route_warehouse rw ON rw.route_id = r.id AND rw.warehouse_id = w.id
+                     JOIN stock_rule s ON s.route_id = r.id
+                     JOIN stock_picking_type t ON t.id = s.picking_type_id
+                     WHERE w.id = $1 AND r.generated_warehouse_id = w.id
+                       AND r.generated_addon = 'stock' AND r.generated_role = 'delivery_route_id'",
+                    &[&warehouse],
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                route.len(),
+                1,
+                "warehouse {warehouse} has one direct delivery rule"
+            );
+            let r = &route[0];
+            generated_routes.push(r.get::<_, i64>(0));
+            assert_eq!(r.get::<_, i64>(1), company);
+            assert_eq!(r.get::<_, String>(2), "pull");
+            assert_eq!(r.get::<_, String>(3), "make_to_stock");
+            assert!(r.get::<_, bool>(4));
+            assert_eq!(r.get::<_, i64>(5), customers);
+            assert!(r.get::<_, bool>(6));
+            assert_eq!(r.get::<_, i64>(7), company);
+            assert_eq!(r.get::<_, i64>(8), warehouse);
+            assert!(r.get::<_, bool>(9));
+            assert_eq!(r.get::<_, i64>(10), warehouse);
+            assert_eq!(r.get::<_, String>(11), "stock");
+            assert_eq!(r.get::<_, String>(12), "ship_only_delivery");
+            assert_eq!(r.get::<_, String>(13), "outgoing");
+            assert!(r.get::<_, bool>(14));
+        }
+        assert_ne!(generated_routes[0], generated_routes[1]);
+
+        let warehouses = env.records("stock.warehouse").unwrap();
+        assert_eq!(
+            warehouses
+                .browse([custom])
+                .unwrap()
+                .cell(&mut tx, "delivery_route_id")
+                .await
+                .unwrap(),
+            Cell::Id(custom_route)
+        );
+        assert_eq!(
+            warehouses
+                .browse([multi])
+                .unwrap()
+                .cell(&mut tx, "delivery_route_id")
+                .await
+                .unwrap(),
+            Cell::Null
+        );
+        assert!(
+            tx.query(
+                "SELECT id FROM stock_route WHERE generated_warehouse_id = ANY($1)",
+                &[&[custom, multi].as_slice()],
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        let snapshot = topology_image(&mut tx).await;
+        env.records("res.company")
+            .unwrap()
+            .call::<(), ()>(&mut tx, "_stock_create_missing_warehouses", ())
+            .await
+            .unwrap();
+        assert_eq!(topology_image(&mut tx).await, snapshot);
+
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(orm);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn ship_only_warehouse_topology_preserves_employee_permissions() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let installed = install(&db).await;
+        let users = super::security::roles(&installed).await;
+        let orm = super::security::secure(&db, &installed).await;
+        let company = super::security::xid(&installed, "base", "main_company").await;
+        let mut tx = orm
+            .begin(erp_orm::UserId::new(users[1]).unwrap())
+            .await
+            .unwrap();
+        let warehouse = warehouse_of(&mut tx, company).await;
+        let env = tx.env().with_company(company).unwrap();
+        let warehouses = env.records("stock.warehouse").unwrap();
+        let current = warehouses.browse([warehouse]).unwrap();
+        let route = current.related(&mut tx, "delivery_route_id").await.unwrap();
+        assert_eq!(route.ids().len(), 1);
+        let rule = route.related(&mut tx, "rule_ids").await.unwrap();
+        assert_eq!(rule.ids().len(), 1);
+        assert_eq!(
+            rule.cell(&mut tx, "action").await.unwrap(),
+            Cell::Str("pull".into())
+        );
+
+        let before = topology_image(&mut tx).await;
+        let expected =
+            super::stock_access::refusal(&orm, "create", "c", "Warehouse", "stock.warehouse").await;
+        let denied = warehouses
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("No employee warehouse".into()))
+                        .set_cell("code", Cell::Str("DENY".into()))
+                        .set_cell("company_id", Cell::Id(company)),
+                ],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(denied.kind(), ErrorKind::Access);
+        assert_eq!(denied.message(), expected);
+        assert_eq!(topology_image(&mut tx).await, before);
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(orm);
+        drop(installed);
         db.cleanup().await.unwrap();
     });
 }

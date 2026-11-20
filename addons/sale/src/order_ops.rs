@@ -78,23 +78,29 @@ impl SaleOrder {
 
     /// Confirms quotations: the refusal check, the confirmation values, `_action_confirm`, then
     /// the lock of the orders `_should_be_locked` returns ("The confirm chain";
+    /// ORM caller can handle a late refusal without committing partial confirmation.
     #[method]
     #[rpc(effect = write)]
     pub async fn action_confirm(this: &RecordSet<SaleOrder>, tx: &mut Transaction) -> Result<()> {
         let records = this.as_records();
-        locked_headers(tx, records).await?;
-        let refusal: Option<String> = records.call(tx, "_confirmation_error_message", ()).await?;
-        if let Some(refusal) = refusal {
-            return Err(Error::validation(refusal));
-        }
-        let values: Vals<SaleOrder> = records.call(tx, "_prepare_confirmation_values", ()).await?;
-        records.write_base(tx, values.into_raw()).await?;
-        let () = records.call(tx, "_action_confirm", ()).await?;
-        let to_lock: Records = records.call(tx, "_should_be_locked", ()).await?;
-        if !to_lock.is_empty() {
-            to_lock.write_base(tx, lock_value(true)).await?;
-        }
-        Ok(())
+        tx.savepoint(async move |tx| {
+            locked_headers(tx, records).await?;
+            let refusal: Option<String> =
+                records.call(tx, "_confirmation_error_message", ()).await?;
+            if let Some(refusal) = refusal {
+                return Err(Error::validation(refusal));
+            }
+            let values: Vals<SaleOrder> =
+                records.call(tx, "_prepare_confirmation_values", ()).await?;
+            records.write_base(tx, values.into_raw()).await?;
+            let () = records.call(tx, "_action_confirm", ()).await?;
+            let to_lock: Records = records.call(tx, "_should_be_locked", ()).await?;
+            if !to_lock.is_empty() {
+                to_lock.write_base(tx, lock_value(true)).await?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Cancels the orders not yet cancelled through `_action_cancel`; a locked order refuses the

@@ -1637,7 +1637,9 @@ dependencies = [
 name = "erp-addon-sale_stock"
 version = "0.1.0"
 dependencies = [
+ "erp-addon-sale",
  "erp-addon-stock_account",
+ "erp-addon-uom",
  "erp-sdk",
 ]
 
@@ -1679,12 +1681,15 @@ dependencies = [
  "erp-addon-barcodes_gs1_nomenclature",
  "erp-addon-base",
  "erp-addon-delivery",
+ "erp-addon-mail",
  "erp-addon-product",
  "erp-addon-product_expiry",
  "erp-addon-purchase",
  "erp-addon-purchase_stock",
  "erp-addon-reporting",
+ "erp-addon-sale",
  "erp-addon-sale_stock",
+ "erp-addon-sales_team",
  "erp-addon-stock_account",
  "erp-addon-stock_delivery",
  "erp-addon-stock_dropshipping",
@@ -1976,6 +1981,7 @@ dependencies = [
  "erp-addon-purchase_stock",
  "erp-addon-reporting",
  "erp-addon-sale",
+ "erp-addon-sale_stock",
  "erp-addon-sales_team",
  "erp-addon-sample_library_wasm",
  "erp-addon-stock",

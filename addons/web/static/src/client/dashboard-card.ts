@@ -168,7 +168,7 @@ export function renderDashboardChart(chart: DashboardChart, locale: NumericLocal
   if (chart.type === "bar") {
     values.forEach((value, index) => {
       const top = Math.min(y(value), y(0)), bottom = Math.max(y(value), y(0));
-      drawing.append(svg("rect", { x: band * index + band * 0.15, y: top, width: band * 0.7, height: Math.max(bottom - top, 0.5) }, `graph-bar dashboard-card-tone-${chart.points[index]!.tone}`));
+      drawing.append(svg("rect", { x: band * index + band * 0.15, y: top, width: band * 0.7, height: value === 0 ? 0 : Math.max(bottom - top, 0.5) }, `graph-bar dashboard-card-tone-${chart.points[index]!.tone}`));
     });
   } else {
     // One line, one colour: a point's tone is read in the list below (and on bars).

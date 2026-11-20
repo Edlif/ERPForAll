@@ -1065,6 +1065,135 @@ mod tests {
     }
 
     #[test]
+    fn native_workflow_default_scope_survives_environment_derivation() {
+        let ordinary = env().with_context([("default_name", Value::str("ordinary"))]);
+        let clean = ordinary.with_context_replaced(Context::new());
+        let generated = ordinary.without_default_overrides();
+        assert!(ordinary.uses_default_overrides());
+        assert!(ordinary.context().contains("default_name"));
+        assert_ne!(generated, clean);
+
+        let derived = generated
+            .with_context_replaced(Context::from_pairs([
+                ("default_name", Value::str("late")),
+                ("lang", Value::str("id_ID")),
+            ]))
+            .with_company(3)
+            .unwrap()
+            .sudo(true)
+            .with_context([("default_name", Value::str("nested"))]);
+        assert!(!derived.uses_default_overrides());
+        assert!(!derived.context().contains("default_name"));
+        assert_eq!(derived.context().get("lang"), Some(Value::str("id_ID")));
+        assert_eq!(
+            derived.context().allowed_company_ids().unwrap(),
+            Some(&[3][..])
+        );
+        assert_eq!(derived.uid(), ordinary.uid());
+    }
+
+    #[test]
+    fn native_workflow_default_scope_preserves_user_switch_semantics() {
+        let ordinary = env();
+        let generated = ordinary.without_default_overrides();
+        // Include invalid, same-user, ordinary-user and refused superuser switches.
+        for uid in [0, 2, 3, 1] {
+            let switched = generated.with_user(uid);
+            assert!(!switched.uses_default_overrides());
+            assert_eq!(
+                switched,
+                ordinary.with_user(uid).without_default_overrides()
+            );
+            assert!(!switched.su());
+        }
+        assert!(ordinary.uses_default_overrides());
+        assert_eq!(ordinary.uid(), 2);
+    }
+
+    #[test]
+    fn native_workflow_default_scope_keeps_context_replacement_and_company_semantics() {
+        let ordinary = env().with_company(3).unwrap().with_context([
+            ("default_name", Value::str("ordinary")),
+            ("lang", Value::str("fr_FR")),
+        ]);
+        let generated = ordinary.without_default_overrides();
+        let replaced = generated.with_context_replaced(Context::from_pairs([
+            ("default_name", Value::str("injected")),
+            ("tz", Value::str("UTC")),
+        ]));
+        assert!(!replaced.uses_default_overrides());
+        assert!(!replaced.context().contains("default_name"));
+        assert!(!replaced.context().contains("lang"));
+        assert_eq!(replaced.context().get("tz"), Some(Value::str("UTC")));
+        assert_eq!(
+            replaced.context().allowed_company_ids().unwrap(),
+            Some(&[3][..])
+        );
+        let company = replaced.with_company(4).unwrap();
+        assert!(!company.uses_default_overrides());
+        assert_eq!(
+            company.context().allowed_company_ids().unwrap(),
+            Some(&[4, 3][..])
+        );
+        assert_eq!(company.with_company(0).unwrap(), company);
+        assert_eq!(company.with_company(4).unwrap(), company);
+        assert!(ordinary.uses_default_overrides());
+        assert_eq!(
+            ordinary.context().get("default_name"),
+            Some(Value::str("ordinary"))
+        );
+        assert_eq!(ordinary.context().get("lang"), Some(Value::str("fr_FR")));
+        assert_eq!(
+            ordinary.context().allowed_company_ids().unwrap(),
+            Some(&[3][..])
+        );
+    }
+
+    #[test]
+    fn native_workflow_default_scope_survives_sudo_on_and_off() {
+        let ordinary = env();
+        let generated = ordinary.without_default_overrides();
+        for flag in [true, false] {
+            let derived = generated.sudo(true).sudo(flag);
+            assert_eq!(derived.su(), flag);
+            assert!(!derived.uses_default_overrides());
+            assert_eq!(
+                derived,
+                ordinary.sudo(true).sudo(flag).without_default_overrides()
+            );
+            assert!(
+                !derived
+                    .with_context([("default_name", Value::str("late"))])
+                    .context()
+                    .contains("default_name")
+            );
+        }
+        assert!(!ordinary.su());
+        assert!(ordinary.uses_default_overrides());
+    }
+
+    #[test]
+    fn native_workflow_default_scope_participates_in_environment_identity() {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+
+        fn hash(env: &Env) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            env.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let ordinary = env();
+        let generated = ordinary.without_default_overrides();
+        assert_eq!(ordinary.context(), generated.context());
+        assert_ne!(ordinary, generated);
+        assert_ne!(hash(&ordinary), hash(&generated));
+        let repeated = generated.without_default_overrides();
+        assert_eq!(generated, repeated);
+        assert_eq!(hash(&generated), hash(&repeated));
+        assert!(ordinary.uses_default_overrides());
+    }
+
+    #[test]
     fn typed_recordsets_are_checked() {
         let e = env();
         let partners = e.records("t.partner").unwrap();

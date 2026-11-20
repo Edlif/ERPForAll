@@ -50,6 +50,6 @@ test("rail uses first matching root and preserves Unicode labels with the shell 
 test("null ownership and label similarity do not replace the settings-only fallback", async () => {
   const host = await rail([{ id: 1, module: null, label: "Notes", icon: "lucide:settings" }, { id: 2, module: "other", label: "Notes", icon: null }]);
   expect(host.querySelector(".settings-app-name")?.textContent).toBe("Notes");
-  expect(host.querySelector('.settings-app-icon[data-letter="N"]')).not.toBeNull();
-  expect(host.querySelector(".settings-app-icon svg")).toBeNull();
+  expect(host.querySelector('.settings-app-icon [data-icon="layout-grid"]')).not.toBeNull();
+  expect(host.querySelector(".settings-app-icon[data-letter]")).toBeNull();
 });

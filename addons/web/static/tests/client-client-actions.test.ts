@@ -95,3 +95,47 @@ test("an unregistered client action tag fails by name and mounts nothing", async
   });
   expect(root.querySelector("[data-screen]")).toBeNull();
 });
+
+/// (partial: a report opens the existing source form through its authorized read)
+test("a client action requests the existing source record using the returned form", async () => {
+  history.replaceState(null, "", "/erp/action-30?menu=10");
+  let screen: ClientActionEnvironment | undefined;
+  registerClientAction("demo.source_form", { create: async environment => {
+    screen = environment;
+    return { dispose() {} };
+  } });
+  const baseFetch = fetchMock({ 30: "demo.source_form" });
+  vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
+    if (path.endsWith("erp_normalize_action_result")) return json({ wire_major: 1, result: {
+      kind: "window", name: "Source", model: "account.move", res_id: 42,
+      views: [{ id: null, type: "form" }], context: {}
+    } });
+    if (path.endsWith("account.move/get_views")) return json({
+      wire_major: 1, registry_version: "r1", description_version: "d1", model: "account.move", notices: [],
+      fields: { "account.move": { name: { type: "char", label: "Number", required: false, readonly: true, selection: null, relation: null, relation_field: null } } },
+      views: [{ identity: { kind: "stored", id: 1 }, type: "form", schema_major: 1, renderer: "web.form", root: 0, nodes: [
+        { kind: "form", record_mode: "record", children: [1] },
+        { kind: "field", field: { model: "account.move", name: "name" }, widget: "char", label: "Number", force_save: false, options: {}, modifiers: { readonly: null, required: null, invisible: null } }
+      ] }]
+    });
+    if (path.endsWith("account.move/web_read")) {
+      expect(JSON.parse(String(init?.body)).ids).toEqual([42]);
+      return json([{ id: 42, name: "INV/42" }]);
+    }
+    return baseFetch(path, init);
+  }));
+  const createElement = document.createElement.bind(document);
+  vi.spyOn(document, "createElement").mockImplementation((tag: string, options?: ElementCreationOptions) => {
+    const node = createElement(tag, options);
+    if (node instanceof HTMLDialogElement) {
+      node.showModal = () => { node.open = true; };
+      node.close = () => { node.open = false; };
+    }
+    return node;
+  });
+  app = new HumanApp(host(), bootstrap);
+  await app.start();
+  await screen!.open({ type: "ir.actions.act_window" });
+  expect(document.querySelector("dialog")?.textContent).toContain("Source");
+  expect(location.search).toBe("?menu=10");
+});

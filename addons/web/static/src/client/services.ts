@@ -40,14 +40,6 @@ function renderHighlightedText(container: HTMLElement, textContent: string, quer
   }
 }
 
-/** Neutral fallback for a settings-only addon without an authorized root menu. */
-function appIcon(appKey: string, appTitle: string): HTMLElement {
-  const tile = el("span", undefined, "addon-icon settings-app-icon");
-  tile.dataset["letter"] = (appTitle.charAt(0) || appKey.charAt(0)).toUpperCase();
-  tile.setAttribute("aria-hidden", "true");
-  return tile;
-}
-
 function humanizeAppTitle(appKey: string): string {
   if (appKey === "general" || appKey === "base") return "General Settings";
   return appKey
@@ -106,14 +98,15 @@ export async function settingsView(
       const addons = array(catalog["addons"], "addons").map(raw => object(raw, "addon"));
       return new Map(addons.filter(addon => addon["icon"] !== undefined).map(addon => [text(addon["name"], "addon name"), text(addon["icon"], "addon icon")]));
     } catch (error) {
-      console.warn(`Settings app icons are not shown: ${(error as Error).message || "the addon catalogue could not be read"}`);
+      console.warn(`Could not load Settings app icons from the addon catalogue: ${(error as Error).message || "the addon catalogue could not be read"}`);
       return new Map();
     }
   };
   let disposed = false;
   const choiceControls: { control: ChoiceDropdown; readonly: boolean }[] = [];
   const disposeChoices = (): void => { for (const { control } of choiceControls.splice(0)) control.dispose(); };
-  const dispose = (): void => { if (disposed) return; disposed = true; generation++; disposeChoices(); };
+  let navigationObserver: ResizeObserver | undefined;
+  const dispose = (): void => { if (disposed) return; disposed = true; generation++; navigationObserver?.disconnect(); disposeChoices(); };
 
   let items: SettingsItem[] = [], linkPending = false;
   const appGroups = new Map<string, AppGroupInfo>();
@@ -129,7 +122,10 @@ export async function settingsView(
   if (scopeKinds.includes("global")) scopeChoices.push({ value: "global", label: "Global settings" });
   if (scopeKinds.includes("company")) for (const company of companies) scopeChoices.push({ value: String(company.id), label: company.name });
   if (!scopeChoices.length) throw new ClientError("server", "No supported settings scope was declared.");
-  const firstScope = scopeChoices[0]!.value;
+  // Open a business app in the operator's current company. The general Settings menu starts shared.
+  const currentCompany = options.navigation?.currentCompanyId;
+  const companyChoice = initialApp && scopeChoices.find(choice => choice.value === String(currentCompany));
+  const firstScope = companyChoice ? companyChoice.value : scopeChoices[0]!.value;
   scope = firstScope === "global" ? { kind: "global" } : { kind: "company", company_id: Number(firstScope) };
 
   const scopeKey = (value: Record<string, unknown>): string => value["kind"] === "global" ? "global" : String(value["company_id"]);
@@ -184,6 +180,24 @@ export async function settingsView(
   const sidebarList = el("nav", undefined, "settings-sidebar-list");
   sidebarList.setAttribute("role", "tablist");
   sidebar.append(sidebarList);
+
+  // Keep the active choices in view when the desktop rail becomes a horizontal phone strip.
+  const revealSelection = (strip: HTMLElement, selector: string): void => {
+    const choice = strip.querySelector<HTMLElement>(selector);
+    if (!choice || strip.clientWidth === 0 || strip.scrollWidth <= strip.clientWidth) return;
+    const frame = strip.getBoundingClientRect(), selected = choice.getBoundingClientRect();
+    if (selected.left < frame.left) strip.scrollLeft += selected.left - frame.left;
+    else if (selected.right > frame.right) strip.scrollLeft += selected.right - frame.right;
+  };
+  const revealNavigation = (): void => {
+    revealSelection(sidebarList, '[aria-selected="true"]');
+    revealSelection(scopeGroup, '[aria-checked="true"]');
+  };
+  if (typeof ResizeObserver !== "undefined") {
+    navigationObserver = new ResizeObserver(revealNavigation);
+    navigationObserver.observe(sidebarList);
+    navigationObserver.observe(scopeGroup);
+  }
 
   const content = el("div", undefined, "settings-content");
   content.setAttribute("role", "region");
@@ -267,6 +281,7 @@ export async function settingsView(
       group.tab.setAttribute("aria-selected", String(group.appKey === appKey));
     }
     clearFilter();
+    revealNavigation();
   };
 
   searchInput.addEventListener("input", () => {
@@ -304,9 +319,8 @@ export async function settingsView(
       const appTitle = rootMenu?.label ?? humanizeAppTitle(appKey);
       const makeIcon = (): HTMLElement | SVGSVGElement => {
         const declared = rootMenu ? rootMenu.icon : addonIcons?.get(appKey);
-        if (declared === undefined) return appIcon(appKey, appTitle);
         const tile = el("span", undefined, "settings-app-icon settings-menu-icon");
-        tile.setAttribute("aria-hidden", "true"); tile.append(menuIcon(declared)); return tile;
+        tile.setAttribute("aria-hidden", "true"); tile.append(menuIcon(declared ?? null)); return tile;
       };
       const selected = appKey === selectedApp;
 
@@ -552,6 +566,7 @@ export async function settingsView(
       content.append(searchBox);
     }
 
+    revealNavigation();
     disable();
     if (searchInput.value) {
       performFilter(searchInput.value);
@@ -573,6 +588,12 @@ export async function settingsView(
     if (new Set(keys).size !== keys.length) throw new ClientError("server", "Duplicate settings declaration.");
     const nextItems = readSettingsItems(description, keys);
     if (nextItems.some(item => item.kind === "link") && !options.navigation) throw new ClientError("unsupported", "Settings links require the application's navigation service.");
+    // An addon may declare only shared settings. Inspect the description before reading any values.
+    if (firstDraw && initialApp && immutableScope["kind"] === "company" && scopeKinds.includes("global")
+        && !nextDeclarations.some(value => value["app"] === initialApp) && !nextItems.some(item => item.app === initialApp)) {
+      if (!disposed && request === generation) await load({ kind: "global" });
+      return;
+    }
     const response = object(await rpc.call("ir.config.setting", "erp_read_values", { scope: immutableScope, keys, context }));
     if (response["wire_major"] !== 1) throw new ClientError("unsupported", "Unsupported settings version.");
     checkScope(response["scope"], immutableScope);

@@ -1,7 +1,8 @@
 //! Native addon skeletons and manifest integration tests for the M7 inventory family.
 //!
-//! Stock remains below accounting. The valuation bridge additionally loads account/analytic;
-//! unknown dependency targets still fail loudly.
+//! Stock remains below accounting. The valuation bridge additionally loads account/analytic.
+//! The Sales delivery bridge loads real Sales and its prerequisites.
+//! Unknown dependency targets still fail loudly.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 
 use erp_sdk::AddonDescriptor;
@@ -26,7 +27,7 @@ fn m7_addons() -> Vec<&'static AddonDescriptor> {
     ]
 }
 
-/// `base`, `web`, `uom`, `product` and the 12 M7 addons, the set every test composes.
+/// The 12 M7 addons and their complete native dependency set.
 fn all_addons() -> Vec<&'static AddonDescriptor> {
     let mut all = vec![
         &erp_addon_base::ADDON,
@@ -37,6 +38,9 @@ fn all_addons() -> Vec<&'static AddonDescriptor> {
         &erp_addon_analytic::ADDON,
         &erp_addon_account::ADDON,
         &erp_addon_purchase::ADDON,
+        &erp_addon_mail::ADDON,
+        &erp_addon_sales_team::ADDON,
+        &erp_addon_sale::ADDON,
     ];
     all.extend(m7_addons());
     all
@@ -118,8 +122,7 @@ fn assert_dependency_order(loaded: &[&'static AddonDescriptor], expected: &[&Add
     }
 }
 
-/// acyclic; the N8 boundary at descriptor level; the module graph order by depth then name is
-/// not asserted here)
+/// boundary at descriptor level; the module graph order by depth then name is not asserted here)
 #[test]
 fn inventory_addon_descriptors_and_manifest_graph() {
     let addons = m7_addons();
@@ -129,13 +132,7 @@ fn inventory_addon_descriptors_and_manifest_graph() {
         "all 12 M7 inventory addons have descriptors"
     );
 
-    let mut deps_map: HashMap<&str, &[&str]> = HashMap::new();
     for desc in &addons {
-        assert!(
-            deps_map.insert(desc.name, desc.depends).is_none(),
-            "duplicate descriptor name {}",
-            desc.name
-        );
         assert!(
             !desc.depends.is_empty(),
             "addon {} must declare dependencies",
@@ -143,27 +140,16 @@ fn inventory_addon_descriptors_and_manifest_graph() {
         );
     }
 
-    // an unknown dependency (a typo, or an addon of a later milestone) fails loudly
-    let known: BTreeSet<&str> = deps_map
-        .keys()
-        .copied()
-        .chain([
-            "base",
-            "web",
-            "reporting",
-            "uom",
-            "product",
-            "analytic",
-            "account",
-            "purchase",
-        ])
-        .collect();
+    let all = all_addons();
+    let deps_map: HashMap<&str, &[&str]> = all.iter().map(|d| (d.name, d.depends)).collect();
+    assert_eq!(deps_map.len(), all.len(), "duplicate descriptor name");
+    // Reject every unknown dependency in the composed graph, including transitive prerequisites.
     for (name, deps) in &deps_map {
         for dep in *deps {
             assert!(
-                known.contains(dep),
-                "{name} depends on {dep}, which is neither an M7 addon nor base/web/uom/product: add it to \
-                 the design note's deferred-dependency table and to this test on purpose"
+                deps_map.contains_key(dep),
+                "{name} depends on {dep}, which is outside the composed inventory addon set: \
+                 update the inventory addon design note and use the real descriptor"
             );
         }
     }
@@ -218,6 +204,7 @@ fn inventory_addon_descriptors_and_manifest_graph() {
     assert!(deps_map["stock"].contains(&"product"));
     assert!(deps_map["stock_landed_costs"].contains(&"purchase_stock"));
     assert!(deps_map["stock_delivery"].contains(&"sale_stock"));
+    assert!(deps_map["sale_stock"].contains(&"sale"));
 }
 
 /// the registry's topological order, not the module graph's depth-then-name order)

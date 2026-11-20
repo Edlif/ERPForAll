@@ -34,16 +34,16 @@ test("an app without a root menu shows its addon's manifest icon; an app with on
   expect(calls.filter(method => method === "erp_available_addons")).toHaveLength(1);
 });
 
-/// (partial: no catalogue read when every app has a root menu; a refused read keeps the letter)
-test("the catalogue is read only for an app without a root menu, and a refusal keeps the letter with a warning", async () => {
+/// (partial: no catalogue read when every app has a root menu; a refused read shows the default icon)
+test("the catalogue is read only for an app without a root menu, and a refusal shows the default icon with a warning", async () => {
   const onlyNotes = await settings([notesRoot, { id: 3, module: "theme_office_blue", label: "Theme", icon: "lucide:palette" }], catalog);
   expect(onlyNotes.calls).not.toContain("erp_available_addons");
   document.body.replaceChildren();
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const refused = await settings([notesRoot], () => json({ message: "Access refused." }, 403));
   const theme = [...refused.host.querySelectorAll(".settings-app-tab")].find(tab => tab.textContent?.includes("Theme Office Blue"))!;
-  expect(theme.querySelector('.settings-app-icon[data-letter="T"]')).not.toBeNull();
-  expect(warn).toHaveBeenCalledWith(expect.stringContaining("Settings app icons are not shown"));
+  expect(theme.querySelector('.settings-app-icon svg[data-icon="layout-grid"]')).not.toBeNull();
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining("Could not load Settings app icons"));
 });
 
 /// (partial: an Apps tile shows the declared icon, and its letter only when none is declared)

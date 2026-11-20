@@ -59,8 +59,13 @@ fn zero_is_decided_at_the_cells_precision() {
     assert!(money.is_zero());
     assert!(!decimal.is_zero());
     assert_eq!(money.to_json()["value"], "0.00");
+    assert!(money.to_json().get("drillable").is_none());
     assert_eq!(decimal.to_json()["value"], "0.004");
     assert_eq!(money.clone().blank_if_zero().value(), None);
+    assert_eq!(
+        money.blank_if_zero().with_drillable(true).to_json()["drillable"],
+        false
+    );
     // text and empty cells do not make a line non-zero
     assert!(Cell::text("Desk").is_zero() && Cell::empty().is_zero());
 }

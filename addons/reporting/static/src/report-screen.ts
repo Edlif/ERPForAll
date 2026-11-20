@@ -4,13 +4,17 @@
 import { icon } from "@erpforall/client";
 import type { ClientActionEnvironment, ClientActionHandle } from "@erpforall/client";
 import * as data from "./report-data.js";
-import type { Line, Options } from "./report-data.js";
+import type { Cell, Line, Options } from "./report-data.js";
 import { exportButtons, type Exports } from "./report-export.js";
 import { buildFilters, disclosure, message, type Disclosure } from "./report-filters.js";
 
 const MODEL = "reporting.report";
 /** The options a returning user gets back: what the user chose, not what the server derived (columns, periods). */
 const KEPT = ["companies", "date", "comparison", "unfold_all", "unfolded", "loaded_pages", "hide_zero", "search", "order", "provider"] as const;
+
+function canDrill(cell: Cell): boolean {
+  return cell.drillable ?? (cell.kind !== "empty" && cell.kind !== "text");
+}
 
 interface Shown { name: string; filters: data.Filters; options: Options; lines: Line[]; computedAt: string; hidden: readonly string[] }
 
@@ -25,6 +29,7 @@ export class ReportScreen implements ClientActionHandle {
   private readonly root = make("section", "report-screen");
   private readonly bar = make("div", "report-bar");
   private readonly actions = make("div", "report-actions");
+  private readonly scope = make("header", "report-scope");
   private readonly status = make("div", "report-status");
   private readonly scroller = make("div", "report-scroll");
   private readonly menu = make("div", "report-menu");
@@ -53,7 +58,9 @@ export class ReportScreen implements ClientActionHandle {
     this.scroller.addEventListener("keydown", event => this.onKey(event));
     this.actions.setAttribute("role", "toolbar"); this.actions.setAttribute("aria-label", "Report actions");
     const toolbar = make("div", "report-toolbar"); toolbar.append(this.bar, this.actions);
-    this.root.append(toolbar, this.status, this.scroller, this.menu);
+    const sheet = make("div", "report-sheet");
+    sheet.append(this.scope, this.scroller, this.status);
+    this.root.append(toolbar, sheet, this.menu);
     env.host.append(this.root);
     this.buildControls();
     this.render();
@@ -65,6 +72,7 @@ export class ReportScreen implements ClientActionHandle {
   private async open(previous: Options | false): Promise<void> {
     const gen = ++this.generation;
     const resolved = data.decodeOptions(await this.call("erp_report_options", { report: this.report, previous }));
+    if (gen !== this.generation || this.disposed) return;
     const loaded = data.decodeLines(await this.call("erp_report_lines", { options: this.requestOptions(resolved.options, resolved.filters.currentOnly) }));
     if (gen !== this.generation || this.disposed) return;
     this.commit({ name: resolved.name, filters: resolved.filters, ...loaded });
@@ -167,6 +175,19 @@ export class ReportScreen implements ClientActionHandle {
   }
   // ---- rendering ----
   private render(): void {
+    this.scope.replaceChildren();
+    if (this.shown) {
+      const selected = this.shown.options["companies"];
+      const names = this.env.companies.filter(company => Array.isArray(selected) && selected.includes(company.id)).map(company => company.name);
+      if (names.length) this.scope.append(make("span", "report-company", names.join(", ")));
+      const periods = data.periods(this.shown.options);
+      const period = periods[data.mainGroup(this.shown.options)];
+      if (period) {
+        const end = data.formatDate(period.to, this.lang);
+        const range = period.from ? data.formatDate(period.from, this.lang) + " – " + end : end;
+        this.scope.append(make("span", "report-scope-period", range));
+      }
+    }
     this.renderBar(); this.renderStatus(); this.renderTable(); this.syncControls();
   }
   private renderBar(): void {
@@ -204,6 +225,7 @@ export class ReportScreen implements ClientActionHandle {
     const visible = data.visibleLines(s.lines, s.options);
     if (!visible.length) { this.scroller.append(make("p", "report-empty", "No data for these filters")); return; }
     const cols = data.columns(s.options), groups = data.periods(s.options);
+    this.root.dataset["singleColumn"] = String(cols.length === 1);
     const perGroup = groups.length ? cols.length / groups.length : cols.length;
     const table = make("table", "report-table"); table.setAttribute("role", "treegrid"); table.setAttribute("aria-label", s.name);
     const head = make("thead");
@@ -235,16 +257,16 @@ export class ReportScreen implements ClientActionHandle {
     const active = visible.some(l => l.id === this.activeId) ? this.activeId : visible[0]?.id;
     this.activeId = active;
     const frag = document.createDocumentFragment();
-    for (const line of visible) frag.append(this.row(line, cols.length, line.id === active));
+    for (const line of visible) frag.append(this.row(line, cols, main, line.id === active));
     body.append(frag); table.append(body); this.scroller.append(table);
     if (focused) [...this.scroller.querySelectorAll<HTMLElement>("tr[data-id]")].find(r => r.dataset["id"] === focused)?.focus();
   }
-  private row(line: Line, columnCount: number, tab: boolean): HTMLTableRowElement {
+  private row(line: Line, columns: readonly data.Column[], mainGroup: number, tab: boolean): HTMLTableRowElement {
     const tr = make("tr", `report-line report-line-${line.kind}`);
     tr.dataset["id"] = line.id; tr.tabIndex = tab ? 0 : -1; tr.setAttribute("role", "row");
     tr.setAttribute("aria-level", String(line.level + 1)); tr.style.setProperty("--level", String(line.level));
     if (line.kind === "more") {
-      const td = make("td"); td.colSpan = columnCount + 1;
+      const td = make("td"); td.colSpan = columns.length + 1;
       const more = make("button", "report-more", `Show more (${line.remaining ?? 0} remaining)`); more.type = "button"; more.dataset["action"] = "more";
       more.disabled = this.busy.has(line.id); td.append(more); tr.append(td); return tr;
     }
@@ -257,7 +279,8 @@ export class ReportScreen implements ClientActionHandle {
       if (this.busy.has(line.id)) { toggle.disabled = true; tr.setAttribute("aria-busy", "true"); }
     } else toggle.hidden = true;
     const inner = make("div", "report-name-inner"); inner.append(toggle, make("span", "report-label", line.name));
-    if (line.kind !== "total") {
+    const hasCellAction = line.cells.some((cell, index) => columns[index]?.group === mainGroup && canDrill(cell));
+    if (line.kind !== "total" && (line.caret.length > 0 || hasCellAction)) {
       const caret = make("button", "report-caret"); caret.type = "button"; caret.tabIndex = -1; caret.dataset["action"] = "caret";
       caret.append(icon("chevron-down")); caret.setAttribute("aria-label", `Actions of ${line.name}`); inner.append(caret);
     }
@@ -265,7 +288,7 @@ export class ReportScreen implements ClientActionHandle {
     line.cells.forEach((cell, index) => {
       const td = make("td", `report-cell report-cell-${cell.kind}${cell.zero ? " report-zero" : ""}`, data.formatCell(cell, this.lang));
       td.dataset["col"] = String(index); td.setAttribute("role", "gridcell");
-      if (line.kind !== "total" && cell.kind !== "empty" && cell.kind !== "text") td.dataset["drill"] = "true";
+      if (line.kind !== "total" && canDrill(cell)) td.dataset["drill"] = "true";
       tr.append(td);
     });
     return tr;
@@ -397,13 +420,13 @@ export class ReportScreen implements ClientActionHandle {
     const main = data.mainGroup(s.options);
     if (line.kind !== "total") data.columns(s.options).forEach((col, index) => {
       const cell = line.cells[index];
-      if (col.group === main && cell && cell.kind !== "empty" && cell.kind !== "text") {
+      if (col.group === main && cell && canDrill(cell)) {
         items.push({ text: `Records behind ${col.name}`, target: { cell: index } });
       }
     });
     if (!items.length) return;
     for (const item of items) {
-      const node = make("button", "report-menu-item", item.text); node.type = "button"; node.setAttribute("role", "menuitem"); node.tabIndex = -1;
+      const node = make("button", "report-menu-item"); node.append(icon("item" in item.target ? "folder-open" : "list"), item.text); node.type = "button"; node.setAttribute("role", "menuitem"); node.tabIndex = -1;
       node.addEventListener("click", () => this.drill(id, item.target)); this.menu.append(node);
     }
     this.menu.setAttribute("aria-label", `Actions of ${line.name}`);

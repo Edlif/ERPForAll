@@ -96,6 +96,16 @@ enum Engine {
     Native { function: String, agg: Agg },
 }
 
+impl Engine {
+    fn drill_source(&self) -> Option<(&Agg, Option<&str>)> {
+        match self {
+            Self::Aggregate(agg) => Some((agg, None)),
+            Self::Native { function, agg } => Some((agg, Some(function.as_str()))),
+            Self::Formula { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ExprDef {
     label: String,
@@ -1303,10 +1313,27 @@ async fn money(
 }
 
 /// The cells of a line with `values` per column group.
-fn cells(def: &ReportDef, id: &LineId, values: &[&Values], money: (u32, Option<i64>)) -> Vec<Cell> {
+fn cells(
+    def: &ReportDef,
+    line: Option<&LineDef>,
+    id: &LineId,
+    values: &[&Values],
+    money: (u32, Option<i64>),
+) -> Vec<Cell> {
     let mut out = Vec::with_capacity(values.len() * def.columns.len());
+    let drillable: Vec<_> = def
+        .columns
+        .iter()
+        .map(|column| {
+            line.is_some_and(|line| {
+                line.exprs
+                    .iter()
+                    .any(|expr| expr.label == column.label && expr.engine.drill_source().is_some())
+            })
+        })
+        .collect();
     for group in values {
-        for column in &def.columns {
+        for (column, has_source) in def.columns.iter().zip(&drillable) {
             let shown = column.rollup_field.as_ref().is_none_or(|f| id.has_group(f));
             let value = if shown {
                 group.get(&column.label).copied().flatten()
@@ -1317,11 +1344,12 @@ fn cells(def: &ReportDef, id: &LineId, values: &[&Values], money: (u32, Option<i
                 CellKind::Monetary => Cell::monetary(value, money.0, money.1),
                 kind => Cell::number(kind, value, column.scale),
             };
-            out.push(if column.blank_if_zero {
+            let displayed = if column.blank_if_zero {
                 cell.blank_if_zero()
             } else {
                 cell
-            });
+            };
+            out.push(displayed.with_drillable(*has_source));
         }
     }
     out
@@ -1402,7 +1430,7 @@ fn definition_lines(
     let empty = Values::new();
     let line_cells = |l: usize, id: &LineId| {
         let per: Vec<&Values> = values.iter().map(|g| g.get(&l).unwrap_or(&empty)).collect();
-        cells(def, id, &per, money)
+        cells(def, Some(&def.lines[l]), id, &per, money)
     };
     fn zero(def: &ReportDef, l: usize, cells_of: &dyn Fn(usize) -> bool) -> bool {
         cells_of(l)
@@ -1700,7 +1728,7 @@ async fn expand(
             } else {
                 LineKind::Group
             },
-            cells(def, &child, &refs, money),
+            cells(def, Some(line), &child, &refs, money),
         );
         shown.unfoldable = !last;
         if matches!(key, Key::Id(Some(_))) {
@@ -1751,7 +1779,7 @@ async fn expand(
             more_id.clone(),
             "",
             LineKind::More,
-            cells(def, &more_id, &refs, money),
+            cells(def, None, &more_id, &refs, money),
         );
         more.remaining = Some(total - end);
         more.next_offset = Some(end);
@@ -1822,7 +1850,18 @@ async fn drill(
             if group >= options.column_groups.len() {
                 return Err(bad(format!("The report has no column {index}.")));
             }
-            let label = &def.columns[column].label;
+            let column = &def.columns[column];
+            let label = &column.label;
+            if column
+                .rollup_field
+                .as_ref()
+                .is_some_and(|field| !id.has_group(field))
+            {
+                return Err(bad(format!(
+                    "Line {} has no value in column {label}.",
+                    line.code
+                )));
+            }
             let expr = line
                 .exprs
                 .iter()
@@ -1833,14 +1872,14 @@ async fn drill(
                         line.code
                     ))
                 })?;
-            let (Engine::Aggregate(agg) | Engine::Native { agg, .. }) = &expr.engine else {
+            let Some((agg, native_function)) = expr.engine.drill_source() else {
                 return Err(bad(format!(
                     "The {label} cell of line {} is a formula; no records are behind it.",
                     line.code
                 )));
             };
             let mut domain = scope(env, agg, options, group)? & keys_domain(&located.keys)?;
-            if let Engine::Native { function, .. } = &expr.engine {
+            if let Some(function) = native_function {
                 let contribution = crate::functions::find(env, function)?;
                 domain = domain & (contribution.drill_domain)(env, tx, options, &agg.model).await?;
             }

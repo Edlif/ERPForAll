@@ -568,12 +568,26 @@ fn definition_reports_compute_unfold_page_and_compare() {
             (format!("{on_hand}|total~~").as_str(), "total")
         );
         assert_eq!(cells(total), cells(line(&answer, &on_hand)));
+        for generated in [more, total] {
+            assert_eq!(generated["caret"], json!([]));
+            assert!(
+                generated["cells"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|cell| cell["drillable"] == false)
+            );
+        }
         assert_eq!(answer["lines"][13]["name"], "Moves");
         assert_eq!(
             cells(line(&answer, &bin(0))),
             [json!("3.00"), json!("1.00"), json!("2.00")]
         );
         assert_eq!(line(&answer, &bin(0))["level"], 1);
+        let grouped = line(&answer, &bin(0));
+        assert_eq!(grouped["caret"], json!(["open"]));
+        assert_eq!(grouped["cells"][0]["drillable"], true);
+        assert_eq!(grouped["cells"][2]["drillable"], false);
 
         // the next page, then the last level (detail lines, no further unfolding)
         let page = expand(&f.orm, f.clerk, &november(f.stock), &on_hand, 10)
@@ -662,6 +676,30 @@ fn definition_reports_compute_unfold_page_and_compare() {
             answer["lines"][0]["cells"][0]["value"],
             json!(count.to_string())
         );
+        let contacts = &answer["lines"][0];
+        assert_eq!(contacts["cells"][0]["drillable"], true);
+        assert_eq!(contacts["caret"], json!([]));
+        let action = runtime::report_drill(
+            &env,
+            &mut tx,
+            &answer["options"],
+            contacts["id"].as_str().unwrap(),
+            &json!({"cell": 0}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(action["res_model"], "res.partner");
+        let matching = env
+            .records("res.partner")
+            .unwrap()
+            .search_count(
+                &mut tx,
+                &Domain::from_json(&action["domain"]).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(matching, count);
     });
 }
 

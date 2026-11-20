@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_order_form_delivery_warehouse" model="ir.ui.view">
+    <field name="name">sale.order.form.delivery.warehouse</field>
+    <field name="model">sale.order</field>
+    <field name="inherit_id" ref="sale.view_order_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='partner_shipping_id']" position="after">
+        <field name="warehouse_id" string="Warehouse"
+               readonly="state not in ('draft', 'sent')"
+               domain="[('company_id', '=', company_id), ('active', '=', True), ('delivery_steps', '=', 'ship_only'), ('delivery_route_id', '!=', False)]"
+               options="{'no_create': True, 'no_open': True}"/>
+      </xpath>
+    </field>
+  </record>
+</erp>

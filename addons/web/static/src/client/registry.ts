@@ -85,7 +85,7 @@ export interface ClientActionEnvironment {
   action: ClientActionDescriptor;
   /** What `captureState` returned when the user left this action, or `null` on a first opening. */
   restored: unknown;
-  /** Run an action result (a related list, another client action) through the normal navigation; the screen stays in the breadcrumb. */
+  /** Run an action result (an existing record form, a related list or another client action) through the normal navigation; the screen stays in the breadcrumb. */
   open(result: unknown): Promise<void>;
 }
 /** `dispose` is synchronous and idempotent and the screen ignores late rendering after it; `captureState` returns JSON of at most 16 KiB. */

@@ -80,7 +80,7 @@ const server = createServer(async (req, res) => {
     else if (pathname.endsWith("erp_load_web_menus")) value = { wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: reportName, action_id: 30, action_kind: "client", children: [], icon: null }] };
     else if (pathname.endsWith("ir.actions.client/erp_load_web_client_action")) value = { wire_major: 1, result: { kind: "client", id: 30, name: reportName, tag: "reporting.report", params: { report: REPORT } } };
     else if (pathname.endsWith("reporting.report/erp_report_options")) value = {
-      name: reportName, options: showPartnerLedger ? body.previous || ledgerOptions : baseOptions,
+      name: reportName, options: { ...(showPartnerLedger ? ledgerOptions : baseOptions), ...(body.previous || {}) },
       filters: showPartnerLedger ? { ...filters, provider: "account_reporting.partner_ledger", unfold_all: false, hide_zero: "never" } : filters,
     };
     else if (pathname.endsWith("reporting.report/erp_report_lines")) {
@@ -89,6 +89,18 @@ const server = createServer(async (req, res) => {
       value = { options: body.options, lines: showPartnerLedger ? ledgerLines : open ? [topLine(true), ...children] : [topLine(false)], computed_at: "2026-11-19 10:00:00", hidden_lines: [] };
     } else if (pathname.endsWith("reporting.report/erp_report_expand")) {
       value = { lines: body.offset === 0 ? [0, 1, 2].map(country).concat([more(3)]) : [3, 4].map(country), computed_at: "2026-11-19 10:00:01" };
+    } else if (pathname.endsWith("erp_report_drill")) {
+      value = { type: "ir.actions.act_window", res_model: "res.partner", domain: [["id", "=", 42]] };
+    } else if (pathname.endsWith("erp_normalize_action_result")) {
+      value = { wire_major: 1, result: { kind: "current_window", model: "res.partner", name: "Source contacts", views: [{ id: null, type: "list" }], domain: body.result.domain, context: {} } };
+    } else if (pathname.endsWith("res.partner/get_views")) {
+      value = { wire_major: 1, registry_version: "r1", description_version: "source-list", model: "res.partner", notices: [],
+        fields: { "res.partner": { name: { type: "char", label: "Name", required: true, readonly: false, selection: null, relation: null, relation_field: null } } },
+        views: [{ identity: { kind: "stored", id: 2 }, type: "list", schema_major: 1, renderer: "web.list", root: 0, nodes: [
+          { kind: "list", children: [1] }, { kind: "field", force_save: false, field: { model: "res.partner", name: "name" }, widget: "char", options: {}, label: "Name", modifiers: { readonly: null, required: null, invisible: null } }] }] };
+    } else if (pathname.endsWith("res.partner/web_search_read")) {
+      assert.ok(JSON.stringify(body.domain).includes('["id","=",42]'));
+      value = { length: 1, records: [{ id: 42, name: "Source partner in Spain" }] };
     } else { unknown.push(pathname); throw new Error(`Unknown fixture RPC: ${pathname}`); }
     res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(value));
   } catch (error) { serverError = error; res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ message: "Fixture server failure" })); }
@@ -172,6 +184,18 @@ try {
       assert.equal(exported.options.search, "spa");
       assert.deepEqual(exported.options.loaded_pages, { [section]: 1 });
     }
+    await page.locator("tr.report-line").filter({ hasText: "Spain" }).locator("[data-drill]").first().click();
+    await page.getByText("Source partner in Spain", { exact: true }).waitFor();
+    await page.goBack();
+    await page.locator(".report-table").waitFor();
+    assert.deepEqual(await rowNames(page), ["Contacts", "Spain"]);
+    assert.equal(await page.getByRole("searchbox", { name: "Search lines" }).inputValue(), "spa");
+    await page.goForward();
+    await page.getByText("Source partner in Spain", { exact: true }).waitFor();
+    await page.locator(".breadcrumb-origin").click();
+    await page.locator(".report-table").waitFor();
+    assert.deepEqual(await rowNames(page), ["Contacts", "Spain"]);
+    checks.push({ width, drill_browser_back_forward_breadcrumb: "PASS" });
     if (width === 1440) { await auditPage(page); await page.screenshot({ path: path.join(output, "report-audit-1440.png"), fullPage: true }); screenshots.push("report-audit-1440.png"); }
     checks.push({ width, open_from_menu: "PASS", unfold_load_more_fold: "PASS", keyboard: "PASS", sort_preset_search: "PASS", export: "PASS", no_page_overflow: "PASS", axe_serious: width === 1440 ? "PASS" : "not run at this width" });
   }

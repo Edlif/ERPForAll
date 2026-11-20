@@ -406,10 +406,57 @@ async fn profit_loss() {
     .await
     .unwrap();
     let lines = shown["lines"].as_array().unwrap();
-    for (label, expected) in [("Income", "120"), ("Expenses", "40"), ("Net profit", "80")] {
+    for (label, expected, drillable) in [
+        ("Income", "120", false),
+        ("Expenses", "40", true),
+        ("Net profit", "80", false),
+    ] {
         let line = lines.iter().find(|line| line["name"] == label).unwrap();
         assert_eq!(numbers(line), [num(expected)], "{label}");
+        assert_eq!(line["cells"][0]["drillable"], drillable, "{label}");
     }
+    let expense = lines
+        .iter()
+        .find(|line| line["name"] == "Expenses")
+        .unwrap();
+    let action = runtime::report_drill(
+        &env,
+        &mut tx,
+        &shown["options"],
+        expense["id"].as_str().unwrap(),
+        &json!({"cell": 0}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(action["res_model"], "account.move.line");
+    let income = lines.iter().find(|line| line["name"] == "Income").unwrap();
+    let accounts = runtime::report_expand(
+        &env,
+        &mut tx,
+        &shown["options"],
+        income["id"].as_str().unwrap(),
+        0,
+    )
+    .await
+    .unwrap();
+    let account = &accounts["lines"][0];
+    assert_eq!(numbers(account), [num("120")]);
+    assert_eq!(account["cells"][0]["drillable"], false);
+    assert_eq!(account["caret"], json!(["open"]));
+    let error = runtime::report_drill(
+        &env,
+        &mut tx,
+        &shown["options"],
+        account["id"].as_str().unwrap(),
+        &json!({"cell": 0}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "The amount cell of line INCOME is a formula; no records are behind it."
+    );
     tx.rollback().await.unwrap();
     let mut tx = orm.begin(UserId::new(admin).unwrap()).await.unwrap();
     tx.env()

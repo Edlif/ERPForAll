@@ -2,8 +2,9 @@
 //! A new warehouse and its generated topology. Left out by the caller, the company, name, short
 //! name and address come from the company. A warehouse created
 //! without its own locations gets a view location, five sub-locations and eight operation types
-//! with their numbering, each with its generated identity (topology ADR D9). Install, upgrade
-//! and company creation all go through [`provision`], so every company has one warehouse.
+//! with their numbering. Ship-only warehouses also get a delivery route and its pull rule.
+//! Generated records carry their warehouse identity (topology ADR D9). Install, upgrade and
+//! company creation all go through [`provision`].
 use erp_sdk::ValueMap;
 use erp_sdk::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -634,7 +635,162 @@ pub(crate) async fn create_operation_types(
     )
     .await?;
     tx.invalidate_model("stock.warehouse", Some(&TYPE_FIELDS))
+        .await?;
+    create_ship_only_routes(tx, &env, &ids).await
+}
+
+/// The route belongs to the warehouse whose new topology the caller just created. Existing
+/// choices survive, and the normal Stock route/rule creates still check the caller's rights.
+async fn create_ship_only_routes(tx: &mut Transaction, env: &Env, ids: &[i64]) -> Result<()> {
+    struct Delivery {
+        warehouse: i64,
+        company: i64,
+        source: i64,
+        destination: i64,
+        picking_type: i64,
+        active: bool,
+        code: String,
+    }
+
+    let decode =
+        |error| Error::db("Reading ship-only warehouse topology failed.").with_source(error);
+    let deliveries = tx
+        .query(
+            "SELECT w.id, w.company_id, w.lot_stock_id, t.default_location_dest_id, \
+                    t.id, w.active, w.code \
+             FROM stock_warehouse w LEFT JOIN stock_picking_type t ON t.id = w.out_type_id \
+             WHERE w.id = ANY($1) AND w.delivery_steps = 'ship_only' \
+               AND w.delivery_route_id IS NULL ORDER BY w.id",
+            &[&ids],
+        )
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(Delivery {
+                warehouse: row.try_get(0).map_err(decode)?,
+                company: row.try_get(1).map_err(decode)?,
+                source: row.try_get(2).map_err(decode)?,
+                destination: row.try_get(3).map_err(decode)?,
+                picking_type: row.try_get(4).map_err(decode)?,
+                active: row.try_get(5).map_err(decode)?,
+                code: row.try_get(6).map_err(decode)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if deliveries.is_empty() {
+        return Ok(());
+    }
+
+    let route_values = deliveries
+        .iter()
+        .map(|delivery| {
+            let warehouse = RecId::from_real(delivery.warehouse)
+                .ok_or_else(|| Error::invariant("A new warehouse has no persisted identity."))?;
+            Ok(RawVals::new()
+                .set_cell(
+                    "name",
+                    Cell::Str(format!("{}: Direct delivery", delivery.code).into()),
+                )
+                .set_cell("company_id", Cell::Id(delivery.company))
+                .set_cell("active", Cell::Bool(delivery.active))
+                .set_cell("product_selectable", Cell::Bool(false))
+                .set_cell("warehouse_selectable", Cell::Bool(true))
+                .set_commands("warehouse_ids", [Command::set([warehouse])]))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let routes = env.records("stock.route")?.create(tx, route_values).await?;
+    let route_ids = routes.ids();
+    let rule_values = deliveries
+        .iter()
+        .zip(&route_ids)
+        .map(|(delivery, route)| {
+            RawVals::new()
+                .set_cell(
+                    "name",
+                    Cell::Str(format!("{}: Stock to customer", delivery.code).into()),
+                )
+                .set_cell("company_id", Cell::Id(delivery.company))
+                .set_cell("warehouse_id", Cell::Id(delivery.warehouse))
+                .set_cell("route_id", Cell::Id(*route))
+                .set_cell("active", Cell::Bool(delivery.active))
+                .set_cell("action", Cell::Str("pull".into()))
+                .set_cell("procure_method", Cell::Str("make_to_stock".into()))
+                .set_cell("picking_type_id", Cell::Id(delivery.picking_type))
+                .set_cell("location_src_id", Cell::Id(delivery.source))
+                .set_cell("location_dest_id", Cell::Id(delivery.destination))
+        })
+        .collect();
+    let rules = env.records("stock.rule")?.create(tx, rule_values).await?;
+    if route_ids.len() != deliveries.len() || rules.ids().len() != deliveries.len() {
+        return Err(Error::invariant(
+            "A ship-only warehouse route or rule was not created.",
+        ));
+    }
+    for ((delivery, route), rule) in deliveries.iter().zip(routes.iter()).zip(rules.iter()) {
+        crate::route_behavior::set_generated_identity(
+            tx,
+            &route,
+            delivery.warehouse,
+            OWNER,
+            "delivery_route_id",
+        )
+        .await?;
+        crate::route_behavior::set_generated_identity(
+            tx,
+            &rule,
+            delivery.warehouse,
+            OWNER,
+            "ship_only_delivery",
+        )
+        .await?;
+    }
+
+    let warehouse_ids: Vec<i64> = deliveries
+        .iter()
+        .map(|delivery| delivery.warehouse)
+        .collect();
+    let linked = tx
+        .execute(
+            "UPDATE stock_warehouse w SET delivery_route_id = v.route \
+             FROM unnest($1::int8[], $2::int8[]) AS v(warehouse, route) \
+             WHERE w.id = v.warehouse AND w.delivery_route_id IS NULL",
+            &[&warehouse_ids, &route_ids],
+        )
+        .await?;
+    if linked != deliveries.len() as u64 {
+        return Err(Error::invariant(
+            "A ship-only warehouse route could not be linked.",
+        ));
+    }
+    tx.invalidate_model("stock.warehouse", Some(&["delivery_route_id"]))
         .await
+}
+
+/// Supply the one-step rule for existing standard warehouses without a configured delivery route.
+pub(crate) async fn backfill_ship_only_routes(tx: &mut Transaction, env: &Env) -> Result<()> {
+    let warehouse_ids = tx
+        .query(
+            "SELECT w.id FROM stock_warehouse w
+             JOIN stock_picking_type t ON t.id = w.out_type_id AND t.warehouse_id = w.id
+             JOIN stock_location source ON source.id = w.lot_stock_id
+             JOIN stock_location dest ON dest.id = t.default_location_dest_id
+             WHERE w.delivery_route_id IS NULL AND w.active AND w.delivery_steps = 'ship_only'
+               AND t.code = 'outgoing' AND t.active AND t.company_id = w.company_id
+               AND t.default_location_src_id = source.id AND source.company_id = w.company_id
+               AND source.usage = 'internal' AND source.active
+               AND dest.usage = 'customer' AND dest.active
+               AND (dest.company_id IS NULL OR dest.company_id = w.company_id)
+             ORDER BY w.id",
+            &[],
+        )
+        .await?
+        .iter()
+        .map(|row| row.try_get(0))
+        .collect::<std::result::Result<Vec<i64>, _>>()
+        .map_err(|e| {
+            Error::db("Reading warehouses without a delivery route failed.").with_source(e)
+        })?;
+    create_ship_only_routes(tx, env, &warehouse_ids).await
 }
 
 /// Give each of `companies` its warehouse with the generated topology, in one batched create.

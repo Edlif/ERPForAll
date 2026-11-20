@@ -3,7 +3,7 @@
 // answer by name, and the pure operations on the loaded line list (fold, unfold, load more).
 export type CellKind = "monetary" | "decimal" | "integer" | "percent" | "date" | "text" | "empty";
 export type LineKind = "section" | "group" | "detail" | "total" | "more";
-export interface Cell { readonly kind: CellKind; readonly value: string | null; readonly scale: number; readonly zero: boolean }
+export interface Cell { readonly drillable?: boolean; readonly kind: CellKind; readonly value: string | null; readonly scale: number; readonly zero: boolean }
 export interface Line {
   readonly id: string; readonly parent: string | null; readonly name: string; readonly level: number; readonly kind: LineKind;
   readonly unfoldable: boolean; unfolded: boolean; readonly cells: readonly Cell[]; readonly caret: readonly string[];
@@ -79,7 +79,7 @@ function cell(raw: unknown): Cell {
   const c = obj(raw, "a cell"), kind = str(c["kind"], "a cell kind");
   if (!KINDS.includes(kind)) throw new Error(`The server sent a cell of unknown kind '${kind}'.`);
   const value = orNull(c["value"], v => str(v, "a cell value"));
-  return { kind: kind as CellKind, value, scale: num(c["scale"], "a cell scale"), zero: bool(c["zero"], "a cell") };
+  return { ...(c["drillable"] === undefined ? {} : { drillable: bool(c["drillable"], "whether a cell has source records") }), kind: kind as CellKind, value, scale: num(c["scale"], "a cell scale"), zero: bool(c["zero"], "a cell") };
 }
 export function line(raw: unknown): Line {
   const l = obj(raw, "a line"), kind = str(l["kind"], "a line kind");

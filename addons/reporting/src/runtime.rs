@@ -150,11 +150,15 @@ async fn unfold(
             let end = (j + 1..lines.len())
                 .find(|k| lines[*k].id.level() <= level)
                 .unwrap_or(lines.len());
+            let mut cells = lines[j].cells.clone();
+            for cell in &mut cells {
+                cell.suppress_declared_drill();
+            }
             let total = Line::new(
                 lines[j].id.child(Segment::total()),
                 lines[j].name.clone(),
                 LineKind::Total,
-                lines[j].cells.clone(),
+                cells,
             );
             lines.insert(end, total);
         }
