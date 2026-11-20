@@ -263,7 +263,8 @@ async fn ids_of(records: &Records, tx: &mut Transaction, field: &str) -> Result<
 fn json(value: &Value) -> Result<Json> {
     let invalid = || Error::validation("A report option is not a JSON value.");
     Ok(match value {
-        Value::False => Json::Bool(false),
+        // JSON-2 binds null as the ORM sentinel and literal booleans as Value::Bool.
+        Value::False => Json::Null,
         Value::Bool(v) => Json::Bool(*v),
         Value::Str(v) => Json::String(v.to_string()),
         Value::Int(v) => Json::from(*v),
@@ -344,10 +345,10 @@ impl ReportingReport {
         report: i64,
         previous: Value,
     ) -> Result<Value> {
-        // no previous options: `false` from a first opening
-        let previous = match previous {
-            Value::False => Json::Null,
-            given => json(&given)?,
+        // Only the top-level previous argument accepts the first-opening false shorthand.
+        let previous = match json(&previous)? {
+            Json::Bool(false) => Json::Null,
+            previous => previous,
         };
         Ok(out(runtime::report_options(
             this.env(),
