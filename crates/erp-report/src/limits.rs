@@ -8,6 +8,8 @@ use std::time::Duration;
 #[non_exhaustive]
 pub struct ReportLimits {
     pub(crate) views: ViewLimits,
+    pub(crate) html_bytes: usize,
+    pub(crate) html_nodes: usize,
     pub(crate) diagnostics: usize,
     pub(crate) calls: usize,
     pub(crate) program_nodes: usize,
@@ -28,6 +30,8 @@ impl Default for ReportLimits {
     fn default() -> Self {
         Self {
             views: ViewLimits::default(),
+            html_bytes: 4 * 1024 * 1024,
+            html_nodes: 50_000,
             diagnostics: 256,
             calls: 32,
             program_nodes: 50_000,
@@ -42,6 +46,21 @@ impl Default for ReportLimits {
     }
 }
 impl ReportLimits {
+    /// Per-value HTML admission. Positive host-selected bounds, at most 4 MiB and 50,000 parser nodes.
+    pub fn with_html_limits(mut self, bytes: usize, nodes: usize) -> Result<Self, ReportError> {
+        for (name, value, maximum) in [
+            ("html_bytes", bytes, self.html_bytes),
+            ("html_nodes", nodes, self.html_nodes),
+        ] {
+            if value == 0 || value > maximum {
+                return Err(ReportError::Limit { name, maximum });
+            }
+        }
+        self.html_bytes = bytes;
+        self.html_nodes = nodes;
+        Ok(self)
+    }
+
     /// Use the view engine's independently validated, lower-only limits.
     pub fn with_views(mut self, views: ViewLimits) -> Self {
         self.views = views;
@@ -95,7 +114,8 @@ impl ReportLimits {
         Ok(self)
     }
     /// Bound the evaluation steps of one document (operations, loop iterations and expressions);
-    /// floor 1, ceiling 10,000,000 (design §6.5). Each expression also runs.
+    /// floor 1, ceiling 10,000,000 (design §6.5). The data stage separately shares this budget
+    /// across helper dependency expansion and accepted results. Each expression also runs.
     pub fn with_evaluation_steps(mut self, value: usize) -> Result<Self, ReportError> {
         if !(1..=10_000_000).contains(&value) {
             return Err(ReportError::Limit {
@@ -143,7 +163,8 @@ impl ReportLimits {
         Ok(self)
     }
     /// Bound the bytes one evaluation buffers: the text it prints and the names each `t-call` and
-    /// `t-set` body copies; floor 1, ceiling 128 MiB.
+    /// `t-set` body copies; floor 1, ceiling 128 MiB. The data stage separately bounds retained
+    /// helper results by logical expression deep size plus record-ID keys under this same ceiling.
     pub fn with_evaluation_bytes(mut self, value: usize) -> Result<Self, ReportError> {
         if !(1..=EVALUATION_BYTES).contains(&value) {
             return Err(ReportError::Limit {
@@ -176,6 +197,7 @@ impl ReportLimits {
 pub(crate) fn millis(value: Duration) -> usize {
     usize::try_from(value.as_millis()).unwrap_or(usize::MAX)
 }
+#[derive(Debug)]
 pub(crate) struct Work {
     left: usize,
     maximum: usize,

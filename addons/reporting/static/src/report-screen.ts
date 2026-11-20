@@ -10,7 +10,7 @@ import { buildFilters, disclosure, message, type Disclosure } from "./report-fil
 
 const MODEL = "reporting.report";
 /** The options a returning user gets back: what the user chose, not what the server derived (columns, periods). */
-const KEPT = ["companies", "date", "comparison", "unfold_all", "unfolded", "hide_zero", "search", "order", "provider"] as const;
+const KEPT = ["companies", "date", "comparison", "unfold_all", "unfolded", "loaded_pages", "hide_zero", "search", "order", "provider"] as const;
 
 interface Shown { name: string; filters: data.Filters; options: Options; lines: Line[]; computedAt: string; hidden: readonly string[] }
 
@@ -65,7 +65,7 @@ export class ReportScreen implements ClientActionHandle {
   private async open(previous: Options | false): Promise<void> {
     const gen = ++this.generation;
     const resolved = data.decodeOptions(await this.call("erp_report_options", { report: this.report, previous }));
-    const loaded = data.decodeLines(await this.call("erp_report_lines", { options: resolved.options }));
+    const loaded = data.decodeLines(await this.call("erp_report_lines", { options: this.requestOptions(resolved.options, resolved.filters.currentOnly) }));
     if (gen !== this.generation || this.disposed) return;
     this.commit({ name: resolved.name, filters: resolved.filters, ...loaded });
   }
@@ -84,15 +84,31 @@ export class ReportScreen implements ClientActionHandle {
     if (typeof saved?.["scroll"] === "number") this.scroller.scrollTop = saved["scroll"];
   }
   /** The report with `options`; the screen keeps its table (dimmed) until the answer arrives, and keeps it if the answer is an error. */
-  private reload(options: Options): void {
+  private requestOptions(options: Options, currentOnly = this.shown?.filters.currentOnly): Options {
+    // A current-position request delegates Today to the server, including after the user's midnight.
+    return currentOnly ? { ...options, date: { mode: "single", preset: "today" } } : options;
+  }
+
+  private reload(options: Options, renewScope = false): void {
     const gen = ++this.generation;
     this.phase = this.shown ? "refreshing" : "loading"; this.failure = undefined; this.closeCaret(false); this.renderStatus(); this.syncControls();
     this.scroller.dataset["dim"] = String(this.shown !== undefined);
-    void this.call("erp_report_lines", { options }).then(raw => {
+    const load = async (): Promise<void> => {
+      const provider = options["provider"];
+      const scoped = provider && typeof provider === "object" && Object.keys(provider).length > 0;
+      let requested = this.requestOptions(options);
+      let resolved: ReturnType<typeof data.decodeOptions> | undefined;
+      if (renewScope && scoped) {
+        resolved = data.decodeOptions(await this.call("erp_report_options", { report: this.report, previous: requested }));
+        if (gen !== this.generation || this.disposed) return;
+        requested = this.requestOptions(resolved.options, resolved.filters.currentOnly);
+      }
+      const raw = await this.call("erp_report_lines", { options: requested });
       if (gen !== this.generation || this.disposed || !this.shown) return;
-      this.commit({ ...this.shown, ...data.decodeLines(raw) });
-    }).catch((error: unknown) => {
-      if (gen === this.generation && !this.disposed) this.fail(error, () => this.reload(options));
+      this.commit({ ...this.shown, ...resolved, ...data.decodeLines(raw) });
+    };
+    void load().catch((error: unknown) => {
+      if (gen === this.generation && !this.disposed) this.fail(error, () => this.reload(options, renewScope));
     });
   }
   private commit(next: Shown): void {
@@ -104,7 +120,18 @@ export class ReportScreen implements ClientActionHandle {
   }
   private patch(patch: Options): void {
     if (!this.shown) return;
-    this.reload({ ...this.shown.options, ...patch });
+    const options = { ...this.shown.options, ...patch };
+    if (typeof patch["search"] === "string" && [...patch["search"]].length > this.shown.filters.maxSearchChars) {
+      this.env.notice(`Search is limited to ${this.shown.filters.maxSearchChars} characters.`);
+      return;
+    }
+    if (("hide_zero" in patch || "search" in patch) && this.phase === "ready" && !this.failure) {
+      this.shown = { ...this.shown, options };
+      this.render();
+    } else {
+      if ("loaded_pages" in options && !("hide_zero" in patch || "search" in patch)) options["loaded_pages"] = {};
+      this.reload(options, true);
+    }
   }
 
   // ---- state ----
@@ -128,8 +155,8 @@ export class ReportScreen implements ClientActionHandle {
       if (iconName) node.append(icon(iconName));
       node.append(text); node.addEventListener("click", run); this.buttons.set(key, node); this.actions.append(node);
     };
-    add("refresh", "Refresh", "refresh-cw", () => { if (this.shown) this.reload(this.shown.options); else this.failure?.retry(); });
-    this.exports = exportButtons({ env: this.env, report: this.report, options: () => this.shown?.options, changed: () => this.syncControls() });
+    add("refresh", "Refresh", "refresh-cw", () => { if (this.shown) this.reload(this.shown.options, true); else this.failure?.retry(); });
+    this.exports = exportButtons({ env: this.env, report: this.report, options: () => this.shown ? this.requestOptions(this.shown.options) : undefined, changed: () => this.syncControls() });
     for (const [key, node] of this.exports.buttons) { this.buttons.set(key, node); this.actions.append(node); }
     this.syncControls();
   }
@@ -173,7 +200,8 @@ export class ReportScreen implements ClientActionHandle {
       this.scroller.append(skeleton); return;
     }
     this.scroller.dataset["dim"] = String(this.phase === "refreshing");
-    if (!s.lines.length) { this.scroller.append(make("p", "report-empty", "No data for these filters")); return; }
+    const visible = data.visibleLines(s.lines, s.options);
+    if (!visible.length) { this.scroller.append(make("p", "report-empty", "No data for these filters")); return; }
     const cols = data.columns(s.options), groups = data.periods(s.options);
     const perGroup = groups.length ? cols.length / groups.length : cols.length;
     const table = make("table", "report-table"); table.setAttribute("role", "treegrid"); table.setAttribute("aria-label", s.name);
@@ -187,8 +215,7 @@ export class ReportScreen implements ClientActionHandle {
       head.append(row);
     }
     const names = make("tr"); names.dataset["names"] = "true"; names.append(make("th", "report-name-head", "Line"));
-    const comparison = s.options["comparison"], ascending = typeof comparison === "object" && comparison !== null && (comparison as Record<string, unknown>)["order"] === "ascending";
-    const main = ascending ? groups.length - 1 : 0, ordered = s.options["order"];
+    const main = data.mainGroup(s.options), ordered = s.options["order"];
     const order = typeof ordered === "object" && ordered !== null ? ordered as { column?: unknown; direction?: unknown } : null;
     for (const col of cols) {
       const th = make("th", "report-col"); th.scope = "col";
@@ -204,10 +231,10 @@ export class ReportScreen implements ClientActionHandle {
     }
     head.append(names); table.append(head);
     const body = make("tbody");
-    const active = s.lines.some(l => l.id === this.activeId) ? this.activeId : s.lines[0]?.id;
+    const active = visible.some(l => l.id === this.activeId) ? this.activeId : visible[0]?.id;
     this.activeId = active;
     const frag = document.createDocumentFragment();
-    for (const line of s.lines) frag.append(this.row(line, cols.length, line.id === active));
+    for (const line of visible) frag.append(this.row(line, cols.length, line.id === active));
     body.append(frag); table.append(body); this.scroller.append(table);
     if (focused) [...this.scroller.querySelectorAll<HTMLElement>("tr[data-id]")].find(r => r.dataset["id"] === focused)?.focus();
   }
@@ -292,18 +319,28 @@ export class ReportScreen implements ClientActionHandle {
   }
   private toggle(id: string): void {
     const s = this.shown, line = this.line(id);
-    if (!s || !line || !line.unfoldable || this.busy.has(id)) return;
+    if (!s || this.phase !== "ready" || !line || !line.unfoldable || this.busy.has(id)) return;
     if (line.unfolded) {
       // Folding while "unfold all" is on keeps what else is open as an explicit list, so a refresh does not reopen everything.
       const open = s.options["unfold_all"] === true ? s.lines.filter(l => l.unfolded).map(l => l.id) : data.unfolded(s.options);
       const folded = data.fold(s.lines, open, id);
-      this.shown = { ...s, lines: folded.lines, options: { ...s.options, unfold_all: false, unfolded: folded.unfolded } }; this.renderTable(); return;
+      const options: Options = { ...s.options, unfold_all: false, unfolded: folded.unfolded };
+      const pages = data.loadedPages(options);
+      if (pages) {
+        const retained = new Set(folded.unfolded);
+        options["loaded_pages"] = Object.fromEntries(Object.entries(pages).filter(([parent]) => retained.has(parent)));
+      }
+      this.shown = { ...s, lines: folded.lines, options }; this.renderTable(); return;
+    }
+    if (data.loadedPages(s.options)) {
+      this.reload({ ...s.options, unfolded: [...new Set([...data.unfolded(s.options), id])] });
+      return;
     }
     const gen = this.generation;
     this.env.run(async () => {
       this.busy.add(id); this.renderTable();
       try {
-        const children = data.decodeExpand(await this.call("erp_report_expand", { options: s.options, line_id: id, offset: 0 }));
+        const children = data.decodeExpand(await this.call("erp_report_expand", { options: this.requestOptions(s.options), line_id: id, offset: 0 }));
         if (gen !== this.generation || this.disposed || !this.shown) return;
         this.busy.delete(id);
         const next = data.unfold(this.shown.lines, data.unfolded(this.shown.options), id, children);
@@ -318,15 +355,22 @@ export class ReportScreen implements ClientActionHandle {
   }
   private loadMore(id: string): void {
     const s = this.shown, line = this.line(id);
-    if (!s || !line || line.kind !== "more" || line.parent === null || line.nextOffset === null || this.busy.has(id)) return;
+    if (!s || this.phase !== "ready" || !line || line.kind !== "more" || line.parent === null || line.nextOffset === null || this.busy.has(id)) return;
     const parent = line.parent, offset = line.nextOffset;
+    const pages = data.loadedPages(s.options);
+    if (pages) {
+      // The server admits the whole visible tree, including pages open under other parents.
+      this.reload({ ...s.options, loaded_pages: { ...pages, [parent]: (pages[parent] ?? 0) + 1 } });
+      return;
+    }
     const gen = this.generation;
     this.env.run(async () => {
       this.busy.add(id); this.renderTable();
       try {
-        const page = data.decodeExpand(await this.call("erp_report_expand", { options: s.options, line_id: parent, offset }));
+        const page = data.decodeExpand(await this.call("erp_report_expand", { options: this.requestOptions(s.options), line_id: parent, offset }));
         if (gen !== this.generation || this.disposed || !this.shown) return;
         this.busy.delete(id);
+        if (this.line(id) !== line) return; // folded or replaced while the page was in flight
         this.shown = { ...this.shown, lines: data.loadMore(this.shown.lines, id, page) }; this.renderTable();
       } catch (error) {
         if (gen === this.generation && !this.disposed) { this.busy.delete(id); this.renderTable(); }
@@ -338,7 +382,7 @@ export class ReportScreen implements ClientActionHandle {
     const s = this.shown;
     if (!s) return;
     this.closeCaret(false);
-    this.env.run(async () => { await this.env.open(await this.call("erp_report_drill", { options: s.options, line_id: id, target })); });
+    this.env.run(async () => { await this.env.open(await this.call("erp_report_drill", { options: this.requestOptions(s.options), line_id: id, target })); });
   }
 
   // ---- caret menu ----
@@ -349,8 +393,13 @@ export class ReportScreen implements ClientActionHandle {
     if (this.caret?.disclosure.isOpen() && this.caret.trigger === trigger) { this.closeCaret(true); return; }
     this.caret?.disclosure.dispose(); this.menu.replaceChildren();
     const items: { text: string; target: { item: string } | { cell: number } }[] = line.caret.map(item => ({ text: item === "open" ? "Open" : item, target: { item } }));
-    const cols = data.columns(s.options), main = cols.filter(c => c.group === cols[0]?.group);
-    if (line.kind !== "total") main.forEach((col, index) => { if (line.cells[index]?.kind !== "empty") items.push({ text: `Records behind ${col.name}`, target: { cell: index } }); });
+    const main = data.mainGroup(s.options);
+    if (line.kind !== "total") data.columns(s.options).forEach((col, index) => {
+      const cell = line.cells[index];
+      if (col.group === main && cell && cell.kind !== "empty" && cell.kind !== "text") {
+        items.push({ text: `Records behind ${col.name}`, target: { cell: index } });
+      }
+    });
     if (!items.length) return;
     for (const item of items) {
       const node = make("button", "report-menu-item", item.text); node.type = "button"; node.setAttribute("role", "menuitem"); node.tabIndex = -1;

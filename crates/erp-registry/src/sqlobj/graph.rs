@@ -240,6 +240,7 @@ pub struct SqlTableGrant {
     model: SqlModelRef,
     binding: SqlBinding,
     ops: &'static [SqlTableOp],
+    exclusive_id_sequence: Option<&'static str>,
 }
 
 impl SqlTableGrant {
@@ -254,6 +255,10 @@ impl SqlTableGrant {
     /// The operations, each once.
     pub fn ops(&self) -> &'static [SqlTableOp] {
         self.ops
+    }
+    /// Exclusive named sequence requiring definer USAGE on the installed database.
+    pub fn exclusive_id_sequence(&self) -> Option<&'static str> {
+        self.exclusive_id_sequence
     }
 }
 
@@ -649,8 +654,32 @@ fn resolve_one(
         ),
         SqlObjectKindDecl::TableGrant(g) => {
             let model = model_ref(registry, reach, id, g.model)?;
-            // INSERT through `DEFAULT nextval(..)` needs USAGE on the sequence
-            if let Some(seq) = registry.model(g.model).and_then(|m| m.id_sequence)
+            let id_source = registry.model(g.model).and_then(|m| m.id_sequence);
+            if let Some(seq) = g.exclusive_id_sequence {
+                if g.binding != SqlBinding::Definer || !g.ops.contains(&SqlTableOp::Insert) {
+                    return Err(err!(
+                        id.who(),
+                        "exclusive id sequence '{seq}' requires a definer INSERT policy"
+                    ));
+                }
+                if id_source != Some(seq) {
+                    return Err(err!(
+                        id.who(),
+                        "'{seq}' does not match the id sequence of model '{}'",
+                        g.model
+                    ));
+                }
+                if let Some(other) = registry.models().iter().find(|m| {
+                    m.has_table() && m.id_sequence == Some(seq) && m.table != model.table()
+                }) {
+                    return Err(err!(
+                        id.who(),
+                        "id sequence '{seq}' belongs to both '{}' and '{}'",
+                        g.model,
+                        other.name
+                    ));
+                }
+            } else if let Some(seq) = id_source
                 && g.ops.contains(&SqlTableOp::Insert)
             {
                 return Err(err!(
@@ -665,6 +694,7 @@ fn resolve_one(
                 model: model.clone(),
                 binding: g.binding,
                 ops: g.ops,
+                exclusive_id_sequence: g.exclusive_id_sequence,
             };
             (
                 vec![SqlReference::Model(model)],

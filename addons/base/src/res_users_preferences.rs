@@ -29,7 +29,7 @@ pub const PREFERENCES_ACTION_XMLID: (&str, &str) = ("base", "action_res_users_my
 const ACTION_FIELDS: [&str; 5] = ["name", "res_model", "target", "view_mode", "views"];
 
 /// Whether the zone database knows `name` (one of the zones `res.partner`'s `_tz_get` offers).
-fn known_time_zone(name: &str) -> bool {
+pub(crate) fn known_time_zone(name: &str) -> bool {
     jiff::tz::db().available().any(|zone| zone.as_str() == name)
 }
 

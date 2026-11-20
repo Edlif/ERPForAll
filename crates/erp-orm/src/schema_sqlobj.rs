@@ -241,16 +241,20 @@ impl Transaction {
                 SqlObjectKind::ForeignKey(_) | SqlObjectKind::TableOptions(_)
             )
         });
-        sync.upgrade_integrity = self.plan_integrity_catalog(provenance, needed).await?;
+        let sequence_needed = graph.objects().iter().any(|o| matches!(o.kind(), SqlObjectKind::TableGrant(g) if g.exclusive_id_sequence().is_some()));
+        sync.upgrade_integrity = self
+            .plan_integrity_catalog(provenance, needed, sequence_needed)
+            .await?;
         let mut rows: BTreeMap<(String, String), Row> = BTreeMap::new();
         if provenance {
             let addons: Vec<&str> = registry.addons().iter().map(|a| a.name).collect();
             let found = self
                 .query(
                     "SELECT addon, key, format_version, step_state, shape, declaration_sha256, \
-                     body_sha256, installed_sha256 FROM erp_schema_sql_object WHERE addon = ANY($1) ORDER BY \
+                     body_sha256, installed_sha256 FROM erp_schema_sql_object WHERE addon = ANY($1) \
+                     OR ($2 AND kind = 'exclusive_sequence') ORDER BY \
                      addon, key",
-                    &[&addons],
+                    &[&addons, &(scope == SqlObjectScope::Full)],
                 )
                 .await?;
             for row in &found {
@@ -258,6 +262,11 @@ impl Transaction {
                     row.try_get(i).map_err(|e| unreadable("provenance row", e))
                 };
                 let (addon, key) = (get(0)?, get(1)?);
+                if !addons.contains(&addon.as_str()) {
+                    return Err(Error::programming(format!(
+                        "SQL object '{addon}/{key}': an installed exclusive sequence policy is absent from the current addon registry; explicit reconciliation is required"
+                    )));
+                }
                 let version: i32 = row.try_get(2).map_err(|e| unreadable("format", e))?;
                 if version != sqlobj::FORMAT_VERSION || get(3)? != INSTALLED {
                     return Err(Error::new(
@@ -462,8 +471,16 @@ impl Transaction {
                     (phase, observed.is_some(), "integrity")
                 }
                 SqlObjectKind::Condition(_) => (Phase::Record, false, "condition"),
-                // no DDL and no provenance row: reconciled by the grant phase of every lifecycle
-                // sync (B4)
+                // Exclusive sequences persist their identity. Other table policies reconcile grants directly.
+                SqlObjectKind::TableGrant(g) if g.exclusive_id_sequence().is_some() => {
+                    (Phase::Record, false, "exclusive sequence")
+                }
+                SqlObjectKind::TableGrant(_) if row.is_some() => {
+                    return Err(refuse(
+                        id,
+                        "removing an exclusive sequence policy requires explicit reconciliation",
+                    ));
+                }
                 SqlObjectKind::TableGrant(_) => continue,
                 _ => return Err(refuse(id, "its kind is installed by a later SQLOBJ slice")),
             };
@@ -804,6 +821,9 @@ impl Transaction {
                     (kind, Some(sha256(observed.as_bytes())))
                 }
                 SqlObjectKind::Condition(_) => ("condition", None),
+                SqlObjectKind::TableGrant(g) if g.exclusive_id_sequence().is_some() => {
+                    ("exclusive_sequence", None)
+                }
                 _ => return Err(refuse(id, "a later object kind cannot be recorded")),
             };
             cols[0].push(id.addon().to_owned());
@@ -880,6 +900,10 @@ impl Transaction {
             )
             .await?;
         }
+        if let Some(bound) = &sync.roles {
+            self.record_named_sequences(sync.graph, bound, &sync.deferred)
+                .await?;
+        }
         if sync.ran {
             self.signal_schema_change().await?;
         }
@@ -945,7 +969,7 @@ impl Transaction {
 
     /// Refuse incomplete SQL-object work at the end of an addon lifecycle operation.
     /// Reads the final registry, provenance and catalog under the schema lock; never installs
-    /// or repairs anything. Policies have no provenance row and are checked by target/grants.
+    /// or repairs anything. Ordinary table policies are checked by target and grants.
     ///
     /// # Errors
     /// `Programming` names an object no schema step installed or a declaration left stale;
@@ -996,7 +1020,7 @@ impl Transaction {
         let recorded: Vec<_> = graph
             .objects()
             .iter()
-            .filter(|o| !matches!(o.kind(), SqlObjectKind::TableGrant(_)))
+            .filter(|o| !matches!(o.kind(), SqlObjectKind::TableGrant(g) if g.exclusive_id_sequence().is_none()))
             .collect();
         let addons: Vec<String> = recorded.iter().map(|o| o.owner().to_owned()).collect();
         let keys: Vec<String> = recorded.iter().map(|o| o.id().key().to_owned()).collect();

@@ -246,7 +246,7 @@ impl Fixture {
                 if matches!(case, Case::Default) {
                     return Ok(currency);
                 }
-                let rows = tx.query("INSERT INTO res_company (name,currency_id,create_uid,write_uid,create_date,write_date) VALUES ('Cost created',$1,1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING id", &[&currency]).await?;
+                let rows = tx.query("INSERT INTO res_company (tz, name,currency_id,create_uid,write_uid,create_date,write_date) VALUES ('UTC', 'Cost created',$1,1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING id", &[&currency]).await?;
                 let [row] = rows.as_slice() else {
                     return Err("company insert must return one row".into());
                 };

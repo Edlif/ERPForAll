@@ -144,7 +144,7 @@ async fn company(
     parent: Option<i64>,
 ) -> i64 {
     tx.query(
-        "INSERT INTO res_company (name, currency_id, parent_id) VALUES ($1, $2, $3) \
+        "INSERT INTO res_company (tz, name, currency_id, parent_id) VALUES ('UTC', $1, $2, $3) \
          RETURNING id::int8",
         &[&name, &currency, &parent],
     )

@@ -81,8 +81,8 @@ async fn company(h: &Harness, name: &str, parent: Option<i64>) -> i64 {
     client
         .query_one(
             "WITH n AS (SELECT nextval(pg_get_serial_sequence('res_company', 'id')) AS id) \
-             INSERT INTO res_company (id, name, active, currency_id, parent_id, parent_path, account_price_include, tax_calculation_rounding_method, anglo_saxon_accounting, expects_chart_of_accounts, fpos_revision) \
-             SELECT id, $1, true, $2, $3::int8, \
+             INSERT INTO res_company (tz, id, name, active, currency_id, parent_id, parent_path, account_price_include, tax_calculation_rounding_method, anglo_saxon_accounting, expects_chart_of_accounts, fpos_revision) \
+             SELECT 'UTC', id, $1, true, $2, $3::int8, \
                     COALESCE((SELECT parent_path FROM res_company WHERE id = $3::int8), '') || id::text || '/', 'tax_excluded','round_globally',false,true,0 \
              FROM n RETURNING id::int8",
             &[&name, &currency, &parent],
@@ -233,6 +233,39 @@ async fn ensure_creates_the_missing_months_of_the_whole_tree_once() {
     assert_refused(&error, ErrorKind::Validation, LAST_DAY_SETTING);
     assert!(error.message().contains("2024/01"), "{}", error.message());
     assert_eq!(periods(&h, root).await.len(), 3);
+}
+
+#[tokio::test]
+async fn opposite_company_dates_change_admission_at_the_shared_fiscal_horizon() {
+    let h = harness().await;
+    let west = company(&h, "Western root", None).await;
+    let east = company(&h, "Eastern branch", Some(west)).await;
+    let client = h.db().client().await.unwrap();
+    client.execute("UPDATE res_company SET tz=CASE WHEN id=$1 THEN 'Etc/GMT+12' ELSE 'Pacific/Kiritimati' END WHERE id IN ($1,$2)", &[&west,&east]).await.unwrap();
+    // The zones are 26 hours apart, so they always have different local dates.
+    // Pick a month offset that preserves that difference across short months.
+    let dates = client.query_one(
+        "WITH days AS (SELECT (now() AT TIME ZONE 'Etc/GMT+12')::date AS west, (now() AT TIME ZONE 'Pacific/Kiritimati')::date AS east)
+         SELECT m, (east + make_interval(months=>m))::date FROM days,generate_series(1,12) m
+         WHERE (west + make_interval(months=>m))::date < (east + make_interval(months=>m))::date ORDER BY m LIMIT 1", &[]
+    ).await.unwrap();
+    let months: i32 = dates.get(0);
+    let target: Date = dates.get(1);
+    drop(client);
+    let fiscal =
+        FiscalCalendar::new(FiscalYearEnd::new(31, 12).unwrap(), i64::from(months)).unwrap();
+    let refused = ensure_periods_with(h.orm(), system(), &fiscal, west, target, target)
+        .await
+        .unwrap_err();
+    assert_refused(&refused, ErrorKind::Validation, HORIZON_SETTING);
+    assert!(periods(&h, east).await.is_empty());
+    let count = ensure_periods_with(h.orm(), system(), &fiscal, east, target, target)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 2,
+        "the admitted branch creates its period across the root tree"
+    );
 }
 
 /// Wait until some session of the test database waits for a lock.
@@ -1037,8 +1070,8 @@ async fn a_company_without_a_valid_parent_path_is_refused_and_is_no_ancestor() {
     for (name, path) in [("No path", None), ("Empty path", Some(""))] {
         let id: i64 = client
             .query_one(
-                "INSERT INTO res_company (name, active, currency_id, parent_path, hard_lock_date, account_price_include, tax_calculation_rounding_method, anglo_saxon_accounting, expects_chart_of_accounts, fpos_revision) \
-                 VALUES ($1, true, $2, $3, '2030-12-31', 'tax_excluded','round_globally',false,true,0) RETURNING id::int8",
+                "INSERT INTO res_company (tz, name, active, currency_id, parent_path, hard_lock_date, account_price_include, tax_calculation_rounding_method, anglo_saxon_accounting, expects_chart_of_accounts, fpos_revision) \
+                 VALUES ('UTC', $1, true, $2, $3, '2030-12-31', 'tax_excluded','round_globally',false,true,0) RETURNING id::int8",
                 &[&name, &currency, &path],
             )
             .await

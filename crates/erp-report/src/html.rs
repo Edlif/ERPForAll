@@ -73,10 +73,16 @@ pub fn render_html(document: &DocTree, warnings: &[String]) -> Result<String, Re
         Node::Placeholder { reason, .. } => Some(reason.as_str()),
         _ => None,
     });
+    let content_warnings: Vec<String> = document
+        .content_warnings()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
     let mut listed = warnings
         .iter()
         .map(String::as_str)
-        .chain(placeholders)
+        .chain(content_warnings.iter().map(String::as_str))
+        .chain(placeholders.filter(|reason| *reason != "HTML image placeholder"))
         .peekable();
     if listed.peek().is_some() {
         out.push_str("<div class=\"erp-report-warnings\" role=\"status\">Warnings<ul>");
@@ -129,6 +135,32 @@ fn escape(out: &mut String, text: &str) {
 }
 
 fn style(out: &mut String, style: &Style, block: bool) {
+    let rich = style.rich();
+    if rich.preformatted() {
+        out.push_str("white-space:pre-wrap;");
+    }
+    if !rich.font().is_empty() {
+        out.push_str("font-family:");
+        escape(out, rich.font());
+        out.push(';');
+    }
+    if let Some(rtl) = rich.rtl() {
+        out.push_str(if rtl {
+            "direction:rtl;"
+        } else {
+            "direction:ltr;"
+        });
+    }
+    if rich.tracking() != 0.0 {
+        let _ = write!(out, "letter-spacing:{}pt;", rich.tracking());
+    }
+    if rich.baseline() != 0 {
+        out.push_str(if rich.baseline() < 0 {
+            "vertical-align:sub;"
+        } else {
+            "vertical-align:super;"
+        });
+    }
     let d = Style::default();
     let _ = write!(out, "font-size:{}pt", style.size());
     if style.bold() {
@@ -137,8 +169,14 @@ fn style(out: &mut String, style: &Style, block: bool) {
     if style.italic() {
         out.push_str(";font-style:italic");
     }
-    if style.underline() {
-        out.push_str(";text-decoration:underline");
+    if style.underline() || rich.strike() {
+        out.push_str(";text-decoration:");
+        if style.underline() {
+            out.push_str("underline ");
+        }
+        if rich.strike() {
+            out.push_str("line-through");
+        }
     }
     if style.color() != d.color() {
         let [r, g, b] = style.color();
@@ -243,6 +281,15 @@ fn children(out: &mut String, nodes: &[Node], ids: &[NodeId], tag: &str) {
 
 /// Recursion is bounded: a `DocTree` is admitted at a depth of at most 32 levels.
 fn node(out: &mut String, nodes: &[Node], id: &NodeId) {
+    let link = match &nodes[id.index()] {
+        Node::Inline { style, .. } | Node::Block { style, .. } => style.rich().link(),
+        _ => "",
+    };
+    if !link.is_empty() {
+        out.push_str("<a href=\"");
+        escape(out, link);
+        out.push_str("\" rel=\"noreferrer\">");
+    }
     // Every id of a finished tree points into its own arena (the builder refuses foreign or later ids).
     let Some(n) = nodes.get(id.index()) else {
         return;
@@ -401,5 +448,8 @@ fn node(out: &mut String, nodes: &[Node], id: &NodeId) {
         Node::PageCounter(PageCounter::Total) => {
             out.push_str("<span class=\"erp-page-counter\" data-counter=\"total\"></span>");
         }
+    }
+    if !link.is_empty() {
+        out.push_str("</a>");
     }
 }

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name = "Accounting Reports"
+summary = "Review financial statements, trial balance, journals and account movements"
+category = "Accounting"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.7.0"
+depends = ["base", "account", "reporting"]
+data = ["data/journal_activity.xml", "data/account_movements.xml", "data/profit_loss.xml", "data/ledger_trial_balance.xml", "data/balance_sheet.xml", "data/general_ledger.xml", "data/partner_ledger.xml"]

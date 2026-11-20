@@ -1,0 +1,5 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_purchase_receipt_user,Purchase: incoming transfer,stock.model_stock_picking,purchase.group_purchase_user,cru,"[('picking_type_id.code', '=', 'incoming')]"
+access_purchase_receipt_move_user,Purchase: incoming transfer move,stock.model_stock_move,purchase.group_purchase_user,cru,"[('picking_type_id.code', '=', 'incoming'), ('picking_id.picking_type_id.code', '=', 'incoming')]"
+access_purchase_receipt_line_user,Purchase: incoming transfer move line,stock.model_stock_move_line,purchase.group_purchase_user,cru,"[('move_id.picking_type_id.code', '=', 'incoming'), ('move_id.picking_id.picking_type_id.code', '=', 'incoming'), ('picking_id.picking_type_id.code', '=', 'incoming')]"
+access_purchase_receipt_open_line_unlink,Purchase: open incoming reservation detail,stock.model_stock_move_line,purchase.group_purchase_user,d,"[('move_id.picking_type_id.code', '=', 'incoming'), ('move_id.picking_id.picking_type_id.code', '=', 'incoming'), ('picking_id.picking_type_id.code', '=', 'incoming'), ('membership', '=', 'open'), ('done_at', '=', False)]"

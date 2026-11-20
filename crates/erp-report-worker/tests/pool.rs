@@ -265,3 +265,151 @@ fn a_worker_log_is_capped_and_never_holds_the_document() {
     assert!(!log.contains("SENTINEL-7f3a"));
     assert!(!error.to_string().contains("SENTINEL-7f3a"));
 }
+
+#[test]
+fn original_html_warnings_survive_worker_string_warning_channel() {
+    use erp_expr::EvalContext;
+    use erp_report::{
+        EvalOptions, FieldValue, Language, RecordStore, ReportLimits, ReportProgram, TemplateSource,
+    };
+    let mut records = RecordStore::new();
+    records
+        .insert(
+            "note",
+            1,
+            "First",
+            vec![("body", FieldValue::html("<unknown>Keep</unknown>"))],
+        )
+        .unwrap();
+    let records = std::sync::Arc::new(records);
+    let context = EvalContext::standard().with_var("doc", records.recordset("note", &[1]));
+    let program = ReportProgram::compile(
+        "html",
+        &[TemplateSource::new("html", "<div t-field='doc.body'/>")],
+        &Language::new("en_US").unwrap(),
+        ReportLimits::default(),
+    )
+    .unwrap();
+    let doc = program
+        .evaluate(
+            &context,
+            &records,
+            &EvalOptions::default(),
+            DocumentOptions::new("html", "HTML", PageSetup::new(400.0, 500.0, 30.0).unwrap()),
+        )
+        .unwrap();
+    let fonts = tempfile::tempdir().unwrap();
+    let pool = pool(settings(&fonts, &[]));
+    let result = pool.render(&doc).unwrap();
+    assert_eq!(result.content_warnings(), doc.content_warnings());
+    assert_eq!(
+        result
+            .warnings()
+            .iter()
+            .filter(|w| w.contains("HtmlElementUnwrapped"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn worker_image_failure_rejects_text_target() {
+    let fonts = tempfile::tempdir().unwrap();
+    let pool = pool(settings(&fonts, &[]));
+    let error = pool
+        .render(&document("image-failure", "plain text"))
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ReportError::InvalidDocument {
+            reason: "image failure must identify an image node"
+        }
+    ));
+}
+
+#[test]
+fn worker_image_failure_survives_structured_response() {
+    let mut builder = DocumentBuilder::new(Limits::default());
+    let image = builder
+        .add(Node::Image {
+            data: std::sync::Arc::from(&b"<svg/>"[..]),
+            width: Some(20.0),
+            height: Some(20.0),
+            fit: erp_report::ImageFit::Contain,
+            alt: "image".into(),
+        })
+        .unwrap();
+    let doc = builder
+        .finish(
+            image,
+            DocumentOptions::new(
+                "image-failure",
+                "Test",
+                PageSetup::new(400.0, 500.0, 20.0).unwrap(),
+            ),
+        )
+        .unwrap();
+    let fonts = tempfile::tempdir().unwrap();
+    let pool = pool(settings(&fonts, &[]));
+    let result = pool.render(&doc).unwrap();
+    assert_eq!(result.image_failures().len(), 1);
+    assert_eq!(result.image_failures()[0].node(), 0);
+    assert_eq!(
+        result.image_failures()[0].reason(),
+        "fixture decoder failure"
+    );
+    assert_eq!(
+        result.warnings(),
+        &["image node 0: fixture decoder failure; an empty box is printed"]
+    );
+}
+
+#[test]
+fn worker_maps_late_failure_to_original_html_field_once() {
+    use erp_expr::EvalContext;
+    use erp_report::{
+        EvalOptions, FieldValue, Language, RecordStore, ReportLimits, ReportProgram,
+        ReportWarningKind, TemplateSource,
+    };
+    let mut records = RecordStore::new();
+    records.insert("note", 7, "Invoice", vec![("body", FieldValue::html(
+        "<img alt='Broken seal' src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB'/>"
+    ))]).unwrap();
+    let records = std::sync::Arc::new(records);
+    let context = EvalContext::standard().with_var("doc", records.recordset("note", &[7]));
+    let program = ReportProgram::compile(
+        "html",
+        &[TemplateSource::new("html", "<div t-field='doc.body'/>")],
+        &Language::new("en_US").unwrap(),
+        ReportLimits::default(),
+    )
+    .unwrap();
+    let doc = program
+        .evaluate(
+            &context,
+            &records,
+            &EvalOptions::default(),
+            DocumentOptions::new(
+                "image-failure",
+                "Test",
+                PageSetup::new(400.0, 500.0, 20.0).unwrap(),
+            ),
+        )
+        .unwrap();
+    assert!(doc.content_warnings().is_empty());
+    let fonts = tempfile::tempdir().unwrap();
+    let pool = pool(settings(&fonts, &[]));
+    let result = pool.render(&doc).unwrap();
+    assert_eq!(result.content_warnings().len(), 1);
+    let warning = &result.content_warnings()[0];
+    assert!(
+        matches!(warning.kind(), ReportWarningKind::ImageDegraded { reason } if reason == "fixture decoder failure")
+    );
+    assert_eq!(
+        warning.source().record(),
+        Some(("note", 7, "Invoice", "body"))
+    );
+    assert_eq!(warning.template(), "html");
+    assert_eq!(warning.line(), 1);
+    assert_eq!(result.warnings(), &[warning.to_string()]);
+}

@@ -36,7 +36,7 @@ async fn predecessor(fields: Vec<FieldDecl>) -> Harness {
     let currency = erp_testkit::fixtures::seed_currency_in(&mut tx)
         .await
         .unwrap();
-    tx.execute("INSERT INTO res_company(id,name,currency_id) VALUES (1,'One',$1),(2,'Two',$1),(3,'Three',$1) ON CONFLICT DO NOTHING", &[&currency]).await.unwrap();
+    tx.execute("INSERT INTO res_company(tz, id,name,currency_id) VALUES ('UTC', 1,'One',$1),('UTC', 2,'Two',$1),('UTC', 3,'Three',$1) ON CONFLICT DO NOTHING", &[&currency]).await.unwrap();
     tx.commit().await.unwrap();
     h
 }
@@ -617,7 +617,7 @@ async fn custom_reference_key_under_orm_name_is_never_dropped() {
 async fn maximum_owner_set_builds_every_override_without_argument_overflow() {
     let h = predecessor(vec![FieldDecl::char("note")]).await;
     let mut tx = h.begin().await.unwrap();
-    tx.batch("INSERT INTO res_company(id,name,currency_id) SELECT n,'Owner '||n,(SELECT currency_id FROM res_company WHERE id=1) FROM generate_series(4,256) n; INSERT INTO migration_property(id,note) VALUES(1,'same')").await.unwrap();
+    tx.batch("INSERT INTO res_company(tz, id,name,currency_id) SELECT 'UTC', n,'Owner '||n,(SELECT currency_id FROM res_company WHERE id=1) FROM generate_series(4,256) n; INSERT INTO migration_property(id,note) VALUES(1,'same')").await.unwrap();
     tx.commit().await.unwrap();
     let orm = successor(&h, vec![property(FieldDecl::char("note"))]);
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();

@@ -6,6 +6,8 @@ use erp_modules::{AddonIndex, LoadMode, ModuleGraph, ModuleName, ModuleState};
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
+pub mod chart_defaults;
+
 /// Dedicated operation enum representing module lifecycle commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleOperation {

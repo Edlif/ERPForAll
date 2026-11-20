@@ -17,7 +17,7 @@ use erp_modules::system::{InitOptions, ModuleSystem};
 use erp_modules::{AddonIndex, ModuleName};
 use erp_report::LayoutEngine;
 use erp_sdk::prelude::*;
-use erp_sdk::{Context, Orm, SUPERUSER_ID};
+use erp_sdk::{Context, ErrorKind, Orm, SUPERUSER_ID};
 use erp_testkit::TestDb;
 
 #[path = "support/report_access.rs"]
@@ -79,6 +79,7 @@ async fn install() -> (TestDb, Orm) {
             &erp_addon_uom::ADDON,
             &erp_addon_product::ADDON,
             &erp_addon_stock::ADDON,
+            &erp_addon_reporting::ADDON,
         ])
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
         .require_core_tables(erp_security::auth::core_tables())
@@ -259,6 +260,206 @@ fn has(page: &str, parts: &[&str]) {
     for part in parts {
         assert!(page.contains(part), "{part}: {page}");
     }
+}
+
+#[test]
+fn barcode_printer_setting_controls_picking_sheet() {
+    big_stack(barcode_printer_body);
+}
+
+async fn barcode_printer_body() {
+    use erp_addon_base::ir_config_setting::{read_values, write_values};
+    use erp_sdk::views::wire::SettingsScope;
+    const KEY: &str = "base.report_barcode_dpi";
+    let (db, orm) = install().await;
+    let mut tx = orm
+        .begin_with(SUPERUSER_ID, Context::new().with_company_id(1))
+        .await
+        .unwrap();
+    let admin = report_access::admin(&mut tx, 1).await;
+    let clerk = report_access::user(
+        &mut tx,
+        "dpi-stock-clerk",
+        1,
+        &[("stock", "group_stock_user")],
+    )
+    .await;
+    let partner = create(
+        &mut tx,
+        1,
+        "res.partner",
+        RawVals::new().set_cell("name", text("DPI receiver")),
+    )
+    .await;
+    let item = product(&mut tx, 1, "DPI item").await;
+    let transfer = picking(
+        &mut tx,
+        1,
+        "outgoing",
+        "WH/OUT/00012",
+        partner,
+        "DPI fixture",
+        &[(item, "1".into())],
+    )
+    .await;
+    let currency = one(
+        &mut tx,
+        "SELECT currency_id::int8 FROM res_company WHERE id=1",
+    )
+    .await;
+    let other_company = create(
+        &mut tx,
+        1,
+        "res.company",
+        RawVals::new()
+            .set_cell("name", text("Private DPI company"))
+            .set_cell("currency_id", Cell::Id(currency)),
+    )
+    .await;
+    let hidden = picking(
+        &mut tx,
+        other_company,
+        "incoming",
+        "PRIVATE/IN/1",
+        partner,
+        "private",
+        &[(item, "1".into())],
+    )
+    .await;
+    tx.commit().await.unwrap();
+    let users = report_access::policy_orm(&db, &orm).await;
+    let mut widths = Vec::new();
+    for dpi in [300_i64, 203, 300] {
+        let mut tx = users
+            .begin(erp_sdk::UserId::new(admin).unwrap())
+            .await
+            .unwrap();
+        assert!(!tx.env().is_superuser());
+        let previous = read_values(
+            &tx.env(),
+            &mut tx,
+            SettingsScope::Global {},
+            vec![KEY.into()],
+        )
+        .await
+        .unwrap();
+        write_values(
+            &tx.env(),
+            &mut tx,
+            SettingsScope::Global {},
+            previous.revision,
+            vec![(KEY.into(), Value::Int(dpi))],
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = users
+            .begin_with(
+                erp_sdk::UserId::new(clerk).unwrap(),
+                Context::new().with_company_id(1),
+            )
+            .await
+            .unwrap();
+        assert!(!tx.env().is_superuser());
+        let denied = read_values(
+            &tx.env(),
+            &mut tx,
+            SettingsScope::Global {},
+            vec![KEY.into()],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied.kind(), ErrorKind::Access);
+        assert_eq!(
+            denied.message(),
+            format!("Setting {KEY} is unavailable or access is denied.")
+        );
+        let denied = write_values(
+            &tx.env(),
+            &mut tx,
+            SettingsScope::Global {},
+            "0".into(),
+            vec![(KEY.into(), Value::Int(72))],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied.kind(), ErrorKind::Access);
+        assert_eq!(
+            denied.message(),
+            format!("Setting {KEY} is unavailable or access is denied.")
+        );
+        let action = erp_addon_base::report_print::find(&mut tx, "stock.report_picking_operations")
+            .await
+            .unwrap();
+        let before = erp_addon_base::report_print::check_records(&mut tx, &action, None, &[hidden])
+            .await
+            .unwrap_err();
+        assert_eq!(before.kind(), ErrorKind::Access);
+        erp_addon_base::report_print::check_records(&mut tx, &action, None, &[transfer])
+            .await
+            .unwrap();
+        let document = erp_addon_base::report_print::prepare(&mut tx, &action, &[transfer])
+            .await
+            .unwrap();
+        assert_eq!(tx.env().user_id().get(), clerk);
+        assert!(
+            !tx.env().is_superuser(),
+            "configuration read must not elevate the printer"
+        );
+        let after = erp_addon_base::report_print::check_records(&mut tx, &action, None, &[hidden])
+            .await
+            .unwrap_err();
+        assert_eq!(after.kind(), ErrorKind::Access);
+        assert_eq!(after.message(), before.message());
+        let framed = report_frame::through_frame(&document);
+        let codes: Vec<_> = framed
+            .nodes()
+            .iter()
+            .filter_map(|node| match node {
+                erp_report::Node::Vector {
+                    vector, width, alt, ..
+                } if alt.ends_with("WH/OUT/00012") => Some((vector, width.unwrap())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(codes.len(), 1);
+        let (vector, width) = codes[0];
+        let module = width / vector.width();
+        let dots = module * f64::from(u32::try_from(dpi).unwrap()) / 72.0;
+        assert!(
+            dots >= 1.0 && (dots - dots.round()).abs() < 1e-9,
+            "{dpi} dpi: {dots} dots"
+        );
+        assert!(!vector.rectangle_list().is_empty());
+        for [x, _, bar_width, _] in vector.rectangle_list() {
+            for measure in [x * dots, bar_width * dots] {
+                assert!(
+                    (measure - measure.round()).abs() < 1e-9,
+                    "bar edge/width {measure}"
+                );
+            }
+        }
+        widths.push(module);
+        let fonts = addons_dir().join("report_fonts");
+        let engine =
+            erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default()).unwrap();
+        let pdf = engine.render(&framed).unwrap();
+        has(
+            &page_texts(pdf.bytes())[0],
+            &["PickingOperationsWH/OUT/00012", "DPIitem"],
+        );
+        tx.rollback().await.unwrap();
+    }
+    assert_eq!(widths[0], widths[2]);
+    assert_ne!(widths[0], widths[1]);
+    let default_on_203 = widths[0] * 203.0 / 72.0;
+    assert!(
+        (default_on_203 - default_on_203.round()).abs() > 1e-6,
+        "fixture must detect the old default"
+    );
+    drop(users);
+    db.cleanup().await.unwrap();
 }
 
 /// report service: delivery slip with address, source document, ordered and delivered quantities
@@ -910,4 +1111,263 @@ fn assert_grouped(page: &str, a: &str) {
         );
         assert!(page.rfind("WingNut").unwrap() > lot, "{page}");
     }
+}
+
+#[test]
+fn stock_report_definitions_follow_completed_receipts() {
+    big_stack(dynamic_report_body);
+}
+
+async fn dynamic_report_body() {
+    use erp_addon_reporting::runtime::{report_drill, report_expand, report_lines, report_options};
+    use serde_json::{Value as Json, json};
+    let (_db, orm) = install().await;
+    let mut initial = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = one(
+        &mut initial,
+        "SELECT res_id::int8 FROM ir_model_data WHERE module='base' AND name='main_company'",
+    )
+    .await;
+    initial.commit().await.unwrap();
+    let mut tx = orm
+        .begin_with(SUPERUSER_ID, Context::new().with_company_id(company))
+        .await
+        .unwrap();
+    let partner = one(
+        &mut tx,
+        &format!("SELECT partner_id::int8 FROM res_company WHERE id={company}"),
+    )
+    .await;
+    let item = product(&mut tx, company, "Dynamic stock unit").await;
+    let receipt = picking(
+        &mut tx,
+        company,
+        "incoming",
+        "DYN/IN/1",
+        partner,
+        "DYN1",
+        &[(item, "7".into())],
+    )
+    .await;
+    call(&mut tx, company, receipt, "action_assign").await;
+    let line = one(
+        &mut tx,
+        &format!("SELECT id FROM stock_move_line WHERE picking_id={receipt}"),
+    )
+    .await;
+    tx.env()
+        .records("stock.move.line")
+        .unwrap()
+        .browse([line])
+        .unwrap()
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("quantity", Cell::Decimal(Decimal::from(8))),
+        )
+        .await
+        .unwrap();
+    call(&mut tx, company, receipt, "button_validate").await;
+    let _draft = picking(
+        &mut tx,
+        company,
+        "incoming",
+        "DYN/IN/2",
+        partner,
+        "DYN2",
+        &[(item, "11".into())],
+    )
+    .await;
+    let env = tx.env();
+    let position = one(&mut tx, "SELECT res_id::int8 FROM ir_model_data WHERE module='stock' AND name='report_stock_position'").await;
+    let options = report_options(&env, &mut tx, position, &Json::Null)
+        .await
+        .unwrap()["options"]
+        .clone();
+    let mut historical = options.clone();
+    historical["date"]["to"] = json!("2001-01-01");
+    let refused = report_lines(&env, &mut tx, &historical).await.unwrap_err();
+    assert!(
+        refused.message().contains("current stock"),
+        "{}",
+        refused.message()
+    );
+    let reopened = report_options(&env, &mut tx, position, &historical)
+        .await
+        .unwrap();
+    assert_eq!(reopened["filters"]["current_only"], true);
+    assert_eq!(reopened["options"]["date"], options["date"]);
+    let top = report_lines(&env, &mut tx, &options).await.unwrap();
+    let section = &top["lines"][0];
+    assert_eq!(section["name"], "Stock");
+    assert!(section["cells"][0]["value"].is_null());
+    let expand = section["id"].as_str().unwrap();
+    let locations = report_expand(&env, &mut tx, &options, expand, 0)
+        .await
+        .unwrap();
+    let shelf = &locations["lines"][0];
+    assert!(shelf["cells"][0]["value"].is_null());
+    let products = report_expand(&env, &mut tx, &options, shelf["id"].as_str().unwrap(), 0)
+        .await
+        .unwrap();
+    let row = &products["lines"][0];
+    assert_eq!(row["name"], "Dynamic stock unit");
+    let quantities: Vec<Decimal> = row["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["value"].as_str().unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(
+        quantities,
+        [Decimal::from(8), Decimal::ZERO, Decimal::from(8)]
+    );
+    let kg = one(
+        &mut tx,
+        "SELECT res_id::int8 FROM ir_model_data WHERE module='uom' AND name='product_uom_kgm'",
+    )
+    .await;
+    let flour_template = create(
+        &mut tx,
+        company,
+        "product.template",
+        RawVals::new()
+            .set_cell("name", text("Dynamic flour"))
+            .set_cell("uom_id", Cell::Id(kg))
+            .set_cell("is_storable", Cell::Bool(true)),
+    )
+    .await;
+    let flour = one(
+        &mut tx,
+        &format!("SELECT id FROM product_product WHERE product_tmpl_id={flour_template}"),
+    )
+    .await;
+    let mut flour_transfers = Vec::new();
+    for (kind, name, qty) in [
+        ("incoming", "DYN/IN/KG", "3"),
+        ("outgoing", "DYN/OUT/KG", "2"),
+    ] {
+        let transfer = picking(
+            &mut tx,
+            company,
+            kind,
+            name,
+            partner,
+            name,
+            &[(flour, qty.to_owned())],
+        )
+        .await;
+        call(&mut tx, company, transfer, "action_assign").await;
+        call(&mut tx, company, transfer, "button_validate").await;
+        flour_transfers.push(transfer);
+    }
+    let moves = one(&mut tx, "SELECT res_id::int8 FROM ir_model_data WHERE module='stock' AND name='report_moves_analysis'").await;
+    let opt = report_options(&env, &mut tx, moves, &Json::Null)
+        .await
+        .unwrap()["options"]
+        .clone();
+    for label in ["qty", "demand"] {
+        let columns = opt["columns"].as_array().unwrap();
+        let column = columns
+            .iter()
+            .find(|column| column["label"] == label)
+            .unwrap();
+        assert_eq!(column["sortable"], false);
+    }
+    let top = report_lines(&env, &mut tx, &opt).await.unwrap();
+    let rows = top["lines"].as_array().unwrap();
+    let mut amounts = std::collections::BTreeMap::new();
+    let mut unit_incoming = None;
+    let mut flour_net = None;
+    for row in rows {
+        assert!(
+            row["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c["value"].is_null())
+        );
+        let direction = row["name"].as_str().unwrap();
+        let detail = report_expand(&env, &mut tx, &opt, row["id"].as_str().unwrap(), 0)
+            .await
+            .unwrap();
+        for product in detail["lines"].as_array().unwrap() {
+            let name = product["name"].as_str().unwrap();
+            if direction == "Incoming" && name == "Dynamic stock unit" {
+                unit_incoming = Some(product["id"].as_str().unwrap().to_owned());
+            }
+            if direction == "Net" && name == "Dynamic flour" {
+                flour_net = Some(product["id"].as_str().unwrap().to_owned());
+            }
+            amounts.insert(
+                (direction.to_owned(), name.to_owned()),
+                product["cells"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|cell| cell["value"].as_str().unwrap().parse::<Decimal>().unwrap())
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
+    for (direction, name, quantity, demand) in [
+        ("Incoming", "Dynamic stock unit", 8, 7),
+        ("Net", "Dynamic stock unit", 8, 7),
+        ("Incoming", "Dynamic flour", 3, 3),
+        ("Outgoing", "Dynamic flour", 2, 2),
+        ("Net", "Dynamic flour", 1, 1),
+    ] {
+        assert_eq!(
+            amounts[&(direction.to_owned(), name.to_owned())],
+            [Decimal::from(quantity), Decimal::from(demand)]
+        );
+    }
+    let action = report_drill(
+        &env,
+        &mut tx,
+        &opt,
+        unit_incoming.as_deref().unwrap(),
+        &json!({"cell":0}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(action["res_model"], "stock.move");
+    let matched = env
+        .records("stock.move")
+        .unwrap()
+        .search(&mut tx, &Domain::from_json(&action["domain"]).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(matched.len(), 1);
+    assert_eq!(
+        matched.values(&mut tx, "picking_id").await.unwrap()[0],
+        Value::Int(receipt)
+    );
+    let action = report_drill(
+        &env,
+        &mut tx,
+        &opt,
+        flour_net.as_deref().unwrap(),
+        &json!({"cell":1}),
+    )
+    .await
+    .unwrap();
+    let matched = env
+        .records("stock.move")
+        .unwrap()
+        .search(&mut tx, &Domain::from_json(&action["domain"]).unwrap())
+        .await
+        .unwrap();
+    let mut transfers: Vec<i64> = matched
+        .values(&mut tx, "picking_id")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|value| match value {
+            Value::Int(id) => id,
+            other => panic!("expected picking id, got {other:?}"),
+        })
+        .collect();
+    transfers.sort_unstable();
+    flour_transfers.sort_unstable();
+    assert_eq!(transfers, flour_transfers);
 }

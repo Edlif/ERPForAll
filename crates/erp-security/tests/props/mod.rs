@@ -145,8 +145,8 @@ pub async fn harness(provider: Arc<dyn PolicyProvider>) -> Harness {
         .await
         .unwrap();
     tx.execute(
-        "INSERT INTO res_company (id, name, currency_id) VALUES \
-         (1, 'c1', $1), (2, 'c2', $1), (3, 'c3', $1)",
+        "INSERT INTO res_company (tz, id, name, currency_id) VALUES \
+         ('UTC', 1, 'c1', $1), ('UTC', 2, 'c2', $1), ('UTC', 3, 'c3', $1)",
         &[&currency],
     )
     .await

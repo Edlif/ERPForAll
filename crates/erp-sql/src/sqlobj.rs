@@ -319,6 +319,10 @@ pub fn physical_identity(object: &SqlObject) -> String {
             format!("condition {} {}", c.sqlstate(), quote(c.identifier()))
         }
         // kinds of later slices have no physical identity yet
+        SqlObjectKind::TableGrant(g) => g.exclusive_id_sequence().map_or_else(
+            || format!("object {}", object.id()),
+            |name| format!("exclusive id sequence {name}"),
+        ),
         _ => format!("object {}", object.id()),
     }
 }
@@ -414,6 +418,11 @@ fn shape(object: &SqlObject) -> Vec<(&'static str, Option<String>)> {
             ("table persistence", s(o.persistence().catalog())),
         ],
         SqlObjectKind::Condition(_) => vec![("kind", s("condition"))],
+        SqlObjectKind::TableGrant(g) if g.exclusive_id_sequence().is_some() => vec![
+            ("kind", s("exclusive_sequence")),
+            ("table", s(g.model().table())),
+            ("sequence", g.exclusive_id_sequence().map(str::to_owned)),
+        ],
         _ => vec![("kind", s(&format!("unsupported {}", object.id())))],
     }
 }

@@ -917,7 +917,7 @@ async fn spec_base_045_multi_company_sequence_precedence() {
         .unwrap();
 
     tx.execute(
-        "INSERT INTO res_company (id, name, currency_id) VALUES (1, 'Company 1', $1) ON CONFLICT DO NOTHING",
+        "INSERT INTO res_company (tz, id, name, currency_id) VALUES ('UTC', 1, 'Company 1', $1) ON CONFLICT DO NOTHING",
         &[&currency],
     )
     .await
@@ -2011,7 +2011,7 @@ async fn draw_harness(policy: erp_testkit::DomainPolicy) -> Harness {
         .await
         .unwrap();
     tx.execute(
-        "INSERT INTO res_company (id, name, currency_id) VALUES (1, 'Company 1', $1), (2, 'Company 2', $1) ON CONFLICT DO NOTHING",
+        "INSERT INTO res_company (tz, id, name, currency_id) VALUES ('UTC', 1, 'Company 1', $1), ('UTC', 2, 'Company 2', $1) ON CONFLICT DO NOTHING",
         &[&currency],
     )
     .await

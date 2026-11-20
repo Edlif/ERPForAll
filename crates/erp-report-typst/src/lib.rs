@@ -171,7 +171,7 @@ impl TypstEngine {
                 reason: "invalid render date",
             },
         )?;
-        let (inputs, mut warnings) = encode::encode(doc, &self.limits)?;
+        let (inputs, mut warnings, image_failures) = encode::encode(doc, &self.limits)?;
         let world = ReportWorld::new(
             self.source.clone(),
             inputs,
@@ -225,12 +225,14 @@ impl TypstEngine {
                 "{missing} glyphs are in none of the selected font families and print as empty boxes"
             ));
         }
-        Ok(RenderResult::new(
+        RenderResult::new(
             RenderIdentity::new(doc.options().id(), RENDERER),
             bytes,
             output.pages().len(),
             warnings,
-        ))
+        )
+        .with_image_failures(image_failures, self.limits)?
+        .with_document_warnings(doc)
     }
 }
 /// Glyph 0 is a font's missing-glyph box: the renderer draws it without a diagnostic of its own.

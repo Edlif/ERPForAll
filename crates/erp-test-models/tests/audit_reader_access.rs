@@ -86,7 +86,7 @@ async fn fixture() -> Fixture {
     owner.batch_execute("INSERT INTO res_groups (id,name) VALUES (101,'Reader'),(102,'Capability only'),(103,'ACL only'),(104,'Projection'),(105,'Internal User');
         INSERT INTO ir_model_data(module,name,model,res_id) VALUES ('reader_test','reader','res.groups',101),('reader_test','cap','res.groups',102),('reader_test','acl','res.groups',103),('reader_test','projection','res.groups',104),('base','group_user','res.groups',105);
         INSERT INTO res_currency(id,name,symbol,rounding,active) VALUES (101,'TST','T',0.01,true);
-        INSERT INTO res_company(id,name,currency_id,active) VALUES (1,'C1',101,true),(2,'C2',101,true);
+        INSERT INTO res_company(tz, id,name,currency_id,active) VALUES ('UTC', 1,'C1',101,true),('UTC', 2,'C2',101,true);
         INSERT INTO res_users(id,name,login,active,share,company_id) VALUES (101,'Reader','reader',true,false,1),(102,'Cap','cap',true,false,1),(103,'ACL','acl',true,false,1);
         INSERT INTO res_groups_users_rel(uid,gid) VALUES (101,101),(101,104),(101,105),(102,102),(102,105),(103,103),(103,105);
         INSERT INTO res_company_users_rel(user_id,cid) VALUES (101,1),(101,2),(102,1),(103,1);

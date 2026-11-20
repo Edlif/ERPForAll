@@ -53,6 +53,7 @@ fn system(db: &TestDb) -> ModuleSystem {
     ModuleSystem::builder(db.pool().clone(), index)
         .code(erp_cli::native_addons::DESCRIPTORS.iter().copied())
         .require_sql_objects(erp_cli::native_addons::SQL_MANIFESTS.iter().copied())
+        .require_sql_uninstall_guards(erp_cli::native_addons::UNINSTALL_MANIFESTS.iter().copied())
         .native_artifact_identities(identities)
         .view_types(erp_addon_web::view_type_contributions())
         .require_core_tables(erp_security::auth::core_tables())

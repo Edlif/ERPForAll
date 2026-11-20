@@ -61,7 +61,7 @@ async fn company(tx: &mut Transaction, name: &str) -> i64 {
 async fn old_company(tx: &mut Transaction, name: &str, active: bool) -> i64 {
     let currency = currency(tx).await;
     tx.query(
-        "INSERT INTO res_company (name, currency_id, active) VALUES ($1, $2, $3) RETURNING id::int8",
+        "INSERT INTO res_company (tz, name, currency_id, active) VALUES ('UTC', $1, $2, $3) RETURNING id::int8",
         &[&name, &currency, &active],
     )
     .await

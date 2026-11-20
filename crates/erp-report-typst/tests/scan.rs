@@ -78,6 +78,7 @@ fn format_of(symbology: Symbology) -> BarcodeFormat {
         Symbology::Code39 => BarcodeFormat::CODE_39,
         Symbology::Itf14 | Symbology::Interleaved2of5 => BarcodeFormat::ITF,
         Symbology::Qr => BarcodeFormat::QR_CODE,
+        Symbology::DataMatrix => BarcodeFormat::DATA_MATRIX,
         other => panic!("no reader format for {other}"),
     }
 }
@@ -93,6 +94,15 @@ fn printed(
 ) -> Vec<u8> {
     let limits = Limits::default();
     let code = Code::encode(symbology, value, level, &limits).unwrap();
+    printed_code(&code, (width, height), grid, caption)
+}
+fn printed_code(
+    code: &Code,
+    (width, height): (f64, f64),
+    grid: ModuleGrid,
+    caption: bool,
+) -> Vec<u8> {
+    let limits = Limits::default();
     let fitted = code.fit(width, height, grid).unwrap();
     let mut b = DocumentBuilder::new(limits);
     let body = b
@@ -100,7 +110,7 @@ fn printed(
             width: Some(fitted.width()),
             height: Some(fitted.height()),
             vector: fitted.into_vector(),
-            alt: format!("Barcode {value}"),
+            alt: format!("Barcode {}", code.text()),
             caption: caption.then(|| code.text().to_owned()),
         })
         .unwrap();
@@ -403,4 +413,119 @@ fn a_code_that_does_not_fit_the_page_moves_whole_to_the_next() {
     let found = rxing::helpers::detect_in_luma(second, width, height, Some(BarcodeFormat::QR_CODE))
         .unwrap();
     assert_eq!(found.getText(), value);
+}
+
+#[test]
+fn datamatrix_pdf_scans_preserve_text_and_format() {
+    let large = "erpforall-label-".repeat(40);
+    for value in [
+        "WH/OUT/00012",
+        "01234567890123456789",
+        "Café",
+        "東京–Arkana",
+        large.as_str(),
+        "[)>\u{1e}05\u{1d}LOT-7\u{1e}\u{4}",
+    ] {
+        let code = Code::encode(
+            Symbology::DataMatrix,
+            value,
+            QrLevel::Low,
+            &Limits::default(),
+        )
+        .unwrap();
+        for dpi in [203, 300] {
+            let pdf = printed_code(&code, (250.0, 210.0), ModuleGrid::new(dpi).unwrap(), false);
+            assert_eq!(read(&pdf, BarcodeFormat::DATA_MATRIX), value);
+        }
+    }
+}
+
+#[test]
+fn datamatrix_gs1_pdf_scans_preserve_separators_and_signal_fnc1() {
+    use rxing::{RXingResultMetadataType, RXingResultMetadataValue};
+    for value in [
+        "010950110102091710LOT-1",
+        "010950110102091721SERIAL-1",
+        "0012345678901234567513260305",
+        "010950110102091710LOT-1\u{1d}2110",
+    ] {
+        let code = Code::encode_gs1_datamatrix(value, &Limits::default()).unwrap();
+        let pdf = printed_code(&code, (160.0, 80.0), ModuleGrid::default(), false);
+        let (grey, width, height) = raster(&pdf, 4.0);
+        let found =
+            rxing::helpers::detect_in_luma(grey, width, height, Some(BarcodeFormat::DATA_MATRIX))
+                .unwrap();
+        assert_eq!(*found.getBarcodeFormat(), BarcodeFormat::DATA_MATRIX);
+        // rxing 0.9.4 consumes the leading FNC1 into metadata, retaining interior GS bytes.
+        assert_eq!(found.getText(), value);
+        assert_eq!(
+            found
+                .getRXingResultMetadata()
+                .get(&RXingResultMetadataType::SYMBOLOGY_IDENTIFIER),
+            Some(&RXingResultMetadataValue::SymbologyIdentifier("]d2".into()))
+        );
+    }
+}
+
+#[test]
+fn datamatrix_template_scans_keep_the_requested_encoding() {
+    use rxing::{RXingResultMetadataType, RXingResultMetadataValue};
+    for (arch, value, identifier) in [
+        (
+            "<div><span t-out=\"'LOT-7'\" t-options=\"{'widget': 'barcode', 'symbology': 'ECC200DataMatrix', 'humanreadable': 1, 'width': 160, 'height': 160}\"/></div>",
+            "LOT-7",
+            "]d1",
+        ),
+        (
+            "<div><span t-out=\"'010950110102091710LOT-1'\" t-options=\"{'widget': 'barcode', 'symbology': 'DataMatrix', 'gs1': True, 'width': 160, 'height': 160}\"/></div>",
+            "010950110102091710LOT-1",
+            "]d2",
+        ),
+        (
+            "<div><img src='/report/barcode/ECC200DataMatrix/10LOT-7%1D2110?gs1=1&amp;width=160&amp;height=160'/></div>",
+            "10LOT-7\u{1d}2110",
+            "]d2",
+        ),
+        (
+            "<div><img src='/report/barcode/DataMatrix/10LOT-7%1D2110?gs1=0&amp;width=160&amp;height=160'/></div>",
+            "10LOT-7\u{1d}2110",
+            // The string encoder uses UTF-8 ECI for controls; this is ordinary ECI,
+            // not the leading-FNC1 identifier of GS1.
+            "]d4",
+        ),
+    ] {
+        let language = Language::new("en_US").unwrap();
+        let sources = [TemplateSource::new("test.datamatrix", arch)];
+        let program = ReportProgram::compile(
+            "test.datamatrix",
+            &sources,
+            &language,
+            ReportLimits::default(),
+        )
+        .unwrap();
+        let document = program
+            .evaluate(
+                &EvalContext::standard(),
+                &RecordStore::new(),
+                &EvalOptions::default(),
+                page(),
+            )
+            .unwrap();
+        let pdf = engine().render(&document).unwrap();
+        assert!(pdf.warnings().is_empty());
+        let (grey, width, height) = raster(pdf.bytes(), 4.0);
+        let found =
+            rxing::helpers::detect_in_luma(grey, width, height, Some(BarcodeFormat::DATA_MATRIX))
+                .unwrap();
+        assert_eq!(*found.getBarcodeFormat(), BarcodeFormat::DATA_MATRIX);
+        assert_eq!(found.getText(), value);
+        assert_eq!(
+            found
+                .getRXingResultMetadata()
+                .get(&RXingResultMetadataType::SYMBOLOGY_IDENTIFIER),
+            Some(&RXingResultMetadataValue::SymbologyIdentifier(
+                identifier.into()
+            ))
+        );
+    }
 }

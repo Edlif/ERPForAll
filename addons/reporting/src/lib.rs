@@ -15,6 +15,7 @@ mod client_action;
 pub mod definition;
 pub mod export;
 mod formula;
+pub mod functions;
 pub mod line;
 mod models;
 pub mod options;

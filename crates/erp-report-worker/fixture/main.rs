@@ -41,12 +41,27 @@ impl LayoutEngine for Scripted {
         } else if id.starts_with("exit") {
             std::process::exit(1);
         }
-        Ok(RenderResult::new(
+        let result = RenderResult::new(
             RenderIdentity::new(id, format!("fixture-{}", std::process::id())),
             b"%PDF-fixture".to_vec(),
             1,
             Vec::new(),
-        ))
+        );
+        if id == "image-failure" {
+            return result.with_image_failures(
+                vec![erp_report::ImageFailure::new(
+                    document
+                        .nodes()
+                        .iter()
+                        .position(|node| matches!(node, erp_report::Node::Image { .. }))
+                        .unwrap_or(0),
+                    "fixture decoder failure".into(),
+                    erp_report::Limits::default(),
+                )?],
+                erp_report::Limits::default(),
+            );
+        }
+        Ok(result)
     }
 }
 

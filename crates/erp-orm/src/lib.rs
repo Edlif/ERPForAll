@@ -132,6 +132,8 @@ mod schema_company;
 pub mod schema_generated;
 mod schema_index;
 mod schema_sqlobj;
+/// Bounded native count-only uninstall guard declarations and execution.
+pub mod sql_uninstall;
 pub use schema_sqlobj::SqlObjectRemoval;
 mod schema_sqlobj_roles;
 pub use schema_sqlobj_roles::SqlRoleBindings;
@@ -241,7 +243,7 @@ pub use principal::{
     Resolution, ResolutionEpoch, SUPERUSER_ID, Scope, ScopeBuilder, ScopeItem, SnapshotId,
     TxSerial, UserId, missing_reset_target, registered_capability,
 };
-pub use read::{Load, read_value};
+pub use read::{BoundedBinary, Load, read_value};
 pub use read_group::{Granularity, GroupValue, Groups, ReadGroup, ReadGroupingSets, RecordsAs};
 pub use records::{
     Base, Field, Ids, Inherits, Model, RecordSet, Records, ResCompany, ResUsers, Token,
@@ -344,3 +346,6 @@ pub use field_check::base_check_write_fields;
 pub mod html;
 /// Image field admission: type and pixel checks, resizing, the database's image limits.
 pub mod image;
+
+/// Registered report helpers and their declared read boundaries.
+pub mod report_helpers;

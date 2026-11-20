@@ -111,7 +111,7 @@ struct World {
 async fn company(client: &Client, name: &str, parent: Option<i64>, currency: i64) -> i64 {
     one(
         client,
-        "INSERT INTO res_company (name, parent_id, currency_id) VALUES ($1, $2, $3) RETURNING id::int8",
+        "INSERT INTO res_company (tz, name, parent_id, currency_id) VALUES ('UTC', $1, $2, $3) RETURNING id::int8",
         &[&name, &parent, &currency],
     )
     .await

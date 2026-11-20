@@ -282,7 +282,7 @@ async fn native_panel_values_and_counts_follow_the_reader() {
         })
         .collect();
     let foreign: i64 = fixture.native.client.query_one(
-        "INSERT INTO res_company(name,currency_id) SELECT 'Panel foreign company',currency_id FROM res_company WHERE id=$1 RETURNING id",
+        "INSERT INTO res_company(tz, name,currency_id) SELECT 'UTC', 'Panel foreign company',currency_id FROM res_company WHERE id=$1 RETURNING id",
         &[&fixture.ids.company]).await.unwrap().get(0);
     let foreign_item: i64 = fixture.native.client.query_one(
         "INSERT INTO panel_http_item(name,state,visible,company_id,category_id) VALUES('Foreign visible item','alpha',true,$1,$2) RETURNING id",

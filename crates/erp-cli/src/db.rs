@@ -98,17 +98,17 @@ pub fn execute_with(
 /// Version 10 adds snapshot-safe pending attachment guard writes.
 /// Version 11 adds SELECT-only peer evidence.
 /// Version 12 adds owner-only attachment recovery.
-/// Version 13 relabels attachment recovery: owner writes, the runtime role reads progress; grants unchanged.
+/// Version 16 includes restricted named id sequences in publication and startup admission.
 fn runtime_grant_contract() -> String {
     format!(
-        r#"{{"version":{RUNTIME_GRANT_CONTRACT_VERSION},"ui_assets":"read-only","node_features":"execute-only","event_outbox":"insert-only","uom_references":"guarded-monotone","job_queue":"column-grants","audit_trail":"insert-only","attachment_usage":"append-only","audit_reader":"select-only","attachment_owner":"read-only","attachment_pending":"guarded-create","attachment_peer":"read-only","attachment_recovery":"owner-write, progress-read","sql_objects":"declared-bindings"}}"#
+        r#"{{"version":{RUNTIME_GRANT_CONTRACT_VERSION},"ui_assets":"read-only","node_features":"execute-only","event_outbox":"insert-only","uom_references":"guarded-monotone","job_queue":"column-grants","audit_trail":"insert-only","attachment_usage":"append-only","audit_reader":"select-only","attachment_owner":"read-only","attachment_pending":"guarded-create","attachment_peer":"read-only","attachment_recovery":"owner-write, progress-read","sql_objects":"exclusive-id-sequences"}}"#
     )
 }
 
 /// The contract version this build publishes.: v5 went to (job queue) and v6
 /// to (audit trail, includes v5's guarantees); change it here and in
 /// `scripts/human-release.py` (`RUNTIME_GRANT_CONTRACTS`) together.
-const RUNTIME_GRANT_CONTRACT_VERSION: u32 = 15;
+const RUNTIME_GRANT_CONTRACT_VERSION: u32 = 16;
 
 async fn build_object(
     args: &BuildObjectArgs,

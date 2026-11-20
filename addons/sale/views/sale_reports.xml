@@ -82,14 +82,9 @@ The printed sales documents, built on the shared document parts of the web addon
                 </t>
                 <t t-call="web.document_total_grand" label.translate="Total"><span t-field="o.amount_total"/></t>
             </t>
-            <!--
-shortcut: the terms are a rich-text field and the engine does not render HTML fields yet,
-                 so every tag is removed (a paragraph end and a line break leave a space),
-                 the character entities of plain text are decoded (the ampersand last) and the white space
-                 is collapsed: the terms print as one plain paragraph without bold, lists or links; replace
-                 this with the HTML output when the engine has it. 
-            -->
-            <t t-set="terms" t-value="(o.note or '').replace('&lt;/p&gt;', ' &lt;/p&gt;').replace('&lt;br', ' &lt;br').split('&lt;')"/>
+            <!-- Sales terms print as plain text. Convert the report's HTML field handle to a string
+                 before stripping tags, preserving word breaks, and decoding entities for escaped output. -->
+            <t t-set="terms" t-value="str(o.note or '').replace('&lt;/p&gt;', ' &lt;/p&gt;').replace('&lt;br', ' &lt;br').split('&lt;')"/>
             <t t-set="terms" t-value="terms[0] + ''.join([part.split('&gt;', 1)[-1] for part in terms[1:]])"/>
             <t t-set="terms" t-value="' '.join(terms.replace('&amp;nbsp;', ' ').replace('&amp;lt;', '&lt;').replace('&amp;gt;', '&gt;').replace('&amp;quot;', '&quot;').replace('&amp;#39;', &quot;'&quot;).replace('&amp;amp;', '&amp;').split())"/>
             <t t-if="terms" t-call="web.document_note" label.translate="Terms and Conditions"><span t-out="terms"/></t>

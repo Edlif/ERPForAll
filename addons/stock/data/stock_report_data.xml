@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+The two dynamic reports of Inventory > Reporting, declared as data for the `reporting` addon.
+     stock_account adds its Value column to the first report from its own data file. 
+-->
+<erp noupdate="1">
+    <!-- Stock Report: today's position of every quant in an internal location. Quantities of
+         different products are in different units, so they show only on product and lot rows. -->
+    <record id="report_stock_position" model="reporting.report">
+        <field name="name">Stock Report</field>
+        <field name="date_mode">single</field>
+        <field name="date_default">today</field>
+        <field name="comparison" eval="False"/>
+        <field name="current_only" eval="True"/>
+        <field name="multi_company" eval="True"/>
+        <field name="hide_zero">optional</field>
+        <field name="search_bar" eval="True"/>
+    </record>
+    <record id="report_stock_position_col_on_hand" model="reporting.report.column">
+        <field name="report_id" ref="report_stock_position"/>
+        <field name="sequence">10</field>
+        <field name="name">On Hand</field>
+        <field name="label">on_hand</field>
+        <field name="kind">decimal</field>
+        <field name="sortable" eval="True"/>
+        <field name="rollup">none</field>
+        <field name="rollup_field">product_id</field>
+    </record>
+    <record id="report_stock_position_col_reserved" model="reporting.report.column">
+        <field name="report_id" ref="report_stock_position"/>
+        <field name="sequence">20</field>
+        <field name="name">Reserved</field>
+        <field name="label">reserved</field>
+        <field name="kind">decimal</field>
+        <field name="sortable" eval="True"/>
+        <field name="rollup">none</field>
+        <field name="rollup_field">product_id</field>
+    </record>
+    <record id="report_stock_position_col_available" model="reporting.report.column">
+        <field name="report_id" ref="report_stock_position"/>
+        <field name="sequence">30</field>
+        <field name="name">Available</field>
+        <field name="label">available</field>
+        <field name="kind">decimal</field>
+        <field name="rollup">none</field>
+        <field name="rollup_field">product_id</field>
+    </record>
+    <record id="report_stock_position_line" model="reporting.report.line">
+        <field name="report_id" ref="report_stock_position"/>
+        <field name="name">Stock</field>
+        <field name="code">STOCK</field>
+        <field name="groupby">location_id, product_id, lot_id</field>
+    </record>
+    <record id="report_stock_position_on_hand" model="reporting.report.expression">
+        <field name="line_id" ref="report_stock_position_line"/>
+        <field name="label">on_hand</field>
+        <field name="model">stock.quant</field>
+        <field name="field">quantity</field>
+        <field name="domain">[["location_id.usage", "=", "internal"]]</field>
+    </record>
+    <record id="report_stock_position_reserved" model="reporting.report.expression">
+        <field name="line_id" ref="report_stock_position_line"/>
+        <field name="label">reserved</field>
+        <field name="model">stock.quant</field>
+        <field name="field">reserved_quantity</field>
+        <field name="domain">[["location_id.usage", "=", "internal"]]</field>
+    </record>
+    <record id="report_stock_position_available" model="reporting.report.expression">
+        <field name="line_id" ref="report_stock_position_line"/>
+        <field name="label">available</field>
+        <field name="engine">formula</field>
+        <field name="formula">on_hand - reserved</field>
+    </record>
+
+    <!-- Moves Analysis: done moves of a period, in and out of the company's own locations
+         (internal or transit, as the reference's Incoming and Outgoing filters). -->
+    <record id="report_moves_analysis" model="reporting.report">
+        <field name="name">Moves Analysis</field>
+        <field name="date_mode">range</field>
+        <field name="date_default">this_month</field>
+        <field name="comparison" eval="True"/>
+        <field name="multi_company" eval="True"/>
+        <field name="hide_zero">optional</field>
+        <field name="search_bar" eval="True"/>
+    </record>
+    <record id="report_moves_analysis_col_qty" model="reporting.report.column">
+        <field name="report_id" ref="report_moves_analysis"/>
+        <field name="sequence">10</field>
+        <field name="name">Quantity</field>
+        <field name="label">qty</field>
+        <field name="kind">decimal</field>
+        <field name="sortable" eval="True"/>
+        <field name="rollup">none</field>
+        <field name="rollup_field">product_id</field>
+    </record>
+    <record id="report_moves_analysis_col_demand" model="reporting.report.column">
+        <field name="report_id" ref="report_moves_analysis"/>
+        <field name="sequence">20</field>
+        <field name="name">Demand</field>
+        <field name="label">demand</field>
+        <field name="kind">decimal</field>
+        <field name="sortable" eval="True"/>
+        <field name="rollup">none</field>
+        <field name="rollup_field">product_id</field>
+    </record>
+    <record id="report_moves_analysis_in" model="reporting.report.line">
+        <field name="report_id" ref="report_moves_analysis"/>
+        <field name="sequence">10</field>
+        <field name="name">Incoming</field>
+        <field name="code">IN</field>
+        <field name="groupby">product_id</field>
+    </record>
+    <record id="report_moves_analysis_in_qty" model="reporting.report.expression">
+        <field name="line_id" ref="report_moves_analysis_in"/>
+        <field name="label">qty</field>
+        <field name="model">stock.move</field>
+        <field name="field">quantity_product_uom</field>
+        <field name="domain">[["state", "=", "done"], ["location_id.usage", "not in", ["internal", "transit"]], ["location_dest_id.usage", "in", ["internal", "transit"]]]</field>
+        <field name="date_field">date</field>
+    </record>
+    <record id="report_moves_analysis_in_demand" model="reporting.report.expression">
+        <field name="line_id" ref="report_moves_analysis_in"/>
+        <field name="label">demand</field>
+        <field name="model">stock.move</field>
+        <field name="field">product_qty</field>
+        <field name="domain">[["state", "=", "done"], ["location_id.usage", "not in", ["internal", "transit"]], ["location_dest_id.usage", "in", ["internal", "transit"]]]</field>
+        <field name="date_field">date</field>
+    </record>
+    <record id="report_moves_analysis_out" model="reporting.report.line">
+        <field name="report_id" ref="report_moves_analysis"/>
+        <field name="sequence">20</field>
+        <field name="name">Outgoing</field>
+        <field name="code">OUT</field>
+        <field name="groupby">product_id</field>
+    </record>
+    <record id="report_moves_analysis_out_qty" model="reporting.report.expression">
+        <field name="line_id" ref="report_moves_analysis_out"/>
+        <field name="label">qty</field>
+        <field name="model">stock.move</field>
+        <field name="field">quantity_product_uom</field>
+        <field name="domain">[["state", "=", "done"], ["location_id.usage", "in", ["internal", "transit"]], ["location_dest_id.usage", "not in", ["internal", "transit"]]]</field>
+        <field name="date_field">date</field>
+    </record>
+    <record id="report_moves_analysis_out_demand" model="reporting.report.expression">
+        <field name="line_id" ref="report_moves_analysis_out"/>
+        <field name="label">demand</field>
+        <field name="model">stock.move</field>
+        <field name="field">product_qty</field>
+        <field name="domain">[["state", "=", "done"], ["location_id.usage", "in", ["internal", "transit"]], ["location_dest_id.usage", "not in", ["internal", "transit"]]]</field>
+        <field name="date_field">date</field>
+    </record>
+    <record id="report_moves_analysis_net" model="reporting.report.line">
+        <field name="report_id" ref="report_moves_analysis"/>
+        <field name="sequence">30</field>
+        <field name="name">Net</field>
+        <field name="code">NET</field>
+        <field name="groupby">product_id</field>
+    </record>
+    <record id="report_moves_analysis_net_source_rows" model="reporting.report.expression">
+        <field name="line_id" ref="report_moves_analysis_net"/>
+        <field name="label">source_rows</field>
+        <field name="model">stock.move</field>
+        <field name="domain">[["state", "=", "done"], "|", "&amp;", ["location_id.usage", "not in", ["internal", "transit"]], ["location_dest_id.usage", "in", ["internal", "transit"]], "&amp;", ["location_id.usage", "in", ["internal", "transit"]], ["location_dest_id.usage", "not in", ["internal", "transit"]]]</field>
+        <field name="date_field">date</field>
+    </record>
+    <record id="report_moves_analysis_net_qty" model="reporting.report.expression">
+        <field name="line_id" ref="report_moves_analysis_net"/>
+        <field name="label">qty</field>
+        <field name="model">stock.move</field>
+        <field name="domain">[["state", "=", "done"], "|", "&amp;", ["location_id.usage", "not in", ["internal", "transit"]], ["location_dest_id.usage", "in", ["internal", "transit"]], "&amp;", ["location_id.usage", "in", ["internal", "transit"]], ["location_dest_id.usage", "not in", ["internal", "transit"]]]</field>
+        <field name="date_field">date</field>
+        <field name="engine">native</field>
+        <field name="field">quantity_product_uom</field>
+        <field name="function">stock.net_movement</field>
+    </record>
+    <record id="report_moves_analysis_net_demand" model="reporting.report.expression">
+        <field name="line_id" ref="report_moves_analysis_net"/>
+        <field name="label">demand</field>
+        <field name="model">stock.move</field>
+        <field name="domain">[["state", "=", "done"], "|", "&amp;", ["location_id.usage", "not in", ["internal", "transit"]], ["location_dest_id.usage", "in", ["internal", "transit"]], "&amp;", ["location_id.usage", "in", ["internal", "transit"]], ["location_dest_id.usage", "not in", ["internal", "transit"]]]</field>
+        <field name="date_field">date</field>
+        <field name="engine">native</field>
+        <field name="field">product_qty</field>
+        <field name="function">stock.net_movement</field>
+    </record>
+</erp>

@@ -13,6 +13,10 @@ use erp_sdk::prelude::*;
 use erp_testkit::Harness;
 
 pub async fn harness() -> Harness {
+    harness_builder().build().await.unwrap()
+}
+
+pub fn harness_builder() -> erp_testkit::HarnessBuilder {
     Harness::builder([
         &erp_addon_base::ADDON,
         &erp_addon_web::ADDON,
@@ -21,15 +25,16 @@ pub async fn harness() -> Harness {
         &erp_addon_barcodes::ADDON,
         &erp_addon_barcodes_gs1_nomenclature::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_reporting::ADDON,
         &erp_addon_analytic::ADDON,
         &erp_addon_account::ADDON,
         &erp_addon_stock_account::ADDON,
     ])
-    .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
+    .require_sql_objects([
+        &erp_addon_stock::schema_guards::MANIFEST,
+        &erp_addon_stock_account::history_guards::MANIFEST,
+    ])
     .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
-    .build()
-    .await
-    .unwrap()
 }
 
 /// Raw fixtures write the required tax inclusion, rounding and accounting flags of `account` themselves: ORM column defaults
@@ -37,7 +42,7 @@ pub async fn harness() -> Harness {
 /// Raw fixtures deliberately avoid future valuation writers and unrelated product create hooks.
 pub async fn seed(tx: &mut Transaction) {
     let currency = erp_testkit::fixtures::seed_currency_in(tx).await.unwrap();
-    tx.execute("INSERT INTO res_company (id,name,currency_id,parent_path,account_price_include,tax_calculation_rounding_method,anglo_saxon_accounting,expects_chart_of_accounts,fpos_revision) VALUES (101,'C1',$1,'101/','tax_excluded','round_globally',false,true,0),(102,'C2',$1,'102/','tax_excluded','round_globally',false,true,0)", &[&currency]).await.unwrap();
+    tx.execute("INSERT INTO res_company (tz, id,name,currency_id,parent_path,account_price_include,tax_calculation_rounding_method,anglo_saxon_accounting,expects_chart_of_accounts,fpos_revision) VALUES ('UTC', 101,'C1',$1,'101/','tax_excluded','round_globally',false,true,0),('UTC', 102,'C2',$1,'102/','tax_excluded','round_globally',false,true,0)", &[&currency]).await.unwrap();
     tx.batch("INSERT INTO uom_uom(id,name,relative_factor) VALUES (101,'{\"en_US\":\"Unit\"}',1);
         INSERT INTO product_category(id,name) VALUES (101,'{\"en_US\":\"Category\"}');
         INSERT INTO product_template(id,name,uom_id,type) VALUES (101,'{\"en_US\":\"P1\"}',101,'consu'),(102,'{\"en_US\":\"P2\"}',101,'consu');

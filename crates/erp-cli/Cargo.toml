@@ -11,6 +11,7 @@ publish.workspace = true
 erp-modules = { workspace = true }
 # `erp access`: the policy of a database through erp-security, as the System principal
 erp-addon-base = { workspace = true }
+erp-addon-ai-base.workspace = true
 erp-addon-barcodes = { workspace = true }
 erp-addon-uom = { workspace = true }
 erp-addon-mail = { workspace = true }
@@ -23,6 +24,7 @@ erp-addon-theme-office-blue.workspace = true
 erp-addon-analytic.workspace = true
 erp-addon-account.workspace = true
 erp-addon-purchase.workspace = true
+erp-addon-purchase_stock.workspace = true
 erp-addon-barcodes_gs1_nomenclature.workspace = true
 erp-addon-stock.workspace = true
 # message thread and chatter on entries, purchase orders and transfers (bridges, auto-installed with mail)
@@ -35,6 +37,8 @@ erp-addon-sales_team.workspace = true
 erp-addon-sale.workspace = true
 # dynamic reports: options, line tree and engines of the report screen
 erp-addon-reporting.workspace = true
+erp-addon-account-reporting.workspace = true
+erp-addon-stock_account.workspace = true
 erp-server.workspace = true
 # `erp report-worker`: the render worker the report pool starts
 erp-report-typst.workspace = true
@@ -72,7 +76,6 @@ sha2.workspace = true
 rustix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
-erp-addon-stock_account = { workspace = true }
 erp-addon-web = { workspace = true, features = ["test-support"] }
 erp-addon-uom = { workspace = true }
 erp-addon-sample_library_wasm = { path = "../../examples/wasm/sample_library_wasm", default-features = false }

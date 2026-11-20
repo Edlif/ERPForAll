@@ -4,9 +4,9 @@
 //! Every save of a definition record checks the whole report again ([`crate::definition::load`],
 //! not strict: a line or label the next record of a data file adds is not refused yet; the RPC
 //! calls load strictly).
-use erp_sdk::Load;
 use erp_sdk::prelude::*;
 use erp_sdk::serde_json::{self, Value as Json};
+use erp_sdk::{FieldOp, Load, Operation};
 
 use crate::runtime;
 
@@ -53,6 +53,9 @@ pub struct ReportingReport {
         string = "Default Period"
     )]
     pub date_default: Option<Arc<str>>,
+    /// The source stores current balances only. A historical cutoff would mislabel their values.
+    #[field(boolean, default = false)]
+    pub current_only: bool,
     /// Comparison periods are offered.
     #[field(boolean, default = true)]
     pub comparison: bool,
@@ -174,7 +177,7 @@ pub struct ReportingReportColumn {
     /// Cell kind.
     #[field(
         selection,
-        selection = [("monetary", "Monetary"), ("decimal", "Decimal"), ("integer", "Integer"), ("percent", "Percent")],
+        selection = [("monetary", "Monetary"), ("decimal", "Decimal"), ("integer", "Integer"), ("percent", "Percent"), ("date", "Date"), ("text", "Text")],
         default = "decimal",
         required = true
     )]
@@ -194,6 +197,10 @@ pub struct ReportingReportColumn {
     /// The group-by field a `none` column is shown on.
     #[field(char)]
     pub rollup_field: Option<Arc<str>>,
+    /// Group spec (external ids, as `has_groups`): the column and its expressions exist only for
+    /// its members; empty: for everyone who reads the report.
+    #[field(char)]
+    pub groups: Option<Arc<str>>,
 }
 
 /// `reporting.report.expression`: one value of a line.
@@ -217,7 +224,7 @@ pub struct ReportingReportExpression {
     #[field(char, required = true)]
     pub label: Option<Arc<str>>,
     /// How it is computed.
-    #[field(selection, selection = [("aggregate", "Aggregate"), ("formula", "Formula")], default = "aggregate", required = true)]
+    #[field(selection, selection = [("aggregate", "Aggregate"), ("formula", "Formula"), ("native", "Native")], default = "aggregate", required = true)]
     pub engine: Option<Arc<str>>,
     /// Aggregate: the model read.
     #[field(char)]
@@ -231,13 +238,17 @@ pub struct ReportingReportExpression {
     /// Formula: arithmetic over labels, `CODE.label` and `sum_children`.
     #[field(text)]
     pub formula: Option<Arc<str>>,
+    /// Native: the registered function that computes it (it reads the aggregate fields' model,
+    /// domain and date).
+    #[field(char)]
+    pub function: Option<Arc<str>>,
     /// Aggregate: the date or datetime the period applies to (empty: none).
     #[field(char)]
     pub date_field: Option<Arc<str>>,
-    /// Aggregate: within the period, or from the beginning up to its end.
+    /// Aggregate: within the period, through its end, or strictly before its start.
     #[field(
         selection,
-        selection = [("strict_range", "Within the Period"), ("from_beginning", "From the Beginning")],
+        selection = [("strict_range", "Within the Period"), ("from_beginning", "From the Beginning"), ("before_period", "Before the Period")],
         default = "strict_range",
         required = true
     )]
@@ -292,6 +303,8 @@ impl ReportingReport {
         "load_more_limit",
         "date_mode",
         "date_default",
+        "current_only",
+        "comparison",
         "hide_zero"
     )]
     async fn _check_definition(
@@ -422,15 +435,71 @@ impl ReportingReport {
     }
 }
 
+// Concurrent edits to different lines share a row version per report under REPEATABLE READ.
+// Callers supply all affected IDs in ascending, unique order, including both sides of a transfer.
+async fn version_line_owners(tx: &mut Transaction, reports: &[i64]) -> Result<()> {
+    for report in reports {
+        tx.execute(
+            "UPDATE reporting_report SET write_date = write_date WHERE id = $1",
+            &[report],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[methods(ReportingReportLine, addon = "reporting")]
 impl ReportingReportLine {
+    /// The constraint sees the new owner after a write. Also check every report the lines left.
+    #[method(override)]
+    async fn write(
+        this: &RecordSet<ReportingReportLine>,
+        tx: &mut Transaction,
+        vals: RawVals,
+        sup: Super,
+    ) -> Result<()> {
+        let lines = this.as_records();
+        if !vals.contains("report_id") {
+            return sup.call(tx, lines, (vals,)).await;
+        }
+        lines.check_access(tx, Operation::Write).await?;
+        if !tx
+            .has_field_access(this.env(), lines.spec().name, "report_id", FieldOp::Write)
+            .await?
+        {
+            return Err(Error::access(
+                "Field reporting.report.line.report_id cannot be written.",
+            ));
+        }
+        let mut sources = ids_of(lines, tx, "report_id").await?;
+        let mut owners = sources.clone();
+        if let Some(Cell::Id(destination)) = vals.get("report_id") {
+            sources.retain(|id| id != destination);
+            owners.push(*destination);
+        }
+        if sources.is_empty() {
+            return sup.call(tx, lines, (vals,)).await;
+        }
+        owners.sort_unstable();
+        owners.dedup();
+        this.env()
+            .records("reporting.report")?
+            .browse(owners.iter().copied())?
+            .check_access(tx, Operation::Read)
+            .await?;
+        version_line_owners(tx, &owners).await?;
+        sup.call(tx, lines, (vals,)).await?;
+        runtime::check_saved(this.env(), tx, &sources).await
+    }
+
     /// The report is checked again.
-    #[constrains("report_id", "code", "parent_id", "groupby", "foldable")]
+    #[constrains("report_id", "code", "parent_id", "sequence", "groupby", "foldable")]
     async fn _check_definition(
         this: &RecordSet<ReportingReportLine>,
         tx: &mut Transaction,
     ) -> Result<()> {
         let reports = ids_of(this.as_records(), tx, "report_id").await?;
+        version_line_owners(tx, &reports).await?;
         runtime::check_saved(this.env(), tx, &reports).await
     }
 }

@@ -80,6 +80,7 @@ fn system(db: &TestDb) -> ModuleSystem {
             &erp_addon_uom::ADDON,
             &erp_addon_product::ADDON,
             &erp_addon_stock::ADDON,
+            &erp_addon_reporting::ADDON,
         ])
         .build()
         .unwrap()

@@ -60,7 +60,7 @@ impl ModuleSystem {
             .parts
             .sql_guards
             .iter()
-            .filter(|g| removing.iter().any(|n| n.as_str() == g.addon))
+            .filter(|g| removing.iter().any(|n| n.as_str() == g.addon()))
             .collect();
         if guards.is_empty() {
             return Ok(GuardPreparation {
@@ -169,7 +169,7 @@ impl ModuleSystem {
             .parts
             .sql_guards
             .iter()
-            .filter(|g| removing.iter().any(|n| n.as_str() == g.addon))
+            .filter(|g| removing.iter().any(|n| n.as_str() == g.addon()))
         {
             guard.evaluate(tx, self.parts.guard_limits).await?;
         }

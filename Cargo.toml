@@ -4,6 +4,7 @@ members = [
     "crates/*",
     # addon crates, listed one by one (data-only addons have no Cargo.toml)
     "addons/base",
+    "addons/ai_base",
     "addons/uom",
     "addons/product",
     "addons/mail",
@@ -32,6 +33,7 @@ members = [
     "addons/sales_team",
     "addons/sale",
     "addons/reporting",
+    "addons/account_reporting",
     # sample WebAssembly addons: Rust code packed as .erpaddon components
     "examples/wasm/sample_library_wasm",
     "examples/wasm/sample_library_wasm_policy",
@@ -96,6 +98,7 @@ erp-wasm-host = { path = "crates/erp-wasm-host" }
 erp-guest = { path = "crates/erp-guest" }
 # Addon crates (L11)
 erp-addon-base = { path = "addons/base" }
+erp-addon-ai-base = { path = "addons/ai_base" }
 erp-addon-uom = { path = "addons/uom" }
 erp-addon-product = { path = "addons/product" }
 erp-addon-product-mail = { path = "addons/product_mail" }
@@ -124,6 +127,7 @@ erp-addon-purchase-mail = { path = "addons/purchase_mail" }
 erp-addon-sales_team = { path = "addons/sales_team" }
 erp-addon-sale = { path = "addons/sale" }
 erp-addon-reporting = { path = "addons/reporting" }
+erp-addon-account-reporting = { path = "addons/account_reporting" }
 # Fixture addon crates (tests only)
 erp-addon-test_ext_a = { path = "crates/erp-test-models/addons/test_ext_a" }
 erp-addon-test_ext_b = { path = "crates/erp-test-models/addons/test_ext_b" }
@@ -196,6 +200,7 @@ ciborium = "0.2"
 # QR code modules for report documents (MIT; no dependencies, no unsafe): erp-report draws them as
 # rectangles. The linear barcodes are encoded by erp-report itself.
 qrcodegen = "1.8"
+datamatrix = "=0.3.3"
 # Safe OS interfaces (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; already in the graph
 # through erp-bench and tempfile): the node registry's suspend-counting clock (CLOCK_BOOTTIME on
 # Linux, CLOCK_MONOTONIC on Apple), the dev-folder walk by directory descriptor, gethostname

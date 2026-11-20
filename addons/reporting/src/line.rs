@@ -326,6 +326,15 @@ impl Cell {
             currency: None,
         }
     }
+    /// A calendar date, carried as ISO text with the date wire kind.
+    pub fn date(value: Date) -> Self {
+        let (year, month, day) = value.ymd();
+        Self {
+            kind: CellKind::Date,
+            text: Some(format!("{year:04}-{month:02}-{day:02}")),
+            ..Self::empty()
+        }
+    }
     /// An empty cell.
     pub fn empty() -> Self {
         Self::number(CellKind::Empty, None, 0)

@@ -164,6 +164,11 @@ fn a_corrupt_raster_prints_a_placeholder_with_a_warning() {
         })
         .unwrap();
     let out = render(b, body).unwrap();
+    let [failure] = out.image_failures() else {
+        panic!("expected one typed image failure");
+    };
+    assert_eq!(failure.node(), 0);
+    assert!(failure.reason().starts_with("the decoder cannot read it: "));
     let [warning] = out.warnings() else {
         panic!("one warning, got {:?}", out.warnings());
     };
@@ -317,4 +322,52 @@ fn table_spans_cross_pages() {
     for label in ["TALLSPAN", "LEFTPAIR", "RIGHTPAIR", "BOTTOMWIDE"] {
         assert_eq!(all.matches(label).count(), 1, "{label}");
     }
+}
+
+#[test]
+fn prepared_html_image_reaches_pdf_and_external_source_never_connects() {
+    use erp_expr::EvalContext;
+    use erp_report::{
+        DataStage, EvalOptions, FieldInfo, FieldValue, Language, LoadedRecord, PlanContext,
+        ReportLimits, ReportProgram, TemplateSource,
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let external = format!("http://{}/never", listener.local_addr().unwrap());
+    let p=ReportProgram::compile("html",&[TemplateSource::new("html","<div t-foreach='docs' t-as='o'><t t-set='copy' t-value='o.note'/><span t-out='copy'/></div>")],&Language::new("en_US").unwrap(),ReportLimits::default()).unwrap();
+    let plan = p
+        .prefetch_plan(&PlanContext::new("notes"), &|_, f| {
+            (f == "note").then(|| FieldInfo::scalar(false).with_html())
+        })
+        .unwrap();
+    let mut stage = DataStage::new(
+        &plan,
+        &[("docs", &[7])],
+        ReportLimits::default(),
+        Limits::default(),
+    )
+    .unwrap();
+    stage.supply(vec![LoadedRecord::new(7).with_display_name("Terms").with_field("note",FieldValue::html(&format!("<p>Before<img src='/web/image/pictures/2/data' alt='Seal'><img src='{external}' alt='External'>After</p>")))]).unwrap();
+    let request = stage.image_request().unwrap().unwrap();
+    assert_eq!(request.ids(), &[2]);
+    stage
+        .supply_images(vec![(2, Arc::from(png(7, 5)))])
+        .unwrap();
+    let records = Arc::new(stage.finish().unwrap());
+    let context = EvalContext::standard().with_var("docs", records.recordset("notes", &[7]));
+    let doc = p
+        .evaluate(&context, &records, &EvalOptions::default(), options())
+        .unwrap();
+    let result = engine().render(&doc).unwrap();
+    assert_eq!(raster_objects(result.bytes()), vec![(7, 5)]);
+    assert_eq!(result.content_warnings().len(), 1);
+    assert!(
+        matches!(result.content_warnings()[0].kind(),erp_report::ReportWarningKind::ExternalImageNotFetched{url_host} if url_host=="127.0.0.1")
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    let text = page_texts(result.bytes()).join(" ");
+    assert!(text.contains("Before") && text.contains("After"));
 }

@@ -150,7 +150,7 @@ async fn served_node_offers_and_installs_account_and_stock() {
             "{name} is refused: {log}"
         );
     }
-    for name in ["stock_account", "sale_stock", "stock_sms"] {
+    for name in ["sale_stock", "stock_sms"] {
         assert_eq!(state_of(&start, name), None, "{name} is not offered");
         assert!(
             log.contains(&format!(
@@ -174,7 +174,16 @@ async fn served_node_offers_and_installs_account_and_stock() {
     let stock = install(&fixture, "stock");
     eprintln!("installing account pulled in {account:?}; stock pulled in {stock:?}");
     assert_eq!(account, ["account", "analytic", "product", "uom"]);
-    assert_eq!(stock, ["barcodes", "barcodes_gs1_nomenclature", "stock"]);
+    assert_eq!(
+        stock,
+        [
+            "barcodes",
+            "barcodes_gs1_nomenclature",
+            "reporting",
+            "stock"
+        ]
+    );
+    assert_eq!(install(&fixture, "stock_account"), ["stock_account"]);
     check_defaults(&fixture, install_defaults::ACCOUNT).await;
     check_defaults(&fixture, install_defaults::STOCK).await;
     // purchase on top of account: its order screens, line sub-views and settings page open too

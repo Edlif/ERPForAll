@@ -2461,7 +2461,7 @@ async fn test_base_1_1_migration_populates_missing_company_partner_id() {
 
     let branch_comp_id: i64 = client
         .query_one(
-            "INSERT INTO res_company (name, currency_id, partner_id) VALUES ('Branch Company', $1, NULL) RETURNING id",
+            "INSERT INTO res_company (tz, name, currency_id, partner_id) VALUES ('UTC', 'Branch Company', $1, NULL) RETURNING id",
             &[&currency_id],
         )
         .await
@@ -2489,7 +2489,7 @@ async fn test_base_1_1_migration_populates_missing_company_partner_id() {
 
     let existing_comp_id: i64 = client
         .query_one(
-            "INSERT INTO res_company (name, currency_id, partner_id) VALUES ('Existing Company', $1, $2) RETURNING id",
+            "INSERT INTO res_company (tz, name, currency_id, partner_id) VALUES ('UTC', 'Existing Company', $1, $2) RETURNING id",
             &[&currency_id, &custom_partner_id],
         )
         .await
@@ -2756,7 +2756,7 @@ async fn combined_migration_rolls_back_partial_partner_creation() {
         companies.push(
             client
                 .query_one(
-                    "INSERT INTO res_company(name,currency_id) VALUES($1,$2) RETURNING id",
+                    "INSERT INTO res_company(tz, name,currency_id) VALUES('UTC', $1,$2) RETURNING id",
                     &[&name, &currency],
                 )
                 .await
@@ -2889,7 +2889,7 @@ async fn combined_migration_concurrent_upgrade_is_refused_without_duplicate_part
         .await
         .unwrap()
         .get(0);
-    let company: i64 = client.query_one("INSERT INTO res_company(name,currency_id) VALUES('Concurrent migration company',$1) RETURNING id", &[&currency]).await.unwrap().get(0);
+    let company: i64 = client.query_one("INSERT INTO res_company(tz, name,currency_id) VALUES('UTC', 'Concurrent migration company',$1) RETURNING id", &[&currency]).await.unwrap().get(0);
     // Raw fixture inserts bypass the old ORM's parent-store maintenance. Reproduce valid
     // legacy root paths before testing the independent partner-link migration.
     client.execute("UPDATE res_company SET parent_path=id::text || '/' WHERE parent_id IS NULL AND parent_path IS NULL", &[]).await.unwrap();

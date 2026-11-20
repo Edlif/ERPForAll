@@ -1424,3 +1424,67 @@ fn condition_kind_is_preserved() {
         assert_eq!(condition.kind(), kind);
     }
 }
+
+#[test]
+fn restricted_insert_requires_an_exclusive_id_source() {
+    use SqlBinding::{Definer, Request};
+    use SqlTableOp::{Insert, Select};
+    let declared = |binding, ops: &'static [SqlTableOp], sequence| {
+        SqlObjectDecl::table_grant(
+            "test_sqa",
+            "source_writer",
+            SqlTableGrantDecl::new(MOVE, binding, ops).exclusive_id_sequence(sequence),
+        )
+    };
+    let mut sole = Build::new(vec![declared(Definer, &[Insert], "sqa_source_ids")]);
+    sole.models = vec![move_model().id_sequence("sqa_source_ids")];
+    let registry = sole.run().unwrap();
+    let SqlObjectKind::TableGrant(grant) = registry
+        .sql_objects()
+        .get("test_sqa", "source_writer")
+        .unwrap()
+        .kind()
+    else {
+        panic!("expected a resolved table policy");
+    };
+    assert_eq!(grant.model().table(), "sqa_move");
+    assert_eq!(grant.exclusive_id_sequence(), Some("sqa_source_ids"));
+
+    for (binding, ops, name, reason) in [
+        (
+            Request,
+            &[Insert][..],
+            "sqa_source_ids",
+            "requires a definer INSERT policy",
+        ),
+        (
+            Definer,
+            &[Select],
+            "sqa_source_ids",
+            "requires a definer INSERT policy",
+        ),
+        (
+            Definer,
+            &[Insert],
+            "elsewhere_ids",
+            "does not match the id sequence",
+        ),
+    ] {
+        let mut invalid = Build::new(vec![declared(binding, ops, name)]);
+        invalid.models = vec![move_model().id_sequence("sqa_source_ids")];
+        let error = invalid.run().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Programming);
+        assert!(error.message().contains(reason), "{error:?}");
+    }
+
+    let mut shared = Build::new(vec![declared(Definer, &[Insert], "sqa_source_ids")]);
+    shared.models = vec![
+        move_model().id_sequence("sqa_source_ids"),
+        ModelDecl::new("test_sqa", "sqa.other").id_sequence("sqa_source_ids"),
+    ];
+    let error = shared.run().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Programming);
+    for detail in ["sqa_source_ids", "sqa.move", "sqa.other"] {
+        assert!(error.message().contains(detail), "{error:?}");
+    }
+}

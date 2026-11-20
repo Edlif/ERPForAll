@@ -42,13 +42,15 @@ fn manifest_matches_the_declaration_and_keeps_the_data_order() {
     }
 }
 
-/// `purchase_stock` depends on `purchase` and installs by itself once both its
-/// dependencies are installed.
+/// The configured direct-receipt workflow depends on Purchase and Inventory, including their
+/// valuation bridge. records explicit installation in.
 #[test]
 fn purchase_stock_depends_on_purchase() {
     let manifest: toml::Table = include_str!("../../purchase_stock/manifest.toml")
         .parse()
         .unwrap();
-    assert_eq!(list(&manifest, "depends"), ["stock_account", "purchase"]);
-    assert_eq!(manifest["auto_install"].as_bool(), Some(true));
+    let mut depends = list(&manifest, "depends");
+    depends.sort_unstable();
+    assert_eq!(depends, ["base", "purchase", "stock", "stock_account"]);
+    assert_eq!(manifest["auto_install"].as_bool(), Some(false));
 }

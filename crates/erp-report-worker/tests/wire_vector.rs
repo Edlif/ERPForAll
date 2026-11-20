@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
-//! A barcode or QR code crosses the worker frame (protocol 9) as the numbers it is made from, and
+//! A barcode or QR code crosses the worker frame as the numbers it is made from, and
 //! the worker makes it again under the checks of a document built in the server process: the frame
 //! carries no markup, and no frame gets a graphic past the limits.
 use ciborium::Value;
@@ -89,7 +89,6 @@ fn a_code_survives_the_worker_frame_as_numbers() {
         render_html(&back, &[]).unwrap(),
         render_html(&tree, &[]).unwrap()
     );
-    assert_eq!(erp_report_worker::PROTOCOL_VERSION, 9);
 }
 
 /// The frame of `coded()` with the fields of its first graphic changed by `edit`. The fields are

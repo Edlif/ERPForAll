@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+The Value column of the Stock Report (stock.report_stock_position), added by data: a column of
+     stock managers only and one native expression on its Stock line. Observed,
+     :47-64 (value only for stock managers, valued locations and not consigned stock). 
+-->
+<erp noupdate="1">
+    <record id="report_stock_position_col_value" model="reporting.report.column">
+        <field name="report_id" ref="stock.report_stock_position"/>
+        <field name="sequence">40</field>
+        <field name="name">Value</field>
+        <field name="label">value</field>
+        <field name="kind">monetary</field>
+        <field name="groups">stock.group_stock_manager</field>
+    </record>
+    <record id="report_stock_position_value" model="reporting.report.expression">
+        <field name="line_id" ref="stock.report_stock_position_line"/>
+        <field name="label">value</field>
+        <field name="engine">native</field>
+        <field name="function">stock_account.quant_value</field>
+        <field name="model">stock.quant</field>
+        <field name="domain">[["location_id.usage", "=", "internal"]]</field>
+    </record>
+</erp>

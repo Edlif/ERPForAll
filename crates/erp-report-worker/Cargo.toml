@@ -35,3 +35,6 @@ name = "erp-report-worker-fixture"
 path = "fixture/main.rs"
 test = false
 doc = false
+
+[dev-dependencies]
+erp-expr.workspace = true

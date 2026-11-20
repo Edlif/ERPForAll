@@ -9,6 +9,8 @@
     reason = "integration assertions"
 )]
 
+#[path = "support/report_dpi.rs"]
+mod report_dpi;
 #[path = "support/report_frame.rs"]
 mod report_frame;
 

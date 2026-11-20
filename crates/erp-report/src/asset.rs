@@ -324,7 +324,7 @@ fn base64(text: &[u8]) -> Option<Vec<u8>> {
     if padding > 2 {
         return None;
     }
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let mut out = Vec::with_capacity(text.len() / 4 * 3 - padding);
     // The length is a multiple of four, so the remainder is empty.
     for (index, group) in text.as_chunks::<4>().0.iter().enumerate() {
         let last = (index + 1) * 4 == text.len();
@@ -352,7 +352,15 @@ pub(crate) fn embedded_bytes(value: &str, limits: &Limits) -> Result<Vec<u8>, Re
     if !crate::validate::embedded_image(value) || !encoding.eq_ignore_ascii_case("base64") {
         return Err(malformed());
     }
-    limits.check(LimitKind::ImageBytes, data.len() / 4 * 3)?;
+    let padding = data.bytes().rev().take_while(|c| *c == b'=').count();
+    if !data.len().is_multiple_of(4) || padding > 2 {
+        return Err(image("the data of an embedded image is not base64"));
+    }
+    let decoded = (data.len() / 4)
+        .checked_mul(3)
+        .and_then(|n| n.checked_sub(padding))
+        .ok_or_else(|| image("the data of an embedded image is not base64"))?;
+    limits.check(LimitKind::ImageBytes, decoded)?;
     base64(data.as_bytes()).ok_or_else(|| image("the data of an embedded image is not base64"))
 }
 /// A vector graphic whose SVG markup ERPForAll writes itself from numbers, so the in-process engine

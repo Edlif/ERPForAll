@@ -15,6 +15,8 @@ async fn harness() -> Harness {
         &erp_addon_barcodes::ADDON,
         &erp_addon_barcodes_gs1_nomenclature::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_web::ADDON,
+        &erp_addon_reporting::ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
     .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))

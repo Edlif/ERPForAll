@@ -173,6 +173,9 @@ impl Categ {
     addon = "test_access"
 )]
 pub struct SomeObj {
+    /// Column-backed file used to exercise bounded binary reads through record rules.
+    #[field(binary)]
+    pub document: Option<Blob>,
     #[field(char)]
     pub name: Option<Arc<str>>,
     #[field(integer)]

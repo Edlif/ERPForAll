@@ -680,7 +680,7 @@ impl ModuleSystem {
                 .parts
                 .sql_guards
                 .iter()
-                .any(|g| resolved.iter().any(|n| n.as_str() == g.addon))
+                .any(|g| resolved.iter().any(|n| n.as_str() == g.addon()))
         {
             return Err(unsupported(
                 "SQL-object uninstall effects and guards ( in a later release)",

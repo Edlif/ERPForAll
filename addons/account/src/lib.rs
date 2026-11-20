@@ -15,6 +15,7 @@ pub mod invoice;
 pub mod journal;
 pub mod ledger;
 pub mod locking;
+pub mod mapping;
 pub mod moves;
 pub mod numbering;
 pub mod payment;

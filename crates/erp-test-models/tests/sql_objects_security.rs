@@ -1483,3 +1483,379 @@ async fn grants_only_publication_restores_policy_and_final_check_detects_widenin
     drop(request);
     f.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exclusive_named_id_sequence_is_usable_only_by_the_configured_definer() {
+    let mut f = Fixture::new("named_sequence").await;
+    let registry = exclusive_registry();
+    f.sync(Arc::clone(&registry)).await.unwrap();
+    let admin = f.h.db().client().await.unwrap();
+    let check = async || {
+        let row = admin.query_one(
+            "SELECT has_sequence_privilege($1::text::name,'sqlobj_token_ids','USAGE'),
+                    has_sequence_privilege($1::text::name,'sqlobj_token_ids','SELECT,UPDATE'),
+                    has_sequence_privilege($2::text::name,'sqlobj_token_ids','USAGE,SELECT,UPDATE'),
+                    has_sequence_privilege($3::text::name,'sqlobj_token_ids','USAGE,SELECT,UPDATE')",
+            &[&f.definer, &f.request, &f.maintenance],
+        ).await.unwrap();
+        assert!(row.get::<_, bool>(0));
+        for i in 1..4 {
+            assert!(!row.get::<_, bool>(i));
+        }
+    };
+    check().await;
+    admin
+        .batch_execute(&format!(
+            "SET ROLE {}; INSERT INTO test_sqlobj_token(name) VALUES ('admitted'); RESET ROLE",
+            quote(f.definer)
+        ))
+        .await
+        .unwrap();
+    let request = f.login(f.request).await;
+    denied(
+        &request,
+        "INSERT INTO test_sqlobj_token(id, name) VALUES (121, 'private')",
+    )
+    .await;
+    let refused = request
+        .query_one("SELECT nextval('public.sqlobj_token_ids')", &[])
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some(&SqlState::INSUFFICIENT_PRIVILEGE));
+    f.admin(&format!(
+        "GRANT USAGE, SELECT ON SEQUENCE sqlobj_token_ids TO {}",
+        quote(f.request)
+    ))
+    .await;
+    f.sync(Arc::clone(&registry)).await.unwrap();
+    check().await;
+    f.admin("CREATE TABLE sqlobj_unrelated(id bigint DEFAULT nextval('sqlobj_token_ids'))")
+        .await;
+    let err = f.sync(Arc::clone(&registry)).await.unwrap_err();
+    assert!(err.message().contains("sqlobj_token_ids"), "{err:?}");
+    f.admin("DROP TABLE sqlobj_unrelated").await;
+    f.admin("ALTER SEQUENCE sqlobj_token_ids CACHE 4").await;
+    let cached = f.sync(Arc::clone(&registry)).await.unwrap_err();
+    assert_eq!(cached.kind(), ErrorKind::Programming);
+    assert!(cached.message().contains("sqlobj_token_ids"), "{cached}");
+    f.admin("ALTER SEQUENCE sqlobj_token_ids CACHE 1").await;
+    f.admin("ALTER SEQUENCE sqlobj_token_ids SET UNLOGGED")
+        .await;
+    let unlogged = f.sync(Arc::clone(&registry)).await.unwrap_err();
+    assert_eq!(unlogged.kind(), ErrorKind::Programming);
+    assert!(
+        unlogged.message().contains("sqlobj_token_ids"),
+        "{unlogged}"
+    );
+    f.admin("ALTER SEQUENCE sqlobj_token_ids SET LOGGED").await;
+
+    let admission = Orm::builder(
+        Arc::clone(&registry),
+        erp_orm::pool::create_pool(f.owner_config(), 2).unwrap(),
+    )
+    .policy(StaticPolicy::AllowAll)
+    .build()
+    .unwrap();
+    let options = SchemaSyncOptions::new().sql_roles(f.bindings());
+    let mut startup = admission.begin(SUPERUSER_ID).await.unwrap();
+    startup
+        .verify_sql_object_publication(&registry, &options)
+        .await
+        .unwrap();
+    startup
+        .batch("GRANT SELECT ON SEQUENCE sqlobj_token_ids TO PUBLIC")
+        .await
+        .unwrap();
+    let error = startup
+        .verify_sql_object_publication(&registry, &options)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Access);
+    assert!(error.message().contains("sqlobj_token_ids"), "{error}");
+    startup.rollback().await.unwrap();
+    drop(startup);
+    drop(admission);
+    check().await;
+
+    // A same-name replacement with the same model default and schema owner is still a distinct
+    // sequence. Preserve the old object and restore it after this isolated drift check.
+    f.admin(&format!("SET ROLE {}; ALTER SEQUENCE sqlobj_token_ids RENAME TO sqlobj_old_ids; \
+        CREATE SEQUENCE sqlobj_token_ids; ALTER TABLE test_sqlobj_token ALTER COLUMN id SET DEFAULT nextval('sqlobj_token_ids'); RESET ROLE",
+        quote(f.owner))).await;
+    let changed = f.sync(Arc::clone(&registry)).await.unwrap_err();
+    assert!(
+        changed.message().contains("identity or owner differs"),
+        "{changed}"
+    );
+    f.admin("ALTER TABLE test_sqlobj_token ALTER COLUMN id SET DEFAULT nextval('sqlobj_old_ids'); DROP SEQUENCE sqlobj_token_ids; ALTER SEQUENCE sqlobj_old_ids RENAME TO sqlobj_token_ids").await;
+    check().await;
+
+    // A foreign grant through a role survives normal role-specific REVOKE. Admission
+    // must refuse it, rolling back the new publisher's own ACL changes.
+    let group = f.roles.add(format!("{}_extra", f.request));
+    f.admin(&format!(
+        "CREATE ROLE {} NOLOGIN; GRANT {} TO {}; GRANT SELECT ON SEQUENCE sqlobj_token_ids TO {}",
+        quote(&group),
+        quote(&group),
+        quote(f.request),
+        quote(&group)
+    ))
+    .await;
+    f.admin(&format!(
+        "GRANT UPDATE ON SEQUENCE sqlobj_token_ids TO {}",
+        quote(f.request)
+    ))
+    .await;
+    assert!(f.sync(Arc::clone(&registry)).await.is_err());
+    let preserved = admin
+        .query_one(
+            "SELECT has_sequence_privilege($1::text::name,'sqlobj_token_ids','UPDATE')",
+            &[&f.request],
+        )
+        .await
+        .unwrap();
+    assert!(
+        preserved.get::<_, bool>(0),
+        "failed reconciliation must restore the prior ACL"
+    );
+    f.admin(&format!(
+        "REVOKE UPDATE ON SEQUENCE sqlobj_token_ids FROM {}",
+        quote(f.request)
+    ))
+    .await;
+    f.admin(&format!(
+        "REVOKE SELECT ON SEQUENCE sqlobj_token_ids FROM {}",
+        quote(&group)
+    ))
+    .await;
+
+    let next = f.roles.add(format!("{}_next", f.definer));
+    f.admin(&format!(
+        "CREATE ROLE {} NOLOGIN; GRANT USAGE ON SCHEMA public TO {}; GRANT {} TO {}",
+        quote(&next),
+        quote(&next),
+        quote(&next),
+        quote(f.owner)
+    ))
+    .await;
+    let previous_group = f.roles.add(format!("{}_old_group", f.definer));
+    f.admin(&format!(
+        "CREATE ROLE {group} NOLOGIN; GRANT SELECT ON test_sqlobj_token TO {group}; GRANT {group} TO {old} WITH INHERIT FALSE, SET TRUE",
+        group = quote(&previous_group), old = quote(f.definer),
+    )).await;
+    let retained = f
+        .sync_with(
+            Arc::clone(&registry),
+            f.bindings().definer_owned(next.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(retained.kind(), ErrorKind::Access);
+    assert!(retained.message().contains("retains access"), "{retained}");
+    f.admin(&format!(
+        "REVOKE SELECT ON test_sqlobj_token FROM {}",
+        quote(&previous_group)
+    ))
+    .await;
+    f.sync_with(
+        Arc::clone(&registry),
+        f.bindings().definer_owned(next.clone()),
+    )
+    .await
+    .unwrap();
+    let rotated = admin.query_one("SELECT has_sequence_privilege($1::text::name,'sqlobj_token_ids','USAGE,SELECT,UPDATE'),has_table_privilege($1::text::name,'test_sqlobj_token','INSERT'),has_sequence_privilege($2::text::name,'sqlobj_token_ids','USAGE')",&[&f.definer,&next]).await.unwrap();
+    assert!(!rotated.get::<_, bool>(0));
+    assert!(!rotated.get::<_, bool>(1));
+    assert!(rotated.get::<_, bool>(2));
+
+    let removed = build_model(token_model().id_sequence("sqlobj_token_ids"), vec![]);
+    let error = f.sync(removed).await.unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("recorded in SQL object provenance"),
+        "{error:?}"
+    );
+    let empty = RegistryBuilder::new([&base_users::ADDON])
+        .linked(false)
+        .build()
+        .unwrap();
+    let options = SchemaSyncOptions::new().sql_roles(f.bindings().definer_owned(next));
+    let orm = Orm::builder(
+        registry,
+        erp_orm::pool::create_pool(f.owner_config(), 2).unwrap(),
+    )
+    .policy(StaticPolicy::AllowAll)
+    .build()
+    .unwrap();
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    for reconcile in [false, true] {
+        let err = if reconcile {
+            tx.reconcile_sql_object_grants(&empty, &options).await
+        } else {
+            tx.verify_sql_object_publication(&empty, &options).await
+        }
+        .unwrap_err();
+        assert!(err.message().contains("exclusive sequence"), "{err}");
+    }
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    drop(request);
+    drop(admin);
+    f.finish().await;
+}
+
+fn exclusive_registry() -> Arc<Registry> {
+    let key = "token_writer";
+    build_model(
+        token_model().id_sequence("sqlobj_token_ids"),
+        vec![SqlObjectDecl::table_grant(
+            ADDON,
+            key,
+            SqlTableGrantDecl::new(TOKEN, SqlBinding::Definer, &[SqlTableOp::Insert])
+                .exclusive_id_sequence("sqlobj_token_ids"),
+        )],
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adopting_an_exclusive_id_policy_migrates_only_the_affected_database() {
+    let f = Fixture::new("upgrade_seq").await;
+    f.sync(build_model(
+        token_model().id_sequence("sqlobj_token_ids"),
+        vec![],
+    ))
+    .await
+    .unwrap();
+    f.admin(&format!(
+        "GRANT USAGE, SELECT ON SEQUENCE sqlobj_token_ids TO {}",
+        quote(f.request)
+    ))
+    .await;
+    let before = f.admin_rows(
+        "SELECT count(*)::text FROM pg_attribute WHERE attrelid=to_regclass('erp_schema_sql_object') AND attname='sequence_oid'"
+    ).await;
+    assert_eq!(before[0][0].as_deref(), Some("0"));
+    f.sync(exclusive_registry()).await.unwrap();
+    let admin = f.h.db().client().await.unwrap();
+    let upgraded = admin
+        .query_one(
+            "SELECT pg_typeof(sequence_oid)::text, pg_typeof(sequence_owner_oid)::text,
+                has_sequence_privilege($1::text::name,sequence_oid,'USAGE,SELECT,UPDATE'),
+                has_sequence_privilege($2::text::name,sequence_oid,'USAGE')
+         FROM erp_schema_sql_object WHERE addon=$3 AND key='token_writer'",
+            &[&f.request, &f.definer, &ADDON],
+        )
+        .await
+        .unwrap();
+    assert_eq!(upgraded.get::<_, String>(0), "regclass");
+    assert_eq!(upgraded.get::<_, String>(1), "regrole");
+    assert!(!upgraded.get::<_, bool>(2));
+    assert!(upgraded.get::<_, bool>(3));
+    drop(admin);
+    f.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exclusive_sequence_survives_a_logical_database_restore() {
+    let f = Fixture::new("restore_seq").await;
+    let registry = exclusive_registry();
+    f.sync(Arc::clone(&registry)).await.unwrap();
+    let source = f.h.db();
+    let clone = erp_testkit::TestDb::builder()
+        .cluster(source.cluster().clone())
+        .create()
+        .await
+        .unwrap();
+    let admin = clone.client().await.unwrap();
+    admin
+        .batch_execute(&format!(
+            "ALTER DATABASE {} OWNER TO {}",
+            quote(clone.name()),
+            quote(f.owner)
+        ))
+        .await
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("fixture.dump");
+    for (program, db, flags) in [
+        ("pg_dump", source, &["--format=custom", "--file"][..]),
+        ("pg_restore", &clone, &["--exit-on-error"][..]),
+    ] {
+        let config = db.config();
+        let bin = std::env::var_os("ERP_PG_BIN")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                [
+                    "/opt/homebrew/opt/postgresql@18/bin",
+                    "/usr/lib/postgresql/18/bin",
+                ]
+                .iter()
+                .map(std::path::PathBuf::from)
+                .find(|path| path.join(program).is_file())
+            })
+            .expect("PostgreSQL 18 client programs required");
+        let tokio_postgres::config::Host::Tcp(host) = &config.get_hosts()[0] else {
+            panic!("fixture requires a TCP test cluster")
+        };
+        let result = std::process::Command::new(bin.join(program))
+            .env(
+                "PGPASSWORD",
+                std::str::from_utf8(config.get_password().unwrap()).unwrap(),
+            )
+            .args([
+                "--host",
+                host,
+                "--port",
+                &config.get_ports()[0].to_string(),
+                "--username",
+                config.get_user().unwrap(),
+                "--dbname",
+                db.name(),
+            ])
+            .args(flags)
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{program}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let seq_oid = "SELECT 'public.sqlobj_token_ids'::regclass::oid";
+    let original: u32 = source
+        .client()
+        .await
+        .unwrap()
+        .query_one(seq_oid, &[])
+        .await
+        .unwrap()
+        .get(0);
+    let restored: u32 = admin.query_one(seq_oid, &[]).await.unwrap().get(0);
+    assert_ne!(original, restored);
+    let mut config = clone.config();
+    config.options(format!("-c role={}", f.owner));
+    let orm = Orm::builder(
+        Arc::clone(&registry),
+        erp_orm::pool::create_pool(config, 2).unwrap(),
+    )
+    .policy(StaticPolicy::AllowAll)
+    .build()
+    .unwrap();
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let options = SchemaSyncOptions::new().sql_roles(f.bindings());
+    tx.verify_sql_object_publication(&registry, &options)
+        .await
+        .unwrap();
+    tx.reconcile_sql_object_grants(&registry, &options)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+    drop(orm);
+    drop(admin);
+    clone.cleanup().await.unwrap();
+    f.finish().await;
+}

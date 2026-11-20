@@ -246,6 +246,194 @@ async fn malformed_identity_refuses_upgrade_and_uninstall_without_effects() {
 }
 
 #[tokio::test]
+async fn forward_upgrade_replays_its_new_dependency_under_the_same_artifact_transition() {
+    let db = TestDb::create().await.unwrap();
+    let addons = Addons::new();
+    addons.add(
+        "consumer",
+        "name='Consumer'\nversion='1.0'\ndepends=['base']\n",
+    );
+    let old = builder(&db, &addons).build().unwrap();
+    let init = old
+        .initialize(InitOptions::new().with_skip_auto_install(true))
+        .await
+        .unwrap();
+    let installed = old
+        .button_immediate_install(&su(&init.orm), &[n("consumer")])
+        .await
+        .unwrap();
+    let previous = receipt_hashes(&installed.orm).await;
+    assert!(!previous.contains_key(&n("fresh")));
+    addons.add("fresh", "name='New dependency'\ndepends=['base']\n");
+    addons.add(
+        "consumer",
+        "name='Consumer'\nversion='2.0'\ndepends=['base','fresh']\n",
+    );
+    let candidate = builder(&db, &addons)
+        .identity_previous(previous.clone())
+        .build()
+        .unwrap();
+    let loaded = candidate.load().await.unwrap();
+    let first = candidate
+        .button_immediate_upgrade(&su(&loaded.orm), &[n("consumer")])
+        .await
+        .unwrap();
+    assert_eq!(first.installed, vec![n("fresh")]);
+    assert_eq!(first.upgraded, vec![n("consumer")]);
+    let orm = first.orm;
+    let first_receipts = receipt_rows(&orm).await;
+    let first_catalog = rows(
+        &orm,
+        "SELECT name,state,latest_version FROM ir_module_module ORDER BY name",
+    )
+    .await;
+    assert_eq!(state(&orm, "fresh").await, "installed");
+    assert_eq!(
+        receipt_hashes(&orm).await.get(&n("consumer")),
+        previous.get(&n("consumer"))
+    );
+    let retried = candidate
+        .button_immediate_upgrade(&su(&orm), &[n("consumer")])
+        .await
+        .unwrap();
+    assert!(retried.installed.is_empty());
+    assert_eq!(receipt_rows(&orm).await, first_receipts);
+    assert_eq!(
+        rows(
+            &orm,
+            "SELECT name,state,latest_version FROM ir_module_module ORDER BY name"
+        )
+        .await,
+        first_catalog
+    );
+    assert_eq!(rows(&orm, "SELECT count(*)::text FROM installed_addon_identity_audit WHERE operation='forward-install'").await, vec![vec![Some("1".into())]]);
+
+    let mut other_previous = previous.clone();
+    other_previous.insert(n("uninstalled"), previous[&n("base")].clone());
+    let wrong = builder(&db, &addons)
+        .identity_previous(other_previous.clone())
+        .build()
+        .unwrap();
+    const MISMATCH: &str =
+        "Addon 'fresh' installed artifact identity does not match available content";
+    validation(
+        wrong
+            .button_immediate_upgrade(&su(&wrong.load().await.unwrap().orm), &[n("consumer")])
+            .await
+            .unwrap_err(),
+        MISMATCH,
+    );
+    validation(
+        candidate
+            .identity_activate(&other_previous, "operator", "Wrong previous release")
+            .await
+            .unwrap_err(),
+        MISMATCH,
+    );
+
+    addons.add(
+        "unrelated",
+        "name='Unrelated candidate content'\ndepends=['base']\n",
+    );
+    validation(
+        candidate
+            .button_immediate_upgrade(&su(&orm), &[n("consumer")])
+            .await
+            .unwrap_err(),
+        MISMATCH,
+    );
+    std::fs::remove_dir_all(addons.path().join("unrelated")).unwrap();
+    exec(
+        &orm,
+        "UPDATE installed_addon_identity SET source_kind='embedded' WHERE name='fresh'",
+    )
+    .await;
+    validation(
+        candidate
+            .button_immediate_upgrade(&su(&orm), &[n("consumer")])
+            .await
+            .unwrap_err(),
+        MISMATCH,
+    );
+    exec(
+        &orm,
+        "UPDATE installed_addon_identity SET source_kind='folder' WHERE name='fresh'",
+    )
+    .await;
+    exec(&orm, "UPDATE installed_addon_identity SET recorded_at=recorded_at+interval '1 second' WHERE name='fresh'").await;
+    validation(
+        candidate
+            .button_immediate_upgrade(&su(&orm), &[n("consumer")])
+            .await
+            .unwrap_err(),
+        MISMATCH,
+    );
+    exec(&orm, "UPDATE installed_addon_identity SET recorded_at=recorded_at-interval '1 second' WHERE name='fresh'").await;
+    assert_eq!(receipt_rows(&orm).await, first_receipts);
+
+    candidate
+        .identity_activate(
+            &previous,
+            "operator",
+            "Verified release with new dependency",
+        )
+        .await
+        .unwrap();
+    let published = receipt_rows(&orm).await;
+    assert_ne!(published, first_receipts);
+    candidate
+        .identity_activate(&previous, "operator", "Repeat after verified activation")
+        .await
+        .unwrap();
+    assert_eq!(receipt_rows(&orm).await, published);
+    db.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn forward_upgrade_refuses_preexisting_dependency_without_its_transition_witness() {
+    let db = TestDb::create().await.unwrap();
+    let addons = Addons::new();
+    let old = builder(&db, &addons).build().unwrap();
+    let init = old
+        .initialize(InitOptions::new().with_skip_auto_install(true))
+        .await
+        .unwrap();
+    let previous = receipt_hashes(&init.orm).await;
+    addons.add(
+        "fresh",
+        "name='Existing unbound dependency'\ndepends=['base']\n",
+    );
+    let installed = old
+        .button_immediate_install(&su(&init.orm), &[n("fresh")])
+        .await
+        .unwrap();
+    let before = receipt_rows(&installed.orm).await;
+    let candidate = builder(&db, &addons)
+        .identity_previous(previous.clone())
+        .build()
+        .unwrap();
+    const MISMATCH: &str =
+        "Addon 'fresh' installed artifact identity does not match available content";
+    validation(
+        candidate
+            .button_immediate_upgrade(&su(&candidate.load().await.unwrap().orm), &[n("base")])
+            .await
+            .unwrap_err(),
+        MISMATCH,
+    );
+    validation(
+        candidate
+            .identity_activate(&previous, "operator", "Unbound installed addon")
+            .await
+            .unwrap_err(),
+        MISMATCH,
+    );
+    assert_eq!(receipt_rows(&installed.orm).await, before);
+    assert!(audit_rows(&installed.orm).await.is_empty());
+    db.cleanup().await.unwrap();
+}
+
+#[tokio::test]
 async fn forward_activation_preserves_unchanged_receipts_and_updates_changed_content() {
     let db = TestDb::create().await.unwrap();
     let addons = Addons::new();

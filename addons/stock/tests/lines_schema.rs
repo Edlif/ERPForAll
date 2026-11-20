@@ -146,6 +146,7 @@ async fn fixture() -> Fixture {
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_reporting::ADDON,
         &ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])

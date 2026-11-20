@@ -31,4 +31,4 @@ lopdf = { version = "=0.45.0", default-features = false }
 # The scan check (tests/scan.rs): a printed page is rasterised and its barcodes and QR codes are
 # read back by a decoder that shares no code with the generator.
 hayro = "=0.8.0"
-rxing = { version = "=0.9.4", default-features = false, features = ["decoders", "oned", "qrcode", "encoding_rs"] }
+rxing = { version = "=0.9.4", default-features = false, features = ["decoders", "oned", "qrcode", "datamatrix", "encoding_rs"] }

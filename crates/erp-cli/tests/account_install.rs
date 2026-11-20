@@ -9,6 +9,10 @@ use erp_modules::{AddonIndex, ModuleName};
 use erp_sdk::{Context, SUPERUSER_ID};
 use erp_testkit::TestDb;
 
+#[path = "support/account_defaults.rs"]
+mod account_defaults;
+#[path = "support/account_pack_defaults.rs"]
+mod account_pack_defaults;
 #[path = "support/install_defaults.rs"]
 mod install_defaults;
 
@@ -107,6 +111,25 @@ async fn install_on_base_and_product() {
         assert_eq!(rows.len(), 1, "module row {name}");
         assert_eq!(rows[0].get::<_, String>(0), "installed", "state of {name}");
     }
+    let mut tx = outcome.orm.begin(SUPERUSER_ID).await.unwrap();
+    assert_eq!(
+        strings(
+            &mut tx,
+            "SELECT name FROM ir_model_data WHERE module = 'account' \
+             AND model = 'account.default.role' ORDER BY name",
+        )
+        .await,
+        [
+            "default_role_expense",
+            "default_role_income",
+            "default_role_payable",
+            "default_role_receivable",
+            "default_role_stock_valuation",
+        ],
+        "install must provide stable accounting role descriptors without seeding chart accounts"
+    );
+    tx.rollback().await.unwrap();
+
     // the chain model's access rows and its declared lock-wait setting. Boxed: the two halves of
     // this test in one future overflow the default test-thread stack in a debug build.
     Box::pin(async {
@@ -324,5 +347,26 @@ async fn install_on_base_and_product() {
     .await
     .unwrap();
     assert_eq!(again, 0);
+    drop(tx);
+    drop(client);
+    let (configured_default, account_id) =
+        Box::pin(account_defaults::exercise(&outcome.orm, main)).await;
+    let env = outcome.orm.env(SUPERUSER_ID, Context::new());
+    let upgraded =
+        Box::pin(system.button_immediate_upgrade(&env, &[ModuleName::new("account").unwrap()]))
+            .await
+            .unwrap();
+    assert!(upgraded.post_commit.is_clean());
+    let mut tx = upgraded.orm.begin(SUPERUSER_ID).await.unwrap();
+    assert_eq!(
+        configured_default
+            .require(&mut tx, erp_addon_account::mapping::ResolutionDate::Current)
+            .await
+            .unwrap(),
+        account_id,
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    Box::pin(account_pack_defaults::exercise(&upgraded.orm, main)).await;
     db.cleanup().await.unwrap();
 }

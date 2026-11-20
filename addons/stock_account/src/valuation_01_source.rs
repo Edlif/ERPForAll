@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Schema only: /. No costing writer, trigger or grant.
-//! Codec checks arrive with; no ORM access grants are provided for ordinary users.
+//! Valuation storage declarations for. Database guards are in `history_guards`.
+//! Ordinary users have no valuation grants.
 
 use crate::recorded_now;
 use erp_sdk::prelude::*;

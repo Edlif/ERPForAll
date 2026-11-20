@@ -24,7 +24,9 @@ mod engine;
 mod error;
 mod evaluate;
 mod format;
+mod helper;
 mod html;
+mod html_images;
 mod limits;
 mod load;
 mod look;
@@ -32,8 +34,10 @@ mod plan;
 mod profile;
 mod program;
 mod records;
+mod rich_text;
 mod style;
 mod validate;
+mod warning;
 mod widget;
 pub use asset::{ImageFit, ImageFormat, ImageInfo, Vector, probe_image};
 pub use attachment::{
@@ -48,17 +52,21 @@ pub use document::{
     Node, NodeId, PageCounter, PageSetup, PdfStandard, PictureQuality, RenderDate, Style,
     TableLook,
 };
-pub use engine::{LayoutEngine, RenderIdentity, RenderResult};
+pub use engine::{ImageFailure, LayoutEngine, RenderIdentity, RenderResult};
 pub use error::{Diagnostic, LayoutFailure, ProfileKind, ReportError, WorkerCrash};
 pub use evaluate::EvalOptions;
 pub use format::LangFormat;
+pub use helper::{HelperRead, HelperRequest};
 pub use html::{HTML_STYLESHEET, render_html};
+pub use html_images::{HtmlImageRequest, HtmlImageResult};
 pub use limits::ReportLimits;
 pub use load::{DataStage, LoadedRecord, ReadRequest};
 pub use plan::{PlanContext, PlanLevel, PrefetchPlan, ReportHelper};
 pub use profile::{HTML_DEGRADATION_RULES, PrintProfile, TokenMeaning, class_meaning};
 pub use program::{Language, ReportProgram};
 pub use records::{FieldValue, RecordStore};
+pub use rich_text::RichText;
 pub use validate::{
     DynamicValue, Validation, inspect, inspect_arch, validate, validate_arch, validate_attribute,
 };
+pub use warning::{HtmlSource, ReportWarning, ReportWarningKind};

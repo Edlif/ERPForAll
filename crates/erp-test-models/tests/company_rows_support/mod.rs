@@ -143,8 +143,8 @@ pub async fn fixture_company(client: &Client) -> i64 {
     let currency = erp_testkit::fixtures::seed_currency(client).await.unwrap();
     client
         .query_one(
-            "INSERT INTO res_company (name, currency_id, active) \
-             VALUES ('Fixture Company', $1, true) RETURNING id::int8",
+            "INSERT INTO res_company (tz, name, currency_id, active) \
+             VALUES ('UTC', 'Fixture Company', $1, true) RETURNING id::int8",
             &[&currency],
         )
         .await

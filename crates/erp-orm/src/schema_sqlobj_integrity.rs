@@ -61,8 +61,12 @@ impl Transaction {
         &mut self,
         provenance: bool,
         needed: bool,
+        sequence_needed: bool,
     ) -> Result<bool> {
-        if !provenance || !needed {
+        if !provenance {
+            return Ok(sequence_needed);
+        }
+        if !(needed || sequence_needed) {
             return Ok(false);
         }
         let rows = self.query("SELECT pg_get_constraintdef(oid), convalidated, conenforced FROM pg_constraint \
@@ -82,12 +86,14 @@ impl Transaction {
         let old =
             "CHECK ((kind = ANY (ARRAY['function'::text, 'trigger'::text, 'condition'::text])))";
         let new = "CHECK ((kind = ANY (ARRAY['function'::text, 'trigger'::text, 'condition'::text, 'foreign_key'::text, 'table_options'::text])))";
-        if !valid || !enforced || (definition != old && definition != new) {
+        let sequence = "CHECK ((kind = ANY (ARRAY['function'::text, 'trigger'::text, 'condition'::text, 'foreign_key'::text, 'table_options'::text, 'exclusive_sequence'::text])))";
+        if !valid || !enforced || (definition != old && definition != new && definition != sequence)
+        {
             return Err(Error::programming(
                 "SQL object catalogue: unknown kind CHECK shape; explicit migration required",
             ));
         }
-        Ok(definition == old)
+        Ok(definition == old || (sequence_needed && definition == new))
     }
 
     pub(super) async fn install_integrity_catalog(
@@ -95,9 +101,16 @@ impl Transaction {
         sync: &mut SqlObjectSync<'_>,
     ) -> Result<()> {
         if sync.upgrade_integrity {
-            self.batch("ALTER TABLE erp_schema_sql_object DROP CONSTRAINT erp_schema_sql_object_kind_check; \
-                ALTER TABLE erp_schema_sql_object ADD CONSTRAINT erp_schema_sql_object_kind_check \
-                CHECK (kind IN ('function','trigger','condition','foreign_key','table_options'))").await?;
+            let sequence = sync.graph.objects().iter().any(|o| matches!(o.kind(), SqlObjectKind::TableGrant(g) if g.exclusive_id_sequence().is_some()));
+            let kinds = if sequence {
+                "'function','trigger','condition','foreign_key','table_options','exclusive_sequence'"
+            } else {
+                "'function','trigger','condition','foreign_key','table_options'"
+            };
+            self.batch(&format!("ALTER TABLE erp_schema_sql_object DROP CONSTRAINT erp_schema_sql_object_kind_check; ALTER TABLE erp_schema_sql_object ADD CONSTRAINT erp_schema_sql_object_kind_check CHECK (kind IN ({kinds}))")).await?;
+            if sequence {
+                self.batch("ALTER TABLE erp_schema_sql_object ADD COLUMN sequence_oid regclass, ADD COLUMN sequence_owner_oid regrole, ADD COLUMN sequence_grantee_oid regrole").await?;
+            }
             sync.ran = true;
         }
         Ok(())

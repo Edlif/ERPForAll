@@ -18,9 +18,14 @@ pub(crate) fn failed(message: impl Into<String>) -> CliError {
     CliError::Execution(message.into())
 }
 pub(crate) fn config(path: &Path) -> Result<Arc<ServerConfig>> {
-    ServerConfig::load(path)
-        .map(Arc::new)
-        .map_err(|e| failed(e.to_string()))
+    let config = ServerConfig::load(path).map_err(|e| failed(e.to_string()))?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| failed("server configuration path has no parent"))?;
+    // Startup admission only. The assistant runtime will retain a registry when that slice lands.
+    erp_addon_ai_base::config::Credentials::load(config.ai(), directory)
+        .map_err(|e| failed(e.to_string()))?;
+    Ok(Arc::new(config))
 }
 pub(crate) fn runtime() -> Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
@@ -226,6 +231,7 @@ WITH RECURSIVE restricted(oid) AS (SELECT c.oid FROM pg_catalog.pg_class c JOIN 
 SELECT NOT has_schema_privilege('public','USAGE') OR EXISTS (
     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname='public' AND CASE
+        WHEN c.relkind='S' AND c.relname=ANY($2::text[]) THEN has_sequence_privilege(c.oid,'USAGE,SELECT,UPDATE')
         WHEN c.relkind IN ('r','p') AND c.oid IN (SELECT oid FROM restricted) THEN FALSE
         WHEN c.relkind='S' AND EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_class t ON t.oid=d.refobjid WHERE d.classid='pg_catalog.pg_class'::regclass AND d.refclassid='pg_catalog.pg_class'::regclass AND d.objid=c.oid AND d.deptype IN ('a','i') AND t.relnamespace=n.oid AND t.oid IN (SELECT oid FROM restricted)) THEN FALSE
         WHEN c.relkind IN ('r','p') AND c.relname IN ('installed_addon_identity','installed_addon_identity_audit','erp_node_feature','erp_node_feature_digest')
@@ -689,6 +695,7 @@ pub(crate) async fn publish_grants_async(args: &ServerArgs) -> Result<String> {
     let publication_node = modules(&config, None)?;
     let publication_registry = publication_node.registry_for_publication(&mut tx).await?;
     let restricted_tables = crate::sql_object_publication::restricted_tables(&publication_registry);
+    let sequences = crate::sql_object_publication::exclusive_id_sequences(&publication_registry);
     let publication = grant_runtime_with_registry(&mut tx, &config, &publication_registry).await;
     if let Err(error) = publication {
         tx.rollback().await?;
@@ -701,7 +708,10 @@ pub(crate) async fn publish_grants_async(args: &ServerArgs) -> Result<String> {
     })?;
     crate::uom_grants::verify(&client).await?;
     let missing: bool = client
-        .query_one(MISSING_RUNTIME_GRANTS_SQL, &[&restricted_tables])
+        .query_one(
+            MISSING_RUNTIME_GRANTS_SQL,
+            &[&restricted_tables, &sequences],
+        )
         .await
         .map_err(|_| failed("Runtime grants committed but runtime verification query failed"))?
         .try_get(0)
@@ -1642,6 +1652,7 @@ impl NativeLifecycle {
             .map_err(cli_field_error)?;
         let restricted_tables =
             crate::sql_object_publication::restricted_tables(&admission_registry);
+        let sequences = crate::sql_object_publication::exclusive_id_sequences(&admission_registry);
         admission_tx
             .verify_sql_object_publication(
                 &admission_registry,
@@ -1649,7 +1660,10 @@ impl NativeLifecycle {
             )
             .await?;
         let missing_grants: bool = client
-            .query_one(MISSING_RUNTIME_GRANTS_SQL, &[&restricted_tables])
+            .query_one(
+                MISSING_RUNTIME_GRANTS_SQL,
+                &[&restricted_tables, &sequences],
+            )
             .await
             .map_err(|error| {
                 erp_fields::Error::db("could not inspect runtime publication grants")
@@ -3189,3 +3203,7 @@ mod module_message_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "human/ai_config_tests.rs"]
+mod ai_config_tests;

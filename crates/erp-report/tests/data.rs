@@ -16,6 +16,12 @@ use erp_report::{
 };
 use std::sync::Arc;
 
+// Retaining helper progress behind an immutable poll must preserve the public auto-traits.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<DataStage<'static>>();
+};
+
 const NBSP: &str = "\u{a0}";
 
 fn compile_with(sources: &[(&str, &str)], limits: ReportLimits) -> ReportProgram {
@@ -37,6 +43,7 @@ fn compile(arch: &str) -> ReportProgram {
 /// The model registry of the tests.
 fn schema(model: &str, field: &str) -> Option<FieldInfo> {
     Some(match (model, field) {
+        ("sale.order", "note") => FieldInfo::scalar(false).with_html(),
         ("sale.order", "name" | "logo") => FieldInfo::scalar(false),
         ("sale.order", "partner_id") => FieldInfo::relation("res.partner", false),
         ("sale.order", "company_id") => FieldInfo::relation("res.company", false),
@@ -86,6 +93,7 @@ fn row(model: &str, id: i64) -> Option<Vec<(&'static str, FieldValue)>> {
         "sale.order" if id == 40_404 => return None,
         "sale.order" => vec![
             ("name", FieldValue::char(&format!("S{id:05}"))),
+            ("note", FieldValue::html("<unknown>Terms</unknown>")),
             (
                 "partner_id",
                 FieldValue::many2one("res.partner", Some(partner_of(id))),
@@ -227,6 +235,45 @@ const ORDER: &str = "<div><t t-foreach='docs' t-as='o'><p t-field='o.name'/><spa
                      t-out='o.partner_id.name'/><span t-out='o.partner_id.country_id.name'/><t \
                      t-foreach='o.line_ids' t-as='line'><span \
                      t-out='line.product_id.default_code'/><span t-out='line.qty'/></t></t></div>";
+
+#[test]
+fn html_provenance_names_are_loaded_in_the_same_batch() {
+    let program =
+        compile("<div><t t-foreach='docs' t-as='doc'><span t-field='doc.note'/></t></div>");
+    let plan = plan_of(&program);
+    assert_eq!(levels(&plan), [level(0, "sale.order", &["note"], true)]);
+    let mut stage = DataStage::new(
+        &plan,
+        &docs(&[1, 2]),
+        ReportLimits::default(),
+        Limits::default(),
+    )
+    .unwrap();
+    let reads = run(&mut stage).unwrap();
+    assert_eq!(reads, [("sale.order".into(), 2, vec!["note".into()], true)]);
+    let store = Arc::new(stage.finish().unwrap());
+    let context = EvalContext::standard().with_var("docs", store.recordset("sale.order", &[1, 2]));
+    let doc = program
+        .evaluate(
+            &context,
+            &store,
+            &EvalOptions::default(),
+            DocumentOptions::new("html", "HTML", PageSetup::new(400.0, 500.0, 30.0).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(doc.content_warnings().len(), 2);
+    for (warning, id) in doc.content_warnings().iter().zip([1, 2]) {
+        assert_eq!(
+            warning.source().record(),
+            Some((
+                "sale.order",
+                id,
+                display_name("sale.order", id).as_str(),
+                "note"
+            ))
+        );
+    }
+}
 
 #[test]
 fn the_plan_has_one_level_per_model_and_relation_depth() {
@@ -372,7 +419,7 @@ fn a_method_that_is_not_a_registered_helper_is_a_compile_error_naming_it() {
 }
 
 #[test]
-fn a_registered_helper_adds_its_declared_fields_and_waits_for_its_task() {
+fn a_registered_helper_loads_dependencies_and_returns_cached_results() {
     let arch = "<div><t t-foreach='docs' t-as='o'><p t-out='o._get_name()'/></t></div>";
     let helpers = [ReportHelper::new(
         "sale.order",
@@ -393,17 +440,49 @@ fn a_registered_helper_adds_its_declared_fields_and_waits_for_its_task() {
         plan.helpers().collect::<Vec<_>>(),
         [("sale.order", "_get_name")]
     );
-    let err = DataStage::new(
+    let program = compile(arch);
+    let mut stage = DataStage::new(
         &plan,
-        &docs(&[1]),
+        &docs(&[1, 2]),
         ReportLimits::default(),
         Limits::default(),
     )
-    .unwrap_err();
-    assert!(matches!(err, ReportError::Unsupported { .. }), "{err:?}");
+    .unwrap();
+    let error = stage.helper_request().unwrap_err();
+    assert!(matches!(error, ReportError::Data { .. }));
     assert_eq!(
-        err.to_string(),
-        "report helper calls requires a later release"
+        error.to_string(),
+        "report data: field reads must complete before report helpers"
+    );
+    run(&mut stage).unwrap();
+    let request = stage.helper_request().unwrap().unwrap();
+    assert_eq!(request.model(), "sale.order");
+    assert_eq!(request.method(), "_get_name");
+    assert_eq!(request.ids(), &[1, 2]);
+    assert!(request.args().is_empty());
+    assert!(request.kwargs().is_empty());
+    assert_eq!(
+        request.dependencies(),
+        &["name", "partner_id.country_id.name"]
+    );
+    assert!(
+        request
+            .reads()
+            .iter()
+            .any(|read| read.model() == "sale.order" && read.fields().contains(&"name".to_owned()))
+    );
+    let results: Vec<_> = request
+        .ids()
+        .iter()
+        .map(|id| serde_json::json!(format!("helper {id}")))
+        .collect();
+    stage.supply_helper(results).unwrap();
+    assert!(stage.helper_request().unwrap().is_none());
+    let store = Arc::new(stage.finish().unwrap());
+    let context = EvalContext::standard().with_var("docs", store.recordset("sale.order", &[1, 2]));
+    assert_eq!(
+        print(&program, &context, &store).unwrap(),
+        ["helper 1", "helper 2"]
     );
     // A declared dependency that is no field path of the model is refused with the helper.
     let wrong = [ReportHelper::new("sale.order", "_get_name", &["name.x"])];
@@ -874,4 +953,408 @@ fn an_answer_that_does_not_match_its_request_is_refused() {
     assert!(stage.request().is_none());
     let err = stage.supply(Vec::new()).unwrap_err();
     assert_eq!(err.to_string(), "report data: no read is pending");
+}
+
+#[test]
+fn helper_arguments_are_static_and_results_are_complete_scalars() {
+    let helpers = [ReportHelper::new("sale.order", "label", &[])];
+    let context = PlanContext::new("sale.order").with_helpers(&helpers);
+    for args in ["docs.id", "[1]", "*docs", "**{}"] {
+        let arch = format!("<div><p t-out='docs.label({args})'/></div>");
+        let error = plan_error(&arch, &context);
+        assert!(matches!(error, ReportError::Compile { .. }));
+        assert_eq!(
+            error.to_string(),
+            "test.report:1: report helper `sale.order.label` requires static scalar arguments and unique named keywords"
+        );
+    }
+    let program = compile(r#"<div><p t-out="docs.label(-2, suffix='x')"/></div>"#);
+    let plan = program.prefetch_plan(&context, &schema).unwrap();
+    let start = || {
+        let mut stage = DataStage::new(
+            &plan,
+            &docs(&[7]),
+            ReportLimits::default(),
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(stage.request().unwrap().fields(), &["id"]);
+        stage
+            .supply(vec![
+                LoadedRecord::new(7).with_field("id", FieldValue::integer(7)),
+            ])
+            .unwrap();
+        stage
+    };
+    let error = start().finish().unwrap_err();
+    assert!(matches!(error, ReportError::Data { .. }));
+    assert_eq!(
+        error.to_string(),
+        "report data: a report helper answer is still pending"
+    );
+    for (results, message) in [
+        (
+            vec![],
+            "report data: helper sale.order.label returned 0 results for 1 records",
+        ),
+        (
+            vec![serde_json::json!({})],
+            "report data: helper sale.order.label: report data: helper results must be null, boolean, signed integer, finite float or string",
+        ),
+        (
+            vec![serde_json::json!(1), serde_json::json!(2)],
+            "report data: helper sale.order.label returned 2 results for 1 records",
+        ),
+    ] {
+        let error = start().supply_helper(results).unwrap_err();
+        assert!(matches!(error, ReportError::Data { .. }));
+        assert_eq!(error.to_string(), message);
+    }
+    let mut stage = start();
+    let request = stage.helper_request().unwrap().unwrap();
+    assert_eq!(request.args(), &[serde_json::json!(-2)]);
+    assert_eq!(request.kwargs()["suffix"], serde_json::json!("x"));
+    stage
+        .supply_helper(vec![serde_json::json!("result")])
+        .unwrap();
+    let store = Arc::new(stage.finish().unwrap());
+    let context = EvalContext::standard().with_var("docs", store.recordset("sale.order", &[7]));
+    assert_eq!(print(&program, &context, &store).unwrap(), ["result"]);
+}
+
+#[test]
+fn equivalent_arguments_union_paths_and_permission_sets_stay_exact() {
+    let helpers = [
+        ReportHelper::new("res.partner", "label", &["country_id.name"])
+            .with_parameters(&["suffix"]),
+    ];
+    let program = compile(
+        r#"<div><t t-foreach='docs' t-as='o'><p t-out="o.partner_id.label('x')"/></t><p t-out="company.label(suffix='x')"/><p t-out='company.name'/></div>"#,
+    );
+    let bindings = [("company", Some("res.partner"))];
+    let plan = program
+        .prefetch_plan(
+            &PlanContext::new("sale.order")
+                .with_helpers(&helpers)
+                .with_bindings(&bindings),
+            &schema,
+        )
+        .unwrap();
+    let mut stage = DataStage::new(
+        &plan,
+        &[("docs", &[1, 2]), ("company", &[8])],
+        ReportLimits::default(),
+        Limits::default(),
+    )
+    .unwrap();
+    run(&mut stage).unwrap();
+    let request = stage.helper_request().unwrap().unwrap();
+    assert_eq!(request.ids(), &[2, 3, 8]);
+    assert!(request.args().is_empty());
+    assert_eq!(request.kwargs()["suffix"], serde_json::json!("x"));
+    for read in request
+        .reads()
+        .iter()
+        .filter(|read| read.model() == "res.partner")
+    {
+        assert_eq!(read.fields(), &["country_id", "id"]);
+    }
+    let values = request
+        .ids()
+        .iter()
+        .map(|id| serde_json::json!(format!("label {id}")))
+        .collect();
+    stage.supply_helper(values).unwrap();
+    assert!(stage.helper_request().unwrap().is_none());
+    let store = Arc::new(stage.finish().unwrap());
+    let context = EvalContext::standard()
+        .with_var("docs", store.recordset("sale.order", &[1, 2]))
+        .with_var("company", store.recordset("res.partner", &[8]));
+    assert_eq!(
+        print(&program, &context, &store).unwrap(),
+        ["label 2", "label 3", "label 8", "Partner 8"]
+    );
+}
+
+#[test]
+fn helper_limits_missing_receivers_and_uncached_calls_fail_closed() {
+    let helpers = [ReportHelper::new("sale.order", "label", &["name"])];
+    let program = compile("<div><p t-out='docs.label()'/></div>");
+    let plan = program
+        .prefetch_plan(
+            &PlanContext::new("sale.order").with_helpers(&helpers),
+            &schema,
+        )
+        .unwrap();
+    let mut absent = DataStage::new(
+        &plan,
+        &docs(&[40_404]),
+        ReportLimits::default(),
+        Limits::default(),
+    )
+    .unwrap();
+    run(&mut absent).unwrap();
+    assert!(absent.helper_request().unwrap().is_none());
+    assert!(absent.finish().unwrap().is_empty());
+    let mut limited = DataStage::new(
+        &plan,
+        &docs(&[1]),
+        ReportLimits::default().with_evaluation_bytes(3).unwrap(),
+        Limits::default(),
+    )
+    .unwrap();
+    run(&mut limited).unwrap();
+    let error = limited
+        .supply_helper(vec![serde_json::json!("long")])
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ReportError::Limit {
+            name: "evaluation_bytes",
+            maximum: 3
+        }
+    ));
+    assert_eq!(
+        error.to_string(),
+        "report limit evaluation_bytes exceeded or invalid (maximum 3)"
+    );
+    let mut stage = DataStage::new(
+        &plan,
+        &docs(&[1, 2]),
+        ReportLimits::default(),
+        Limits::default(),
+    )
+    .unwrap();
+    run(&mut stage).unwrap();
+    stage
+        .supply_helper(vec![serde_json::json!("one"), serde_json::json!("two")])
+        .unwrap();
+    let store = Arc::new(stage.finish().unwrap());
+    for ids in [&[][..], &[1, 2][..], &[99][..]] {
+        let context = EvalContext::standard().with_var("docs", store.recordset("sale.order", ids));
+        let error = print(&program, &context, &store).unwrap_err();
+        assert!(matches!(error, ReportError::Expression { .. }));
+        let reason = if ids.len() == 1 {
+            "helper sale.order.label has no cached result for these arguments"
+        } else {
+            "Expected singleton for helper sale.order.label"
+        };
+        assert_eq!(
+            error.to_string(),
+            format!("test.report:1: expression `docs.label()`: ValueError: {reason}")
+        );
+    }
+    let unknown = compile("<div><p t-out='docs.label(1)'/></div>");
+    let context = EvalContext::standard().with_var("docs", store.recordset("sale.order", &[1]));
+    let error = print(&unknown, &context, &store).unwrap_err();
+    assert!(matches!(error, ReportError::Expression { .. }));
+    assert_eq!(
+        error.to_string(),
+        "test.report:1: expression `docs.label(1)`: ValueError: helper sale.order.label has no cached result for these arguments"
+    );
+}
+
+#[test]
+fn cached_helper_lookup_charges_expression_work_and_memory() {
+    use erp_expr::{Budget, EvalLimits, ExprError, ExprValue, Kwargs};
+    let helpers = [ReportHelper::new("sale.order", "label", &["name"])];
+    let program = compile("<div><p t-out='docs.label()'/></div>");
+    let plan = program
+        .prefetch_plan(
+            &PlanContext::new("sale.order").with_helpers(&helpers),
+            &schema,
+        )
+        .unwrap();
+    let mut stage = DataStage::new(
+        &plan,
+        &docs(&[1]),
+        ReportLimits::default(),
+        Limits::default(),
+    )
+    .unwrap();
+    run(&mut stage).unwrap();
+    let text = "cached result";
+    stage.supply_helper(vec![serde_json::json!(text)]).unwrap();
+    let store = Arc::new(stage.finish().unwrap());
+    let ExprValue::Object(records) = store.recordset("sale.order", &[1]) else {
+        panic!("recordset object");
+    };
+    let ExprValue::Object(helper) = records
+        .get_attr("label", &mut Budget::new(EvalLimits::default()))
+        .unwrap()
+    else {
+        panic!("bound helper object");
+    };
+    let mut baseline = Budget::new(EvalLimits::default());
+    let value = helper.call(&[], &Kwargs::new(), &mut baseline).unwrap();
+    assert_eq!(value.as_str(), Some(text));
+    assert!(baseline.bytes_used() >= text.len());
+    assert!(baseline.steps_used() > 0);
+    let byte_limit = baseline.bytes_used() - 1;
+    let value_bytes = value.deep_size();
+    let value_limit = value_bytes - 1;
+    for (limits, message) in [
+        (
+            EvalLimits::default().with_max_value_bytes(value_limit),
+            format!(
+                "LimitExceeded: value of {} bytes exceeds the per-value limit of {value_limit} bytes",
+                value_bytes
+            ),
+        ),
+        (
+            EvalLimits::default().with_max_total_bytes(byte_limit),
+            format!("LimitExceeded: evaluation memory budget of {byte_limit} bytes exceeded"),
+        ),
+        (
+            EvalLimits::default().with_max_steps(0),
+            "LimitExceeded: evaluation step limit of 0 exceeded".to_owned(),
+        ),
+    ] {
+        let error = helper
+            .call(&[], &Kwargs::new(), &mut Budget::new(limits))
+            .unwrap_err();
+        assert!(matches!(error, ExprError::LimitExceeded { .. }));
+        assert_eq!(error.to_string(), message);
+    }
+}
+
+#[test]
+fn helper_batches_share_work_and_result_steps_without_recharging_polls() {
+    let helpers = [
+        ReportHelper::new("sale.order", "first", &["name"]),
+        ReportHelper::new("sale.order", "second", &["name"]),
+    ];
+    let program = compile("<div><p t-out='docs.first()'/><p t-out='docs.second()'/></div>");
+    let plan = program
+        .prefetch_plan(
+            &PlanContext::new("sale.order").with_helpers(&helpers),
+            &schema,
+        )
+        .unwrap();
+    for maximum in [6, 7, 8] {
+        let mut stage = DataStage::new(
+            &plan,
+            &docs(&[1]),
+            ReportLimits::default()
+                .with_evaluation_steps(maximum)
+                .unwrap(),
+            Limits::default(),
+        )
+        .unwrap();
+        run(&mut stage).unwrap();
+        for _ in 0..12 {
+            assert_eq!(stage.helper_request().unwrap().unwrap().method(), "first");
+        }
+        let error = stage.supply_helper(vec![]).unwrap_err();
+        assert!(matches!(error, ReportError::Data { .. }));
+        assert_eq!(
+            error.to_string(),
+            "report data: helper sale.order.first returned 0 results for 1 records"
+        );
+        let error = stage
+            .supply_helper(vec![serde_json::json!({})])
+            .unwrap_err();
+        assert!(matches!(error, ReportError::Data { .. }));
+        assert_eq!(
+            error.to_string(),
+            "report data: helper sale.order.first: report data: helper results must be null, boolean, signed integer, finite float or string"
+        );
+        stage.supply_helper(vec![serde_json::json!("one")]).unwrap();
+        let error = if maximum == 6 {
+            stage.helper_request().unwrap_err()
+        } else {
+            for _ in 0..12 {
+                assert_eq!(stage.helper_request().unwrap().unwrap().method(), "second");
+            }
+            if maximum == 8 {
+                stage.supply_helper(vec![serde_json::json!("two")]).unwrap();
+                assert!(stage.helper_request().unwrap().is_none());
+                assert!(stage.helper_request().unwrap().is_none());
+                let store = Arc::new(stage.finish().unwrap());
+                let context =
+                    EvalContext::standard().with_var("docs", store.recordset("sale.order", &[1]));
+                assert_eq!(print(&program, &context, &store).unwrap(), ["one", "two"]);
+                continue;
+            }
+            stage
+                .supply_helper(vec![serde_json::json!("two")])
+                .unwrap_err()
+        };
+        assert!(
+            matches!(error, ReportError::Limit { name: "evaluation_steps", maximum: value } if value == maximum)
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("report limit evaluation_steps exceeded or invalid (maximum {maximum})")
+        );
+    }
+}
+
+#[test]
+fn empty_helper_strings_still_require_retained_value_and_record_key_bytes() {
+    let helpers = [ReportHelper::new("sale.order", "label", &["name"])];
+    let program = compile("<div><p t-out='docs.label()'/></div>");
+    let plan = program
+        .prefetch_plan(
+            &PlanContext::new("sale.order").with_helpers(&helpers),
+            &schema,
+        )
+        .unwrap();
+    let required = erp_expr::ExprValue::str("").deep_size() + std::mem::size_of::<i64>();
+    for maximum in [1, required - 1, required] {
+        let mut stage = DataStage::new(
+            &plan,
+            &docs(&[1]),
+            ReportLimits::default()
+                .with_evaluation_bytes(maximum)
+                .unwrap(),
+            Limits::default(),
+        )
+        .unwrap();
+        run(&mut stage).unwrap();
+        let result = stage.supply_helper(vec![serde_json::json!("")]);
+        if maximum == required {
+            result.unwrap();
+            stage.finish().unwrap();
+        } else {
+            let error = result.unwrap_err();
+            assert!(
+                matches!(error, ReportError::Limit { name: "evaluation_bytes", maximum: value } if value == maximum)
+            );
+            assert_eq!(
+                error.to_string(),
+                format!("report limit evaluation_bytes exceeded or invalid (maximum {maximum})")
+            );
+            assert_eq!(stage.helper_request().unwrap().unwrap().method(), "label");
+        }
+    }
+}
+
+#[test]
+fn empty_receiver_helper_polls_do_not_repeat_finished_work() {
+    let helpers = [
+        ReportHelper::new("sale.order", "first", &["name"]),
+        ReportHelper::new("sale.order", "second", &["name"]),
+    ];
+    let program = compile("<div><p t-out='docs.first()'/><p t-out='docs.second()'/></div>");
+    let plan = program
+        .prefetch_plan(
+            &PlanContext::new("sale.order").with_helpers(&helpers),
+            &schema,
+        )
+        .unwrap();
+    for ids in [&[][..], &[40_404][..]] {
+        let mut stage = DataStage::new(
+            &plan,
+            &docs(ids),
+            ReportLimits::default().with_evaluation_steps(4).unwrap(),
+            Limits::default(),
+        )
+        .unwrap();
+        run(&mut stage).unwrap();
+        for _ in 0..12 {
+            assert!(stage.helper_request().unwrap().is_none());
+        }
+        assert!(stage.finish().unwrap().is_empty());
+    }
 }

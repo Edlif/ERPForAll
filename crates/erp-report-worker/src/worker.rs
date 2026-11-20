@@ -181,7 +181,12 @@ pub fn run<E: LayoutEngine>(
                     Ok(result) => {
                         let head = Response::Rendered {
                             pages: result.page_count() as u64,
-                            warnings: clip_warnings(result.warnings()),
+                            warnings: clip_warnings(result.engine_warnings()),
+                            image_failures: result
+                                .image_failures()
+                                .iter()
+                                .map(|failure| (failure.node() as u64, failure.reason().to_owned()))
+                                .collect(),
                             renderer: result.identity().renderer().to_owned(),
                         };
                         reply(&mut output, &head)

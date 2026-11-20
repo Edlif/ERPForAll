@@ -358,6 +358,8 @@ async fn field_denial_precedes_cascade_and_company_diagnostics() {
         &erp_addon_barcodes::ADDON,
         &erp_addon_barcodes_gs1_nomenclature::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_web::ADDON,
+        &erp_addon_reporting::ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
     .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
@@ -435,6 +437,8 @@ async fn child_field_denial_rolls_back_a_direct_route_write() {
         &erp_addon_barcodes::ADDON,
         &erp_addon_barcodes_gs1_nomenclature::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_web::ADDON,
+        &erp_addon_reporting::ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
     .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
@@ -487,6 +491,8 @@ async fn inaccessible_company_labels_never_become_validation_diagnostics() {
         &erp_addon_barcodes::ADDON,
         &erp_addon_barcodes_gs1_nomenclature::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_web::ADDON,
+        &erp_addon_reporting::ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
     .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))

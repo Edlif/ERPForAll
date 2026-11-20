@@ -386,16 +386,24 @@ impl Worker {
                 Response::Rendered {
                     pages,
                     warnings,
+                    image_failures,
                     renderer,
                 } => {
                     let pages = usize::try_from(pages).map_err(|_| other_reply())?;
+                    let image_failures =
+                        crate::wire::image_failures_from_wire(image_failures, settings.limits())
+                            .map_err(|_| other_reply())?;
                     let bytes = worker.receive(pdf_bytes)?;
-                    Ok(Reply::Rendered(RenderResult::new(
-                        RenderIdentity::new(id, renderer),
-                        bytes,
-                        pages,
-                        warnings,
-                    )))
+                    Ok(Reply::Rendered(
+                        RenderResult::new(
+                            RenderIdentity::new(id, renderer),
+                            bytes,
+                            pages,
+                            warnings,
+                        )
+                        .with_image_failures(image_failures, settings.limits())
+                        .map_err(|_| other_reply())?,
+                    ))
                 }
                 Response::Failed(failure) => Ok(Reply::Failed(failure)),
                 Response::Ready { .. } | Response::Diag(_) => Err(other_reply()),
@@ -894,7 +902,9 @@ impl LayoutEngine for WorkerPool {
             let fault = match worker.render(id, &frame, settings) {
                 Ok(Reply::Rendered(result)) => {
                     shared.release(worker);
-                    return Ok(result.with_retried(retried));
+                    return result
+                        .with_retried(retried)
+                        .with_document_warnings(document);
                 }
                 Ok(Reply::Failed(failure)) => {
                     shared.release(worker);

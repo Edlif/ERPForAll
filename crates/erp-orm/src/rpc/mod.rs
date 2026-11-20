@@ -575,6 +575,7 @@ impl fmt::Debug for Exposed {
 /// A method a `<function>` of a data file may call.
 #[derive(Clone)]
 pub struct DataCallable {
+    declared_effect: Option<Effect>,
     model_name: &'static str,
     method: &'static str,
     receiver: Receiver,
@@ -585,6 +586,11 @@ pub struct DataCallable {
 }
 
 impl DataCallable {
+    /// Maximum declared RPC effect, retained even when the method is hidden over RPC.
+    pub fn declared_effect(&self) -> Option<Effect> {
+        self.declared_effect
+    }
+
     /// Records or model method.
     pub fn receiver(&self) -> Receiver {
         self.receiver
@@ -689,6 +695,7 @@ pub struct ExposureTable {
     data: FxHashMap<ModelId, FxHashMap<&'static str, DataCallable>>,
     /// The assistant status of every exposed chain that some installed offer names.
     offers: OfferTable,
+    report_helpers: Vec<crate::report_helpers::ReportHelper>,
 }
 
 /// The assistant status of each (model, method) an installed offer names.
@@ -816,11 +823,14 @@ impl ExposureTable {
             }
         }
         let offers = resolve_offers(registry, dispatch, &entries, &installed)?;
-        Ok(Self {
+        let mut table = Self {
             entries,
             data,
             offers,
-        })
+            report_helpers: Vec::new(),
+        };
+        table.report_helpers = crate::report_helpers::resolve(registry, &table)?;
+        Ok(table)
     }
 
     /// Whether the assistant may propose `model.method`, and why not (R4): exposed, not
@@ -864,6 +874,11 @@ impl ExposureTable {
     /// `#[rpc(hide)]`.
     pub fn data_callable(&self, model: ModelId, method: &str) -> Option<&DataCallable> {
         self.data.get(&model)?.get(method)
+    }
+
+    /// Explicit report helpers of the installed registry; data-callable alone is insufficient.
+    pub fn report_helpers(&self) -> &[crate::report_helpers::ReportHelper] {
+        &self.report_helpers
     }
 
     /// Every (method, exposure) of `model`, sorted by method name (for the parity test and the
@@ -1126,6 +1141,13 @@ fn resolve_data_callable(
         }
     }
     Ok(found.map(|(receiver, params, bind, at)| DataCallable {
+        declared_effect: chain
+            .iter()
+            .filter_map(|imp| match imp.decl {
+                RpcDecl::Expose { effect, .. } => Some(effect),
+                _ => None,
+            })
+            .max(),
         model_name: model,
         method,
         receiver,

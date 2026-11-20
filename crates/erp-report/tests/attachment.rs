@@ -678,3 +678,30 @@ fn differing_reassignment_is_unresolved() {
         "report sample.action: sample.report:1 cannot resolve `x` for attachment field validation"
     );
 }
+
+#[test]
+fn registered_model_helper_checks_relative_hidden_dependencies() {
+    let helpers = [erp_report::ReportHelper::new(
+        "sale.line",
+        "label",
+        &["cost"],
+    )];
+    let arch = each_doc("<t t-foreach='doc.lines' t-as='line'><p t-out='line.label()'/></t>");
+    let sources = [TemplateSource::new("sample.report", &arch)];
+    let check = |ack| {
+        check_attachment(
+            &policy(true, ack).with_report_helpers(&helpers),
+            &sources,
+            "sample.report",
+            &fields,
+            ReportLimits::default(),
+        )
+    };
+    let error = check(false).unwrap_err();
+    assert!(matches!(error, ReportError::Restricted { .. }));
+    assert_eq!(
+        error.to_string(),
+        "report sample.action: sample.report:1 prints restricted field sale.line.cost; set allow_attachment_group_fields explicitly to acknowledge the first printer's field view"
+    );
+    assert_eq!(check(true).unwrap()[0].field(), "sale.line.cost");
+}

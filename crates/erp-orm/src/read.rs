@@ -652,6 +652,7 @@ impl Transaction {
         fid: FieldId,
         may_load: bool,
     ) -> Result<()> {
+        self.check_report_field(records, fid)?;
         self.admit_records(records).await?;
         if !records.env().su() {
             // a read served from the cache still decides on the field and record checks, so bring
@@ -1410,5 +1411,115 @@ mod slots_tests {
             .unwrap_err();
         assert_eq!(err.kind(), erp_fields::ErrorKind::Programming);
         assert_eq!(err.message(), "t.m(7,) has no slot");
+    }
+}
+
+/// One persisted binary value admitted by [`Records::read_binary_bounded`].
+/// Missing records are omitted; an unset value has size zero and no payload.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct BoundedBinary {
+    id: i64,
+    size: usize,
+    bytes: Option<Arc<[u8]>>,
+}
+impl BoundedBinary {
+    /// Persisted record ID.
+    pub fn id(&self) -> i64 {
+        self.id
+    }
+    /// Exact stored byte count, including values excluded by the admission bounds.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+    /// Payload, absent for unset or budget-excluded values. No rejected body crosses from PostgreSQL.
+    pub fn bytes(&self) -> Option<&Arc<[u8]>> {
+        self.bytes.as_ref()
+    }
+}
+impl Records {
+    /// Read a direct stored binary column with byte admission in the same SQL snapshot as the data.
+    /// Both limits are byte counts, not unbounded sentinels. An individual value above `per_value`
+    /// has no payload; when the sum of individually admissible values exceeds `total`, no payload
+    /// is returned. Sizes let the caller distinguish both cases from an unset value. No cache is filled.
+    ///
+    /// # Errors
+    /// Ordinary model, record and field access errors propagate. Zero/overflowing budgets, new
+    /// records and computed, related, inherited, generated, translated or company-dependent fields
+    /// are refused with Validation errors; they cannot use a direct bounded column projection.
+    pub async fn read_binary_bounded(
+        &self,
+        tx: &mut Transaction,
+        name: &str,
+        per_value: usize,
+        total: usize,
+    ) -> Result<Vec<BoundedBinary>> {
+        let cap = i64::try_from(per_value)
+            .map_err(|_| Error::validation("binary per-value byte limit overflows int8"))?;
+        let total = i64::try_from(total)
+            .map_err(|_| Error::validation("binary total byte limit overflows int8"))?;
+        if cap == 0 || total == 0 {
+            return Err(Error::validation("binary byte limits must be positive"));
+        }
+        let registry = Arc::clone(self.env().registry());
+        let spec = registry.model_by_id(self.model_id());
+        let field = field_of(spec, name)?;
+        // Check field/model/record policy without loading contents, even for an unsupported kind.
+        tx.check_report_field(self, field.id)?;
+        tx.admit_records(self).await?;
+        if !self.env().su() {
+            tx.prepare_access(self.env()).await?;
+        }
+        tx.check_model(self.env(), self.model_id(), Operation::Read)?;
+        tx.check_field(self.env(), self.model_id(), field.id, FieldOp::Read)?;
+        tx.field_record_read_checks(self, field.id, false).await?;
+        if !sized_by_column(spec, field)
+            || field.compute.is_some()
+            || field.related.is_some()
+            || field.is_generated()
+            || field.translate
+            || field.company_dependent
+            || field.company_default_for.is_some()
+            || self.rec_ids().iter().any(|id| id.is_new())
+        {
+            return Err(Error::validation(
+                "bounded binary reads require persisted records and a direct stored binary field",
+            ));
+        }
+        tx.flush_fields(self.model_id(), &[field.id]).await?;
+        let ids: Vec<i64> = self.rec_ids().iter().map(|id| id.get()).collect();
+        let column = erp_sql::quote(field.name);
+        // The window computes only lengths. CASE prevents excess bytea values entering result rows.
+        // One statement avoids a concurrent size-read/content-read race; no eager payload CTE.
+        let sql = format!(
+            "SELECT id, octet_length({column}), CASE WHEN octet_length({column}) <= $2::bigint \
+            AND sum(CASE WHEN octet_length({column}) <= $2::bigint THEN octet_length({column})::bigint ELSE 0 END) OVER () <= $3::bigint \
+            THEN {column} ELSE NULL END FROM {} WHERE id = ANY($1) ORDER BY id",
+            erp_sql::quote(&spec.table)
+        );
+        let rows = tx.query(&sql, &[&ids, &cap, &total]).await?;
+        rows.iter()
+            .map(|row| {
+                let id: i64 = row
+                    .try_get(0)
+                    .map_err(|e| Error::db(format!("bounded binary id: {e}")))?;
+                let size: Option<i32> = row
+                    .try_get(1)
+                    .map_err(|e| Error::db(format!("bounded binary size: {e}")))?;
+                let size = usize::try_from(size.unwrap_or(0))
+                    .map_err(|_| Error::internal("negative binary byte length"))?;
+                let bytes: Option<Vec<u8>> = row
+                    .try_get(2)
+                    .map_err(|e| Error::db(format!("bounded binary payload: {e}")))?;
+                if bytes.as_ref().is_some_and(|b| b.len() != size) {
+                    return Err(Error::internal("bounded binary payload size changed"));
+                }
+                Ok(BoundedBinary {
+                    id,
+                    size,
+                    bytes: bytes.map(Arc::from),
+                })
+            })
+            .collect()
     }
 }

@@ -266,7 +266,8 @@ async fn ensure(
     let result = async {
         require_company_access(&mut tx, &[company_id]).await?;
         let (root, tree) = company_tree(&mut tx, company_id).await?;
-        let periods = periods_in_horizon(&calendar, date_from, date_to)?;
+        let today = admitted_business_date(&mut tx, company_id).await?;
+        let periods = periods_in_horizon(&calendar, today, date_from, date_to)?;
         insert(&mut tx, root, &tree, &periods).await
     }
     .await;
@@ -321,9 +322,10 @@ pub(crate) async fn ensure_for_rows(
                 read
             }
         };
+        let today = admitted_business_date(tx, company).await?;
         let mut periods = std::collections::BTreeMap::new();
         for day in days {
-            for period in periods_in_horizon(&calendar, day, day)? {
+            for period in periods_in_horizon(&calendar, today, day, day)? {
                 periods.insert(period.date_from, period);
             }
         }
@@ -347,12 +349,31 @@ fn keep_first(error: Error, rollback: Result<()>) -> Error {
     }
 }
 
+/// The fiscal service already admitted this company with its company-tree policy. Its
+/// READ COMMITTED transaction accepts raw statements only. Sample the zone and transaction
+/// instant together, and use the same business calendar conversion as the stock overview.
+async fn admitted_business_date(tx: &mut Transaction, company: i64) -> Result<Date> {
+    let rows = tx
+        .query(
+            "SELECT tz, transaction_timestamp() AT TIME ZONE 'UTC' FROM res_company WHERE id = $1",
+            &[&company],
+        )
+        .await?;
+    let row = rows
+        .first()
+        .ok_or_else(|| Error::missing(format!("Company {company} is unavailable.")))?;
+    let zone: String = row.try_get(0).map_err(db)?;
+    let instant: DateTime = row.try_get(1).map_err(db)?;
+    Ok(erp_addon_base::company_calendar::business_day_at(instant, &zone)?.date)
+}
+
 fn periods_in_horizon(
     calendar: &FiscalCalendar,
+    today: Date,
     date_from: Date,
     date_to: Date,
 ) -> Result<Vec<PeriodRange>> {
-    let horizon = add_months(Date::today(), calendar.horizon_months())?;
+    let horizon = add_months(today, calendar.horizon_months())?;
     if date_to > horizon {
         return Err(Error::validation(format!(
             "{date_to} is later than {horizon}, the furthest date fiscal periods are created for \

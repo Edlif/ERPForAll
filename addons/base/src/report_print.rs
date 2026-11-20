@@ -19,9 +19,9 @@ use std::sync::Arc;
 use erp_sdk::auth::user_context;
 use erp_sdk::prelude::*;
 use erp_sdk::report::{
-    DataError, DocTree, DocumentOptions, EvalContext, EvalOptions, LangFormat, Language, Limits,
-    Node, PageSetup, PictureQuality, PlanContext, ReportError, ReportLimits, ReportProgram,
-    TemplateSource, field_info, load_records,
+    DataError, DocTree, DocumentOptions, EvalContext, EvalOptions, HtmlImagePolicy, LangFormat,
+    Language, Limits, LoadOptions, Node, PageSetup, PictureQuality, PlanContext, ReportError,
+    ReportLimits, ReportProgram, TemplateSource, field_info, load_records_with_options,
 };
 use erp_sdk::{FieldType, Operation, access::GroupId};
 
@@ -48,6 +48,7 @@ pub struct PrintReport {
     /// The key of its template.
     pub report_name: String,
     print_report_name: Option<String>,
+    html_image_policy: HtmlImagePolicy,
 }
 
 fn report_error(report: &PrintReport, error: &ReportError) -> Error {
@@ -94,7 +95,8 @@ pub async fn find(tx: &mut Transaction, reference: &str) -> Result<PrintReport> 
         .query(
             "SELECT r.id, r.name, r.model, r.report_type, r.report_name, r.print_report_name, \
                     ARRAY(SELECT g.gid::int8 FROM res_groups_report_rel g WHERE g.uid = r.id \
-                          ORDER BY 1) \
+                          ORDER BY 1), \
+                    r.attachment, r.allow_attachment_group_fields \
                FROM ir_act_report_xml r \
               WHERE r.id = $1 OR r.report_name = $2 \
                  OR r.id = (SELECT d.res_id FROM ir_model_data d \
@@ -118,6 +120,18 @@ pub async fn find(tx: &mut Transaction, reference: &str) -> Result<PrintReport> 
             .unwrap_or_default())
     };
     let report = PrintReport {
+        html_image_policy: {
+            let attachment: Option<String> = row.try_get(7).map_err(|_| bad("attachment"))?;
+            let acknowledged: Option<bool> = row
+                .try_get(8)
+                .map_err(|_| bad("allow_attachment_group_fields"))?;
+            // Absent acknowledgement is false, as the declared boolean field default.
+            if attachment.is_some_and(|s| !s.trim().is_empty()) && acknowledged != Some(true) {
+                HtmlImagePolicy::UnrestrictedFields
+            } else {
+                HtmlImagePolicy::CallerRights
+            }
+        },
         id: row.try_get(0).map_err(|_| bad("id"))?,
         name: text(1, "name")?,
         model: text(2, "model")?,
@@ -511,6 +525,7 @@ async fn locale(tx: &mut Transaction, report: &PrintReport) -> Result<Locale> {
     // so the language carries none; load them here when a store of template terms exists.
     let language = Language::new(code).map_err(|e| report_error(report, &e))?;
     let options = EvalOptions::default()
+        .with_code_grid(crate::report_settings::barcode_grid(tx).await?)
         .with_formats(formats)
         .with_utc_offsets(move |unix| {
             jiff::Timestamp::from_second(unix)
@@ -584,21 +599,24 @@ async fn load(
             .iter()
             .map(|name| (*name, Some(report.model.as_str()))),
     );
+    let helpers = erp_sdk::report::report_helpers(tx);
     let plan = program
         .prefetch_plan(
-            &PlanContext::new(&report.model).with_bindings(&bindings),
+            &PlanContext::new(&report.model)
+                .with_bindings(&bindings)
+                .with_helpers(&helpers),
             &|model: &str, field: &str| field_info(&registry, model, field),
         )
         .map_err(|e| report_error(report, &e))?;
     let mut roots: Vec<(&str, &[i64])> = vec![("docs", ids), ("company", companies)];
     roots.extend(extra.iter().map(|name| (*name, ids)));
-    let store = load_records(
+    let store = load_records_with_options(
         tx,
         &env,
         &plan,
         &roots,
-        ReportLimits::default(),
-        Limits::default(),
+        LoadOptions::new(ReportLimits::default(), Limits::default())
+            .with_html_image_policy(report.html_image_policy),
     )
     .await
     .map_err(|e| data_error(report, e))?;

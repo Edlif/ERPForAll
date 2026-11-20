@@ -308,3 +308,15 @@ fn data_callable_receivers_must_agree_with_the_chain() {
             .is_some()
     );
 }
+
+#[test]
+fn report_helper_effect_check_does_not_lose_a_hidden_write_declaration() {
+    let callable = resolve_data_callable("x.model", "act", &[&BASE_WRITE, &EXT_HIDE])
+        .unwrap()
+        .unwrap();
+    assert_eq!(callable.declared_effect(), Some(Effect::Write));
+    let callable = resolve_data_callable("x.model", "act", &[&BASE_DATA])
+        .unwrap()
+        .unwrap();
+    assert_eq!(callable.declared_effect(), None);
+}

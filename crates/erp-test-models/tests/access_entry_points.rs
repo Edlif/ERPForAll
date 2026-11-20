@@ -159,7 +159,20 @@ const ENTRY_POINTS: &[(&str, Class)] = &[
     ("Records::cells", Checked(Refused(Read))),
     ("Records::value", Checked(Refused(Read))),
     ("Records::values", Checked(Refused(Read))),
+    (
+        "SqlUninstallGuard::evaluate",
+        Unchecked(
+            "requires a fully elevated System transaction and evaluates bounded counts on the guard's declared tables during addon removal",
+        ),
+    ),
+    (
+        "Transaction::report_helper_scope",
+        Unchecked(
+            "verifies a registered model and method and narrows permitted reads for its helper scope; reads no record when opening the scope",
+        ),
+    ),
     ("Records::read", Checked(Refused(Read))),
+    ("Records::read_binary_bounded", Checked(Refused(Read))),
     ("Records::read_with", Checked(Refused(Read))),
     ("Records::read_rows", Checked(Refused(Read))),
     ("Records::fetch", Checked(Refused(Read))),
@@ -1043,6 +1056,16 @@ const AUDIT_ELEVATION: &str = "returns the given environment in superuser mode, 
 /// Every `sudo(true)` call site outside tests (`<crate>/<file>::<function>`, how many): why it may
 /// leave the engine. replaces them with scoped elevation blocks where it can.
 const SUDO_SITES: &[(&str, usize, &str)] = &[
+    (
+        "base/report_settings.rs::barcode_grid",
+        1,
+        "reads the one declared global base.report_barcode_dpi setting for the renderer and returns the validated module grid",
+    ),
+    (
+        "stock_account/report_value.rs::value",
+        1,
+        "only stock managers read published cost values for company, product and lot keys of quants aggregated as the caller; scope and row limit are applied before the value read; only summed amounts leave the provider",
+    ),
     (
         "account/fiscal/settings.rs::read",
         1,
@@ -2442,6 +2465,10 @@ async fn probe(name: &str, tx: &mut Transaction, f: &Fixture) -> Option<erp_fiel
             "Records::value" => hidden.value(tx, "name").await.map(|_| Seen::Done),
             "Records::values" => all.values(tx, "name").await.map(|_| Seen::Done),
             "Records::read" => all.read(tx, &named).await.map(|_| Seen::Done),
+            "Records::read_binary_bounded" => hidden
+                .read_binary_bounded(tx, "document", 32, 64)
+                .await
+                .map(|_| Seen::Done),
             "Records::read_with" => all
                 .read_with(tx, &named, Load::Raw)
                 .await

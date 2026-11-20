@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The calls behind the RPC methods of `reporting.report` (design §9), each in the caller's read
 //! transaction: resolve the options, ask the provider for lines, unfold what the options ask for
-//! (one page per line), add the totals below unfolded lines, and bound the answer.
+//! (including their saved pages), add the totals below unfolded lines, and bound the answer.
 use erp_sdk::prelude::*;
 use erp_sdk::serde_json::{Value as Json, json};
 
@@ -90,11 +90,50 @@ async fn unfold(
                 offset: 0,
                 limit: p.def.load_more_limit,
             };
-            let children = p
+            let mut children = p
                 .provider
                 .expand(cx, &p.def, &p.options, &line.id, page)
                 .await?
                 .lines;
+            let room = limit - lines.len();
+            let extra = p
+                .options
+                .loaded_pages
+                .get(&line.id.to_string())
+                .copied()
+                .unwrap_or(0);
+            let mut offset = 0;
+            for _ in 0..extra {
+                if children.len() > room {
+                    return Err(too_many());
+                }
+                let Some(marker) = children.last().filter(|l| l.kind == LineKind::More) else {
+                    break;
+                };
+                let next = marker
+                    .next_offset
+                    .filter(|next| *next > offset && marker.id == line.id.child(Segment::more()))
+                    .ok_or_else(|| {
+                        Error::internal("reporting: invalid provider page continuation")
+                    })?;
+                children.pop();
+                let page = ExpandPage {
+                    offset: next,
+                    limit: p.def.load_more_limit,
+                };
+                let more = p
+                    .provider
+                    .expand(cx, &p.def, &p.options, &line.id, page)
+                    .await?;
+                if more.lines.len() > room - children.len() {
+                    return Err(too_many());
+                }
+                children.extend(more.lines);
+                offset = next;
+            }
+            if children.len() > room {
+                return Err(too_many());
+            }
             lines[i].unfolded = true;
             lines.splice(i + 1..i + 1, children);
         }

@@ -21,11 +21,15 @@ pub const LINKED: &[&str] = &[
     "purchase",
     "purchase_mail",
     "barcodes_gs1_nomenclature",
+    "reporting",
+    "account_reporting",
     "stock",
+    "stock_account",
     "stock_mail",
+    "purchase_stock",
     "sales_team",
     "sale",
-    "reporting",
+    "ai_base",
 ];
 
 /// The reason for an addon that is only its manifest and its dependency declaration: offering it
@@ -33,19 +37,12 @@ pub const LINKED: &[&str] = &[
 pub const DECLARED_ONLY: &str = "declared, no behaviour yet (manifest and dependency declaration \
      only, no model, no data); not linked into this binary until it ships behaviour";
 
-/// The reason for an addon whose storage models exist and nothing else does (no access rows, no
-/// data, no method a user can call): installing it would create tables nobody can use.
-pub const STORAGE_ONLY: &str = "declared, no behaviour yet (storage models only: no access rows, \
-     no data, no operation); not linked into this binary until it ships behaviour";
-
 /// The addons of `addons/` with a Rust crate that the `erp` binary does not link, with the reason
 /// the addon catalogue logs for each. Every crate under `addons/` is in [`LINKED`] or here.
 pub const NOT_LINKED: &[(&str, &str)] = &[
     ("delivery", DECLARED_ONLY),
     ("product_expiry", DECLARED_ONLY),
-    ("purchase_stock", DECLARED_ONLY),
     ("sale_stock", DECLARED_ONLY),
-    ("stock_account", STORAGE_ONLY),
     ("stock_delivery", DECLARED_ONLY),
     ("stock_dropshipping", DECLARED_ONLY),
     ("stock_landed_costs", DECLARED_ONLY),

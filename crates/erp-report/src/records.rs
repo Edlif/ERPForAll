@@ -58,7 +58,7 @@ impl FieldValue {
     pub fn text(value: &str) -> Self {
         Self::string(Kind::Text, value)
     }
-    /// A rich-text field; printing it is.
+    /// Rich text, converted through the bounded user-content mapping at evaluation.
     pub fn html(value: &str) -> Self {
         Self::string(Kind::Html, value)
     }
@@ -156,8 +156,90 @@ pub(crate) struct Record {
 #[derive(Debug, Default)]
 pub struct RecordStore {
     records: BTreeMap<(String, i64), Record>,
+    pub(crate) html_images: crate::html_images::HtmlImages,
+    pub(crate) helpers: Vec<HelperResults>,
     /// The bytes of every set binary field, in the order the records were added.
     images: Vec<Arc<[u8]>>,
+    html: Vec<(Arc<dyn ExprObject>, Arc<str>, crate::HtmlSource)>,
+}
+#[derive(Debug)]
+pub(crate) struct HelperResults {
+    pub(crate) invocation: crate::helper::Invocation,
+    pub(crate) values: BTreeMap<i64, ExprValue>,
+}
+#[derive(Debug)]
+struct BoundHelper {
+    store: Arc<RecordStore>,
+    model: String,
+    method: String,
+    ids: Vec<i64>,
+}
+impl ExprObject for BoundHelper {
+    fn type_name(&self) -> &str {
+        "report.helper"
+    }
+    fn repr(&self) -> String {
+        format!("<report helper {}.{}>", self.model, self.method)
+    }
+    fn call(
+        &self,
+        args: &[ExprValue],
+        kwargs: &erp_expr::Kwargs,
+        budget: &mut Budget,
+    ) -> ExprResult<ExprValue> {
+        let [id] = self.ids.as_slice() else {
+            return Err(ExprError::value_error(format!(
+                "Expected singleton for helper {}.{}",
+                self.model, self.method
+            )));
+        };
+        let invalid = || {
+            ExprError::value_error(format!(
+                "helper {}.{} has no cached result for these arguments",
+                self.model, self.method
+            ))
+        };
+        let mut argument_bytes = 0usize;
+        for value in args.iter().chain(kwargs.values()) {
+            budget.check_value(value)?;
+            argument_bytes = argument_bytes.saturating_add(value.deep_size());
+        }
+        for name in kwargs.keys() {
+            argument_bytes = argument_bytes.saturating_add(name.len());
+        }
+        budget.charge(argument_bytes)?;
+        let args = args
+            .iter()
+            .map(crate::helper::json)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(invalid)?;
+        let kwargs = kwargs
+            .iter()
+            .map(|(k, v)| Some((k.clone(), crate::helper::json(v)?)))
+            .collect::<Option<BTreeMap<_, _>>>()
+            .ok_or_else(invalid)?;
+        for result in &self.store.helpers {
+            budget.steps(1)?;
+            let invocation = &result.invocation;
+            if invocation.model != self.model || invocation.method != self.method {
+                continue;
+            }
+            budget.charge(argument_bytes)?;
+            let (mut args, mut kwargs) = (args.clone(), kwargs.clone());
+            if let Some(parameters) = &invocation.parameters {
+                crate::helper::normalize(&mut args, &mut kwargs, parameters).ok_or_else(invalid)?;
+            }
+            if invocation.args == args && invocation.kwargs == kwargs {
+                let value = result.values.get(id).ok_or_else(invalid)?;
+                budget.check_value(value)?;
+                if let ExprValue::Str(text) = value {
+                    budget.charge(text.len())?;
+                }
+                return Ok(value.clone());
+            }
+        }
+        Err(invalid())
+    }
 }
 /// The type name of the value a set binary field has in an expression.
 pub(crate) const IMAGE: &str = "report.image";
@@ -180,7 +262,35 @@ impl ExprObject for ImageValue {
         Ok(i64::try_from(self.index).unwrap_or(-1))
     }
 }
+/// A store-issued opaque markup handle. Its text is not an expression capability.
+#[derive(Debug)]
+struct HtmlValue {
+    index: usize,
+    text: Arc<str>,
+}
+impl ExprObject for HtmlValue {
+    fn type_name(&self) -> &str {
+        "report.html"
+    }
+    fn repr(&self) -> String {
+        self.text.to_string()
+    }
+    fn as_int(&self) -> ExprResult<i64> {
+        i64::try_from(self.index).map_err(|_| ExprError::value_error("HTML handle overflow"))
+    }
+}
 impl RecordStore {
+    pub(crate) fn html(&self, value: &ExprValue) -> Option<(Arc<str>, crate::HtmlSource)> {
+        let ExprValue::Object(object) = value else {
+            return None;
+        };
+        if object.type_name() != "report.html" {
+            return None;
+        }
+        let index = usize::try_from(object.as_int().ok()?).ok()?;
+        let (issued, text, source) = self.html.get(index)?;
+        Arc::ptr_eq(object, issued).then(|| (text.clone(), source.clone()))
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -210,7 +320,23 @@ impl RecordStore {
             return Err(invalid("record was added to the store twice"));
         }
         let mut fields = fields;
-        for field in fields.values_mut() {
+        for (name, field) in &mut fields {
+            if matches!(field.kind, Kind::Html)
+                && let ExprValue::Str(text) = &field.value
+            {
+                let text: Arc<str> = text.as_str().into();
+                let object: Arc<dyn ExprObject> = Arc::new(HtmlValue {
+                    index: self.html.len(),
+                    text: text.clone(),
+                });
+                let source = crate::HtmlSource {
+                    record: display_name
+                        .as_ref()
+                        .map(|label| (model.into(), id, label.clone(), name.clone())),
+                };
+                self.html.push((object.clone(), text, source));
+                field.value = ExprValue::Object(object);
+            }
             if let Kind::Binary(bytes) = &field.kind
                 && !bytes.is_empty()
             {
@@ -344,6 +470,19 @@ impl ExprObject for Recordset {
             .ok_or_else(|| ExprError::index_error("recordset index out of range"))
     }
     fn get_attr(&self, name: &str, _budget: &mut Budget) -> ExprResult<ExprValue> {
+        if self
+            .store
+            .helpers
+            .iter()
+            .any(|r| r.invocation.model == self.model && r.invocation.method == name)
+        {
+            return Ok(ExprValue::Object(Arc::new(BoundHelper {
+                store: self.store.clone(),
+                model: self.model.clone(),
+                method: name.into(),
+                ids: self.ids.clone(),
+            })));
+        }
         if name == "ids" {
             return Ok(ExprValue::list(
                 self.ids.iter().map(|id| ExprValue::Int(*id)).collect(),

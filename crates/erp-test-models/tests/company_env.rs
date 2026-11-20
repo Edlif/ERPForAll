@@ -520,7 +520,7 @@ async fn seed(h: &Harness) -> Seeded {
         .unwrap();
     let mut make = async |name: &str, sequence: i32, active: bool| -> i64 {
         tx.query(
-            "INSERT INTO res_company (name, sequence, active, currency_id) VALUES ($1, $2, $3, $4) \
+            "INSERT INTO res_company (tz, name, sequence, active, currency_id) VALUES ('UTC', $1, $2, $3, $4) \
              RETURNING id::int8",
             &[&name, &sequence, &active, &currency],
         )

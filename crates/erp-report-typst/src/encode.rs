@@ -59,6 +59,14 @@ fn styled(dict: &mut Dict, style: &Style, scale: f64) -> Result<(), ReportError>
     dict.insert("bold".into(), Value::Bool(style.bold()));
     dict.insert("italic".into(), Value::Bool(style.italic()));
     dict.insert("underline".into(), Value::Bool(style.underline()));
+    let rich = style.rich();
+    dict.insert("strike".into(), Value::Bool(rich.strike()));
+    dict.insert("baseline".into(), Value::Int(i64::from(rich.baseline())));
+    dict.insert("pre".into(), Value::Bool(rich.preformatted()));
+    dict.insert("rtl".into(), rich.rtl().map_or(Value::None, Value::Bool));
+    dict.insert("tracking".into(), Value::Float(rich.tracking() * scale));
+    dict.insert("font".into(), string(rich.font()));
+    dict.insert("link".into(), string(rich.link()));
     dict.insert(
         "color".into(),
         array(style.color().into_iter().map(|v| Value::Int(i64::from(v)))),
@@ -346,11 +354,16 @@ fn shares(longest: &[usize], numbers: &[bool], body: f64) -> (Vec<f64>, bool) {
     (out, false)
 }
 /// Typed renderer input and the warnings of nodes printed differently from what they ask for.
-/// Raster images are decoded here, before layout, so a corrupt image is an `Image` error and not a
-/// layout diagnostic; the decoder call is memoized, so layout reuses this decode.
-pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String>), ReportError> {
+/// Raster images are decoded here, before layout. Corrupt bodies become structured image
+/// failures and placeholders; the decoder call is memoized, so layout reuses this decode.
+pub(crate) fn encode(
+    doc: &DocTree,
+    limits: &Limits,
+) -> Result<(Dict, Vec<String>, Vec<erp_report::ImageFailure>), ReportError> {
     let mut nodes = Vec::with_capacity(doc.nodes().len());
     let mut warnings = Vec::new();
+    let mut image_failures = Vec::new();
+    let mut image_failure_bytes = 0usize;
     let mut pictures = Pictures::default();
     // Table column shares, and the font scale every node inherits from a compact table above it.
     // Parents come after their children in the arena, so a reverse walk reaches a table first.
@@ -367,6 +380,7 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
     let mut width = vec![page.width() - left - right; count];
     let limit = (page.height() - top - bottom) * TALL_SHARE;
     let mut tall = vec![false; count];
+    let mut preformatted = vec![false; count];
     for (index, node) in doc.nodes().iter().enumerate().rev() {
         let table = match node {
             Node::Table {
@@ -388,7 +402,11 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
             Node::Block { style, .. } => (outer - 2.0 * style.padding()).max(0.0),
             _ => outer,
         };
+        let pre = preformatted[index]
+            || matches!(node,
+            Node::Block { style, .. } | Node::Inline { style, .. } if style.rich().preformatted());
         for child in node.children() {
+            preformatted[child.index()] |= pre;
             if let Some(s) = scale.get_mut(child.index()) {
                 *s = f64::min(*s, own);
             }
@@ -487,6 +505,7 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                 "flow"
             }
             Node::Text(text) => {
+                d.insert("pre".into(), Value::Bool(preformatted[index]));
                 d.insert("text".into(), string(text));
                 let size = if scale[index] < 1.0 {
                     Value::Float(inherited[index] * scale[index])
@@ -628,9 +647,18 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                 let (bytes, format, landscape) = match ready {
                     Ok(ready) => ready,
                     Err(reason) => {
-                        warnings.push(format!(
-                            "image node {index}: {reason}; an empty box is printed"
-                        ));
+                        image_failure_bytes = image_failure_bytes
+                            .checked_add(reason.len())
+                            .and_then(|bytes| {
+                                bytes.checked_add(std::mem::size_of::<erp_report::ImageFailure>())
+                            })
+                            .ok_or(ReportError::DocumentLimit {
+                                kind: erp_report::LimitKind::Bytes,
+                                actual: usize::MAX,
+                                max: limits.get(erp_report::LimitKind::Bytes),
+                            })?;
+                        limits.check(erp_report::LimitKind::Bytes, image_failure_bytes)?;
+                        image_failures.push(erp_report::ImageFailure::new(index, reason, *limits)?);
                         break 'picture placeholder(&mut d, wide, high, alt);
                     }
                 };
@@ -677,7 +705,9 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
                 alt,
                 reason,
             } => {
-                warnings.push(reason.clone());
+                if reason != "HTML image placeholder" {
+                    warnings.push(reason.clone());
+                }
                 placeholder(&mut d, *width, *height, alt)
             }
             Node::Vector {
@@ -758,7 +788,7 @@ pub(crate) fn encode(doc: &DocTree, limits: &Limits) -> Result<(Dict, Vec<String
         "margins".into(),
         array([top, right, bottom, left].map(Value::Float)),
     );
-    Ok((input, warnings))
+    Ok((input, warnings, image_failures))
 }
 
 #[cfg(test)]

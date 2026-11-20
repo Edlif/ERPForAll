@@ -93,6 +93,8 @@ struct RawConfig {
     /// settings by name.
     /// Names and bounds are checked by the composition root, which knows the settings.
     report: Option<toml::Value>,
+    /// Optional AI configuration; admitted by the addon at the CLI composition root.
+    ai: Option<toml::Value>,
 }
 /// The `[report]` table: the font store and the render pool's settings, each `name = integer`.
 #[derive(Debug, Clone, Default)]
@@ -207,6 +209,7 @@ pub struct ServerConfig {
     audit_read_policy: erp_rpc::ReadAuditPolicy,
     attachments: String,
     report: ReportConfig,
+    ai: Option<toml::Value>,
 }
 impl fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -438,6 +441,7 @@ impl ServerConfig {
                 .unwrap_or(false),
             attachments,
             report: read_report(raw.report, resolve)?,
+            ai: raw.ai,
             audit_read_policy: read_audit_policy(raw.audit_read_policy)?,
         })
     }
@@ -453,6 +457,11 @@ impl ServerConfig {
     pub fn attachments_toml(&self) -> &str {
         &self.attachments
     }
+    /// Node-local AI configuration consumed by the optional addon, never shared or logged.
+    pub fn ai(&self) -> Option<&toml::Value> {
+        self.ai.as_ref()
+    }
+
     /// The `[report]` table: font store and render pool settings, node-local.
     pub fn report(&self) -> &ReportConfig {
         &self.report
@@ -585,6 +594,8 @@ impl erp_orm::node::SharedSettings for ServerConfig {
             attachments: _,
             // node-local: each node starts its own render workers with its own fonts and limits
             report: _,
+            // Provider files belong to each node and never enter shared settings metadata.
+            ai: _,
         } = self;
         out.shared_str("server.database", database)?;
         out.shared_str("server.public_origin", origin)?;

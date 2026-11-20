@@ -3,9 +3,43 @@
 use crate::warehouse::StockPickingType;
 use erp_sdk::prelude::*;
 
+/// Return a cutoff for each operation type, in record order, using its own company.
+pub(crate) async fn local_cutoffs(
+    this: &RecordSet<StockPickingType>,
+    tx: &mut Transaction,
+) -> Result<Vec<(i64, DateTime)>> {
+    let companies = this
+        .as_records()
+        .cells(tx, "company_id")
+        .await?
+        .into_iter()
+        .map(|value| match value {
+            Cell::Id(id) => Ok(id),
+            _ => Err(Error::validation(
+                "Set the company of the operation type before opening its overview.",
+            )),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let unique: std::collections::BTreeSet<i64> = companies.iter().copied().collect();
+    let days = erp_addon_base::company_calendar::business_days(
+        tx,
+        this.env(),
+        &unique.into_iter().collect::<Vec<_>>(),
+    )
+    .await?;
+    companies
+        .into_iter()
+        .map(|id| {
+            days.get(&id)
+                .map(|day| (id, day.start_utc))
+                .ok_or_else(|| Error::missing(format!("Company {id} is unavailable.")))
+        })
+        .collect()
+}
+
 #[methods(StockPickingType, addon = "stock")]
 impl StockPickingType {
-    #[compute(depends=["picking_ids.state","picking_ids.scheduled_date","picking_ids.has_deadline_issue","picking_ids.backorder_id"], depends_context=["uid","allowed_company_ids"])]
+    #[compute(depends=["company_id.tz","picking_ids.state","picking_ids.scheduled_date","picking_ids.has_deadline_issue","picking_ids.backorder_id"], depends_context=["uid","allowed_company_ids"])]
     async fn _compute_picking_count(
         this: &RecordSet<StockPickingType>,
         tx: &mut Transaction,
@@ -16,8 +50,14 @@ impl StockPickingType {
         }
         let states = Domain::field("state")?;
         let active = states.in_(vec!["assigned", "waiting", "confirmed"]);
-        let today = DateTime::from_parts(Date::today(), 0, 0, 0, 0)
-            .ok_or_else(|| Error::internal("Cannot represent today's midnight."))?;
+        let cutoffs: std::collections::BTreeMap<_, _> =
+            local_cutoffs(this, tx).await?.into_iter().collect();
+        let scheduled = Domain::field("scheduled_date")?;
+        let company = Domain::field("company_id")?;
+        let overdue =
+            Domain::or(cutoffs.into_iter().map(|(id, cutoff)| {
+                Domain::and([company.eq(id), scheduled.lt(cutoff.to_string())])
+            }));
         let filters = [
             (StockPickingType::COUNT_PICKING_DRAFT, states.eq("draft")),
             (
@@ -30,10 +70,7 @@ impl StockPickingType {
                 StockPickingType::COUNT_PICKING_LATE,
                 Domain::and([
                     active.clone(),
-                    Domain::or([
-                        Domain::field("scheduled_date")?.lt(today.to_string()),
-                        Domain::field("has_deadline_issue")?.eq(true),
-                    ]),
+                    Domain::or([overdue, Domain::field("has_deadline_issue")?.eq(true)]),
                 ]),
             ),
             (

@@ -109,6 +109,21 @@ pub(crate) async fn prepare_create(
         return Ok(());
     };
     vals.insert("move_type".into(), Cell::Str(move_type.clone()));
+    let currency = match id_cell(vals.get("currency_id"), "currency_id")? {
+        Some(currency) => Some(currency),
+        None => match env.context().get("default_currency_id") {
+            None | Some(Value::False | Value::Bool(false)) => None,
+            Some(Value::Int(currency)) => {
+                vals.insert("currency_id".into(), Cell::Id(currency));
+                Some(currency)
+            }
+            Some(other) => {
+                return Err(Error::validation(format!(
+                    "The context key default_currency_id takes a currency id, not {other:?}."
+                )));
+            }
+        },
+    };
     let journal = match id_cell(vals.get("journal_id"), "journal_id")? {
         Some(journal) => journal,
         None => {
@@ -118,7 +133,7 @@ pub(crate) async fn prepare_create(
                     Error::user("No company is active: give the invoice a company.")
                 })?,
             };
-            let journal = invoice_journal(tx, env, company, &move_type).await?;
+            let journal = invoice_journal(tx, env, company, &move_type, currency).await?;
             vals.insert("journal_id".into(), Cell::Id(journal));
             journal
         }
@@ -269,24 +284,44 @@ fn has_new_lines(vals: &RawVals) -> bool {
     })
 }
 
-/// The first sale or purchase journal of `company` or one of its parents, in journal order.
+/// The first eligible journal in journal order, preferring a matching foreign currency.
+/// Both searches run under the same caller and company scope.
 async fn invoice_journal(
     tx: &mut Transaction,
     env: &Env,
     company: i64,
     move_type: &str,
+    currency: Option<i64>,
 ) -> Result<i64> {
     let kind = journal_type(move_type);
-    let found = env
-        .records("account.journal")?
-        .search(
-            tx,
-            &Domain::and([
-                Domain::condition("type", Operator::Eq, kind)?,
-                Domain::condition("company_id", Operator::ParentOf, company)?,
-            ]),
-        )
-        .await?;
+    let journals = env.records("account.journal")?;
+    let eligible = Domain::and([
+        Domain::condition("type", Operator::Eq, kind)?,
+        Domain::condition("company_id", Operator::ParentOf, company)?,
+    ]);
+    let first = SearchOptions::new().limit(1);
+    if let Some(currency) = currency {
+        let company_currency = env
+            .records("res.company")?
+            .browse([company])?
+            .cell(tx, "currency_id")
+            .await?;
+        if id_cell(Some(&company_currency), "currency_id")? != Some(currency) {
+            let matching = Domain::and([
+                eligible.clone(),
+                Domain::condition("currency_id", Operator::Eq, currency)?,
+            ]);
+            if let Some(&journal) = journals
+                .search_with(tx, &matching, &first)
+                .await?
+                .ids()
+                .first()
+            {
+                return Ok(journal);
+            }
+        }
+    }
+    let found = journals.search_with(tx, &eligible, &first).await?;
     found.ids().first().copied().ok_or_else(|| {
         Error::user(format!(
             "No {kind} journal is available for company {company}: create one in Accounting, \

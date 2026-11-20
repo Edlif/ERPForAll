@@ -185,6 +185,9 @@ impl Node {
         let builder = if native {
             builder
                 .require_sql_objects(crate::native_addons::SQL_MANIFESTS.iter().copied())
+                .require_sql_uninstall_guards(
+                    crate::native_addons::UNINSTALL_MANIFESTS.iter().copied(),
+                )
                 .native_artifact_identities(crate::identity::native_artifact_identities()?)
                 .code(crate::native_addons::DESCRIPTORS.iter().copied())
                 .not_linked(crate::native_addons::NOT_LINKED.iter().copied())

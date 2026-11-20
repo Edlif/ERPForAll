@@ -1,0 +1,47 @@
+{
+  "captured_utc": "2026-11-19T21:33:33.298899+00:00",
+  "host_sha256": "bd3430240a18eb39ab86d16194d13ba84f08c3983f3928d8efa4672e6205fb96",
+  "python": "3.14.6",
+  "git": "git version 2.54.0 (Apple Git-157)",
+  "command": "python3 -I crates/erp-cli/tests/fixtures/account_reporting_previous/capture.py",
+  "sources": [
+    {
+      "revision": "339d5ee2d4d154961e59c1f9ad52b76967d5dd21",
+      "version": "1.4.0",
+      "files_sha256": {
+        "manifest.toml": "84771e5785632071094f8e202dcd3340a52f4fb2151527e3639208337dd51590",
+        "data/journal_activity.xml": "2b883a7def2200967b6406d8061a2de6aae69b9601a81ba968ab919b3d11e55b",
+        "data/account_movements.xml": "db949a5bee117939352617c921fdbdf3a6b1dbf1c5c49f46d3646090a1885d59",
+        "data/profit_loss.xml": "2d14dbec1750e8f9d5580656eb1695338bff1287aec8547418848a60aecde95f",
+        "data/ledger_trial_balance.xml": "4c203e258107ec1298f93dd000f174864e71bb0947ca5cda24fc6a515c0f48ab",
+        "data/balance_sheet.xml": "a4b7adbb9e0af89af58d764a1b3cc3bcc27d9ec1559f89d72f617e2c863cf85f"
+      }
+    },
+    {
+      "revision": "d2716b3b972a64fd577c418ecbb2a6ddde21c9c9",
+      "version": "1.5.0",
+      "files_sha256": {
+        "manifest.toml": "db9ddc32284a1b5938dd45c155001dc969a2b6edbc82565bcd4c5d4204fca72b",
+        "data/journal_activity.xml": "2b883a7def2200967b6406d8061a2de6aae69b9601a81ba968ab919b3d11e55b",
+        "data/account_movements.xml": "db949a5bee117939352617c921fdbdf3a6b1dbf1c5c49f46d3646090a1885d59",
+        "data/profit_loss.xml": "2d14dbec1750e8f9d5580656eb1695338bff1287aec8547418848a60aecde95f",
+        "data/ledger_trial_balance.xml": "4c203e258107ec1298f93dd000f174864e71bb0947ca5cda24fc6a515c0f48ab",
+        "data/balance_sheet.xml": "a4b7adbb9e0af89af58d764a1b3cc3bcc27d9ec1559f89d72f617e2c863cf85f",
+        "data/general_ledger.xml": "ee579e8829a1ea2f37cf1db7575ff932af49948e44f71192997d2671ea5e350e"
+      }
+    },
+    {
+      "revision": "fe3f0d0de78e1c1659c192abcbeabb1ace786af8",
+      "version": "1.6.0",
+      "files_sha256": {
+        "manifest.toml": "7b99050a0ed67aa5778a76d04d406f7e644e92e289083bd0612dee8987d9fadb",
+        "data/journal_activity.xml": "2b883a7def2200967b6406d8061a2de6aae69b9601a81ba968ab919b3d11e55b",
+        "data/account_movements.xml": "db949a5bee117939352617c921fdbdf3a6b1dbf1c5c49f46d3646090a1885d59",
+        "data/profit_loss.xml": "2d14dbec1750e8f9d5580656eb1695338bff1287aec8547418848a60aecde95f",
+        "data/ledger_trial_balance.xml": "4c203e258107ec1298f93dd000f174864e71bb0947ca5cda24fc6a515c0f48ab",
+        "data/balance_sheet.xml": "349b885bfb49d9ad8d137a6f2409481f0b64678eef8451fedc65ecd1d3dd5644",
+        "data/general_ledger.xml": "ee579e8829a1ea2f37cf1db7575ff932af49948e44f71192997d2671ea5e350e"
+      }
+    }
+  ]
+}

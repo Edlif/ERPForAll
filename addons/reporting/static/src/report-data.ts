@@ -12,9 +12,39 @@ export interface Line {
 export interface Column { readonly group: number; readonly name: string; readonly label: string; readonly kind: CellKind; readonly sortable: boolean }
 export interface Period { readonly from: string | null; readonly to: string }
 export interface Filters {
-  readonly dateMode: "range" | "single"; readonly comparison: boolean; readonly multiCompany: boolean; readonly unfoldAll: boolean;
-  readonly hideZero: "never" | "optional" | "by_default"; readonly searchBar: boolean; readonly totalsBelow: boolean;
+  readonly dateMode: "range" | "single"; readonly currentOnly: boolean; readonly comparison: boolean; readonly multiCompany: boolean; readonly unfoldAll: boolean;
+  readonly hideZero: "never" | "optional" | "by_default"; readonly searchBar: boolean; readonly maxSearchChars: number; readonly totalsBelow: boolean;
 }
+/** Apply report filters to the loaded tree. Unknown folded or paged amounts stay reachable. */
+export function visibleLines(lines: Line[], options: Options): Line[] {
+  const hideZero = options["hide_zero"] === true;
+  const search = typeof options["search"] === "string" ? options["search"].toLowerCase() : "";
+  if (!hideZero && !search) return lines;
+
+  const matched = new Set<string>(), nonzero = new Set<string>();
+  for (const line of lines) {
+    if (line.kind === "more") continue;
+    if (line.name.toLowerCase().includes(search) || (line.parent !== null && matched.has(line.parent))) {
+      matched.add(line.id);
+    }
+  }
+  // Descendant matches keep their path. A sibling of a match stays hidden.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (line.kind === "more" || (line.unfoldable && !line.unfolded) || line.cells.some(cell => !cell.zero)) {
+      nonzero.add(line.id);
+    }
+    if (line.parent !== null) {
+      if (nonzero.has(line.id)) nonzero.add(line.parent);
+      if (matched.has(line.id)) matched.add(line.parent);
+    }
+  }
+  return lines.filter(line => {
+    const id = line.kind === "more" && line.parent !== null ? line.parent : line.id;
+    return (!hideZero || nonzero.has(id)) && (!search || matched.has(id));
+  });
+}
+
 /** The options object as the server resolved it; the screen edits it and sends it back whole (design §5). */
 export type Options = Record<string, unknown>;
 export interface Loaded { readonly options: Options; readonly lines: Line[]; readonly computedAt: string; readonly hidden: readonly string[] }
@@ -63,7 +93,11 @@ export function line(raw: unknown): Line {
 export function filters(raw: unknown): Filters {
   const f = obj(raw, "the filters"), mode = str(f["date_mode"], "the date mode"), hide = str(f["hide_zero"], "the hide-zero mode");
   if (mode !== "range" && mode !== "single" || hide !== "never" && hide !== "optional" && hide !== "by_default") throw new Error("The server sent unknown filter modes.");
-  return { dateMode: mode, hideZero: hide, comparison: bool(f["comparison"], "the filters"), multiCompany: bool(f["multi_company"], "the filters"),
+  const currentOnly = f["current_only"] === undefined ? false : bool(f["current_only"], "the current position filter");
+  // Older reporting servers use the original wire bound of 256 Unicode characters.
+  const maxSearchChars = f["max_search_chars"] === undefined ? 256 : num(f["max_search_chars"], "the search limit");
+  if (!Number.isSafeInteger(maxSearchChars) || maxSearchChars < 1) throw new Error("The report search limit is invalid.");
+  return { dateMode: mode, currentOnly, maxSearchChars, hideZero: hide, comparison: bool(f["comparison"], "the filters"), multiCompany: bool(f["multi_company"], "the filters"),
     unfoldAll: bool(f["unfold_all"], "the filters"), searchBar: bool(f["search_bar"], "the filters"), totalsBelow: bool(f["totals_below"], "the filters") };
 }
 export function decodeOptions(raw: unknown): { name: string; options: Options; filters: Filters } {
@@ -76,6 +110,12 @@ export function decodeLines(raw: unknown): Loaded {
     hidden: arr(a["hidden_lines"], "the hidden lines").map(name => str(name, "a hidden line name")) };
 }
 export function decodeExpand(raw: unknown): Line[] { return arr(obj(raw, "an unfold")["lines"], "the lines").map(line); }
+
+export function mainGroup(options: Options): number {
+  const comparison = options["comparison"];
+  const oldestFirst = typeof comparison === "object" && comparison !== null && (comparison as Record<string, unknown>)["order"] === "ascending";
+  return oldestFirst ? periods(options).length - 1 : 0;
+}
 
 export function columns(options: Options): Column[] {
   return arr(options["columns"], "the columns").map(raw => {
@@ -91,6 +131,16 @@ export function periods(options: Options): Period[] {
   });
 }
 export const unfolded = (options: Options): string[] => arr(options["unfolded"], "the unfolded lines").map(id => str(id, "an unfolded line id"));
+
+/** Extra successful pages per parent. Older servers omit the field. */
+export function loadedPages(options: Options): Record<string, number> | undefined {
+  if (options["loaded_pages"] === undefined) return undefined;
+  const pages = obj(options["loaded_pages"], "the loaded pages");
+  return Object.fromEntries(Object.entries(pages).map(([id, count]) => {
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count <= 0) throw new Error("The server sent an invalid loaded page count.");
+    return [id, count];
+  }));
+}
 
 /** The lines below `id`: ids are the parent's id plus a segment, so a prefix with the separator is exact. */
 const below = (id: string): string => `${id}|`;

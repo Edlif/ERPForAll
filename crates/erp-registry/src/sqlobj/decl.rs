@@ -187,6 +187,7 @@ pub struct SqlTableGrantDecl {
     pub(crate) model: &'static str,
     pub(crate) binding: SqlBinding,
     pub(crate) ops: &'static [SqlTableOp],
+    pub(crate) exclusive_id_sequence: Option<&'static str>,
 }
 
 impl SqlTableGrantDecl {
@@ -196,7 +197,14 @@ impl SqlTableGrantDecl {
             model,
             binding,
             ops,
+            exclusive_id_sequence: None,
         }
+    }
+    /// Request USAGE on this model's exclusive named id sequence for a definer INSERT.
+    /// The registry and installed database must both confirm exclusivity.
+    pub const fn exclusive_id_sequence(mut self, name: &'static str) -> Self {
+        self.exclusive_id_sequence = Some(name);
+        self
     }
 }
 

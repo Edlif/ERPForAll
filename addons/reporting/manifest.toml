@@ -4,7 +4,7 @@ summary = "Reports as a tree of lines with dates, comparison, unfolding and dril
 category = "Technical"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.0.0"
+version = "1.2.0"
 depends = ["base", "web"]
 data = [
     "security/ir.access.csv",

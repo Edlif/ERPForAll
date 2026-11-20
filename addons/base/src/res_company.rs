@@ -42,6 +42,9 @@ pub struct ResCompany {
     /// Partner representing this company.
     #[field(many2one, comodel = "res.partner", ondelete = "restrict")]
     pub partner_id: Option<RecId>,
+    /// IANA time zone for company business dates.
+    #[field(char, string = "Business Time Zone", required = true, default = "UTC")]
+    pub tz: Option<Arc<str>>,
     /// Company currency.
     #[field(many2one, comodel = "res.currency", required = true)]
     pub currency_id: Option<RecId>,
@@ -274,11 +277,19 @@ impl ResCompany {
         }
         let guard = crate::company_lifecycle::Guard::enter(tx, &[])?;
         crate::company_lifecycle::fence(tx).await?;
-        let defaults: ValueMap = records
-            .call(tx, "default_get", (vec!["parent_id".to_owned()],))
-            .await?;
+        let mut wanted = vec!["parent_id".to_owned()];
+        if vals_list.iter().any(|vals| !vals.contains("tz")) {
+            wanted.push("tz".to_owned());
+        }
+        let defaults: ValueMap = records.call(tx, "default_get", (wanted,)).await?;
         let defaults = records.vals_from_values(&defaults)?;
         for vals in &mut vals_list {
+            if !vals.contains("tz")
+                && let Some(zone) = defaults.get("tz")
+            {
+                vals.insert("tz".into(), zone.clone());
+            }
+            crate::company_calendar::validate(vals)?;
             if !vals.contains("parent_id")
                 && let Some(parent) = defaults.get("parent_id")
             {
@@ -385,6 +396,7 @@ impl ResCompany {
         let records = this.as_records();
         records.check_access(tx, Operation::Write).await?;
         erp_sdk::__private::base_check_write_fields(tx, records, &vals)?;
+        crate::company_calendar::validate(&vals)?;
         if vals.contains("parent_id") {
             return Err(Error::user("The company hierarchy cannot be changed."));
         }
@@ -595,13 +607,20 @@ impl ResCompany {
         names: Vec<String>,
         sup: Super,
     ) -> Result<ValueMap> {
+        let wants_zone = names.iter().any(|n| n == "tz");
         let wants_currency = names.iter().any(|n| n == "currency_id");
         let wants_parent = names.iter().any(|n| n == "parent_id");
         let mut requested = names;
         if wants_currency && !wants_parent {
             requested.push("parent_id".to_owned());
         }
-        let mut out = sup.call(tx, this.as_records(), (requested,)).await?;
+        let mut out: ValueMap = sup.call(tx, this.as_records(), (requested,)).await?;
+        if wants_zone && this.env().context().get("default_tz").is_none() {
+            out.insert(
+                "tz".to_owned(),
+                crate::company_calendar::creator_zone(tx, this.env()).await?,
+            );
+        }
         if wants_currency {
             let defaults = this.as_records().vals_from_values(&out)?;
             if let Some(Cell::Id(parent)) = defaults.get("parent_id") {

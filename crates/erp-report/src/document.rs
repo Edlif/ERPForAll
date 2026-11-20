@@ -53,6 +53,7 @@ pub enum TableLook {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Style {
+    rich: crate::RichText,
     size: f64,
     bold: bool,
     italic: bool,
@@ -71,6 +72,7 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
+            rich: crate::RichText::default(),
             size: 10.0,
             bold: false,
             italic: false,
@@ -89,6 +91,13 @@ impl Default for Style {
     }
 }
 impl Style {
+    pub fn rich(&self) -> &crate::RichText {
+        &self.rich
+    }
+    pub fn with_rich(mut self, rich: crate::RichText) -> Self {
+        self.rich = rich;
+        self
+    }
     /// Space before and after a block, in points.
     pub fn with_spacing(mut self, above: f64, below: f64) -> Result<Self, ReportError> {
         if ![above, below]
@@ -693,7 +702,9 @@ impl DocumentBuilder {
                 header,
                 cells,
             } => {
-                if *columns == 0 || *columns > header.len().max(cells.len()).max(1) {
+                // Cell spans, not the number of cell IDs, determine a row's width.
+                // `place` validates exact occupancy below before constructing the table.
+                if *columns == 0 || (header.is_empty() && cells.is_empty() && *columns != 1) {
                     return Err(invalid(
                         "table rows must fill a positive column count no larger than its cells",
                     ));
@@ -797,9 +808,10 @@ impl DocumentBuilder {
                     .checked_add(cells.capacity())
                     .ok_or_else(|| invalid("document size arithmetic overflow"))?,
             ),
-            Node::Flow { children }
-            | Node::Block { children, .. }
-            | Node::Inline { children, .. } => (0, children.capacity()),
+            Node::Flow { children } => (0, children.capacity()),
+            Node::Block { children, style } | Node::Inline { children, style } => {
+                (style.rich.bytes(), children.capacity())
+            }
             Node::List { items, .. } => (0, items.capacity()),
             Node::Rule | Node::LineBreak | Node::PageBreak | Node::PageCounter(_) => (0, 0),
         };
@@ -937,6 +949,9 @@ impl DocumentBuilder {
             footer: self.footer,
             options,
             cost,
+            content_warnings: Vec::new(),
+            image_origins: Vec::new(),
+            limits: self.limits,
         })
     }
 }
@@ -944,6 +959,9 @@ impl DocumentBuilder {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct DocTree {
+    image_origins: Vec<(usize, crate::ReportWarning)>,
+    pub(crate) limits: Limits,
+    content_warnings: Vec<crate::ReportWarning>,
     nodes: Vec<Node>,
     body: NodeId,
     header: Option<NodeId>,
@@ -952,6 +970,63 @@ pub struct DocTree {
     cost: Cost,
 }
 impl DocTree {
+    /// Attach provenance only to admitted image nodes; metadata shares the document byte budget.
+    pub(crate) fn with_image_origins(
+        mut self,
+        mut origins: Vec<(usize, crate::ReportWarning)>,
+        limits: Limits,
+    ) -> Result<Self, ReportError> {
+        limits.check(LimitKind::Images, origins.len())?;
+        origins.sort_unstable_by_key(|(node, _)| *node);
+        let mut previous = None;
+        for (node, warning) in &origins {
+            if previous == Some(*node) || !matches!(self.nodes.get(*node), Some(Node::Image { .. }))
+            {
+                return Err(invalid("image origin must identify a unique image node"));
+            }
+            if !matches!(
+                warning.kind(),
+                crate::ReportWarningKind::ImageDegraded { .. }
+            ) {
+                return Err(invalid(
+                    "image origin must carry an image degradation warning",
+                ));
+            }
+            previous = Some(*node);
+            let bytes = limits.add(
+                LimitKind::Bytes,
+                warning.bytes(),
+                std::mem::size_of::<usize>(),
+            )?;
+            self.cost.bytes = limits.add(LimitKind::Bytes, self.cost.bytes, bytes)?;
+        }
+        self.image_origins = origins;
+        Ok(self)
+    }
+    pub(crate) fn image_origin(&self, node: usize) -> Option<&crate::ReportWarning> {
+        // Absence means an ordinary developer-template image, not lost HTML provenance.
+        match self
+            .image_origins
+            .binary_search_by_key(&node, |(node, _)| *node)
+        {
+            Ok(index) => Some(&self.image_origins[index].1),
+            Err(_) => None,
+        }
+    }
+    pub fn content_warnings(&self) -> &[crate::ReportWarning] {
+        &self.content_warnings
+    }
+    pub(crate) fn with_content_warnings(
+        mut self,
+        warnings: Vec<crate::ReportWarning>,
+        limits: Limits,
+    ) -> Result<Self, ReportError> {
+        for warning in &warnings {
+            self.cost.bytes = limits.add(LimitKind::Bytes, self.cost.bytes, warning.bytes())?;
+        }
+        self.content_warnings = warnings;
+        Ok(self)
+    }
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
     }

@@ -82,6 +82,13 @@ async fn source_schema() {
     assert_eq!(rollback_error.message(), "rollback fixture");
     assert!(source(&mut tx, "later").await > consumed);
     let model = tx.env().records("stock.valuation.source").unwrap();
+    let defaults = model
+        .default_get(&mut tx, &["component", "cost_partition"])
+        .await
+        .unwrap();
+    for name in ["component", "cost_partition"] {
+        assert_eq!(defaults.get(name), Some(&erp_sdk::Value::Str("".into())));
+    }
     let time = DateTime::parse_odoo("2026-01-01 00:00:00").unwrap();
     let vals = RawVals::new()
         .set_cell("company_id", Cell::Id(101))
@@ -101,14 +108,11 @@ async fn source_schema() {
             Cell::Json(Arc::new(erp_sdk::serde_json::json!({"fixture":true}))),
         )
         .set_cell("request_digest", Cell::Str("fixture-digest".into()));
-    let created = model.create(&mut tx, vec![vals]).await.unwrap();
+    let error = model.create(&mut tx, vec![vals]).await.unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::UserError);
     assert_eq!(
-        created.cell(&mut tx, "component").await.unwrap(),
-        Cell::Str("".into())
-    );
-    assert_eq!(
-        created.cell(&mut tx, "cost_partition").await.unwrap(),
-        Cell::Str("".into())
+        error.message(),
+        "Only the stock valuation engine can change stock.valuation.source."
     );
     tx.rollback().await.unwrap();
 }
@@ -176,17 +180,12 @@ async fn allocation_schema() {
     tx.batch("INSERT INTO stock_move_line(id,move_id,company_id,product_id,uom_id,location_id,location_dest_id,quantity,quantity_product_uom,uom_factor,product_uom_factor,product_unit_digits,membership,active,correction_seq,child_mode,picked)
         SELECT 102,move_id,company_id,product_id,uom_id,location_id,101,quantity,quantity_product_uom,uom_factor,product_uom_factor,product_unit_digits,membership,active,correction_seq,child_mode,picked FROM stock_move_line WHERE id=101;
         INSERT INTO stock_move_line_serial(id,line_id,move_id,lot_id,active) VALUES(101,101,101,101,true);").await.unwrap();
-    tx.execute(
-        "UPDATE stk_value_source_alloc SET serial_child_id=101 WHERE id=$1",
-        &[&id],
-    )
-    .await
-    .unwrap();
+    let child_alloc = insert(&mut tx, &format!("INSERT INTO stk_value_source_alloc(source_id,ordinal,company_id,product_id,move_line_id,serial_child_id,side,quantity,recorded_at) VALUES({sid},1,101,101,101,101,'original',1,'2026-01-01') RETURNING id")).await.unwrap();
     let child_error = tx
         .savepoint(async |tx| {
             tx.execute(
                 "UPDATE stk_value_source_alloc SET move_line_id=102 WHERE id=$1",
-                &[&id],
+                &[&child_alloc],
             )
             .await
             .map(|_| ())

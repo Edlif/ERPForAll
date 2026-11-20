@@ -145,6 +145,7 @@ impl Header {
 struct LineFacts {
     accountable: i64,
     unbalanced: Option<String>,
+    mixed_off_balance: bool,
     archived_accounts: Vec<i64>,
     foreign_accounts: Vec<i64>,
     /// A line carries taxes or is a tax line, so the entry reaches the tax report.
@@ -543,7 +544,9 @@ async fn line_facts(tx: &mut Transaction, ids: &[i64]) -> Result<BTreeMap<i64, L
                '{}'), \
              COALESCE(bool_or(l.tax_line_id IS NOT NULL OR l.tax_repartition_line_id IS NOT NULL \
                OR EXISTS (SELECT 1 FROM account_move_line_account_tax_rel r \
-                          WHERE r.account_move_line_id = l.id)), false) \
+                          WHERE r.account_move_line_id = l.id)), false), \
+             COALESCE(bool_or(a.account_type = 'off_balance') \
+                      AND bool_or(a.account_type <> 'off_balance'), false) \
              FROM account_move m \
              JOIN res_company co ON co.id = m.company_id \
              LEFT JOIN account_move_line l ON l.move_id = m.id \
@@ -563,6 +566,7 @@ async fn line_facts(tx: &mut Transaction, ids: &[i64]) -> Result<BTreeMap<i64, L
                 archived_accounts: row.try_get(3).map_err(db)?,
                 foreign_accounts: row.try_get(4).map_err(db)?,
                 taxed: row.try_get(5).map_err(db)?,
+                mixed_off_balance: row.try_get(6).map_err(db)?,
             },
         );
     }
@@ -650,6 +654,12 @@ fn validate(
             "These accounts belong to no company of the entry's company tree: {}.",
             names(&facts.foreign_accounts, account_names)
         ));
+    }
+    if facts.mixed_off_balance {
+        messages.push(
+            "Off-balance accounts cannot be mixed with ordinary accounts in one journal entry."
+                .to_owned(),
+        );
     }
     if let Some(difference) = &facts.unbalanced {
         messages.push(format!(

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="default_role_receivable" model="account.default.role">
+      <field name="key">receivable</field>
+    </record>
+    <record id="default_role_payable" model="account.default.role">
+      <field name="key">payable</field>
+    </record>
+    <record id="default_role_income" model="account.default.role">
+      <field name="key">income</field>
+    </record>
+    <record id="default_role_expense" model="account.default.role">
+      <field name="key">expense</field>
+    </record>
+    <record id="default_role_stock_valuation" model="account.default.role">
+      <field name="key">stock_valuation</field>
+    </record>
+  </data>
+</erp>

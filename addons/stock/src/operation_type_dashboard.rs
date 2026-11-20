@@ -41,7 +41,7 @@ fn tone_above_zero(count: i32, tone: &'static str) -> &'static str {
 
 #[methods(StockPickingType, addon = "stock")]
 impl StockPickingType {
-    #[compute(depends=["picking_ids.state","picking_ids.scheduled_date","picking_ids.has_deadline_issue","picking_ids.backorder_id"], depends_context=["uid","allowed_company_ids"])]
+    #[compute(depends=["company_id.tz","picking_ids.state","picking_ids.scheduled_date","picking_ids.has_deadline_issue","picking_ids.backorder_id"], depends_context=["uid","allowed_company_ids"])]
     async fn _compute_dashboard_card(
         this: &RecordSet<StockPickingType>,
         tx: &mut Transaction,
@@ -64,9 +64,7 @@ impl StockPickingType {
             .mapped(tx, StockPickingType::COUNT_PICKING_BACKORDERS)
             .await?;
         // Same cut-off as the late counter (operation_type_counters.rs): today's midnight.
-        let today = DateTime::from_parts(Date::today(), 0, 0, 0, 0)
-            .ok_or_else(|| Error::internal("Cannot represent today's midnight."))?
-            .to_string();
+        let cutoffs = crate::operation_type_counters::local_cutoffs(this, tx).await?;
         let open = json!(["state", "in", OPEN]);
         for (i, id) in this.as_records().ids().iter().copied().enumerate() {
             let card = json!({
@@ -94,7 +92,7 @@ impl StockPickingType {
                         vec![
                             open.clone(),
                             json!("|"),
-                            json!(["scheduled_date", "<", today]),
+                            json!(["scheduled_date", "<", cutoffs[i].1.to_string()]),
                             json!(["has_deadline_issue", "=", true]),
                         ],
                         tone_above_zero(late[i], "danger"),

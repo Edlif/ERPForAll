@@ -19,6 +19,7 @@ const MINUS: &str = "-\u{feff}";
 #[derive(Debug, PartialEq)]
 pub(crate) enum Piece {
     Text(String),
+    Html(std::sync::Arc<str>, crate::HtmlSource),
     Break,
     /// The bytes of an image field, printed at its natural size or shrunk into `max` (width and
     /// height, in points).
@@ -306,7 +307,23 @@ fn raw(
                 .ok_or_else(|| at.evaluate("a relational widget needs a recordset"))?;
             return display_names(env, object.type_name(), &ids, at);
         }
-        "html" => return unsupported("html field content", "a later release"),
+        "html" => {
+            let (text, source) = match env.records.html(value) {
+                Some((text, source)) if source.record().is_some() => (text, source),
+                Some(_) => {
+                    return Err(at.evaluate("display_name was not loaded for this HTML field"));
+                }
+                None => match value {
+                    ExprValue::Str(text) => (text.as_str().into(), crate::HtmlSource::expression()),
+                    _ => {
+                        return Err(
+                            at.evaluate("the html widget needs text or this report's HTML field")
+                        );
+                    }
+                },
+            };
+            return Ok(Some(vec![Piece::Html(text, source)]));
+        }
         "image" => {
             let bytes = env.records.image(value).ok_or_else(|| {
                 at.evaluate(format!(
@@ -457,6 +474,14 @@ fn barcode(env: &Env<'_>, value: &ExprValue, options: Option<&Map>, at: &At) -> 
         [None, Some(height)] => (height * wide / high, height),
         [None, None] => (wide, high),
     };
+    // Unlike legacy options, an explicitly supplied None is invalid for this boolean.
+    let gs1 = match options.and_then(|options| options.get_str("gs1")) {
+        None => false,
+        Some(ExprValue::Bool(flag)) => *flag,
+        Some(ExprValue::Int(0)) => false,
+        Some(ExprValue::Int(1)) => true,
+        Some(_) => return Err(at.evaluate("widget option `gs1` must be a boolean or 0 or 1")),
+    };
     let ask = CodeAsk {
         symbology: string("symbology")?.unwrap_or("Code128"),
         value: &text,
@@ -464,6 +489,7 @@ fn barcode(env: &Env<'_>, value: &ExprValue, options: Option<&Map>, at: &At) -> 
         height,
         human_readable: flag("humanreadable", false)?,
         quiet: flag("quiet", true)?,
+        gs1,
         level,
         grid,
     };
@@ -484,6 +510,10 @@ fn widget_option<'a>(options: Option<&'a Map>, at: &At) -> Result<Option<&'a str
 pub(crate) fn value(env: &Env<'_>, value: &ExprValue, options: Option<&Map>, at: &At) -> Printed {
     match widget_option(options, at)? {
         Some(widget) => raw(env, value, widget, options, None, at),
+        None if env.records.html(value).is_some() => raw(env, value, "html", options, None, at),
+        None if matches!(value,ExprValue::Object(o) if o.type_name()=="report.html") => {
+            Err(at.evaluate("HTML value belongs to another report store"))
+        }
         None => Ok(text(value.to_py_str())),
     }
 }

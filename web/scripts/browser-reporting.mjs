@@ -34,10 +34,15 @@ const countries = ["Belgium", "France", "Germany", "Italy", "Spain"];
 const cell = (value, kind = "integer") => ({ kind, value, scale: 0, currency: null, zero: value === "0" });
 const country = (index) => ({ id: `${section}|group:country_id~res.country~${index + 1}`, parent: section, name: countries[index], level: 1, kind: "detail", unfoldable: false, unfolded: false, cells: [cell(String(10 * (index + 1)))], caret: ["open"], remaining: null, next_offset: null });
 const more = (offset) => ({ id: `${section}|more~~`, parent: section, name: "More", level: 1, kind: "more", unfoldable: false, unfolded: false, cells: [cell(null, "empty")], caret: [], remaining: countries.length - offset, next_offset: offset });
-const baseOptions = { report: REPORT, companies: [1], date: { mode: "range", preset: "this_year", from: "2026-01-01", to: "2026-12-31" }, comparison: { mode: "none", periods: 1, order: "descending", from: null, to: null }, unfold_all: false, unfolded: [], hide_zero: false, search: "", provider: {},
+const baseOptions = { report: REPORT, companies: [1], date: { mode: "range", preset: "this_year", from: "2026-01-01", to: "2026-12-31" }, comparison: { mode: "none", periods: 1, order: "descending", from: null, to: null }, unfold_all: false, unfolded: [], loaded_pages: {}, hide_zero: false, search: "", provider: {},
   column_groups: [{ from: "2026-01-01", to: "2026-12-31" }], columns: [{ group: 0, name: "Contacts", label: "count", kind: "integer", sortable: true }], order: null };
 const filters = { date_mode: "range", comparison: true, multi_company: false, unfold_all: true, hide_zero: "optional", search_bar: true, totals_below: false };
 const topLine = (open) => ({ id: section, parent: null, name: "Contacts", level: 0, kind: "section", unfoldable: true, unfolded: open, cells: [cell("150")], caret: [], remaining: null, next_offset: null });
+// Distinct fixture payloads verify transport fidelity. The export integration suite checks document structure.
+const files = {
+  pdf: { mime: "application/pdf", bytes: Buffer.from("%PDF-1.4 fixture") },
+  xlsx: { mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes: Buffer.from([0x50, 0x4b, 3, 4, 0x78]) }
+};
 const calls = [], errors = [], unknown = [], checks = [], screenshots = [];
 let serverError;
 const server = createServer(async (req, res) => {
@@ -52,7 +57,10 @@ const server = createServer(async (req, res) => {
     const body = input ? JSON.parse(input) : {};
     calls.push({ path: pathname, body });
     if (pathname === "/erp/reporting/export") {
-      res.writeHead(200, { "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="contacts.${body.format === "pdf" ? "pdf" : "xlsx"}"` }); res.end("%PDF-1.4 fixture"); return;
+      assert.ok(Object.hasOwn(files, body.format));
+      const file = files[body.format];
+      res.writeHead(200, { "Content-Type": file.mime, "Content-Disposition": `attachment; filename="contacts.${body.format}"` });
+      res.end(file.bytes); return;
     }
     let value;
     if (pathname.endsWith("erp_describe")) value = { wire_major: 1, registry_version: "r1", scope: body.scope, declarations: [] };
@@ -65,7 +73,8 @@ const server = createServer(async (req, res) => {
     else if (pathname.endsWith("reporting.report/erp_report_options")) value = { name: "Contacts by Country", options: baseOptions, filters };
     else if (pathname.endsWith("reporting.report/erp_report_lines")) {
       const open = body.options.unfolded.includes(section);
-      value = { options: body.options, lines: open ? [topLine(true), ...[0, 1, 2].map(country), more(3)] : [topLine(false)], computed_at: "2026-11-19 10:00:00", hidden_lines: [] };
+      const children = body.options.loaded_pages?.[section] ? countries.map((_, i) => country(i)) : [0, 1, 2].map(country).concat(more(3));
+      value = { options: body.options, lines: open ? [topLine(true), ...children] : [topLine(false)], computed_at: "2026-11-19 10:00:00", hidden_lines: [] };
     } else if (pathname.endsWith("reporting.report/erp_report_expand")) {
       value = { lines: body.offset === 0 ? [0, 1, 2].map(country).concat([more(3)]) : [3, 4].map(country), computed_at: "2026-11-19 10:00:01" };
     } else { unknown.push(pathname); throw new Error(`Unknown fixture RPC: ${pathname}`); }
@@ -102,7 +111,7 @@ try {
     await page.getByRole("button", { name: "Show more (2 remaining)" }).click();
     await page.locator("tr.report-line", { hasText: "Spain" }).waitFor();
     assert.deepEqual(await rowNames(page), ["Contacts", "Belgium", "France", "Germany", "Italy", "Spain"]);
-    assert.equal(calls.filter(c => c.path.endsWith("erp_report_expand")).at(-1).body.offset, 3);
+    assert.deepEqual(calls.findLast(c => c.path.endsWith("erp_report_lines")).body.options.loaded_pages, { [section]: 1 });
     const geometry = await page.evaluate(() => ({ labels: [...document.querySelectorAll("tr.report-line .report-label")].map(node => Math.round(node.getBoundingClientRect().left)), align: getComputedStyle(document.querySelector("tr.report-line .report-cell")).textAlign }));
     assert.ok(geometry.labels[1] - geometry.labels[0] >= 16, `a child line is indented below its section: ${JSON.stringify(geometry.labels)}`);
     assert.ok(["end", "right"].includes(geometry.align), `numbers are aligned to the end of the cell, not ${geometry.align}`);
@@ -129,18 +138,28 @@ try {
     await page.locator("select[name=preset]").selectOption("last_year");
     await page.waitForFunction(() => document.querySelector(".report-status")?.textContent?.includes("Computed"));
     assert.equal(calls.findLast(c => c.path.endsWith("erp_report_lines")).body.options.date.preset, "last_year");
-    await page.getByRole("searchbox", { name: "Search lines" }).fill("bel");
+    await page.getByRole("button", { name: "Unfold Contacts" }).click();
+    await page.locator("tr.report-line", { hasText: "France" }).waitFor();
+    await page.getByRole("button", { name: "Show more (2 remaining)" }).click();
+    await page.locator("tr.report-line", { hasText: "Spain" }).waitFor();
+    await page.getByRole("searchbox", { name: "Search lines" }).fill("spa");
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => document.querySelector(".report-status")?.textContent?.includes("Computed"));
-    assert.equal(calls.findLast(c => c.path.endsWith("erp_report_lines")).body.options.search, "bel");
+    assert.equal(calls.findLast(c => c.path.endsWith("erp_report_lines")).body.options.search, "");
 
     // exports: the file arrives as sent and the request carries options and a format, never rows
-    const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "PDF" }).click()]);
-    assert.equal(download.suggestedFilename(), "contacts.pdf");
-    const exported = calls.findLast(c => c.path === "/erp/reporting/export").body;
-    assert.deepEqual(Object.keys(exported).sort(), ["format", "options", "report"]);
-    assert.equal(exported.format, "pdf");
-    assert.equal(exported.options.search, "bel");
+    await page.locator("tr.report-line", { hasText: "France" }).waitFor({ state: "detached" });
+    assert.deepEqual(await rowNames(page), ["Contacts", "Spain"]);
+    for (const [format, file] of Object.entries(files)) {
+      const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: format.toUpperCase(), exact: true }).click()]);
+      assert.equal(download.suggestedFilename(), "contacts." + format);
+      assert.deepEqual(await readFile(await download.path()), file.bytes);
+      const exported = calls.findLast(c => c.path === "/erp/reporting/export").body;
+      assert.deepEqual(Object.keys(exported).sort(), ["format", "options", "report"]);
+      assert.equal(exported.format, format);
+      assert.equal(exported.options.search, "spa");
+      assert.deepEqual(exported.options.loaded_pages, { [section]: 1 });
+    }
     if (width === 1440) { await auditPage(page); await page.screenshot({ path: path.join(output, "report-audit-1440.png"), fullPage: true }); screenshots.push("report-audit-1440.png"); }
     checks.push({ width, open_from_menu: "PASS", unfold_load_more_fold: "PASS", keyboard: "PASS", sort_preset_search: "PASS", export: "PASS", no_page_overflow: "PASS", axe_serious: width === 1440 ? "PASS" : "not run at this width" });
   }

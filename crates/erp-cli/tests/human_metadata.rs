@@ -2664,7 +2664,7 @@ async fn assert_current_list_scope(
     // use authenticated non-System principals through JSON-2, never this setup environment.
     let other_company: i64 = tx
         .query(
-            "INSERT INTO res_company(name,currency_id) VALUES($1,$2) RETURNING id",
+            "INSERT INTO res_company(tz, name,currency_id) VALUES('UTC', $1,$2) RETURNING id",
             &[&"Action scope fixture company", &currency],
         )
         .await
@@ -3349,7 +3349,7 @@ async fn assert_list_count_rpc_scope(
         .await
         .unwrap()[0]
         .get(0);
-    let other_company: i64 = tx.query("INSERT INTO res_company(name, currency_id) SELECT 'Count other company', currency_id FROM res_company WHERE id = $1 RETURNING id", &[&company]).await.unwrap()[0].get(0);
+    let other_company: i64 = tx.query("INSERT INTO res_company(tz, name, currency_id) SELECT 'UTC', 'Count other company', currency_id FROM res_company WHERE id = $1 RETURNING id", &[&company]).await.unwrap()[0].get(0);
     tx.execute("INSERT INTO acceptance_notes_note(name, priority, company_id, owner_id, active) VALUES ('count normal', 'normal', $1, $2, true), ('count unset', NULL, $1, $2, true), ('count hidden owner', 'high', $1, $3, true), ('count hidden company', 'high', $4, $2, true), ('count archived', 'high', $1, $2, false)", &[&company, &owner, &other_owner, &other_company]).await.unwrap();
     tx.commit().await.unwrap();
     drop(tx);

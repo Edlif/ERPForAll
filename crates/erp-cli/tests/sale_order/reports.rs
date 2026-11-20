@@ -283,7 +283,10 @@ fn the_sales_documents_print_a_quotation_an_order_and_a_pro_forma() {
             assert!(!pages[0].contains(markup), "{markup}: {}", pages[0]);
         }
         assert!(
-            !html.contains("&amp;amp;") && !html.contains("&lt;strong"),
+            html.contains("Prices in USD &amp; excl. VAT.")
+                && html.contains("Orders of 5 &lt; 10 units: no discount.")
+                && !html.contains("&amp;amp;")
+                && !html.contains("&lt;strong"),
             "{html}"
         );
         let emptied = order(

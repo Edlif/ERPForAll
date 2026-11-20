@@ -152,6 +152,12 @@ impl Transaction {
         }
         for object in graph.objects().iter().rev().filter(|o| removed(o)) {
             if let SqlObjectKind::TableGrant(policy) = object.kind() {
+                if let Some(sequence) = policy.exclusive_id_sequence() {
+                    return Err(Error::user(format!(
+                        "cannot remove SQL object '{}': exclusive id sequence '{sequence}' requires explicit reconciliation",
+                        object.id()
+                    )));
+                }
                 if new.models().iter().any(|m|m.has_table() && m.table==policy.model().table()) && !new.sql_objects().objects().iter().any(|o|matches!(o.kind(),SqlObjectKind::TableGrant(kept) if kept.model().table()==policy.model().table() && kept.binding()==policy.binding() && kept.ops()==policy.ops())) {
                     return Err(Error::user(format!("cannot remove SQL object '{}': required by 'model {}'",object.id(),policy.model().model())));
                 }

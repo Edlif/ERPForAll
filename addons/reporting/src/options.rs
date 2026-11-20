@@ -4,23 +4,27 @@
 //! uses the report's default. Asking for options (`erp_report_options`) carries previous options
 //! over and drops what no longer applies; computing lines (`erp_report_lines`, expand, drill) is
 //! strict and refuses such a value by name. A malformed value is refused in both.
+use std::collections::{BTreeMap, BTreeSet};
+
+use erp_sdk::ErrorKind;
 use erp_sdk::prelude::*;
 use erp_sdk::serde_json::{Map, Value as Json, json};
 
-use crate::definition::{HideZero, ReportDef};
-use crate::line::LineId;
+use crate::definition::{self, HideZero, ReportDef};
+use crate::line::{LineId, SegmentKind};
 use crate::settings::{self, Bounds};
 
 /// Characters of the search text: a protocol bound of the filter bar.
 pub const MAX_SEARCH_CHARS: usize = 256;
 
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 13] = [
     "report",
     "companies",
     "date",
     "comparison",
     "unfold_all",
     "unfolded",
+    "loaded_pages",
     "hide_zero",
     "search",
     "provider",
@@ -156,6 +160,8 @@ pub struct Options {
     pub unfold_all: bool,
     /// The unfolded lines.
     pub unfolded: Vec<LineId>,
+    /// Additional pages requested for each unfolded parent, keyed by canonical line ID.
+    pub loaded_pages: BTreeMap<String, u64>,
     /// Hide zero lines (on screen in the browser; in exports on the server).
     pub hide_zero: bool,
     /// The search text.
@@ -185,7 +191,7 @@ impl Options {
             .flat_map(|group| {
                 def.columns.iter().map(move |c| {
                     json!({"group": group, "name": c.name, "label": c.label,
-                           "kind": c.kind.as_str(), "sortable": c.sortable})
+                           "kind": c.kind.as_str(), "sortable": def.can_sort(c)})
                 })
             })
             .collect();
@@ -209,6 +215,7 @@ impl Options {
             },
             "unfold_all": self.unfold_all,
             "unfolded": self.unfolded.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "loaded_pages": self.loaded_pages,
             "hide_zero": self.hide_zero,
             "search": self.search,
             "provider": self.provider,
@@ -391,6 +398,74 @@ pub fn compare(main: Period, mode: ComparisonMode, k: i32) -> Option<Period> {
     }
 }
 
+/// Bound the work of all requested page replays together, before asking a provider for rows.
+fn loaded_pages(
+    input: &Map<String, Json>,
+    def: &ReportDef,
+    bounds: &Bounds,
+    unfolded: &[LineId],
+    unfold_all: bool,
+    same_report: bool,
+    strict: bool,
+) -> Result<BTreeMap<String, u64>> {
+    let mut pages = BTreeMap::new();
+    let Some(given) = input.get("loaded_pages") else {
+        return Ok(pages);
+    };
+    let given = object(given, "options.loaded_pages")?;
+    let max_pages = bounds.max_screen_lines as u64 / def.load_more_limit;
+    let too_many = || {
+        bad(format!(
+            "options.loaded_pages exceeds the {}-line screen bound (setting {}).",
+            bounds.max_screen_lines,
+            settings::MAX_SCREEN_LINES
+        ))
+    };
+    if given.len() as u64 > max_pages {
+        return Err(too_many());
+    }
+    let open: BTreeSet<String> = unfolded.iter().map(ToString::to_string).collect();
+    let mut total = 0_u64;
+    for (key, value) in given {
+        let count = value
+            .as_u64()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| bad("options.loaded_pages counts must be positive integers."))?;
+        total = total
+            .checked_add(count)
+            .filter(|n| *n <= max_pages)
+            .ok_or_else(too_many)?;
+        let id = LineId::parse(key)?;
+        if id.to_string() != *key {
+            return Err(bad("options.loaded_pages needs canonical parent line IDs."));
+        }
+        let parent = matches!(
+            id.segments().last().map(|s| s.kind()),
+            Some(SegmentKind::Line(_) | SegmentKind::Group(_))
+        );
+        if !same_report || id.report() != def.id || !parent || !(unfold_all || open.contains(key)) {
+            if strict {
+                return Err(bad(format!(
+                    "options.loaded_pages: {key} is not an unfolded parent of this report."
+                )));
+            }
+            continue;
+        }
+        if def.provider == definition::DEFINITION
+            && let Err(error) = definition::check_page_parent(def, &id, bounds, |parent| {
+                unfold_all || open.contains(&parent.to_string())
+            })
+        {
+            if strict || error.kind() != ErrorKind::Validation {
+                return Err(error);
+            }
+            continue;
+        }
+        pages.insert(key.clone(), count);
+    }
+    Ok(pages)
+}
+
 /// Resolve `input` for `def`. `strict` refuses a value this report cannot use instead of
 /// replacing it with the default.
 ///
@@ -498,6 +573,10 @@ pub(crate) async fn resolve(
                 "options.date.mode: this report uses {}.",
                 mode_name(def.date_mode)
             ))?;
+        } else if def.current_only
+            && (given != Preset::Today || from.is_some() || to.is_some_and(|to| to != today))
+        {
+            refuse("options.date: this report reads current stock or balances. Open it with Today to refresh.".into())?;
         } else if !given.offered(def.date_mode) {
             refuse(format!(
                 "options.date.preset: {} is not offered in {} mode.",
@@ -640,6 +719,16 @@ pub(crate) async fn resolve(
         }
     }
 
+    let loaded_pages = loaded_pages(
+        input,
+        def,
+        bounds,
+        &unfolded,
+        unfold_all,
+        same_report,
+        strict,
+    )?;
+
     // hide_zero (order 200)
     let hide_zero = match (def.hide_zero, flag(input, "hide_zero")?) {
         (HideZero::Never, Some(true)) => {
@@ -689,7 +778,7 @@ pub(crate) async fn resolve(
                 _ => return Err(bad("options.order.direction is not asc or desc.")),
             };
             match def.columns.iter().find(|c| c.label == column) {
-                Some(c) if c.sortable && !def.is_formula_label(column) => Some(Order {
+                Some(c) if def.can_sort(c) => Some(Order {
                     column: column.to_owned(),
                     descending,
                 }),
@@ -713,6 +802,7 @@ pub(crate) async fn resolve(
         comparison_custom,
         unfold_all,
         unfolded,
+        loaded_pages,
         hide_zero,
         search,
         provider,

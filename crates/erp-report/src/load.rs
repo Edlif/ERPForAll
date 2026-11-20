@@ -7,9 +7,7 @@ use crate::{
     FieldValue, Limits, PrefetchPlan, RecordStore, ReportError, ReportLimits, probe_image,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-
-/// The task that runs registered helpers; until it lands a program that calls one is refused here.
-const HELPERS_TASK: &str = "a later release";
+use std::sync::Mutex;
 
 fn data(reason: impl Into<String>) -> ReportError {
     ReportError::Data {
@@ -72,6 +70,41 @@ struct Pending {
     model: String,
     ids: Vec<i64>,
 }
+/// Progress belongs to the stage, including work spent finding an empty invocation.
+#[derive(Debug)]
+struct HelperProgress {
+    index: usize,
+    pending: Option<crate::HelperRequest>,
+    work: crate::limits::Work,
+    steps: usize,
+    maximum: usize,
+    failure: Option<(&'static str, usize)>,
+}
+impl HelperProgress {
+    fn check_steps(&self, amount: usize) -> Result<usize, ReportError> {
+        if let Some((name, maximum)) = self.failure {
+            return Err(ReportError::Limit { name, maximum });
+        }
+        self.steps
+            .checked_add(amount)
+            .filter(|steps| *steps <= self.maximum)
+            .ok_or(ReportError::Limit {
+                name: "evaluation_steps",
+                maximum: self.maximum,
+            })
+    }
+    fn charge(&mut self, amount: usize) -> Result<(), ReportError> {
+        let result = self.check_steps(amount).and_then(|steps| {
+            self.work.charge(amount)?;
+            self.steps = steps;
+            Ok(())
+        });
+        if let Err(ReportError::Limit { name, maximum }) = &result {
+            self.failure = Some((*name, *maximum));
+        }
+        result
+    }
+}
 /// The reads of one batch, in order. Ask for [`DataStage::request`], run it, hand the records to
 /// [`DataStage::supply`], and repeat until there is no request; [`DataStage::finish`] gives the
 /// store. The number of requests is at most the plan's levels, whatever the batch size. An error
@@ -115,6 +148,11 @@ pub struct DataStage<'p> {
     asked: BTreeMap<String, BTreeSet<i64>>,
     loaded: BTreeMap<String, BTreeMap<i64, LoadedRecord>>,
     reads: usize,
+    helpers: Mutex<HelperProgress>,
+    helper_results: Vec<crate::records::HelperResults>,
+    limits: ReportLimits,
+    helper_bytes: usize,
+    html_images: crate::html_images::HtmlImages,
 }
 impl<'p> DataStage<'p> {
     /// Start the reads of `plan` for the ids of its context names (`docs` and every declared name
@@ -122,21 +160,14 @@ impl<'p> DataStage<'p> {
     ///
     /// A name of the plan without ids, a name the plan does not have and a name given twice are
     /// [`ReportError::Data`] errors; more records than the data limit of `limits` is a
-    /// [`ReportError::Limit`]; a program that calls a report helper is refused as
-    /// [`ReportError::Unsupported`] until helper calls are run by the data stage. `document`
-    /// carries the image limits.
+    /// [`ReportError::Limit`]. After the reads, supply every helper answer before finishing.
+    /// `document` carries the image limits.
     pub fn new(
         plan: &'p PrefetchPlan,
         roots: &[(&str, &[i64])],
         limits: ReportLimits,
         document: Limits,
     ) -> Result<Self, ReportError> {
-        if plan.helpers().next().is_some() {
-            return Err(ReportError::Unsupported {
-                feature: "helper calls",
-                task: HELPERS_TASK,
-            });
-        }
         let mut held = vec![Vec::new(); plan.paths.len()];
         let mut given = BTreeSet::new();
         for (name, ids) in roots {
@@ -164,6 +195,18 @@ impl<'p> DataStage<'p> {
             asked: BTreeMap::new(),
             loaded: BTreeMap::new(),
             reads: 0,
+            helpers: Mutex::new(HelperProgress {
+                index: 0,
+                pending: None,
+                work: limits.work(),
+                steps: 0,
+                maximum: limits.steps,
+                failure: None,
+            }),
+            helper_results: Vec::new(),
+            limits,
+            helper_bytes: 0,
+            html_images: crate::html_images::HtmlImages::default(),
         };
         stage.schedule()?;
         Ok(stage)
@@ -292,6 +335,16 @@ impl<'p> DataStage<'p> {
                         "{model}({id}).{field} is missing from its read"
                     )));
                 };
+                if matches!(value.kind, crate::records::Kind::Html)
+                    && let erp_expr::ExprValue::Str(text) = &value.value
+                {
+                    self.html_images.scan(
+                        (model.into(), id, field.clone()),
+                        text.as_str(),
+                        self.limits,
+                        self.document,
+                    )?;
+                }
                 // A binary value the plan reads is a picture; empty bytes are the unset value. One
                 // over a picture limit is refused here, by record and field. Bytes that are no
                 // picture are kept: where a template prints them, an empty box and a warning
@@ -321,20 +374,228 @@ impl<'p> DataStage<'p> {
         }
         Ok(())
     }
+    /// The next helper batch. Field reads must finish first. Empty receiver batches are skipped.
+    /// Repeated polls return the retained batch without repeating dependency analysis. Work and
+    /// accepted result counts share the stage's cumulative evaluation-step budget.
+    pub fn helper_request(&self) -> Result<Option<crate::HelperRequest>, ReportError> {
+        if !self.pending.is_empty() {
+            return Err(data("field reads must complete before report helpers"));
+        }
+        let mut progress = self
+            .helpers
+            .lock()
+            .map_err(|_| data("report helper state was poisoned"))?;
+        progress.check_steps(0)?;
+        if let Some(request) = &progress.pending {
+            return Ok(Some(request.clone()));
+        }
+        while let Some(invocation) = self.plan.invocations.get(progress.index) {
+            progress.charge(1)?;
+            let mut ids = BTreeSet::new();
+            for path in &invocation.paths {
+                progress.charge(self.held[*path].len())?;
+                ids.extend(self.held[*path].iter().copied().filter(|id| {
+                    self.loaded
+                        .get(&invocation.model)
+                        .is_some_and(|rows| rows.contains_key(id))
+                }));
+            }
+            if ids.is_empty() {
+                progress.index += 1;
+                continue;
+            }
+            let mut permissions: BTreeMap<(String, i64), BTreeSet<String>> = BTreeMap::new();
+            for id in &ids {
+                permissions
+                    .entry((invocation.model.clone(), *id))
+                    .or_default()
+                    .insert("id".into());
+            }
+            for dependency in &invocation.dependencies {
+                let mut current: Vec<_> = ids
+                    .iter()
+                    .map(|id| (invocation.model.clone(), *id))
+                    .collect();
+                let segments: Vec<_> = dependency.split('.').collect();
+                for (index, field) in segments.iter().enumerate() {
+                    let mut next = BTreeSet::new();
+                    for (model, id) in current {
+                        progress.charge(1)?;
+                        let Some(record) = self.loaded.get(&model).and_then(|rows| rows.get(&id))
+                        else {
+                            continue;
+                        };
+                        let allowed = permissions.entry((model.clone(), id)).or_default();
+                        allowed.insert("id".into());
+                        allowed.insert((*field).into());
+                        if index + 1 < segments.len() {
+                            let (target, related) = record
+                                .fields
+                                .get(*field)
+                                .and_then(FieldValue::relation)
+                                .ok_or_else(|| {
+                                    data(format!(
+                                        "helper {}.{} dependency {dependency} was not loaded",
+                                        invocation.model, invocation.method
+                                    ))
+                                })?;
+                            progress.charge(related.len())?;
+                            next.extend(related.iter().map(|id| (target.to_owned(), *id)));
+                        }
+                    }
+                    current = next.into_iter().collect();
+                }
+            }
+            let mut grouped: BTreeMap<(String, Vec<String>), Vec<i64>> = BTreeMap::new();
+            for ((model, id), fields) in permissions {
+                grouped
+                    .entry((model, fields.into_iter().collect()))
+                    .or_default()
+                    .push(id);
+            }
+            let reads = grouped
+                .into_iter()
+                .map(|((model, fields), ids)| crate::HelperRead { model, fields, ids })
+                .collect();
+            let request = crate::HelperRequest {
+                invocation: invocation.clone(),
+                ids: ids.into_iter().collect(),
+                reads,
+            };
+            progress.pending = Some(request.clone());
+            return Ok(Some(request));
+        }
+        Ok(None)
+    }
+    /// Supply exactly one bounded scalar per receiver, in request order. No result is kept on failure.
+    pub fn supply_helper(&mut self, values: Vec<serde_json::Value>) -> Result<(), ReportError> {
+        let request = self
+            .helper_request()?
+            .ok_or_else(|| data("no report helper is pending"))?;
+        if values.len() != request.ids().len() {
+            return Err(data(format!(
+                "helper {}.{} returned {} results for {} records",
+                request.model(),
+                request.method(),
+                values.len(),
+                request.ids().len()
+            )));
+        }
+        // Refuse the total before constructing any retained result, including empty strings.
+        // A malformed answer leaves both the pending batch and successful-result charges intact.
+        self.helpers
+            .lock()
+            .map_err(|_| data("report helper state was poisoned"))?
+            .check_steps(values.len())?;
+        let mut bytes = self.helper_bytes;
+        for value in &values {
+            bytes = bytes
+                .checked_add(crate::helper::scalar_bytes(value))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<i64>()))
+                .filter(|bytes| *bytes <= self.limits.bytes)
+                .ok_or(ReportError::Limit {
+                    name: "evaluation_bytes",
+                    maximum: self.limits.bytes,
+                })?;
+        }
+        let scalars = values
+            .into_iter()
+            .map(|value| {
+                crate::helper::scalar(value).map_err(|error| {
+                    data(format!(
+                        "helper {}.{}: {error}",
+                        request.model(),
+                        request.method()
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let progress = self
+            .helpers
+            .get_mut()
+            .map_err(|_| data("report helper state was poisoned"))?;
+        progress.charge(scalars.len())?;
+        let results = request.ids().iter().copied().zip(scalars).collect();
+        progress.index += 1;
+        progress.pending = None;
+        self.helper_bytes = bytes;
+        self.helper_results.push(crate::records::HelperResults {
+            invocation: request.invocation,
+            values: results,
+        });
+        Ok(())
+    }
+    /// The next auxiliary HTML image projection, after the declared field reads. No I/O occurs here.
+    /// Distinct model/field groups and the total records/bytes are bounded by ReportLimits.
+    pub fn image_request(&mut self) -> Result<Option<crate::HtmlImageRequest>, ReportError> {
+        if !self.pending.is_empty() {
+            return Err(data("field reads must complete before HTML images"));
+        }
+        let ordinary = self.asked.values().map(BTreeSet::len).sum();
+        self.html_images.prepare(self.limits, ordinary)?;
+        Ok(self.html_images.request())
+    }
+    /// Answer the current image request with raw bytes of existing records. Missing records degrade.
+    /// Duplicate or unrequested IDs are errors; image byte/pixel/header failures are warnings.
+    pub fn supply_images(
+        &mut self,
+        records: Vec<(i64, std::sync::Arc<[u8]>)>,
+    ) -> Result<(), ReportError> {
+        self.html_images.supply(
+            records
+                .into_iter()
+                .map(|(id, bytes)| (id, Ok(bytes)))
+                .collect(),
+            None,
+            self.limits,
+            self.document,
+        )
+    }
+    /// Per-image byte cap and remaining aggregate payload budget of the pending projection.
+    /// Metadata for its targets is reserved before the adapter requests payloads.
+    pub fn image_byte_budget(&self) -> Result<(usize, usize), ReportError> {
+        Ok((
+            self.document.get(crate::LimitKind::ImageBytes),
+            self.html_images.remaining(self.limits)?,
+        ))
+    }
+    /// Answer with admitted bytes or explicit content rejections. Access failures must be propagated
+    /// by the adapter, never supplied as content rejections.
+    pub fn supply_image_results(
+        &mut self,
+        records: Vec<crate::HtmlImageResult>,
+    ) -> Result<(), ReportError> {
+        self.html_images
+            .supply(records, None, self.limits, self.document)
+    }
+    /// Degrade an unavailable or nonbinary target projection without reading it. Never use this to
+    /// swallow an ORM access refusal or a database error; those must end the data stage.
+    pub fn reject_images(&mut self, reason: &str) -> Result<(), ReportError> {
+        self.html_images
+            .supply(Vec::new(), Some(reason), self.limits, self.document)
+    }
     /// The reads answered so far.
     pub fn reads(&self) -> usize {
         self.reads
     }
     /// The store of everything that was read. A request that is still pending is a
     /// [`ReportError::Data`] error.
-    pub fn finish(self) -> Result<RecordStore, ReportError> {
+    pub fn finish(mut self) -> Result<RecordStore, ReportError> {
         if let Some(pending) = self.pending.front() {
             return Err(data(format!(
                 "the read of {} is still pending",
                 pending.model
             )));
         }
+        if self.helper_request()?.is_some() {
+            return Err(data("a report helper answer is still pending"));
+        }
+        if self.image_request()?.is_some() {
+            return Err(data("an HTML image read is still pending"));
+        }
         let mut store = RecordStore::new();
+        store.html_images = self.html_images;
+        store.helpers = self.helper_results;
         for (model, records) in self.loaded {
             for (id, record) in records {
                 store.add(&model, id, record.display_name, record.fields)?;

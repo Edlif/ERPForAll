@@ -39,7 +39,7 @@ async fn defaults_harness() -> Harness {
 async fn init_db(tx: &mut erp_orm::Transaction) -> i64 {
     let currency = erp_testkit::fixtures::seed_currency_in(tx).await.unwrap();
     tx.execute(
-        "INSERT INTO res_company (id, name, currency_id) VALUES (1, 'Company 1', $1), (2, 'Company 2', $1) ON CONFLICT DO NOTHING",
+        "INSERT INTO res_company (tz, id, name, currency_id) VALUES ('UTC', 1, 'Company 1', $1), ('UTC', 2, 'Company 2', $1) ON CONFLICT DO NOTHING",
         &[&currency],
     )
     .await
@@ -529,7 +529,7 @@ async fn access_harness() -> Harness {
         )
         .await?;
         tx.execute(
-            "INSERT INTO res_company (id, name, currency_id) VALUES (3, 'Company 3', $1) ON CONFLICT DO NOTHING",
+            "INSERT INTO res_company (tz, id, name, currency_id) VALUES ('UTC', 3, 'Company 3', $1) ON CONFLICT DO NOTHING",
             &[&currency],
         )
         .await?;

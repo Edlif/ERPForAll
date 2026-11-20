@@ -24,6 +24,18 @@ pub mod sql_objects {
     pub use linkme;
 }
 
+/// Count-only native uninstall guard declarations.
+/// The host's ModuleSystem still requires an independent manifest and orchestrates authority,
+/// locks and rollback. The callback receives no SQL/Env/transaction escape. This collector is
+/// shared by every native host; it is absent from the WebAssembly guest backend.
+pub mod sql_uninstall {
+    pub use erp_orm::sql_uninstall::{
+        SQL_UNINSTALL_GUARDS, SqlGuardFn, SqlGuardRead, SqlUninstallGuard,
+        SqlUninstallGuardManifest,
+    };
+    pub use linkme;
+}
+
 /// Typed native settings declarations; lifecycle composition binds addon ownership.
 pub mod settings;
 
@@ -279,19 +291,33 @@ pub mod rpc {
 /// (`base::report_print`). No layout: the node lays the document out.
 ///
 /// The list is explicit: an item `erp_report` adds reaches addons only when it is added here.
+/// Native addons can encode a barcode on a physical printer grid without a direct dependency:
+///
+/// ```
+/// use erp_sdk::report::{Code, Limits, ModuleGrid, QrLevel, ReportError, Symbology};
+/// let grid = ModuleGrid::new(203)?;
+/// let code = Code::encode(Symbology::Code128, "WH/OUT/00012", QrLevel::Low, &Limits::default())?;
+/// let graphic = code.fit(240.0, 36.0, grid)?;
+/// assert!(!graphic.vector().rectangle_list().is_empty());
+/// # Ok::<(), ReportError>(())
+/// ```
 pub mod report {
     /// The context a report program evaluates in (`docs`, `company`, plain values).
     pub use erp_expr::EvalContext;
+    pub use erp_orm::report_helpers::{REPORT_HELPERS, ReportHelperDecl};
     pub use erp_report::{
-        Alignment, AttachmentPolicy, Diagnostic, DocTree, DocumentBuilder, DocumentOptions,
-        EvalOptions, FieldInfo, HelperDependencies, ImageFit, LangFormat, Language, Limits, Node,
-        NodeId, PageSetup, PictureQuality, PlanContext, ProfileKind, RecordStore, ReportError,
-        ReportLimits, ReportProgram, RestrictedField, Style, TemplateSource, Validation,
-        check_attachment, render_html, validate_arch,
+        Alignment, AttachmentPolicy, Code, Diagnostic, DocTree, DocumentBuilder, DocumentOptions,
+        EvalOptions, FieldInfo, HelperDependencies, ImageFit, LangFormat, Language, Limits,
+        ModuleGrid, Node, NodeId, PageSetup, PictureQuality, PlanContext, ProfileKind, QrLevel,
+        RecordStore, ReportError, ReportLimits, ReportProgram, RestrictedField, Style, Symbology,
+        TemplateSource, Validation, check_attachment, render_html, validate_arch,
     };
     /// The data stage under the caller's rights: `load_records` fills the store a program
     /// evaluates from; `field_info` describes the registry's fields to the planner.
-    pub use erp_report_data::{DataError, field_info, load as load_records};
+    pub use erp_report_data::{
+        DataError, HtmlImagePolicy, LoadOptions, field_info, load as load_records,
+        load_with_options as load_records_with_options, report_helpers,
+    };
 }
 
 /// The view arch engine (`erp_views`): parsing, combining and validating

@@ -87,10 +87,10 @@ async fn layer_schema() {
         })
         .await
         .unwrap_err();
-    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::UserError);
     assert_eq!(
         error.message(),
-        "Wrong value for stock.valuation.layer.shortage_policy: 'invented'"
+        "Only the stock valuation engine can change stock.valuation.layer."
     );
     unique(&mut tx,&format!("INSERT INTO stk_cost_layer(company_id,product_id,source_id,kind,effective_time,original_quantity,original_value,consumed_quantity,consumed_value,residual_num,residual_den,generation) VALUES(101,101,{sid},'receipt','2026-01-01',3,10,0,0,0,1,0)"),"stk_cost_layer","_identity").await;
     index(

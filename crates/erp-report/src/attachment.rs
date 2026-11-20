@@ -15,6 +15,7 @@ pub struct FieldInfo {
     pub(crate) relation: Option<String>,
     restricted: bool,
     pub(crate) currency: Option<String>,
+    pub(crate) html: bool,
 }
 impl FieldInfo {
     /// A scalar field with or without a field-level groups restriction.
@@ -23,7 +24,13 @@ impl FieldInfo {
             relation: None,
             restricted,
             currency: None,
+            html: false,
         }
+    }
+    /// Mark an HTML field so warning display names join the same authorized read.
+    pub fn with_html(mut self) -> Self {
+        self.html = true;
+        self
     }
     /// A relational field and its target model.
     pub fn relation(model: impl Into<String>, restricted: bool) -> Self {
@@ -31,6 +38,7 @@ impl FieldInfo {
             relation: Some(model.into()),
             restricted,
             currency: None,
+            html: false,
         }
     }
     /// A monetary field names the field of the same record that holds its currency; the prefetch
@@ -50,6 +58,7 @@ pub struct AttachmentPolicy<'a> {
     acknowledged: bool,
     bindings: &'a [(&'a str, Option<&'a str>)],
     helpers: &'a [HelperDependencies<'a>],
+    report_helpers: &'a [crate::ReportHelper<'a>],
 }
 impl<'a> AttachmentPolicy<'a> {
     /// A report on `model` with no attachment expression and no acknowledgement.
@@ -61,6 +70,7 @@ impl<'a> AttachmentPolicy<'a> {
             acknowledged: false,
             bindings: &[],
             helpers: &[],
+            report_helpers: &[],
         }
     }
     /// Whether the action has an `attachment` expression; attachment reuse does not matter here.
@@ -78,6 +88,11 @@ impl<'a> AttachmentPolicy<'a> {
     /// unresolved, never guessed.
     pub fn with_bindings(mut self, bindings: &'a [(&'a str, Option<&'a str>)]) -> Self {
         self.bindings = bindings;
+        self
+    }
+    /// Authoritative model helpers, whose dependencies are relative to their receiver.
+    pub fn with_report_helpers(mut self, helpers: &'a [crate::ReportHelper<'a>]) -> Self {
+        self.report_helpers = helpers;
         self
     }
     /// Authoritative dependencies of scalar helpers, written in the report context's names
@@ -196,6 +211,34 @@ impl<F: Fn(&str, &str) -> Option<FieldInfo>> Analysis<'_, F> {
                 args,
                 keywords,
             } => {
+                if let Expr::Attribute { value, attr } = func.as_ref() {
+                    let model = self
+                        .reference(key, line, value, bindings, original)?
+                        .ok_or_else(|| self.unresolved(key, line, original))?;
+                    let helpers = self.policy.report_helpers;
+                    let mut matches = helpers
+                        .iter()
+                        .filter(|h| h.model() == model && h.method() == attr);
+                    let helper = matches
+                        .next()
+                        .ok_or_else(|| self.unresolved(key, line, original))?;
+                    if matches.next().is_some()
+                        || crate::helper::static_args(args, keywords).is_none()
+                    {
+                        return Err(self.unresolved(key, line, original));
+                    }
+                    let local = BTreeMap::from([("receiver".into(), Some(model))]);
+                    for dependency in helper.dependencies() {
+                        self.work.charge(dependency.len())?;
+                        if !dependency.split('.').all(identifier) {
+                            return Err(self.unresolved(key, line, original));
+                        }
+                        let source = format!("receiver.{dependency}");
+                        let parsed = expression(key, line, &source)?;
+                        self.reference(key, line, &parsed, &local, original)?;
+                    }
+                    return Ok(None);
+                }
                 let Expr::Name(name) = func.as_ref() else {
                     return Err(self.unresolved(key, line, original));
                 };
@@ -406,7 +449,12 @@ pub fn check_attachment<F: Fn(&str, &str) -> Option<FieldInfo>>(
     if !policy.attachment {
         return Ok(Vec::new());
     }
-    if policy.helpers.len() > limits.diagnostics {
+    if policy
+        .helpers
+        .len()
+        .saturating_add(policy.report_helpers.len())
+        > limits.diagnostics
+    {
         return Err(ReportError::Limit {
             name: "helpers",
             maximum: limits.diagnostics,

@@ -11,6 +11,10 @@
 //! registry's fields to the planner.
 #![allow(missing_docs)]
 
+mod helpers;
+mod html_images;
+pub use helpers::report_helpers;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -80,8 +84,41 @@ pub fn field_info(registry: &Registry, model: &str, field: &str) -> Option<Field
         FieldType::Monetary {
             currency_field: Some(currency),
         } => FieldInfo::scalar(restricted).with_currency_field(currency.as_str()),
+        FieldType::Html => FieldInfo::scalar(restricted).with_html(),
         _ => FieldInfo::scalar(restricted),
     })
+}
+
+/// Policy for dynamic HTML image dependencies. This never grants ORM read access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtmlImagePolicy {
+    /// Conservative default when the caller has not supplied archive context.
+    UnrestrictedFields,
+    /// Non-archived output, or an archive explicitly acknowledging group-restricted fields.
+    CallerRights,
+}
+/// Data-stage budgets and archive policy, supplied by the trusted report integration.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct LoadOptions {
+    limits: ReportLimits,
+    document: Limits,
+    image_policy: HtmlImagePolicy,
+}
+impl LoadOptions {
+    /// Use explicit budgets and conservatively refuse dynamic group-restricted image fields.
+    pub fn new(limits: ReportLimits, document: Limits) -> Self {
+        Self {
+            limits,
+            document,
+            image_policy: HtmlImagePolicy::UnrestrictedFields,
+        }
+    }
+    /// Select caller-rights resolution only after deciding the report's archive policy.
+    pub fn with_html_image_policy(mut self, policy: HtmlImagePolicy) -> Self {
+        self.image_policy = policy;
+        self
+    }
 }
 
 /// Read everything `plan` needs for the records of `roots` (each context name of the plan with its ids)
@@ -117,7 +154,19 @@ pub async fn load(
     limits: ReportLimits,
     document: Limits,
 ) -> Result<RecordStore, DataError> {
-    let mut stage = DataStage::new(plan, roots, limits, document)?;
+    load_with_options(tx, env, plan, roots, LoadOptions::new(limits, document)).await
+}
+
+/// Load declared fields and HTML images with explicit archive policy and admission budgets.
+/// ORM access/database failures are returned unchanged; malformed image content degrades in the report.
+pub async fn load_with_options(
+    tx: &mut Transaction,
+    env: &Env,
+    plan: &PrefetchPlan,
+    roots: &[(&str, &[i64])],
+    options: LoadOptions,
+) -> Result<RecordStore, DataError> {
+    let mut stage = DataStage::new(plan, roots, options.limits, options.document)?;
     let names_only: BTreeSet<String> = plan
         .levels()
         .iter()
@@ -137,6 +186,11 @@ pub async fn load(
         };
         stage.supply(records)?;
     }
+    while let Some(request) = stage.helper_request()? {
+        let results = helpers::execute(tx, env, &request).await?;
+        stage.supply_helper(results)?;
+    }
+    html_images::load(tx, env, &mut stage, options.image_policy).await?;
     Ok(stage.finish()?)
 }
 

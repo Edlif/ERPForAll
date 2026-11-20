@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "erp-addon-ai-base"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+erp-sdk.workspace = true
+erp-addon-base.workspace = true
+url = "=2.5.8"
+serde = { workspace = true, features = ["derive"] }
+toml.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

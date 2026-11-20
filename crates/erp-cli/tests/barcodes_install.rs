@@ -276,6 +276,7 @@ fn stock_adds_default_rule_types_without_transaction_schema() {
                 &erp_addon_uom::ADDON,
                 &erp_addon_product::ADDON,
                 &erp_addon_stock::ADDON,
+                &erp_addon_reporting::ADDON,
             ])
             .build()
             .unwrap();

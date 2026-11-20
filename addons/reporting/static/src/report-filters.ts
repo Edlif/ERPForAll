@@ -194,7 +194,7 @@ function searchForm(ctx: FilterContext): HTMLFormElement {
 /** The bar for `ctx`; dispose it before building the next one (the editors inside own listeners). */
 export function buildFilters(ctx: FilterContext): { node: HTMLElement; dispose(): void } {
   const node = document.createElement("div"); node.className = "report-filters"; node.setAttribute("role", "toolbar"); node.setAttribute("aria-label", "Report filters");
-  const chips: Chip[] = [dateChip(ctx)];
+  const chips: Chip[] = ctx.filters.currentOnly ? [] : [dateChip(ctx)];
   if (ctx.filters.comparison) chips.push(comparisonChip(ctx));
   if (ctx.filters.multiCompany && ctx.env.companies.length > 1) chips.push(companiesChip(ctx));
   if (ctx.filters.unfoldAll || ctx.filters.hideZero !== "never") chips.push(optionsChip(ctx));

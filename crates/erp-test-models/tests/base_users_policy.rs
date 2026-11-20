@@ -340,7 +340,7 @@ async fn spec_company_031_users_change_their_default_company_within_their_compan
         companies.push(
             one(
                 &client,
-                "INSERT INTO res_company (name, currency_id, active) VALUES ($1, $2, true) \
+                "INSERT INTO res_company (tz, name, currency_id, active) VALUES ('UTC', $1, $2, true) \
                  RETURNING id::int8",
                 &[&name, &currency],
             )

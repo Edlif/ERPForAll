@@ -23,6 +23,9 @@ use crate::{
 use erp_expr::{EvalContext, ExprError, ExprObject, ExprResult, ExprValue, Map, Seq, eval_ast};
 use std::{rc::Rc, sync::Arc, time::Instant};
 
+#[path = "html_content.rs"]
+mod html_content;
+
 const FRAGMENT: &str = "report.fragment";
 const VECTORS_TASK: &str = "a later release";
 /// The helper a template gives an image field to for an `<img>` source, as in the reference.
@@ -144,6 +147,7 @@ struct Inherit {
 }
 /// What an element adds to what it inherited.
 struct Own {
+    rich: crate::RichText,
     inherit: Inherit,
     padding: f64,
     keep: bool,
@@ -246,6 +250,8 @@ enum Source {
     Records(Arc<dyn ExprObject>),
 }
 struct Run<'p> {
+    warnings: Vec<crate::ReportWarning>,
+    image_origins: Vec<(usize, crate::ReportWarning)>,
     program: &'p ReportProgram,
     records: &'p RecordStore,
     options: &'p EvalOptions,
@@ -278,6 +284,8 @@ impl ReportProgram {
         let document = document.with_language(self.language.iso())?;
         let base = Style::default().size();
         let mut run = Run {
+            warnings: Vec::new(),
+            image_origins: Vec::new(),
             program: self,
             records,
             options,
@@ -338,7 +346,10 @@ impl ReportProgram {
         if let Some(footer) = run.footer.take() {
             run.builder.set_footer(footer)?;
         }
-        run.builder.finish(body, document)
+        run.builder
+            .finish(body, document)?
+            .with_content_warnings(run.warnings, options.limits)?
+            .with_image_origins(run.image_origins, options.limits)
     }
 }
 
@@ -1141,6 +1152,7 @@ impl<'p> Run<'p> {
                 "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th" | "ul" | "ol" | "li"
             );
         Own {
+            rich: crate::RichText::default(),
             inherit: Inherit {
                 text,
                 align,
@@ -1166,7 +1178,8 @@ impl<'p> Run<'p> {
             .with_bold(text.bold)
             .with_italic(text.italic)
             .with_underline(text.underline)
-            .with_color(text.color);
+            .with_color(text.color)
+            .with_rich(own.rich.clone());
         if !boxed {
             return Ok(style);
         }
@@ -1449,6 +1462,9 @@ impl<'p> Run<'p> {
                 for piece in pieces {
                     match piece {
                         Piece::Text(text) => self.text(kids, &text)?,
+                        Piece::Html(text, source) => {
+                            self.html_content(&text, &source, inherit, at, kids)?
+                        }
                         Piece::Break => self.node(Node::LineBreak, false, kids)?,
                         Piece::Image {
                             data,
@@ -1584,15 +1600,8 @@ impl<'p> Run<'p> {
                         )));
                     }
                 };
-                let id = if span > 1 {
-                    self.builder.add(Node::Cell {
-                        child: id,
-                        colspan: span,
-                        rowspan: 1,
-                    })?
-                } else {
-                    id
-                };
+                // Keep the child unwrapped until its table is assembled. User-content
+                // degradation can then unwrap a row without leaking a structural Cell node.
                 out.push(Item::Cell(id, span));
             }
             "li" => out.push(Item::Entry(self.single(kids, own, own.styled(), at)?)),
@@ -1639,7 +1648,20 @@ impl<'p> Run<'p> {
                 let mut cells = Vec::new();
                 for (row, head) in rows {
                     let mut width: usize = row.iter().map(|(_, span)| span).sum();
-                    let mut row: Vec<NodeId> = row.into_iter().map(|(id, _)| id).collect();
+                    let mut row: Vec<NodeId> = row
+                        .into_iter()
+                        .map(|(id, span)| {
+                            if span > 1 {
+                                self.builder.add(Node::Cell {
+                                    child: id,
+                                    colspan: span,
+                                    rowspan: 1,
+                                })
+                            } else {
+                                Ok(id)
+                            }
+                        })
+                        .collect::<Result<_, ReportError>>()?;
                     // A short row is filled with empty cells so that the next row starts a line.
                     while width < columns {
                         row.push(self.builder.add(Node::Text(String::new()))?);
@@ -1787,7 +1809,7 @@ fn code_by_path(
         None => return Err(malformed()),
     }
     let (mut width, mut height) = (600, 100);
-    let (mut human_readable, mut quiet) = (false, true);
+    let (mut human_readable, mut quiet, mut gs1) = (false, true, false);
     let mut level = QrLevel::default();
     let mut grid = grid;
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
@@ -1806,6 +1828,7 @@ fn code_by_path(
             "height" => height = whole(&text, 1, 10_000)?,
             "humanreadable" => human_readable = whole(&text, 0, u32::MAX)? != 0,
             "quiet" => quiet = whole(&text, 0, u32::MAX)? != 0,
+            "gs1" => gs1 = whole(&text, 0, 1)? == 1,
             "barLevel" => {
                 level = QrLevel::from_name(&text).ok_or_else(|| {
                     refuse(format!(
@@ -1843,6 +1866,7 @@ fn code_by_path(
             height: sides[1].unwrap_or(f64::from(height) * POINTS_PER_PIXEL),
             human_readable,
             quiet,
+            gs1,
             level,
             grid,
         },

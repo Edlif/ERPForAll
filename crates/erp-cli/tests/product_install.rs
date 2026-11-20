@@ -1393,6 +1393,7 @@ fn product_and_stock_install_together() {
                 &erp_addon_barcodes::ADDON,
                 &erp_addon_barcodes_gs1_nomenclature::ADDON,
                 &erp_addon_stock::ADDON,
+                &erp_addon_reporting::ADDON,
             ])
             .build()
             .unwrap();

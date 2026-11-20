@@ -102,7 +102,7 @@ fn vals(items: &[(&str, Value)]) -> std::collections::BTreeMap<String, Value> {
 }
 async fn seed(tx: &mut Transaction) {
     let currency = erp_testkit::fixtures::seed_currency_in(tx).await.unwrap();
-    tx.execute("INSERT INTO res_company (id, name, currency_id) VALUES (1, 'One', $1), (2, 'Two', $1), (3, 'Three', $1) ON CONFLICT DO NOTHING", &[&currency]).await.unwrap();
+    tx.execute("INSERT INTO res_company (tz, id, name, currency_id) VALUES ('UTC', 1, 'One', $1), ('UTC', 2, 'Two', $1), ('UTC', 3, 'Three', $1) ON CONFLICT DO NOTHING", &[&currency]).await.unwrap();
     // a user without elevation (the system principal is always elevated)
     tx.execute(
         "INSERT INTO res_users (id, name, login, active) VALUES (7, 'plain', 'plain', true) ON CONFLICT DO NOTHING",

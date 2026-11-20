@@ -3,8 +3,8 @@ summary = "Manage stock and logistics activities"
 category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.9.0"
-depends = ["base", "product", "barcodes_gs1_nomenclature"]
+version = "1.11.0"
+depends = ["base", "product", "barcodes_gs1_nomenclature", "reporting"]
 data = [
     "security/stock_security.xml",
     "security/stock_group_classification.xml",
@@ -28,5 +28,7 @@ data = [
     "views/stock_orderpoint_views.xml",
     "views/stock_quant_views.xml",
     "views/stock_menus_master.xml",
+    "data/stock_report_data.xml",
+    "views/stock_report_menus.xml",
 ]
 exact_only = true

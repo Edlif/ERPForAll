@@ -522,11 +522,11 @@ fn what_cannot_be_printed_as_asked_is_refused_at_its_template_line() {
     };
     assert_eq!(
         widget("'symbology': 'Aztec'"),
-        "test.report:1: barcode code: symbology `Aztec` is unknown; the symbologies are auto, Code128, EAN13, EAN8, UPCA, Code39, ITF14, I2of5, QR"
+        "test.report:1: barcode code: symbology `Aztec` is unknown; the symbologies are auto, Code128, EAN13, EAN8, UPCA, Code39, ITF14, I2of5, QR, DataMatrix"
     );
     assert_eq!(
-        widget("'symbology': 'ECC200DataMatrix'"),
-        "test.report:1: barcode code: symbology `ECC200DataMatrix` is not printed; the symbologies are auto, Code128, EAN13, EAN8, UPCA, Code39, ITF14, I2of5, QR"
+        widget("'symbology': 'Extended39'"),
+        "test.report:1: barcode code: symbology `Extended39` is not printed; the symbologies are auto, Code128, EAN13, EAN8, UPCA, Code39, ITF14, I2of5, QR, DataMatrix"
     );
     assert_eq!(
         widget("'symbology': 'EAN13'"),
@@ -668,5 +668,252 @@ fn an_image_whose_source_is_a_code_address_prints_that_code() {
         ),
     ] {
         assert_eq!(message(&format!("<div><img src='{source}'/></div>")), text);
+    }
+}
+
+#[test]
+fn datamatrix_templates_print_the_named_symbol() {
+    for arch in [
+        "<div><span t-field='doc.name' t-options=\"{'widget': 'barcode', 'symbology': 'ECC200DataMatrix', 'humanreadable': 1}\"/></div>",
+        "<div><img src='/report/barcode/DataMatrix/WH%2FOUT%2F00012?width=120&amp;height=120'/></div>",
+    ] {
+        let doc = print(arch).unwrap();
+        let found = codes(&doc);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "Barcode WH/OUT/00012");
+        assert_eq!(found[0].1, found[0].2);
+        assert_eq!(found[0].3, None);
+    }
+}
+
+#[test]
+fn datamatrix_names_geometry_and_limits() {
+    for name in [
+        "DataMatrix",
+        "ECC200DataMatrix",
+        "data-matrix",
+        "ecc200_data matrix",
+    ] {
+        assert_eq!(Symbology::from_name(name), Some(Symbology::DataMatrix));
+    }
+    assert!(Symbology::ALL.contains(&Symbology::DataMatrix));
+    assert!(Symbology::DataMatrix.is_matrix());
+    assert_eq!(Symbology::DataMatrix.name(), "DataMatrix");
+    let code = encode(Symbology::DataMatrix, "A").unwrap();
+    assert_eq!(code.symbology(), Symbology::DataMatrix);
+    assert_eq!(code.text(), "A");
+    assert_eq!(code.modules_across(), code.rows() + 2);
+    assert_eq!(
+        code.clone().without_quiet_zone().modules_across(),
+        code.rows()
+    );
+    for y in 0..code.rows() {
+        assert!(code.is_dark(0, y), "solid left finder");
+    }
+    for x in 0..code.rows() {
+        assert!(code.is_dark(x, code.rows() - 1), "solid bottom finder");
+    }
+    for dpi in [203, 300] {
+        let fitted = code.fit(75.0, 35.0, ModuleGrid::new(dpi).unwrap()).unwrap();
+        assert_eq!(fitted.width(), fitted.height());
+        assert!(fitted.width() <= 35.0);
+        let dots = fitted.module() * f64::from(dpi) / 72.0;
+        assert!((dots - dots.round()).abs() < 1e-9);
+        assert_eq!(fitted.vector().width(), code.modules_across() as f64);
+    }
+    for (value, reason) in [
+        (String::new(), "there is no value to encode"),
+        (
+            "a".repeat(2_500),
+            "2500 bytes do not fit a square ECC200 Data Matrix",
+        ),
+    ] {
+        let error = encode(Symbology::DataMatrix, &value).unwrap_err();
+        assert!(matches!(
+            error,
+            ReportError::Code {
+                symbology: "DataMatrix",
+                ..
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            format!("report DataMatrix code: {reason}")
+        );
+    }
+    for gs1 in [false, true] {
+        let limits = Limits::default().lowered(LimitKind::CodeBytes, 8).unwrap();
+        let error = if gs1 {
+            Code::encode_gs1_datamatrix("123456789", &limits)
+        } else {
+            Code::encode(Symbology::DataMatrix, "123456789", QrLevel::Low, &limits)
+        }
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ReportError::DocumentLimit {
+                kind: LimitKind::CodeBytes,
+                actual: 9,
+                max: 8
+            }
+        ));
+        assert_eq!(error.to_string(), "report limit code_bytes exceeded: 9 > 8");
+    }
+    for side in [0.0, f64::NAN, f64::INFINITY, 14401.0] {
+        let error = code.fit(side, 30.0, ModuleGrid::default()).unwrap_err();
+        assert!(matches!(
+            error,
+            ReportError::Code {
+                symbology: "DataMatrix",
+                ..
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "report DataMatrix code: the box of a code must be in (0, 14400] points each way"
+        );
+    }
+    let error = code.fit(1.0, 1.0, ModuleGrid::default()).unwrap_err();
+    assert!(matches!(
+        error,
+        ReportError::Code {
+            symbology: "DataMatrix",
+            ..
+        }
+    ));
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "report DataMatrix code: `A` is {} modules and needs {:.1} points at the smallest module (2 dots at 300 dpi); its box gives 1.0",
+            code.modules_across(),
+            code.modules_across() as f64 * 0.48
+        )
+    );
+}
+
+#[test]
+fn datamatrix_gs1_is_explicit_and_rejects_invalid_options() {
+    for value in ["é", "\n", "\0", "\u{7f}"] {
+        let error = Code::encode_gs1_datamatrix(value, &Limits::default()).unwrap_err();
+        assert!(matches!(
+            error,
+            ReportError::Code {
+                symbology: "DataMatrix",
+                ..
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "report DataMatrix code: GS1 data must contain printable ASCII or the ASCII GS separator (0x1D)"
+        );
+    }
+    let empty = Code::encode_gs1_datamatrix("", &Limits::default()).unwrap_err();
+    assert!(matches!(
+        empty,
+        ReportError::Code {
+            symbology: "DataMatrix",
+            ..
+        }
+    ));
+    assert_eq!(
+        empty.to_string(),
+        "report DataMatrix code: there is no value to encode"
+    );
+    let value = "010950110102091710LOT-1\u{1d}2110";
+    assert_eq!(
+        Code::encode_gs1_datamatrix(value, &Limits::default())
+            .unwrap()
+            .text(),
+        value
+    );
+    for option in ["'yes'", "2", "-1", "None"] {
+        assert_eq!(
+            message(&format!(
+                "<div><span t-field='doc.name' t-options=\"{{'widget': 'barcode', 'symbology': 'DataMatrix', 'gs1': {option}}}\"/></div>"
+            )),
+            "test.report:1: widget option `gs1` must be a boolean or 0 or 1"
+        );
+    }
+    for kind in ["QR", "Code128", "auto"] {
+        assert_eq!(
+            message(&format!(
+                "<div><span t-field='doc.name' t-options=\"{{'widget': 'barcode', 'symbology': '{kind}', 'gs1': True}}\"/></div>"
+            )),
+            "test.report:1: barcode code: option `gs1` is available only for DataMatrix"
+        );
+    }
+    assert_eq!(
+        message("<div><img src='/report/barcode/DataMatrix/ABC?gs1=2'/></div>"),
+        "test.report:1: barcode code: parameter `gs1` must be a whole number in 0..=1; got `2`"
+    );
+    assert_eq!(
+        message("<div><img src='/report/barcode/QR/ABC?gs1=1'/></div>"),
+        "test.report:1: barcode code: option `gs1` is available only for DataMatrix"
+    );
+    for flag in ["False", "0", "True", "1"] {
+        let doc = print(&format!("<div><span t-field='doc.name' t-options=\"{{'widget': 'barcode', 'symbology': 'DataMatrix', 'gs1': {flag}}}\"/></div>")).unwrap();
+        assert_eq!(codes(&doc).len(), 1);
+    }
+}
+
+#[test]
+fn datamatrix_vectors_obey_document_rectangle_limits() {
+    let limits = Limits::default()
+        .lowered(LimitKind::VectorRectangles, 1)
+        .unwrap();
+    let graphic = Code::encode(Symbology::DataMatrix, "A", QrLevel::Low, &limits)
+        .unwrap()
+        .fit(30.0, 30.0, ModuleGrid::default())
+        .unwrap();
+    let count = graphic.vector().rectangle_list().len();
+    let mut builder = erp_report::DocumentBuilder::new(limits);
+    let error = builder
+        .add(Node::Vector {
+            vector: graphic.into_vector(),
+            width: None,
+            height: None,
+            alt: "Data Matrix".into(),
+            caption: None,
+        })
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ReportError::DocumentLimit {
+            kind: LimitKind::VectorRectangles,
+            max: 1,
+            ..
+        }
+    ));
+    assert_eq!(
+        error.to_string(),
+        format!("report limit vector_rectangles exceeded: {count} > 1")
+    );
+}
+
+#[test]
+fn datamatrix_keeps_the_document_byte_ceiling() {
+    let value = "0".repeat(2_954);
+    for result in [
+        Code::encode(
+            Symbology::DataMatrix,
+            &value,
+            QrLevel::Low,
+            &Limits::default(),
+        ),
+        Code::encode_gs1_datamatrix(&value, &Limits::default()),
+    ] {
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            ReportError::DocumentLimit {
+                kind: LimitKind::CodeBytes,
+                actual: 2_954,
+                max: 2_953
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "report limit code_bytes exceeded: 2954 > 2953"
+        );
     }
 }

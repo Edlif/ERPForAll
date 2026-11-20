@@ -1207,3 +1207,34 @@ async fn lock_first_opening_refuses_waits_that_round_to_unlimited_or_exceed_post
         );
     }
 }
+
+#[tokio::test]
+async fn direct_guard_execution_requires_system_and_preserves_hard_limits() {
+    let db = TestDb::create().await.unwrap();
+    let addons = fixture();
+    let system = guarded(&db, &addons).build().unwrap();
+    let orm = install(&system).await;
+    let mut user = orm.begin(erp_orm::UserId::new(2).unwrap()).await.unwrap();
+    let error = GUARD
+        .evaluate(
+            &mut user,
+            erp_modules::sql_uninstall::SqlGuardLimits::DEFAULT,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Access);
+    assert_eq!(
+        error.message(),
+        "SqlUninstallGuard::evaluate: only a transaction of the System principal with full elevation may do this (this one acts as user 2)"
+    );
+    user.rollback().await.unwrap();
+    let mut root = orm.begin(SUPERUSER_ID).await.unwrap();
+    let mut limits = erp_modules::sql_uninstall::SqlGuardLimits::DEFAULT;
+    limits.queries += 1;
+    let error = GUARD.evaluate(&mut root, limits).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Programming);
+    assert_eq!(
+        error.message(),
+        "SQL uninstall guard limits may only lower node defaults"
+    );
+}

@@ -77,14 +77,14 @@ async fn seed(h: &Harness) -> Seeded {
         .unwrap();
     let main = one(tx
         .query(
-            "INSERT INTO res_company (name, currency_id) VALUES ('Main', $1) RETURNING id::int8",
+            "INSERT INTO res_company (tz, name, currency_id) VALUES ('UTC', 'Main', $1) RETURNING id::int8",
             &[&currency],
         )
         .await
         .unwrap());
     let branch = one(tx
         .query(
-            "INSERT INTO res_company (name, currency_id) VALUES ('Branch', $1) RETURNING id::int8",
+            "INSERT INTO res_company (tz, name, currency_id) VALUES ('UTC', 'Branch', $1) RETURNING id::int8",
             &[&currency],
         )
         .await

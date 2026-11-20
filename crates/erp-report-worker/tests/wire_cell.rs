@@ -83,9 +83,6 @@ fn a_spanning_table_cell_survives_the_worker_frame() {
     assert_eq!(html, render_html(&tree, &[]).unwrap());
     assert!(html.contains("colspan=\"3\""), "{html}");
     assert!(html.contains("rowspan=\"2\""), "{html}");
-    // spanning cells came with protocol 6; 7 added the optional font packages, 8 the fit of a picture and
-    // placeholder boxes, 9 barcodes and QR codes
-    assert_eq!(erp_report_worker::PROTOCOL_VERSION, 9);
 }
 
 /// The CBOR value of a frame with the colspan of its first spanning cell replaced by `colspan`.

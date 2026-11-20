@@ -157,6 +157,7 @@ async fn fixture_with_policy(policy: Option<erp_testkit::FieldPolicy>) -> Fixtur
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_reporting::ADDON,
         &ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
@@ -1100,6 +1101,7 @@ async fn restricted_fixture() -> Fixture {
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_reporting::ADDON,
         &ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
@@ -1389,6 +1391,7 @@ async fn fixture_with_domains(policy: erp_testkit::DomainPolicy) -> Fixture {
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_reporting::ADDON,
         &ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
@@ -1994,6 +1997,73 @@ async fn overview_card_never_shows_another_companys_types_or_counts() {
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Access);
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn stock_late_counter_and_drill_use_each_companys_business_day() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let boundaries = tx.query("SELECT (date_trunc('day',transaction_timestamp() AT TIME ZONE z) AT TIME ZONE z) AT TIME ZONE 'UTC'
+        FROM unnest(ARRAY['Pacific/Kiritimati','Pacific/Pago_Pago']) WITH ORDINALITY AS zones(z,pos) ORDER BY pos", &[]).await.unwrap();
+    let east: DateTime = boundaries[0].get(0);
+    let west: DateTime = boundaries[1].get(0);
+    assert_ne!(east, west);
+    let scheduled = DateTime::from_micros(east.micros() + (west.micros() - east.micros()) / 2);
+    for (company, kind, zone) in [
+        (f.company, f.picking_type, "Pacific/Kiritimati"),
+        (f.other_company, f.other_picking_type, "Pacific/Pago_Pago"),
+    ] {
+        let company_row = row(&tx, "res.company", company);
+        update(
+            &mut tx,
+            &company_row,
+            RawVals::new().set_cell("tz", text(zone)),
+        )
+        .await
+        .unwrap();
+        let picking = create(
+            &mut tx,
+            "stock.picking",
+            RawVals::new()
+                .set_cell("name", text(zone))
+                .set_cell("company_id", Cell::Id(company))
+                .set_cell("picking_type_id", Cell::Id(kind))
+                .set_cell("location_id", Cell::Id(f.location))
+                .set_cell("location_dest_id", Cell::Id(f.other_location))
+                .set_cell("scheduled_date", Cell::DateTime(scheduled)),
+        )
+        .await;
+        move_in_state(&mut tx, &f, picking, company, "confirmed").await;
+    }
+    let types = tx
+        .env()
+        .records("stock.picking.type")
+        .unwrap()
+        .browse([f.picking_type, f.other_picking_type])
+        .unwrap();
+    let pickings = tx.env().records("stock.picking").unwrap();
+    for (card, boundary) in overview_cards(&mut tx, &types)
+        .await
+        .iter()
+        .zip([east, west])
+    {
+        let late = card["stats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|stat| stat["label"] == "Late")
+            .unwrap();
+        let expected = u64::from(scheduled < boundary);
+        assert_eq!(late["count"].as_u64(), Some(expected));
+        let domain = Domain::from_json(&late["domain"]).unwrap();
+        assert_eq!(
+            pickings.search_count(&mut tx, &domain, None).await.unwrap(),
+            expected
+        );
+    }
     tx.rollback().await.unwrap();
     drop(tx);
     f.h.cleanup().await.unwrap();

@@ -24,6 +24,7 @@ mod engine_tests;
 mod error;
 #[cfg(test)]
 mod fault;
+mod fragment;
 #[cfg(test)]
 mod lead_r1_tests;
 mod limits;
@@ -38,6 +39,7 @@ mod tables;
 mod url;
 
 pub use error::{HtmlSanitizeError, ParseFailure};
+pub use fragment::{Fragment, FragmentAttribute, FragmentKind, FragmentNode};
 pub use limits::{LimitError, LimitKind, Limits};
 pub use policy::{DefaultPolicy, FieldPolicy, OutputMethod, SanitizeMode, SanitizePolicy};
 pub use report::{RemovalEntry, RemovalKind, RemovalReason, RemovalReport};

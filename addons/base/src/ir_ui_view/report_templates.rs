@@ -357,10 +357,12 @@ async fn check_report(tx: &mut Transaction, report: &Report, stage: Stage) -> Re
         // the letterhead prints the company logo with this helper; it reads no other field
         let helpers = [HelperDependencies::new("image_data_uri", &[])];
         let registry = Arc::clone(tx.env().registry());
+        let report_helpers = erp_sdk::report::report_helpers(tx);
         let policy = AttachmentPolicy::new(&report.name, &report.model)
             .with_attachment(true)
             .with_acknowledgement(report.acknowledged)
-            .with_helpers(&helpers);
+            .with_helpers(&helpers)
+            .with_report_helpers(&report_helpers);
         let templates: Vec<TemplateSource<'_>> = sources
             .iter()
             .map(|(key, arch)| TemplateSource::new(key, arch))

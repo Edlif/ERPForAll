@@ -18,6 +18,7 @@ use erp_registry::{
 use erp_sql::sqlobj;
 
 use crate::Transaction;
+mod sequence;
 use crate::grantee::{Grant, reach_cte};
 
 /// The database roles the operator binds to the SQL object role bindings A2.
@@ -620,6 +621,8 @@ impl Transaction {
             self.sql_object_ddl(id, &sqlobj::table_grants(table, &all, &grants))
                 .await?;
         }
+        self.check_named_sequences(graph, bound, deferred, true)
+            .await?;
         self.fence_sql_object_descendants(graph, bound, deferred, true)
             .await?;
         self.verify_sql_object_privileges(graph, bound, deferred)
@@ -786,6 +789,8 @@ impl Transaction {
         deferred: &BTreeSet<SqlObjectId>,
     ) -> Result<()> {
         self.check_sql_object_owners(graph, bound, deferred).await?;
+        self.check_named_sequences(graph, bound, deferred, false)
+            .await?;
         self.fence_sql_object_descendants(graph, bound, deferred, false)
             .await?;
         let functions = functions(graph, deferred);

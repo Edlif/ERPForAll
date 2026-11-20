@@ -134,13 +134,13 @@ async fn seed(client: &Client) -> Seeded {
     let currency = erp_testkit::fixtures::seed_currency(client).await.unwrap();
     let company_a = one(
         client,
-        "INSERT INTO res_company (name, currency_id, active) VALUES ('A', $1, true) RETURNING id::int8",
+        "INSERT INTO res_company (tz, name, currency_id, active) VALUES ('UTC', 'A', $1, true) RETURNING id::int8",
         &[&currency],
     )
     .await;
     let company_b = one(
         client,
-        "INSERT INTO res_company (name, currency_id, active) VALUES ('B', $1, true) RETURNING id::int8",
+        "INSERT INTO res_company (tz, name, currency_id, active) VALUES ('UTC', 'B', $1, true) RETURNING id::int8",
         &[&currency],
     )
     .await;

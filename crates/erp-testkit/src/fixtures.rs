@@ -22,7 +22,7 @@ const CURRENCY_SQL: &str = "INSERT INTO res_currency (name, symbol, rounding, ac
 /// # async fn example(client: &tokio_postgres::Client) -> Result<(), tokio_postgres::Error> {
 /// let currency_id = erp_testkit::fixtures::seed_currency(client).await?;
 /// client.execute(
-///     "INSERT INTO res_company (name, currency_id) VALUES ('Test', $1)",
+///     "INSERT INTO res_company (tz, name, currency_id) VALUES ('UTC', 'Test', $1)",
 ///     &[&currency_id],
 /// ).await?;
 /// # Ok(())
@@ -42,7 +42,7 @@ pub async fn seed_currency(client: &Client) -> std::result::Result<i64, tokio_po
 /// # async fn example(tx: &mut erp_orm::Transaction) -> erp_fields::Result<()> {
 /// let currency_id = erp_testkit::fixtures::seed_currency_in(tx).await?;
 /// tx.execute(
-///     "INSERT INTO res_company (name, currency_id) VALUES ('Test', $1)",
+///     "INSERT INTO res_company (tz, name, currency_id) VALUES ('UTC', 'Test', $1)",
 ///     &[&currency_id],
 /// ).await?;
 /// # Ok(())

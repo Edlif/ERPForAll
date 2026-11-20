@@ -19,8 +19,10 @@ erp-orm.workspace = true
 erp-registry.workspace = true
 erp-fields.workspace = true
 thiserror.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
+linkme.workspace = true
 # The evaluation context a test prints a loaded store with.
 erp-expr = { workspace = true }
 erp-testkit = { workspace = true }

@@ -46,7 +46,7 @@ async fn the_tables_the_resolver_reads_bump_the_membership_generation() {
     let currency = erp_testkit::fixtures::seed_currency(&client).await.unwrap();
     client
         .execute(
-            "INSERT INTO res_company (id, name, currency_id) VALUES (10, 'c1', $1), (11, 'c2', $1)",
+            "INSERT INTO res_company (tz, id, name, currency_id) VALUES ('UTC', 10, 'c1', $1), ('UTC', 11, 'c2', $1)",
             &[&currency],
         )
         .await

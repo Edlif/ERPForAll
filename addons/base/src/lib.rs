@@ -27,6 +27,7 @@
 
 mod approval_settings;
 pub mod attachments;
+pub mod company_calendar;
 mod company_lifecycle;
 mod company_tree;
 pub mod dated_parameter;
@@ -65,6 +66,7 @@ mod policy_sources;
 pub mod report_job;
 pub mod report_paperformat;
 pub mod report_print;
+mod report_settings;
 pub mod res_company;
 pub mod res_country;
 pub mod res_currency;

@@ -2754,8 +2754,12 @@ const PURE_EFFECT_ERROR: &str = "ForbiddenEffect: pure method scope refuses data
 
 // The same lifetime and sticky-error mechanism serves both callback policies (I4).
 // Pure nesting retains the first pure allowlist; a pure scope inside an adapter adds restrictions.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum MethodEffectPolicy {
+    ReportHelper {
+        name: String,
+        reads: Vec<crate::report_helpers::ReportRead>,
+    },
     Pure {
         model: &'static str,
         methods: &'static [&'static str],
@@ -2773,6 +2777,9 @@ struct MethodEffectState {
 impl MethodEffectState {
     fn message(&self) -> String {
         match self.policy {
+            MethodEffectPolicy::ReportHelper { ref name, .. } => format!(
+                "Report helper {name} may only read its declared, prefetched fields in the caller environment"
+            ),
             MethodEffectPolicy::Pure { .. } => PURE_EFFECT_ERROR.to_owned(),
             MethodEffectPolicy::GeneratedInput { model } => format!(
                 "Generated input adapter on '{model}' may read but cannot mutate, flush or change execution context"
@@ -3123,6 +3130,81 @@ impl Transaction {
         self.effect_state(|policy| matches!(policy, MethodEffectPolicy::GeneratedInput { .. }))
     }
 
+    fn report_helper_state(&self) -> Option<&MethodEffectState> {
+        self.effect_state(|policy| matches!(policy, MethodEffectPolicy::ReportHelper { .. }))
+    }
+
+    /// Restrict a batch helper to its preloaded fields and original environment.
+    /// Forbidden operations remain errors even if the helper catches them.
+    pub fn report_helper_scope(
+        &mut self,
+        records: &Records,
+        method: &str,
+        reads: Vec<crate::report_helpers::ReportRead>,
+    ) -> Result<PureMethods<'_>> {
+        self.refuse_effect()?;
+        if !self
+            .exposure()
+            .report_helpers()
+            .iter()
+            .any(|h| h.model() == records.model_name() && h.method() == method)
+        {
+            return Err(Error::programming(format!(
+                "report helper {}.{method} is not registered",
+                records.model_name()
+            )));
+        }
+        let previous = self.method_effects.clone();
+        self.method_effects = Some(Arc::new(MethodEffectState {
+            policy: MethodEffectPolicy::ReportHelper {
+                name: format!("{}.{method}", records.model_name()),
+                reads,
+            },
+            env: records.env().clone(),
+            parent: previous.clone(),
+            refused: Mutex::new(None),
+        }));
+        Ok(PureMethods {
+            transaction: self,
+            previous,
+        })
+    }
+
+    pub(crate) fn check_report_field(&self, records: &Records, field: FieldId) -> Result<()> {
+        if let Some(state) = self.report_helper_state()
+            && let MethodEffectPolicy::ReportHelper {
+                ref name,
+                ref reads,
+            } = state.policy
+        {
+            let permitted = reads
+                .iter()
+                .any(|r| r.model == records.model_id() && r.fields.contains(&field))
+                && records.ids().iter().all(|id| {
+                    reads.iter().any(|r| {
+                        r.model == records.model_id()
+                            && r.fields.contains(&field)
+                            && r.ids.contains(id)
+                    })
+                });
+            if !permitted {
+                return Err(state.refuse(format!(
+                    "Report helper {name}: undeclared read of {}.{}",
+                    records.model_name(),
+                    records.spec().field_by_id(field).name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn refuse_report_sql(&self) -> Result<()> {
+        match self.report_helper_state() {
+            Some(state) => Err(state.refuse(state.message())),
+            None => Ok(()),
+        }
+    }
+
     pub(crate) fn in_generated_input(&self) -> bool {
         self.adapter_state().is_some()
     }
@@ -3146,7 +3228,7 @@ impl Transaction {
     }
 
     pub(crate) fn refuse_adapter_effect(&self) -> Result<()> {
-        if self.in_generated_input() {
+        if self.in_generated_input() || self.report_helper_state().is_some() {
             self.refuse_effect()
         } else {
             Ok(())
@@ -3784,6 +3866,7 @@ impl Transaction {
     /// Inside a [`HookScope`] a statement whose first keyword is transaction control is refused
     /// first, whatever the intent; `call` is the public entry point named in that refusal.
     fn require_writable_sql(&mut self, call: &'static str, sql: &str) -> Result<()> {
+        self.refuse_report_sql()?;
         self.refuse_pure_effect()?;
         if self.in_generated_input() && self.require_select_only(sql).is_err() {
             return self.refuse_adapter_effect();
@@ -3829,6 +3912,7 @@ impl Transaction {
     /// transaction declared `effect = read` makes about its raw SQL, applied whatever the
     /// transaction's own intent is.
     pub(crate) fn require_select_only(&mut self, sql: &str) -> Result<()> {
+        self.refuse_report_sql()?;
         self.note_string_reading();
         let refusal = |why: &str| {
             Error::programming(format!(
@@ -4050,6 +4134,11 @@ impl Transaction {
     }
 
     fn check_adapter_environment(&self, records: &Records) -> Result<()> {
+        if let Some(state) = self.report_helper_state()
+            && (records.env() != &state.env || state.refusal().is_some())
+        {
+            return Err(state.refuse(state.message()));
+        }
         if let Some(state) = self.adapter_state()
             && (records.env().principal() != state.env.principal()
                 || records.env().companies()? != state.env.companies()?)

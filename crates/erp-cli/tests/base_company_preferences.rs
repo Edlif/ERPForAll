@@ -10,7 +10,7 @@
 use std::{path::Path, sync::Arc};
 
 use erp_fields::{Cell, ErrorKind, RecId};
-use erp_modules::{AddonIndex, InitOptions, ModuleSystem};
+use erp_modules::{AddonIndex, InitOptions, ModuleName, ModuleSystem};
 use erp_orm::{Command, Orm, RawVals, SUPERUSER_ID, Transaction};
 use erp_security::{resolver::Resolver, source::PolicySource};
 use erp_testkit::{Harness, TestDb};
@@ -594,6 +594,7 @@ async fn installed() {
         "website",
         "vat",
         "currency_id",
+        "tz",
         "parent_id",
     ] {
         assert!(fields.contains_key(field), "field catalogue lacks {field}");
@@ -669,6 +670,7 @@ async fn installed() {
     ];
     let main_company_name_before = cell(&mut tx, "res.company", company, "name").await;
     tx.commit().await.unwrap();
+    drop(tx);
 
     let source = PolicySource::build(Arc::clone(loaded.orm.registry()), db.pool().clone())
         .await
@@ -750,6 +752,7 @@ async fn installed() {
         assert_eq!(error.kind(), ErrorKind::Access, "{field}: {error:?}");
     }
     ordinary_tx.rollback().await.unwrap();
+    drop(ordinary_tx);
 
     let mut admin_tx = orm
         .begin(erp_orm::UserId::new(admin).unwrap())
@@ -791,6 +794,53 @@ async fn installed() {
         text("+62 21 999")
     );
     admin_tx.rollback().await.unwrap();
+    drop(admin_tx);
+    company_zone_survives_base_upgrade(&db, &system, &loaded.orm, company).await;
+}
+
+async fn company_zone_survives_base_upgrade(
+    db: &TestDb,
+    system: &ModuleSystem,
+    orm: &Orm,
+    company: i64,
+) {
+    let client = db.client().await.unwrap();
+    client
+        .batch_execute(
+            "BEGIN;
+         DELETE FROM ir_model_data WHERE model='ir.model.fields' AND res_id IN
+            (SELECT id FROM ir_model_fields WHERE model='res.company' AND name='tz');
+         DELETE FROM ir_model_fields WHERE model='res.company' AND name='tz';
+         ALTER TABLE res_company DROP COLUMN tz;
+         COMMIT;",
+        )
+        .await
+        .unwrap();
+    drop(client);
+    let mut current = orm.clone();
+    for (expected, next) in [("UTC", Some("Asia/Jakarta")), ("Asia/Jakarta", None)] {
+        let env = current.env(SUPERUSER_ID, erp_sdk::Context::new());
+        let updated =
+            Box::pin(system.button_immediate_upgrade(&env, &[ModuleName::new("base").unwrap()]))
+                .await
+                .unwrap();
+        assert!(updated.post_commit.is_clean());
+        let mut tx = updated.orm.begin(SUPERUSER_ID).await.unwrap();
+        let row = tx
+            .env()
+            .records("res.company")
+            .unwrap()
+            .browse([company])
+            .unwrap();
+        assert_eq!(row.cell(&mut tx, "tz").await.unwrap(), text(expected));
+        if let Some(zone) = next {
+            row.write(&mut tx, RawVals::new().set_cell("tz", text(zone)))
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        current = updated.orm;
+    }
 }
 
 /// The children of the first title block of a described view, each as its JSON text: the node
@@ -813,4 +863,105 @@ fn title_block_children(view: &serde_json::Value) -> Option<Vec<String>> {
         serde_json::Value::Object(members) => members.values().find_map(title_block_children),
         _ => None,
     }
+}
+
+#[tokio::test]
+async fn company_business_zone_is_required_and_invalid_changes_leave_it_intact() {
+    let harness = Harness::builder([&erp_addon_base::ADDON])
+        .build()
+        .await
+        .unwrap();
+    let mut tx = harness.begin().await.unwrap();
+    let currency = currency(&mut tx).await;
+    let company = create(
+        &mut tx,
+        "res.company",
+        RawVals::new()
+            .set_cell("name", text("Jakarta warehouse"))
+            .set_cell("currency_id", Cell::Id(currency))
+            .set_cell("tz", text("Asia/Jakarta")),
+    )
+    .await;
+    let record = tx
+        .env()
+        .records("res.company")
+        .unwrap()
+        .browse([company])
+        .unwrap();
+    assert_eq!(
+        record.cell(&mut tx, "tz").await.unwrap(),
+        text("Asia/Jakarta")
+    );
+    for invalid in [text("Warehouse/West"), text(""), Cell::Null] {
+        let error = record
+            .write(&mut tx, RawVals::new().set_cell("tz", invalid))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("time zone"), "{error}");
+        assert_eq!(
+            record.cell(&mut tx, "tz").await.unwrap(),
+            text("Asia/Jakarta")
+        );
+    }
+}
+
+#[tokio::test]
+async fn companies_use_their_own_day_at_one_transaction_start() {
+    let harness = Harness::builder([&erp_addon_base::ADDON])
+        .build()
+        .await
+        .unwrap();
+    let mut tx = harness.begin().await.unwrap();
+    let env = tx.env();
+    let currency = currency(&mut tx).await;
+    env.records("res.users")
+        .unwrap()
+        .browse([env.uid()])
+        .unwrap()
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("tz", text("Pacific/Kiritimati")),
+        )
+        .await
+        .unwrap();
+    let vals = |name| {
+        RawVals::new()
+            .set_cell("name", text(name))
+            .set_cell("currency_id", Cell::Id(currency))
+    };
+    let form_defaults: erp_sdk::ValueMap = env
+        .records("res.company")
+        .unwrap()
+        .call(&mut tx, "default_get", (vec!["tz".to_owned()],))
+        .await
+        .unwrap();
+    assert_eq!(
+        form_defaults.get("tz"),
+        Some(&erp_fields::Value::Str("Pacific/Kiritimati".into()))
+    );
+    let company = create(&mut tx, "res.company", vals("East")).await;
+    let west = create(
+        &mut tx,
+        "res.company",
+        vals("West").set_cell("tz", text("Pacific/Pago_Pago")),
+    )
+    .await;
+    assert_eq!(
+        cell(&mut tx, "res.company", company, "tz").await,
+        text("Pacific/Kiritimati")
+    );
+    let days = erp_addon_base::company_calendar::business_days(&mut tx, &env, &[company, west])
+        .await
+        .unwrap();
+    let rows = tx
+        .query(
+            "SELECT (transaction_timestamp() AT TIME ZONE 'Pacific/Kiritimati')::date,
+                (transaction_timestamp() AT TIME ZONE 'Pacific/Pago_Pago')::date",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(days[&company].date, rows[0].get::<_, erp_fields::Date>(0));
+    assert_eq!(days[&west].date, rows[0].get::<_, erp_fields::Date>(1));
+    assert!(days[&company].date > days[&west].date);
 }

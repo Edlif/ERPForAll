@@ -158,7 +158,7 @@ async fn seed(tx: &mut Transaction) {
 async fn company(tx: &mut Transaction, currency: i64, name: &str) -> i64 {
     let rows = tx
         .query(
-            "INSERT INTO res_company (name, currency_id, active) VALUES ($1, $2, true) \
+            "INSERT INTO res_company (tz, name, currency_id, active) VALUES ('UTC', $1, $2, true) \
              RETURNING id::int8",
             &[&name, &currency],
         )

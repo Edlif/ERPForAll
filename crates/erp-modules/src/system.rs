@@ -1086,7 +1086,8 @@ impl ModuleSystemBuilder {
             crate::sql_uninstall::SQL_UNINSTALL_GUARDS
                 .iter()
                 .filter(|guard| {
-                    guard.addon == "base" || self.code.iter().any(|addon| addon.name == guard.addon)
+                    guard.addon() == "base"
+                        || self.code.iter().any(|addon| addon.name == guard.addon())
                 }),
         );
         crate::sql_uninstall::validate(&self.sql_guards, &self.guard_manifests, self.guard_limits)?;
@@ -1103,10 +1104,10 @@ impl ModuleSystemBuilder {
             }
         }
         for guard in &self.sql_guards {
-            if guard.addon != "base" && !code.contains_key(guard.addon) {
+            if guard.addon() != "base" && !code.contains_key(guard.addon()) {
                 return Err(erp_fields::Error::programming(format!(
                     "SQL uninstall guard owner '{}' has no native addon descriptor",
-                    guard.addon
+                    guard.addon()
                 ))
                 .into());
             }
@@ -2278,7 +2279,7 @@ impl Parts {
                 .overlay(&overlay)
                 .build()?,
         );
-        for guard in self.sql_guards.iter().filter(|g| names.contains(g.addon)) {
+        for guard in self.sql_guards.iter().filter(|g| names.contains(g.addon())) {
             guard.tables(&registry)?;
         }
         Ok(registry)
@@ -6066,6 +6067,17 @@ impl<'s> Run<'s> {
                 tx,
                 &self.upgraded,
                 &installed_preimages,
+                &content_hashes,
+            )
+            .await?;
+        }
+        if !self.upgraded.is_empty()
+            && let Some(PreviousIdentity::Release(previous)) = &self.system.parts.identity_previous
+        {
+            installed_identity::record_forward_installations(
+                tx,
+                &self.installed,
+                previous,
                 &content_hashes,
             )
             .await?;

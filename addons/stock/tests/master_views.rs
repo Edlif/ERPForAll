@@ -100,22 +100,46 @@ fn forms_exist_and_quant_list_is_read_only() {
     assert!(quant.contains(r#"context="{'group_by': 'location_id'}""#));
 }
 
-/// Each action has a menu, the new top menus exist, and the menu file loads last.
+/// Each master action has a menu. Parent menus and actions load before their consumers.
 #[test]
 fn master_menus_point_at_every_action_and_load_last() {
-    let menus = read("views/stock_menus_master.xml");
+    let manifest: toml::Table = read("manifest.toml").parse().unwrap();
+    let data = manifest["data"].as_array().expect("manifest data list");
+    let load_index = |file: &str| {
+        data.iter()
+            .position(|entry| entry.as_str() == Some(file))
+            .expect(file)
+    };
+    let master_menu_file = "views/stock_menus_master.xml";
+    let master_menu_index = load_index(master_menu_file);
+    let menus = read(master_menu_file);
     for id in ["menu_stock_products", "menu_stock_reporting"] {
         assert!(menus.contains(&format!("id=\"{id}\"")), "{id}");
     }
-    for (_, _, action) in SCREENS {
+    for (file, _, action) in SCREENS {
         assert!(
             menus.contains(&format!("action=\"{action}\"")),
             "menu for {action}"
         );
+        let action_file = format!("views/{file}");
+        assert!(
+            load_index(&action_file) < master_menu_index,
+            "{action_file} must load before {master_menu_file}"
+        );
     }
     assert!(menus.contains(r#"action="product.product_template_action""#));
     assert!(menus.contains(r#"parent="menu_stock_config_settings""#));
-    let manifest = read("manifest.toml");
-    let last = manifest.rfind("\"views/").expect("view entries");
-    assert!(manifest[last..].starts_with("\"views/stock_menus_master.xml\""));
+    assert!(
+        load_index("views/settings_views.xml") < master_menu_index,
+        "Inventory and Configuration parents must load before the master menus"
+    );
+    let report_menu_index = load_index("views/stock_report_menus.xml");
+    assert!(
+        master_menu_index < report_menu_index,
+        "the Reporting parent must load before the report menus"
+    );
+    assert!(
+        load_index("data/stock_report_data.xml") < report_menu_index,
+        "report definitions must load before their menu actions"
+    );
 }

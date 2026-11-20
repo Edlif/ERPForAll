@@ -4,7 +4,7 @@
 use erp_report::{
     Alignment, CrossAlignment, DocTree, DocumentBuilder, DocumentOptions, ImageFit, LayoutFailure,
     LimitKind, Limits, Node, NodeId, PageCounter, PageSetup, PdfStandard, PictureQuality,
-    RenderDate, ReportError, Style, TableLook, Vector,
+    RenderDate, ReportError, RichText, Style, TableLook, Vector,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -93,12 +93,30 @@ pub enum Response {
     Rendered {
         pages: u64,
         warnings: Vec<String>,
+        image_failures: Vec<(u64, String)>,
         renderer: String,
     },
     /// The document (or, before `Ready`, the start message) was refused; the worker lives on after a
     /// refused document.
     Failed(WireFailure),
     Diag(DiagReport),
+}
+
+/// Admit untrusted response diagnostics through core constructors before they reach a result.
+pub(crate) fn image_failures_from_wire(
+    failures: Vec<(u64, String)>,
+    limits: Limits,
+) -> Result<Vec<erp_report::ImageFailure>, ReportError> {
+    limits.check(LimitKind::Images, failures.len())?;
+    failures
+        .into_iter()
+        .map(|(node, reason)| {
+            let node = usize::try_from(node).map_err(|_| ReportError::InvalidDocument {
+                reason: "image failure node index is not representable",
+            })?;
+            erp_report::ImageFailure::new(node, reason, limits)
+        })
+        .collect()
 }
 
 /// Whether a protection is in force, said by the side that applies it.
@@ -389,7 +407,8 @@ enum WireNode<'a> {
     ),
 }
 /// size, bold, italic, underline, colour, padding, alignment (0 start, 1 centre, 2 end), keep together,
-/// space above and below, fill, rules above and below, table look (0 lined, 1 bordered, 2 borderless)
+/// space above and below, fill, rules above and below, table look (0 lined, 1 bordered, 2 borderless),
+/// strike, baseline, preformatted, direction, tracking, font, safe link (protocol 10)
 #[derive(Debug, Serialize, Deserialize)]
 struct WireStyle(
     f64,
@@ -404,6 +423,13 @@ struct WireStyle(
     Option<[u8; 3]>,
     (bool, bool),
     u8,
+    bool,
+    i8,
+    bool,
+    Option<bool>,
+    f64,
+    String,
+    String,
 );
 #[derive(Debug, Serialize, Deserialize)]
 struct WireOptions<'a> {
@@ -461,6 +487,13 @@ fn wire_style(style: &Style) -> Result<WireStyle, ReportError> {
             TableLook::Borderless => 2,
             _ => return Err(later("table look over the render worker protocol")),
         },
+        style.rich().strike(),
+        style.rich().baseline(),
+        style.rich().preformatted(),
+        style.rich().rtl(),
+        style.rich().tracking(),
+        style.rich().font().to_owned(),
+        style.rich().link().to_owned(),
     ))
 }
 fn style(wire: WireStyle) -> Result<Style, ReportError> {
@@ -477,8 +510,24 @@ fn style(wire: WireStyle) -> Result<Style, ReportError> {
         fill,
         (rule_above, rule_below),
         table,
+        strike,
+        baseline,
+        preformatted,
+        rtl,
+        tracking,
+        font,
+        link,
     ) = wire;
+    let rich = RichText::default()
+        .with_strike(strike)
+        .with_baseline(baseline)?
+        .with_preformatted(preformatted)
+        .with_rtl(rtl)
+        .with_tracking(tracking)?
+        .with_font(&font)?
+        .with_link(&link)?;
     Ok(Style::default()
+        .with_rich(rich)
         .with_size(size)?
         .with_padding(padding)?
         .with_bold(bold)
@@ -794,4 +843,41 @@ pub(crate) fn request_frame_bytes(limits: Limits) -> usize {
         .get(LimitKind::Bytes)
         .saturating_mul(2)
         .saturating_add(1024 * 1024)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test assertions")]
+mod image_failure_tests {
+    use super::*;
+
+    #[test]
+    fn worker_diagnostics_reject_bad_indices_counts_and_reasons() {
+        let limits = Limits::default().lowered(LimitKind::Nodes, 2).unwrap();
+        assert!(matches!(
+            image_failures_from_wire(vec![(2, "bad".into())], limits),
+            Err(ReportError::DocumentLimit {
+                kind: LimitKind::Nodes,
+                actual: 3,
+                max: 2
+            })
+        ));
+        let limits = Limits::default().lowered(LimitKind::Images, 1).unwrap();
+        assert!(matches!(
+            image_failures_from_wire(vec![(0, "a".into()), (1, "b".into())], limits),
+            Err(ReportError::DocumentLimit {
+                kind: LimitKind::Images,
+                actual: 2,
+                max: 1
+            })
+        ));
+        let limits = Limits::default().lowered(LimitKind::Bytes, 2).unwrap();
+        assert!(matches!(
+            image_failures_from_wire(vec![(0, "bad".into())], limits),
+            Err(ReportError::DocumentLimit {
+                kind: LimitKind::Bytes,
+                actual: 3,
+                max: 2
+            })
+        ));
+    }
 }

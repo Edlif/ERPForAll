@@ -27,9 +27,11 @@ pub enum Symbology {
     /// Interleaved 2 of 5 of any even number of digits, without a check digit.
     Interleaved2of5,
     Qr,
+    /// Square ECC200 Data Matrix. GS1 is selected by the dedicated encoding method.
+    DataMatrix,
 }
 impl Symbology {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Code128,
         Self::Ean13,
         Self::Ean8,
@@ -38,6 +40,7 @@ impl Symbology {
         Self::Itf14,
         Self::Interleaved2of5,
         Self::Qr,
+        Self::DataMatrix,
     ];
     /// The name a template writes.
     pub const fn name(self) -> &'static str {
@@ -50,6 +53,7 @@ impl Symbology {
             Self::Itf14 => "ITF14",
             Self::Interleaved2of5 => "I2of5",
             Self::Qr => "QR",
+            Self::DataMatrix => "DataMatrix",
         }
     }
     /// The symbology of a template name: ours, or the reference's name for the same code
@@ -69,6 +73,7 @@ impl Symbology {
             "itf14" => Self::Itf14,
             "i2of5" | "interleaved2of5" => Self::Interleaved2of5,
             "qr" | "qrcode" => Self::Qr,
+            "datamatrix" | "ecc200datamatrix" => Self::DataMatrix,
             _ => return None,
         })
     }
@@ -88,7 +93,7 @@ impl Symbology {
         }
     }
     pub const fn is_matrix(self) -> bool {
-        matches!(self, Self::Qr)
+        matches!(self, Self::Qr | Self::DataMatrix)
     }
 }
 impl std::fmt::Display for Symbology {
@@ -247,6 +252,7 @@ impl Code {
                 }
                 (interleaved(&d), [10, 10], value.to_owned())
             }
+            Symbology::DataMatrix => return Self::datamatrix(value, false),
             Symbology::Qr => {
                 let (modules, side) = qr(value, level)?;
                 return Ok(Self {
@@ -264,6 +270,94 @@ impl Code {
             modules,
             quiet,
             text,
+        })
+    }
+    /// Encode a GS1 element string as a square ECC200 Data Matrix, with leading FNC1.
+    ///
+    /// The caller constructs and validates application identifiers. Printable ASCII and ASCII
+    /// GS (`0x1D`) separators are preserved; other characters are refused. No AI or check digit
+    /// is inferred. An ordinary Data Matrix uses [`Self::encode`] instead.
+    ///
+    /// # Errors
+    /// Returns a document limit error for excessive input, or a code error for empty/invalid
+    /// input or a value that cannot fit a square ECC200 symbol.
+    ///
+    /// ```
+    /// use erp_report::{Code, Limits};
+    /// let code = Code::encode_gs1_datamatrix("010950110102091710LOT-1", &Limits::default())?;
+    /// assert_eq!(code.text(), "010950110102091710LOT-1");
+    /// # Ok::<(), erp_report::ReportError>(())
+    /// ```
+    pub fn encode_gs1_datamatrix(value: &str, limits: &Limits) -> Result<Self, ReportError> {
+        if value.is_empty() {
+            return Err(refuse(Symbology::DataMatrix, "there is no value to encode"));
+        }
+        limits.check(LimitKind::CodeBytes, value.len())?;
+        if !value
+            .bytes()
+            .all(|b| (0x20..=0x7e).contains(&b) || b == 0x1d)
+        {
+            return Err(refuse(
+                Symbology::DataMatrix,
+                "GS1 data must contain printable ASCII or the ASCII GS separator (0x1D)",
+            ));
+        }
+        Self::datamatrix(value, true)
+    }
+
+    // Both callers check CodeBytes before reaching the external encoder. Restricting it to
+    // standard square ECC200 keeps the existing square fit contract and bounds the module map.
+    fn datamatrix(value: &str, gs1: bool) -> Result<Self, ReportError> {
+        let encoder = datamatrix::DataMatrixBuilder::new()
+            .with_symbol_list(datamatrix::SymbolList::default().enforce_square())
+            .with_macros(false)
+            .with_fnc1_start(gs1);
+        let encoded = if gs1 {
+            encoder.encode(value.as_bytes())
+        } else {
+            encoder.encode_str(value)
+        }
+        .map_err(|error| match error {
+            // The encoder also returns SymbolListEmpty after excluding sizes too small
+            // for the payload; our initial square symbol list is always nonempty.
+            datamatrix::data::DataEncodingError::TooMuchOrIllegalData
+            | datamatrix::data::DataEncodingError::SymbolListEmpty => refuse(
+                Symbology::DataMatrix,
+                format!(
+                    "{} bytes do not fit a square ECC200 Data Matrix",
+                    value.len()
+                ),
+            ),
+        })?;
+        let bitmap = encoded.bitmap();
+        let columns = bitmap.width();
+        // 144 is the largest square ECC200 side, a format invariant, not an operator limit.
+        if !(10..=144).contains(&columns) || bitmap.height() != columns {
+            return Err(refuse(
+                Symbology::DataMatrix,
+                "encoder returned invalid square ECC200 dimensions",
+            ));
+        }
+        let size = columns
+            .checked_mul(columns)
+            .ok_or_else(|| refuse(Symbology::DataMatrix, "ECC200 module count overflow"))?;
+        let mut modules = vec![false; size];
+        for (x, y) in bitmap.pixels() {
+            if x >= columns || y >= columns {
+                return Err(refuse(
+                    Symbology::DataMatrix,
+                    "encoder returned a module outside the ECC200 symbol",
+                ));
+            }
+            modules[y * columns + x] = true;
+        }
+        Ok(Self {
+            symbology: Symbology::DataMatrix,
+            modules,
+            columns,
+            // ECC200 requires a one-module quiet zone on every side.
+            quiet: [1; 2],
+            text: value.to_owned(),
         })
     }
     pub fn symbology(&self) -> Symbology {
@@ -405,7 +499,7 @@ impl CodeGraphic {
 }
 
 /// Names the reference accepts for codes this library does not print.
-const NOT_PRINTED: [&str; 10] = [
+const NOT_PRINTED: [&str; 9] = [
     "codabar",
     "code11",
     "extended39",
@@ -415,7 +509,6 @@ const NOT_PRINTED: [&str; 10] = [
     "postnet",
     "standard93",
     "usps4state",
-    "ecc200datamatrix",
 ];
 /// What a template asks of one code, in points.
 pub(crate) struct CodeAsk<'a> {
@@ -428,6 +521,7 @@ pub(crate) struct CodeAsk<'a> {
     pub(crate) human_readable: bool,
     pub(crate) quiet: bool,
     pub(crate) level: QrLevel,
+    pub(crate) gs1: bool,
     pub(crate) grid: ModuleGrid,
 }
 /// A code as a document prints it.
@@ -465,7 +559,17 @@ pub(crate) fn print(ask: &CodeAsk<'_>, limits: &Limits) -> Result<PrintedCode, R
             });
         }
     };
-    let mut code = Code::encode(symbology, ask.value, ask.level, limits)?;
+    if ask.gs1 && symbology != Symbology::DataMatrix {
+        return Err(ReportError::Code {
+            symbology: "barcode",
+            reason: "option `gs1` is available only for DataMatrix".into(),
+        });
+    }
+    let mut code = if ask.gs1 {
+        Code::encode_gs1_datamatrix(ask.value, limits)?
+    } else {
+        Code::encode(symbology, ask.value, ask.level, limits)?
+    };
     if !ask.quiet {
         code = code.without_quiet_zone();
     }

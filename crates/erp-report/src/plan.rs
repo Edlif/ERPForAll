@@ -21,18 +21,34 @@ const CURRENCY_FIELDS: [&str; 3] = ["symbol", "position", "decimal_places"];
 /// A model method an addon registered as a report helper (data-callable level), with
 /// every field it reads, written as paths from the record it is called on (`partner_id.name`).
 /// The registry is authoritative: a field the helper reads and does not declare is not loaded.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReportHelper<'a> {
     model: &'a str,
     method: &'a str,
     dependencies: &'a [&'a str],
+    parameters: Option<Vec<String>>,
 }
 impl<'a> ReportHelper<'a> {
+    /// Parameter names in the callable binder's positional order; omitted arguments stay omitted.
+    pub fn with_parameters(mut self, parameters: &[&str]) -> Self {
+        self.parameters = Some(parameters.iter().map(|name| (*name).to_owned()).collect());
+        self
+    }
+    pub fn model(&self) -> &str {
+        self.model
+    }
+    pub fn method(&self) -> &str {
+        self.method
+    }
+    pub fn dependencies(&self) -> &[&str] {
+        self.dependencies
+    }
     pub fn new(model: &'a str, method: &'a str, dependencies: &'a [&'a str]) -> Self {
         Self {
             model,
             method,
             dependencies,
+            parameters: None,
         }
     }
 }
@@ -123,6 +139,7 @@ pub struct PrefetchPlan {
     pub(crate) roots: Vec<(String, usize)>,
     pub(crate) models: BTreeMap<String, ModelFields>,
     helpers: BTreeSet<(String, String)>,
+    pub(crate) invocations: Vec<crate::helper::Invocation>,
 }
 impl PrefetchPlan {
     /// The reads of the plan, by depth then model. Their number bounds the reads of a batch,
@@ -203,7 +220,9 @@ struct Analysis<'a, F> {
     fields: &'a F,
     paths: Vec<Path>,
     helpers: BTreeSet<(String, String)>,
+    pub(crate) invocations: Vec<crate::helper::Invocation>,
     work: Work,
+    helper_bytes: usize,
 }
 impl<F: Fn(&str, &str) -> Option<FieldInfo>> Analysis<'_, F> {
     fn path(&mut self, model: &str, depth: usize) -> Result<usize, ReportError> {
@@ -263,6 +282,7 @@ impl<F: Fn(&str, &str) -> Option<FieldInfo>> Analysis<'_, F> {
                     let info = self.info(model, attr, cx)?;
                     for path in paths {
                         self.paths[*path].fields.insert(attr.into());
+                        self.paths[*path].display_name |= info.html;
                         if let Some(target) = &info.relation {
                             let child = self.child(*path, attr, target)?;
                             out.0.entry(target.clone()).or_default().insert(child);
@@ -301,7 +321,14 @@ impl<F: Fn(&str, &str) -> Option<FieldInfo>> Analysis<'_, F> {
         Ok(())
     }
     /// A method called on records: a registered helper, whose declared fields join the plan.
-    fn helper(&mut self, receiver: &Ty, method: &str, cx: &Cx<'_>) -> Result<(), ReportError> {
+    fn helper(
+        &mut self,
+        receiver: &Ty,
+        method: &str,
+        args: &[Expr],
+        keywords: &[(Option<String>, Expr)],
+        cx: &Cx<'_>,
+    ) -> Result<(), ReportError> {
         let registered = self.registered;
         for (model, paths) in &receiver.0 {
             let helper = registered
@@ -313,6 +340,53 @@ impl<F: Fn(&str, &str) -> Option<FieldInfo>> Analysis<'_, F> {
                         cx.source
                     ))
                 })?;
+            let (mut args, mut kwargs) = crate::helper::static_args(args, keywords)
+                .ok_or_else(|| cx.at.compile(format!("report helper `{model}.{method}` requires static scalar arguments and unique named keywords")))?;
+            if let Some(parameters) = &helper.parameters {
+                crate::helper::normalize(&mut args, &mut kwargs, parameters).ok_or_else(|| {
+                    cx.at.compile(format!(
+                        "report helper `{model}.{method}` has invalid or duplicate arguments"
+                    ))
+                })?;
+            }
+            let invocation = crate::helper::Invocation {
+                model: model.clone(),
+                method: method.into(),
+                parameters: helper.parameters.clone(),
+                args,
+                kwargs,
+                paths: paths.clone(),
+                dependencies: helper.dependencies.iter().map(|s| (*s).into()).collect(),
+            };
+            self.work.charge(invocation.byte_len())?;
+            self.helper_bytes =
+                self.helper_bytes
+                    .checked_add(invocation.byte_len())
+                    .ok_or(ReportError::Limit {
+                        name: "evaluation_bytes",
+                        maximum: self.program.limits.bytes,
+                    })?;
+            if self.helper_bytes > self.program.limits.bytes {
+                return Err(ReportError::Limit {
+                    name: "evaluation_bytes",
+                    maximum: self.program.limits.bytes,
+                });
+            }
+            if let Some(existing) = self
+                .invocations
+                .iter_mut()
+                .find(|v| v.same_call(&invocation))
+            {
+                existing.paths.extend(paths);
+            } else {
+                if self.invocations.len() >= self.program.limits.plan_paths {
+                    return Err(ReportError::Limit {
+                        name: "plan_paths",
+                        maximum: self.program.limits.plan_paths,
+                    });
+                }
+                self.invocations.push(invocation);
+            }
             for dependency in helper.dependencies {
                 self.work.charge(dependency.len())?;
                 let declared = Cx {
@@ -327,6 +401,11 @@ impl<F: Fn(&str, &str) -> Option<FieldInfo>> Analysis<'_, F> {
                         )));
                     }
                     value = self.attribute(&value, segment, &declared)?;
+                }
+            }
+            for path in paths {
+                if !self.paths[*path].reads() {
+                    self.paths[*path].fields.insert("id".into());
                 }
             }
             self.helpers.insert((model.clone(), method.to_owned()));
@@ -414,7 +493,7 @@ impl<F: Fn(&str, &str) -> Option<FieldInfo>> Analysis<'_, F> {
                 match func.as_ref() {
                     Expr::Attribute { value, attr } => {
                         let receiver = self.infer(value, cx, scope)?;
-                        self.helper(&receiver, attr, cx)?;
+                        self.helper(&receiver, attr, args, keywords, cx)?;
                     }
                     function => {
                         self.infer(function, cx, scope)?;
@@ -708,7 +787,9 @@ impl ReportProgram {
             fields,
             paths: Vec::new(),
             helpers: BTreeSet::new(),
+            invocations: Vec::new(),
             work: self.limits.work(),
+            helper_bytes: 0,
         };
         let mut scope = Scope::new();
         let mut roots = Vec::new();
@@ -741,6 +822,7 @@ impl ReportProgram {
             roots,
             models,
             helpers: analysis.helpers,
+            invocations: analysis.invocations,
         })
     }
 }

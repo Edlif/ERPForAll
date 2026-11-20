@@ -24,7 +24,7 @@ async fn hidden_company_still_protects_its_currency_in_a_non_sudo_transaction() 
         .unwrap();
     setup
         .execute(
-            "INSERT INTO res_company (name, currency_id, active) VALUES ('Hidden Company', $1, true)",
+            "INSERT INTO res_company (tz, name, currency_id, active) VALUES ('UTC', 'Hidden Company', $1, true)",
             &[&currency],
         )
         .await

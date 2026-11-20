@@ -180,7 +180,7 @@ async fn seed(client: &Client) -> World {
     let company = async |name: &str| -> i64 {
         one(
             client,
-            "INSERT INTO res_company (name, currency_id) VALUES ($1, $2) RETURNING id::int8",
+            "INSERT INTO res_company (tz, name, currency_id) VALUES ('UTC', $1, $2) RETURNING id::int8",
             &[&name, &currency],
         )
         .await

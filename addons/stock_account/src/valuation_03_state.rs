@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Schema only: /. No costing writer, trigger or grant.
-//! Codec checks arrive with; no ORM access grants are provided for ordinary users.
+//! Valuation storage declarations for. Database guards are in `history_guards`.
+//! Bounded numeric checks follow the valuation codec. Ordinary users have no valuation grants.
 
 use crate::recorded_now;
 use erp_sdk::prelude::*;
@@ -15,6 +15,8 @@ use erp_sdk::prelude::*;
     log_access = false,
     row_version = true,
     constraints = [
+        ("_valid_grid_value", r#"CHECK (CASE WHEN "grid_value" IS NOT NULL AND "grid_value" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("grid_value") <= 18 AND abs("grid_value") < power(2::numeric, 256) THEN abs("grid_value" * power(10::numeric, 18)) < power(2::numeric, 256) ELSE FALSE END)"#, "grid_value must fit the 18-place valuation grid."),
+        ("_valid_carry", r#"CHECK (CASE WHEN "currency_increment" IS NOT NULL AND "currency_increment" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND "currency_increment" > 0 AND min_scale("currency_increment") <= 28 AND "currency_increment" < power(2::numeric, 96) AND "currency_carry" IS NOT NULL AND "currency_carry" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND abs("currency_carry") < power(2::numeric, 256) THEN CASE WHEN "currency_increment" * power(10::numeric, min_scale("currency_increment")) < power(2::numeric, 96) AND min_scale("currency_carry") <= greatest(18, min_scale("currency_increment")) THEN abs("currency_carry" * power(10::numeric, greatest(18, min_scale("currency_increment")))) < power(2::numeric, 256) AND 2 * abs("currency_carry") <= "currency_increment" ELSE FALSE END ELSE FALSE END)"#, "The currency carry must fit its frozen increment and stay within half of it."),
         ("_lot_product", "FOREIGN KEY (lot_id, product_id) REFERENCES stock_lot (id, product_id) ON DELETE RESTRICT", "A valuation lot must belong to its product."),
         ("_finite_grid_value", "CHECK (grid_value <> 'NaN' AND grid_value <> 'Infinity' AND grid_value <> '-Infinity')", "grid_value must be a finite number."),
         ("_finite_quantity", "CHECK (quantity <> 'NaN' AND quantity <> 'Infinity' AND quantity <> '-Infinity')", "quantity must be a finite number."),
@@ -160,6 +162,8 @@ pub struct ValuationControl {
     company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
     log_access = false,
     constraints = [
+        ("_valid_grid_value", r#"CHECK (CASE WHEN "grid_value" IS NOT NULL AND "grid_value" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("grid_value") <= 18 AND abs("grid_value") < power(2::numeric, 256) THEN abs("grid_value" * power(10::numeric, 18)) < power(2::numeric, 256) ELSE FALSE END)"#, "grid_value must fit the 18-place valuation grid."),
+        ("_valid_carry", r#"CHECK (CASE WHEN "currency_increment" IS NOT NULL AND "currency_increment" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND "currency_increment" > 0 AND min_scale("currency_increment") <= 28 AND "currency_increment" < power(2::numeric, 96) AND "currency_carry" IS NOT NULL AND "currency_carry" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND abs("currency_carry") < power(2::numeric, 256) THEN CASE WHEN "currency_increment" * power(10::numeric, min_scale("currency_increment")) < power(2::numeric, 96) AND min_scale("currency_carry") <= greatest(18, min_scale("currency_increment")) THEN abs("currency_carry" * power(10::numeric, greatest(18, min_scale("currency_increment")))) < power(2::numeric, 256) AND 2 * abs("currency_carry") <= "currency_increment" ELSE FALSE END ELSE FALSE END)"#, "The currency carry must fit its frozen increment and stay within half of it."),
         ("_source_company_product", "FOREIGN KEY (source_id, company_id, product_id) REFERENCES stk_value_source (id, company_id, product_id) ON DELETE RESTRICT", "A valuation row must have its source company and product."),
         ("_lot_product", "FOREIGN KEY (lot_id, product_id) REFERENCES stock_lot (id, product_id) ON DELETE RESTRICT", "A valuation lot must belong to its product."),
         ("_finite_grid_value", "CHECK (grid_value <> 'NaN' AND grid_value <> 'Infinity' AND grid_value <> '-Infinity')", "grid_value must be a finite number."),

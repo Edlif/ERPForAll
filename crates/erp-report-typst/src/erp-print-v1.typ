@@ -15,11 +15,22 @@
 #let built = ()
 #for n in d.nodes {
   let children = n.at("children", default: ()).map(i => built.at(i))
-  let content = if n.kind == "text" { if n.size == none { text(n.text) } else { text(size: n.size * 1pt, n.text) } }
+  let content = if n.kind == "text" { if n.pre { raw(n.text, block: false) } else if n.size == none { text(n.text) } else { text(size: n.size * 1pt, n.text) } }
   else if n.kind == "flow" { children.join() }
   else if n.kind == "block" or n.kind == "inline" {
     let body = children.join()
+    if n.pre { body = {
+      show raw: set text(font: if n.font == "" { d.fonts } else { n.font }, size: 1em / 0.8)
+      body
+    } }
+    if n.font != "" { body = text(font: n.font, body) }
+    if n.rtl != none { body = text(dir: if n.rtl { rtl } else { ltr }, body) }
+    if n.tracking != 0 { body = text(tracking: n.tracking * 1pt, body) }
     if n.underline { body = underline(body) }
+    if n.strike { body = strike(body) }
+    if n.baseline == -1 { body = sub(body) }
+    else if n.baseline == 1 { body = super(body) }
+    if n.link != "" { body = link(n.link, body) }
     body = text(size: n.size * 1pt, weight: if n.bold { "bold" } else { "regular" }, style: if n.italic { "italic" } else { "normal" }, fill: rgb(..n.color), body)
     if n.kind == "block" {
       let side = if n.align == "center" { center } else if n.align == "end" { end } else if n.align == "start" { start } else { panic("unsupported admitted alignment") }

@@ -410,6 +410,7 @@ async fn registry(env: &Env, tx: &mut Transaction) -> Result<SettingsRegistry> {
             .with_groups(group_contributions(env, &installed)?, &installed)?;
     crate::jobs_settings::require(&registry)?;
     crate::approval_settings::require(&registry)?;
+    crate::report_settings::require(&registry)?;
     Ok(registry)
 }
 
@@ -559,6 +560,7 @@ async fn published(env: &Env, tx: &mut Transaction) -> Result<Published> {
             )?;
     crate::jobs_settings::require(&registry)?;
     crate::approval_settings::require(&registry)?;
+    crate::report_settings::require(&registry)?;
     Ok(Published {
         registry,
         resolvers,

@@ -937,10 +937,6 @@ fn records_read_only_what_was_loaded() {
 fn what_later_slices_add_is_refused_by_task() {
     for (arch, message) in [
         (
-            "<div t-field='doc.narration'/>",
-            "report html field content requires a later release",
-        ),
-        (
             "<p><span t-field='doc.name' t-options=\"{'widget': 'image_url'}\"/></p>",
             "report images read by their path while printing requires a later release",
         ),

@@ -1,6 +1,9 @@
 //! Durable addon file receipts. All writes run under the owning lifecycle transaction.
+use std::fmt::Write;
+
 use super::*;
 use crate::artifact_identity::ArtifactSnapshot;
+use sha2::{Digest, Sha256};
 
 const IDENTITY_DDL: &str = "CREATE TABLE IF NOT EXISTS installed_addon_identity (
     name text PRIMARY KEY,
@@ -241,6 +244,58 @@ pub(super) async fn verify_entries_async(entries: &IndexMap<ModuleName, AddonEnt
     blocking(move || verify_entries(&entries)).await
 }
 
+// Tie a first install to both whole artifact sets. BTreeMap order and explicit lengths
+// prevent a different verified previous or admitted candidate set from aliasing this witness.
+fn forward_install_transition(
+    previous: &BTreeMap<ModuleName, String>,
+    current: &BTreeMap<ModuleName, String>,
+) -> Result<String> {
+    let length = |n: usize| {
+        u64::try_from(n).map(u64::to_be_bytes).map_err(|_| {
+            erp_fields::Error::validation("Forward addon identity canonical length overflow")
+        })
+    };
+    let mut digest = Sha256::new();
+    digest.update(b"erp-forward-install-transition-v1\0");
+    for identities in [previous, current] {
+        digest.update(length(identities.len())?);
+        for (name, hash) in identities {
+            for value in [name.as_str(), hash.as_str()] {
+                digest.update(length(value.len())?);
+                digest.update(value.as_bytes());
+            }
+        }
+    }
+    let mut transition = String::with_capacity(64);
+    for byte in digest.finalize() {
+        write!(transition, "{byte:02x}").map_err(|error| {
+            erp_fields::Error::programming(format!(
+                "Cannot encode forward addon transition: {error}"
+            ))
+        })?;
+    }
+    Ok(transition)
+}
+
+async fn forward_install_committed(
+    tx: &mut Transaction,
+    name: &ModuleName,
+    hash: &str,
+    transition: &str,
+) -> Result<bool> {
+    let rows = tx
+        .query(
+            "SELECT EXISTS (SELECT 1 FROM installed_addon_identity_audit a
+         JOIN installed_addon_identity i ON i.name=$1
+         WHERE a.operation='forward-install' AND a.content_hashes->$1->>'current'=$2
+         AND a.content_hashes->$1->>'transition'=$3
+         AND a.content_hashes->$1->>'receipt_epoch'=extract(epoch FROM i.recorded_at)::text)",
+            &[&name.as_str(), &hash, &transition],
+        )
+        .await?;
+    rows[0].try_get(0).map_err(row_error)
+}
+
 /// A repeated forward publication can follow a file rollback without rolling receipts back.
 /// Accept only a completely current set, retaining the exact original migration witnesses.
 async fn validate_already_current_activation(
@@ -259,6 +314,7 @@ async fn validate_already_current_activation(
         }
     }
     validate_sources(tx, names, entries).await?;
+    let transition = forward_install_transition(previous, current)?;
     for name in names {
         let hash = current.get(name).ok_or_else(|| mismatch(name))?;
         // Package transitions have already been admitted against their actual stored archive;
@@ -266,10 +322,13 @@ async fn validate_already_current_activation(
         if hash.starts_with("package-v1:") {
             continue;
         }
-        let old = previous.get(name).ok_or_else(|| mismatch(name))?;
-        if old != hash {
-            require_forward_migration(tx, name, old, hash).await?;
+        if previous.get(name) == Some(hash)
+            || forward_install_committed(tx, name, hash, &transition).await?
+        {
+            continue;
         }
+        let old = previous.get(name).ok_or_else(|| mismatch(name))?;
+        require_forward_migration(tx, name, old, hash).await?;
     }
     Ok(true)
 }
@@ -298,19 +357,26 @@ pub(super) async fn validate_names(
     previous: Option<&BTreeMap<ModuleName, String>>,
 ) -> Result<BTreeMap<ModuleName, String>> {
     let mut bound = BTreeMap::new();
+    let transition = previous
+        .map(|previous| forward_install_transition(previous, current))
+        .transpose()?;
     for name in names {
         let old = receipt(tx, name).await?;
+        let current_hash = current.get(name).ok_or_else(|| mismatch(name))?;
         let expected = match previous {
-            Some(_) if old.starts_with("package-v1:") => current.get(name),
-            Some(previous) => previous.get(name),
-            None => current.get(name),
-        }
-        .ok_or_else(|| mismatch(name))?;
-        if &old != expected {
-            return Err(mismatch(name));
-        }
-        if !current.contains_key(name) {
-            return Err(mismatch(name));
+            Some(previous) if !old.starts_with("package-v1:") => previous.get(name),
+            _ => Some(current_hash),
+        };
+        if expected != Some(&old) {
+            // A newly installed dependency has a current receipt from the first lifecycle
+            // transaction. It does not require a migration from bytes that were never installed.
+            let key = transition
+                .as_deref()
+                .filter(|_| &old == current_hash)
+                .ok_or_else(|| mismatch(name))?;
+            if !forward_install_committed(tx, name, current_hash, key).await? {
+                return Err(mismatch(name));
+            }
         }
         bound.insert(name.clone(), old);
     }
@@ -405,6 +471,52 @@ pub(super) async fn record_forward_migrations(
         erp_fields::Error::programming(format!("Cannot encode forward migration evidence: {error}"))
     })?;
     tx.execute("INSERT INTO installed_addon_identity_audit(operator,note,operation,names,content_hashes) VALUES ('forward-release-migration','Candidate artifacts upgraded in lifecycle transaction','forward-migrate',$1,$2)", &[&names, &hashes]).await?;
+    Ok(())
+}
+
+/// Record newly installed native/data dependencies during a verified forward upgrade. The
+/// owning transaction already holds lifecycle ownership and has inserted their exact receipts.
+pub(super) async fn record_forward_installations(
+    tx: &mut Transaction,
+    installed: &[ModuleName],
+    previous: &BTreeMap<ModuleName, String>,
+    current: &BTreeMap<ModuleName, String>,
+) -> Result<()> {
+    if installed.is_empty() {
+        return Ok(());
+    }
+    let transition = forward_install_transition(previous, current)?;
+    let mut changes = BTreeMap::new();
+    for name in installed {
+        let hash = current.get(name).ok_or_else(|| mismatch(name))?;
+        if hash.starts_with("addon-v1:") {
+            changes.insert(name.as_str(), hash);
+        }
+    }
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let hashes = serde_json::to_value(&changes).map_err(|error| {
+        erp_fields::Error::programming(format!(
+            "Cannot encode forward installation evidence: {error}"
+        ))
+    })?;
+    let inserted = tx.execute(
+        "INSERT INTO installed_addon_identity_audit(operator,note,operation,names,content_hashes)
+         SELECT 'forward-release-migration','New dependencies installed in lifecycle transaction',
+                'forward-install',array_agg(i.name ORDER BY i.name),
+                jsonb_object_agg(i.name, jsonb_build_object('current',i.content_hash,
+                    'transition',$2::text,'receipt_epoch',extract(epoch FROM i.recorded_at)::text))
+         FROM jsonb_each_text($1) AS candidate(name,hash)
+         JOIN installed_addon_identity i ON i.name=candidate.name AND i.content_hash=candidate.hash
+         HAVING count(*)=(SELECT count(*) FROM jsonb_each_text($1))",
+        &[&hashes, &transition],
+    ).await?;
+    if inserted != 1 {
+        return Err(
+            erp_fields::Error::invariant("New forward installation receipt is missing").into(),
+        );
+    }
     Ok(())
 }
 

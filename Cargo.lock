@@ -1217,6 +1217,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
+name = "datamatrix"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2d3882a013aca40e2e24f0e454ef7a581a50c603d67eded130013ab641a289d"
+dependencies = [
+ "arrayvec",
+ "flagset",
+]
+
+[[package]]
 name = "deadpool"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1449,6 +1459,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "erp-addon-account-reporting"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-reporting",
+ "erp-sdk",
+ "sha2 0.11.1",
+]
+
+[[package]]
+name = "erp-addon-ai-base"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-base",
+ "erp-sdk",
+ "libc",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml 0.8.23",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "erp-addon-analytic"
 version = "0.1.0"
 dependencies = [
@@ -1566,6 +1602,7 @@ name = "erp-addon-purchase_stock"
 version = "0.1.0"
 dependencies = [
  "erp-addon-purchase",
+ "erp-addon-stock",
  "erp-addon-stock_account",
  "erp-sdk",
 ]
@@ -1645,6 +1682,7 @@ dependencies = [
  "erp-addon-product_expiry",
  "erp-addon-purchase",
  "erp-addon-purchase_stock",
+ "erp-addon-reporting",
  "erp-addon-sale_stock",
  "erp-addon-stock_account",
  "erp-addon-stock_delivery",
@@ -1679,6 +1717,7 @@ dependencies = [
  "erp-addon-barcodes_gs1_nomenclature",
  "erp-addon-base",
  "erp-addon-product",
+ "erp-addon-reporting",
  "erp-addon-stock",
  "erp-addon-uom",
  "erp-addon-web",
@@ -1914,6 +1953,8 @@ dependencies = [
  "deadpool-postgres",
  "erp-addon-account",
  "erp-addon-account-mail",
+ "erp-addon-account-reporting",
+ "erp-addon-ai-base",
  "erp-addon-analytic",
  "erp-addon-barcodes",
  "erp-addon-barcodes_gs1_nomenclature",
@@ -1923,6 +1964,7 @@ dependencies = [
  "erp-addon-product-mail",
  "erp-addon-purchase",
  "erp-addon-purchase-mail",
+ "erp-addon-purchase_stock",
  "erp-addon-reporting",
  "erp-addon-sale",
  "erp-addon-sales_team",
@@ -2149,13 +2191,16 @@ dependencies = [
 name = "erp-report"
 version = "0.1.0"
 dependencies = [
+ "datamatrix",
  "erp-expr",
+ "erp-html",
  "erp-views",
  "qrcodegen",
  "serde",
  "serde_json",
  "thiserror",
  "time",
+ "url",
 ]
 
 [[package]]
@@ -2169,6 +2214,8 @@ dependencies = [
  "erp-report",
  "erp-test-models",
  "erp-testkit",
+ "linkme",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -2198,6 +2245,7 @@ name = "erp-report-worker"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "erp-expr",
  "erp-report",
  "rustix",
  "serde",
@@ -2593,6 +2641,12 @@ name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+
+[[package]]
+name = "flagset"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
 name = "flate2"

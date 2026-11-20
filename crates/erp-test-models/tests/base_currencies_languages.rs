@@ -210,9 +210,15 @@ async fn test_res_company_currency_id_required_and_default() {
 
     let eur_id = create_currency(&mut tx, "EUR", "€", 0.01).await;
     let selected = create_company(&mut tx, "Selected Company", eur_id).await;
-    tx.execute(
-        "UPDATE res_users SET company_id = $1 WHERE id = $2",
-        &[&root_comp.get(), &tx.env().uid()],
+    let user = tx
+        .env()
+        .records("res.users")
+        .unwrap()
+        .browse([tx.env().uid()])
+        .unwrap();
+    user.write(
+        &mut tx,
+        RawVals::new().set_cell("company_id", Cell::Id(root_comp.get())),
     )
     .await
     .unwrap();
@@ -338,6 +344,37 @@ async fn currency_decimal_thresholds_and_optional_iso_code() {
 }
 
 // The full test also exercises lookup failure in a non-sudo environment.
+#[tokio::test]
+async fn company_zone_default_distinguishes_an_absent_user_from_an_unreadable_preference() {
+    let h = base_harness().await;
+    let mut missing = h.begin_as(42).await.unwrap();
+    let company = missing.env().records("res.company").unwrap();
+    let values = company.default_get(&mut missing, &["tz"]).await.unwrap();
+    assert_eq!(values.get("tz"), Some(&Value::Str("UTC".into())));
+    missing.rollback().await.unwrap();
+    drop(missing);
+    h.cleanup().await.unwrap();
+
+    let policy = erp_testkit::FieldPolicy::new().deny("res.users", "tz", erp_orm::FieldOp::Read);
+    let h = Harness::builder([&base_users::ADDON, &erp_addon_base::ADDON])
+        .policy(policy)
+        .build()
+        .await
+        .unwrap();
+    let mut setup = h.begin().await.unwrap();
+    setup.execute("INSERT INTO res_users (id,name,login,active,share) VALUES (42,'Zone reader','zone-reader',true,false)", &[]).await.unwrap();
+    setup.commit().await.unwrap();
+    drop(setup);
+    let mut reader = h.begin_as(42).await.unwrap();
+    let company = reader.env().records("res.company").unwrap();
+    let error = company.default_get(&mut reader, &["tz"]).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Access);
+    assert!(error.message().contains("tz"), "{error}");
+    reader.rollback().await.unwrap();
+    drop(reader);
+    h.cleanup().await.unwrap();
+}
+
 async fn assert_company_currency_default_propagates_field_access_errors() {
     let policy =
         erp_testkit::FieldPolicy::new().deny("res.users", "company_id", erp_orm::FieldOp::Read);

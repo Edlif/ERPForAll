@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Inert, operator-editable defaults: no hosted vendor/model or credential is assumed. -->
+<erp noupdate="1">
+  <record id="provider_local" model="ai.provider">
+    <field name="name">local</field>
+    <field name="family">openai_compatible</field>
+    <field name="base_url">http://127.0.0.1:11434/v1</field>
+    <field name="allowed_models" eval="['local-model']"/>
+    <field name="region">local</field>
+    <field name="active" eval="False"/>
+  </record>
+  <record id="route_assistant_main" model="ai.route">
+    <field name="name">Assistant</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="task_kind">assistant</field>
+    <field name="provider_id" ref="provider_local"/>
+    <field name="model">local-model</field>
+  </record>
+</erp>

@@ -133,3 +133,43 @@ async fn assert_grants(partitioned: bool) {
     drop(admin);
     h.cleanup().await.unwrap();
 }
+
+#[tokio::test]
+async fn ordinary_publication_excludes_exclusive_named_id_sequences() {
+    static NAMED: ModelDecl =
+        ModelDecl::new("publish_fixture", "publish_fixture.named").id_sequence("pub_named_ids");
+    static NAMED_POLICY: SqlObjectDecl = SqlObjectDecl::table_grant(
+        "publish_fixture",
+        "restricted_id",
+        SqlTableGrantDecl::new(
+            "publish_fixture.named",
+            SqlBinding::Definer,
+            &[SqlTableOp::Insert],
+        )
+        .exclusive_id_sequence("pub_named_ids"),
+    );
+    static NAMED_MANIFEST: SqlObjectManifest =
+        SqlObjectManifest::new("publish_fixture", &["restricted_id"]);
+    let registry = RegistryBuilder::new([&base_users::ADDON, &ADDON])
+        .with_decls([&NAMED])
+        .require_sql_objects([&NAMED_MANIFEST])
+        .with_sql_objects([&NAMED_POLICY])
+        .linked(false)
+        .build()
+        .unwrap();
+    let h = Harness::builder([&base_users::ADDON])
+        .build()
+        .await
+        .unwrap();
+    let mut tx = h.begin().await.unwrap();
+    let role = format!("{}_named_request", h.db().name());
+    tx.batch(&format!("CREATE ROLE {} NOLOGIN; CREATE SEQUENCE pub_named_ids; CREATE TABLE publish_fixture_named(id bigint DEFAULT nextval('pub_named_ids')); CREATE SEQUENCE pub_ordinary_ids", erp_sql::quote(&role))).await.unwrap();
+    grant_ordinary(&mut tx, &role, &registry).await.unwrap();
+    let row=tx.query("SELECT has_sequence_privilege($1::text::name,'pub_named_ids','USAGE,SELECT,UPDATE'),has_sequence_privilege($1::text::name,'pub_ordinary_ids','USAGE'),has_sequence_privilege($1::text::name,'pub_ordinary_ids','SELECT')",&[&role]).await.unwrap();
+    assert!(!row[0].get::<_, bool>(0));
+    assert!(row[0].get::<_, bool>(1));
+    assert!(row[0].get::<_, bool>(2));
+    tx.rollback().await.unwrap();
+    drop(tx);
+    h.cleanup().await.unwrap();
+}

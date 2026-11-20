@@ -55,7 +55,7 @@ async fn state_schema() {
     )
     .await;
     unique(&mut tx,"INSERT INTO stk_cost_state(company_id,product_id,method,policy,grid_value,quantity,currency_carry,currency_id,currency_increment,generation) SELECT company_id,product_id,method,policy,grid_value,quantity,currency_carry,currency_id,currency_increment,generation FROM stk_cost_state","stk_cost_state","_key").await;
-    // Negative stock is valid, as are both signed half-increment endpoints (codec bound later).
+    // Negative stock is valid, as are both signed half-increment endpoints.
     tx.execute(
         "UPDATE stk_cost_state SET currency_carry=-0.005 WHERE id=$1",
         &[&id],

@@ -141,6 +141,7 @@ async fn fixture() -> Fixture {
         &erp_addon_uom::ADDON,
         &erp_addon_product::ADDON,
         &erp_addon_stock::ADDON,
+        &erp_addon_reporting::ADDON,
         &ADDON,
     ])
     .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
@@ -959,6 +960,7 @@ async fn quant_model_refuses_generic_writes() {
     for (field, value) in [
         ("quantity", Cell::Decimal(Decimal::ONE)),
         ("reserved_quantity", Cell::Decimal(Decimal::ZERO)),
+        ("inventory_quantity_auto_apply", Cell::Decimal(Decimal::ONE)),
         ("location_id", Cell::Id(f.x)),
         ("lot_id", Cell::Id(f.lot_a)),
     ] {
@@ -2340,6 +2342,193 @@ async fn a_refused_later_chunk_undoes_the_earlier_chunks() {
     // the transaction goes on, and the undone chunk's keys are not held
     apply(&mut tx, &[change(first, "1", "0")]).await;
     assert_eq!(stored(&mut tx, first).await, Some(("1".into(), "0".into())));
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn quant_names_follow_present_balance_dimensions() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let base = f.key(f.p, f.l);
+    let cases = [
+        (base, "L"),
+        (base.lot_id(Some(f.lot_a)), "L - A"),
+        (base.package_id(Some(f.k)), "L - K"),
+        (base.owner_id(Some(f.o)), "L - O"),
+        (
+            base.lot_id(Some(f.lot_a))
+                .package_id(Some(f.k))
+                .owner_id(Some(f.o)),
+            "L - A - K - O",
+        ),
+    ];
+    let changes: Vec<_> = cases
+        .iter()
+        .map(|(key, _)| change(*key, "1", "0"))
+        .collect();
+    let balances = apply(&mut tx, &changes).await;
+    for (key, label) in cases {
+        let balance = balances.iter().find(|balance| balance.key == key).unwrap();
+        let quant = tx
+            .env()
+            .records("stock.quant")
+            .unwrap()
+            .browse([balance.id.unwrap()])
+            .unwrap();
+        assert_eq!(
+            quant.cell(&mut tx, "display_name").await.unwrap(),
+            text(label)
+        );
+    }
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn warehouse_filter_and_grouped_count_use_visible_balances() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let shelf = location(&mut tx, "Store", Some(f.view), "internal").await;
+    create(
+        &mut tx,
+        "stock.warehouse",
+        RawVals::new()
+            .set_cell("name", text("Central Store"))
+            .set_cell("code", text("CST"))
+            .set_cell("company_id", Cell::Id(f.company))
+            .set_cell("view_location_id", Cell::Id(f.view))
+            .set_cell("lot_stock_id", Cell::Id(shelf)),
+    )
+    .await;
+    let inside = f.key(f.p, shelf);
+    let outside = f.key(f.p, f.x);
+    let balances = apply(
+        &mut tx,
+        &[
+            change(inside, "7", "2"),
+            change(inside.package_id(Some(f.k)), "4", "2"),
+            change(outside, "5", "0"),
+        ],
+    )
+    .await;
+    // Imported stock may include a supplier quant. The engine normally skips virtual locations.
+    let supplier_id: i64 = tx.query("INSERT INTO stock_quant(company_id, product_id, location_id, quantity, reserved_quantity, in_date) VALUES ($1, $2, $3, 9, 0, now()) RETURNING id", &[&f.company, &f.p, &f.vendor]).await.unwrap()[0].get(0);
+    let quants = tx
+        .env()
+        .with_company(f.company)
+        .unwrap()
+        .records("stock.quant")
+        .unwrap();
+    let domain = Domain::field("on_hand").unwrap().eq(true);
+    let mut actual = quants.search(&mut tx, &domain).await.unwrap().ids();
+    let mut expected: Vec<_> = balances
+        .iter()
+        .filter(|b| b.key.location_id == shelf)
+        .map(|b| b.id.unwrap())
+        .collect();
+    actual.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
+    let excluded = quants
+        .search(&mut tx, &Domain::field("on_hand").unwrap().eq(false))
+        .await
+        .unwrap();
+    let mut excluded_ids = excluded.ids();
+    let mut outside_ids = vec![
+        balances
+            .iter()
+            .find(|b| b.key == outside)
+            .unwrap()
+            .id
+            .unwrap(),
+        supplier_id,
+    ];
+    excluded_ids.sort_unstable();
+    outside_ids.sort_unstable();
+    assert_eq!(excluded_ids, outside_ids);
+    for id in &expected {
+        assert_eq!(
+            quants
+                .browse([*id])
+                .unwrap()
+                .cell(&mut tx, "on_hand")
+                .await
+                .unwrap(),
+            Cell::Bool(true)
+        );
+    }
+    let wrong_company = tx
+        .env()
+        .with_company(f.other_company)
+        .unwrap()
+        .with_context([(
+            "allowed_company_ids",
+            Value::list([Value::Int(f.other_company)]),
+        )]);
+    assert!(
+        wrong_company
+            .records("stock.quant")
+            .unwrap()
+            .search(&mut tx, &domain)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let grouped = quants
+        ._read_group(
+            &mut tx,
+            ReadGroup::new(domain).groupby(["product_id"]).aggregates([
+                "inventory_quantity_auto_apply:sum",
+                "available_quantity:sum",
+            ]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(grouped.column(1), [GroupValue::Decimal(dec("11"))]);
+    assert_eq!(grouped.column(2), [GroupValue::Decimal(dec("7"))]);
+    tx.rollback().await.unwrap();
+    drop(tx);
+    f.h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn available_quantity_upgrade_reads_preexisting_stock_and_later_reservations() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let key = f.key(f.p, f.l);
+    let balance = apply(&mut tx, &[change(key, "11", "4")]).await;
+    let id = balance[0].id.unwrap();
+    // The previous schema had no column here. Keep the actual stock rows through schema sync.
+    tx.execute(
+        "ALTER TABLE stock_quant DROP COLUMN available_quantity",
+        &[],
+    )
+    .await
+    .unwrap();
+    tx.execute("DELETE FROM erp_schema_generated WHERE table_name='stock_quant' AND column_name='available_quantity'", &[]).await.unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+    let synced = f.h.orm().sync_schema().await.unwrap();
+    assert!(synced.kept_comments().is_empty());
+    let mut tx = f.h.begin().await.unwrap();
+    let quant = tx
+        .env()
+        .records("stock.quant")
+        .unwrap()
+        .browse([id])
+        .unwrap();
+    assert_eq!(
+        quant.cell(&mut tx, "available_quantity").await.unwrap(),
+        Cell::Decimal(dec("7"))
+    );
+    apply(&mut tx, &[change(key, "0", "1")]).await;
+    assert_eq!(
+        quant.cell(&mut tx, "available_quantity").await.unwrap(),
+        Cell::Decimal(dec("6"))
+    );
     tx.rollback().await.unwrap();
     drop(tx);
     f.h.cleanup().await.unwrap();

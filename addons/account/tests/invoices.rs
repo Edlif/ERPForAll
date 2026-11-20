@@ -414,6 +414,95 @@ async fn a_customer_invoice_gets_its_tax_and_receivable_lines_and_totals() {
 }
 
 #[tokio::test]
+async fn invoice_currency_selects_the_default_journal() {
+    let h = harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let b = books(&mut tx, "Currency journals").await;
+    let foreign = foreign_currency(&mut tx, b.company, &[("2026-11-01", "2")]).await;
+    let domestic = tx
+        .env()
+        .records("res.company")
+        .unwrap()
+        .browse([b.company])
+        .unwrap()
+        .cell(&mut tx, "currency_id")
+        .await
+        .unwrap();
+    let sale_fx = journal(&mut tx, b.company, "FX", "sale", Some(b.income)).await;
+    let sale_home = journal(&mut tx, b.company, "HOME", "sale", Some(b.income)).await;
+    let Cell::Id(home) = domestic else {
+        panic!("expected a company currency")
+    };
+    for (journal, currency) in [(sale_fx, foreign), (sale_home, home)] {
+        tx.query(
+            "UPDATE account_journal SET currency_id = $2, sequence = 20 WHERE id = $1",
+            &[&journal, &currency],
+        )
+        .await
+        .unwrap();
+    }
+    let sibling = company(&mut tx, "Independent books").await;
+    let sibling_purchase = journal(&mut tx, sibling, "FXBUY", "purchase", None).await;
+    tx.query(
+        "UPDATE account_journal SET currency_id = $2, sequence = 1 WHERE id = $1",
+        &[&sibling_purchase, &foreign],
+    )
+    .await
+    .unwrap();
+    let model = moves(&tx, b.company);
+    let from_context = model.with_context([("default_currency_id", Value::Int(foreign))]);
+    for (model, kind, currency, explicit_journal, expected_journal, expected_currency) in [
+        (&model, "out_invoice", Some(foreign), None, sale_fx, foreign),
+        (&from_context, "out_refund", None, None, sale_fx, foreign),
+        (&from_context, "out_invoice", Some(home), None, b.sale, home),
+        (&from_context, "in_invoice", None, None, b.purchase, foreign),
+        (
+            &from_context,
+            "out_invoice",
+            None,
+            Some(b.sale),
+            b.sale,
+            foreign,
+        ),
+    ] {
+        let mut vals = invoice(kind, b.customer, vec![]);
+        if let Some(currency) = currency {
+            vals.insert("currency_id".into(), Cell::Id(currency));
+        }
+        if let Some(journal) = explicit_journal {
+            vals.insert("journal_id".into(), Cell::Id(journal));
+        }
+        let entry = model.create(&mut tx, vec![vals]).await.unwrap();
+        assert_eq!(
+            entry.cell(&mut tx, "journal_id").await.unwrap(),
+            Cell::Id(expected_journal)
+        );
+        assert_eq!(
+            entry.cell(&mut tx, "currency_id").await.unwrap(),
+            Cell::Id(expected_currency)
+        );
+    }
+    let sibling_moves =
+        moves(&tx, sibling).with_context([("default_currency_id", Value::Int(foreign))]);
+    let error = try_create(
+        &sibling_moves,
+        &mut tx,
+        invoice("out_invoice", b.customer, vec![]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError);
+    assert!(
+        error.to_string().contains(&format!(
+            "No sale journal is available for company {sibling}"
+        )),
+        "{error}"
+    );
+    tx.rollback().await.unwrap();
+    h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
 async fn each_invoice_type_books_its_lines_on_the_right_side() {
     let h = harness().await;
     let mut tx = h.begin().await.unwrap();

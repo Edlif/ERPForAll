@@ -15,6 +15,7 @@ use erp_sdk::serde_json::{self, Value as Json, json};
 use erp_sdk::{BoxFuture, ErrorKind, Load};
 
 use crate::formula::{self, EvalError, Ref, Term};
+use crate::functions::{NativeRequest, NativeValues};
 use crate::line::{
     Cell, CellKind, DrillTarget, ExpandPage, Expansion, Line, LineId, LineKind, Segment,
     SegmentKind,
@@ -69,6 +70,13 @@ enum Foldable {
     Never,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DateScope {
+    StrictRange,
+    FromBeginning,
+    BeforePeriod,
+}
+
 #[derive(Debug, Clone)]
 struct Agg {
     model: String,
@@ -77,13 +85,15 @@ struct Agg {
     field: Option<String>,
     // the date field and whether it is a datetime
     date: Option<(String, bool)>,
-    from_beginning: bool,
+    date_scope: DateScope,
 }
 
 #[derive(Debug, Clone)]
 enum Engine {
     Aggregate(Agg),
     Formula { term: Term, zero_empty: bool },
+    // a registered function; `agg` carries its model, domain and date (no summed field)
+    Native { function: String, agg: Agg },
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +136,7 @@ pub struct ReportDef {
     pub provider: String,
     pub(crate) date_mode: DateMode,
     pub(crate) date_default: Preset,
+    pub(crate) current_only: bool,
     pub(crate) comparison: bool,
     pub(crate) multi_company: bool,
     pub(crate) unfold_all: bool,
@@ -142,25 +153,30 @@ pub struct ReportDef {
 }
 
 impl ReportDef {
-    /// Whether a grouped line computes `label` with a formula (such a column is not sortable).
-    pub(crate) fn is_formula_label(&self, label: &str) -> bool {
-        self.lines.iter().any(|l| {
-            !l.groupby.is_empty()
-                && l.exprs
-                    .iter()
-                    .any(|e| e.label == label && matches!(e.engine, Engine::Formula { .. }))
-        })
+    /// Whether every grouped line can order this column before it pages its results.
+    pub(crate) fn can_sort(&self, column: &ColumnDef) -> bool {
+        column.sortable
+            && !self.lines.iter().any(|line| {
+                !line.groupby.is_empty()
+                    && (line.exprs.iter().any(|expr| {
+                        expr.label == column.label && !matches!(expr.engine, Engine::Aggregate(_))
+                    }) || aggs(line).next().is_some_and(|(_, first)| {
+                        aggs(line).any(|(_, agg)| agg.date_scope != first.date_scope)
+                    }))
+            })
     }
     /// The filter bar this report offers.
     pub(crate) fn filters(&self) -> Json {
         json!({
             "date_mode": match self.date_mode { DateMode::Range => "range", DateMode::Single => "single" },
+            "current_only": self.current_only,
             "comparison": self.comparison,
             "multi_company": self.multi_company,
             "unfold_all": self.unfold_all,
             "hide_zero": match self.hide_zero {
                 HideZero::Never => "never", HideZero::Optional => "optional", HideZero::ByDefault => "by_default" },
             "search_bar": self.search_bar,
+            "max_search_chars": crate::options::MAX_SEARCH_CHARS,
             "totals_below": self.totals_below,
         })
     }
@@ -259,6 +275,7 @@ pub async fn load(
                 "provider",
                 "date_mode",
                 "date_default",
+                "current_only",
                 "comparison",
                 "multi_company",
                 "unfold_all",
@@ -297,6 +314,15 @@ pub async fn load(
             "the default period is not offered in its date mode.".into(),
         ));
     }
+    let current_only = flag(report, "current_only")?;
+    let comparison = flag(report, "comparison")?;
+    if current_only
+        && (date_mode != DateMode::Single || date_default != Preset::Today || comparison)
+    {
+        return Err(fail(
+            "Current Only requires Single Date, Today and comparison disabled.".into(),
+        ));
+    }
     let hide_zero = match text(report, "hide_zero")?.as_str() {
         "never" => HideZero::Never,
         "optional" => HideZero::Optional,
@@ -305,6 +331,7 @@ pub async fn load(
     };
 
     let mut columns = Vec::new();
+    let mut absent: Vec<String> = Vec::new();
     for row in rows(
         env,
         tx,
@@ -319,6 +346,7 @@ pub async fn load(
             "blank_if_zero",
             "rollup",
             "rollup_field",
+            "groups",
         ],
     )
     .await?
@@ -328,6 +356,12 @@ pub async fn load(
             return Err(fail(format!(
                 "column label '{label}' is not a unique lower-case name."
             )));
+        }
+        // a column of a group the caller is not in does not exist for the caller, nor do its values
+        let groups = text(&row, "groups")?;
+        if strict && !groups.is_empty() && !tx.has_groups(env, &groups).await? {
+            absent.push(label);
+            continue;
         }
         // a negative scale is refused with the out-of-range one
         let scale = u32::try_from(int(&row, "scale")?)
@@ -354,9 +388,15 @@ pub async fn load(
                 )));
             }
         };
+        let kind = CellKind::parse(&text(&row, "kind")?)?;
+        if provider == "reporting.definition" && matches!(kind, CellKind::Date | CellKind::Text) {
+            return Err(fail(format!(
+                "column {label}: date/text columns require a native report provider."
+            )));
+        }
         columns.push(ColumnDef {
             name: text(&row, "name")?,
-            kind: CellKind::parse(&text(&row, "kind")?)?,
+            kind,
             scale,
             sortable: flag(&row, "sortable")?,
             blank_if_zero: flag(&row, "blank_if_zero")?,
@@ -447,6 +487,13 @@ pub async fn load(
             at = lines[p].parent;
         }
         if let Some(p) = lines[index].parent {
+            // The line model orders the declaration by sequence, then id for ties.
+            if p > index {
+                return Err(Error::validation(format!(
+                    "Line \"{}\" comes before its parent line \"{}\". Move the parent line above it.",
+                    lines[index].name, lines[p].name
+                )));
+            }
             lines[p].children.push(index);
         }
     }
@@ -464,6 +511,7 @@ pub async fn load(
             "domain",
             "field",
             "formula",
+            "function",
             "date_field",
             "date_scope",
             "zero_division",
@@ -477,6 +525,9 @@ pub async fn load(
             .position(|i| *i == line_id)
             .ok_or_else(|| Error::internal("reporting: an expression of an unread line"))?;
         let label = text(&row, "label")?;
+        if absent.contains(&label) {
+            continue;
+        }
         let code = lines[line].code.clone();
         if !is_label(&label) || lines[line].exprs.iter().any(|e| e.label == label) {
             return Err(fail(format!(
@@ -493,6 +544,23 @@ pub async fn load(
                     .map_err(|e| fail(format!("line {code}, {label}: {}", e.message())))?,
                 zero_empty: text(&row, "zero_division")? == "empty",
             },
+            "native" => {
+                let function = text(&row, "function")?;
+                if function.is_empty() {
+                    return Err(fail(format!(
+                        "line {code}, {label}: a native expression names its function."
+                    )));
+                }
+                if strict {
+                    crate::functions::find(env, &function)
+                        .map_err(|e| fail(format!("line {code}, {label}: {}", e.message())))?;
+                }
+                Engine::Native {
+                    function,
+                    agg: aggregate(env, &row)
+                        .map_err(|e| fail(format!("line {code}, {label}: {}", e.message())))?,
+                }
+            }
             other => {
                 return Err(fail(format!(
                     "line {code}, {label}: engine '{other}' is unknown."
@@ -517,7 +585,8 @@ pub async fn load(
         provider,
         date_mode,
         date_default,
-        comparison: flag(report, "comparison")?,
+        current_only,
+        comparison,
         multi_company: flag(report, "multi_company")?,
         unfold_all: flag(report, "unfold_all")?,
         hide_zero,
@@ -563,6 +632,11 @@ fn aggregate(env: &Env, row: &Row) -> Result<Agg> {
         let kind = typed(&date_field, &["date", "datetime"], "a date or a datetime")?;
         Some((date_field, kind == "datetime"))
     };
+    if text(row, "date_scope")? == "before_period" && date.is_none() {
+        return Err(Error::validation(
+            "The before_period date scope requires a date field.",
+        ));
+    }
     let domain_text = text(row, "domain")?;
     if domain_text.len() > MAX_DOMAIN_BYTES {
         return Err(Error::validation(format!(
@@ -583,14 +657,30 @@ fn aggregate(env: &Env, row: &Row) -> Result<Agg> {
         domain,
         field,
         date,
-        from_beginning: text(row, "date_scope")? == "from_beginning",
+        date_scope: match text(row, "date_scope")?.as_str() {
+            "strict_range" => DateScope::StrictRange,
+            "from_beginning" => DateScope::FromBeginning,
+            "before_period" => DateScope::BeforePeriod,
+            other => {
+                return Err(Error::validation(format!(
+                    "date scope '{other}' is not supported."
+                )));
+            }
+        },
     })
 }
 
 fn aggs(line: &LineDef) -> impl Iterator<Item = (&str, &Agg)> {
     line.exprs.iter().filter_map(|e| match &e.engine {
         Engine::Aggregate(agg) => Some((e.label.as_str(), agg)),
-        Engine::Formula { .. } => None,
+        Engine::Formula { .. } | Engine::Native { .. } => None,
+    })
+}
+
+fn natives(line: &LineDef) -> impl Iterator<Item = (&str, &str, &Agg)> {
+    line.exprs.iter().filter_map(|e| match &e.engine {
+        Engine::Native { function, agg } => Some((e.label.as_str(), function.as_str(), agg)),
+        Engine::Aggregate(_) | Engine::Formula { .. } => None,
     })
 }
 
@@ -621,7 +711,6 @@ fn check_line(
                     a.model != first.model
                         || a.domain_text != first.domain_text
                         || a.date != first.date
-                        || a.from_beginning != first.from_beginning
                 }) {
                     return Err(format!(
                         "the aggregate expressions of grouped line {code} use different models, domains or dates."
@@ -900,6 +989,51 @@ fn locate(def: &ReportDef, id: &LineId, bounds: &Bounds) -> Result<Located> {
     })
 }
 
+/// Validate a saved page parent for a provider delegating to [`DefinitionProvider`].
+/// A parent must have grouped children and an unfolded ancestor path; section children are not paged.
+///
+/// # Errors
+/// `Validation` for a parent outside the definition, with no remaining group, or behind a folded
+/// ancestor; `Internal` for an incomplete validated path.
+pub fn check_page_parent(
+    def: &ReportDef,
+    id: &LineId,
+    bounds: &Bounds,
+    is_open: impl Fn(&LineId) -> bool,
+) -> Result<()> {
+    let at = locate(def, id, bounds)?;
+    if at.keys.len() >= def.lines[at.line].group.len() {
+        return Err(bad(format!(
+            "options.loaded_pages: {id} has no grouped children to page."
+        )));
+    }
+    // A nested count cannot reopen folded ancestors. Definition sections that always show
+    // their children are implicit; groups and other sections must have been opened.
+    let mut node = id.clone();
+    let mut line = &def.lines[at.line];
+    let mut groups = at.keys.len();
+    loop {
+        let implicit =
+            groups == 0 && line.foldable == Foldable::Always && !line.children.is_empty();
+        if line.foldable == Foldable::Never || !(implicit || is_open(&node)) {
+            return Err(bad(format!(
+                "options.loaded_pages: the path to {id} is folded at {node}."
+            )));
+        }
+        if groups > 0 {
+            groups -= 1;
+        } else if let Some(parent) = line.parent {
+            line = &def.lines[parent];
+        } else {
+            break;
+        }
+        node = node.parent().ok_or_else(|| {
+            Error::internal("reporting: validated page parent has an incomplete path")
+        })?;
+    }
+    Ok(())
+}
+
 fn bad(message: impl Into<String>) -> Error {
     Error::validation(message.into())
 }
@@ -925,6 +1059,36 @@ fn numeric(value: Option<&GroupValue>) -> Result<Decimal> {
     }
 }
 
+/// Run a registered function over `domain`; `group` `None` answers one total.
+async fn native(
+    cx: &mut ReportCx<'_>,
+    function: &str,
+    options: &Options,
+    agg: &Agg,
+    domain: Domain,
+    group: Option<&str>,
+) -> Result<NativeValues> {
+    let call = crate::functions::find(cx.env(), function)?.function;
+    call(
+        cx,
+        options,
+        NativeRequest {
+            model: &agg.model,
+            field: agg.field.as_deref(),
+            domain,
+            group,
+        },
+    )
+    .await
+}
+
+fn sum_of(values: &NativeValues) -> Result<Decimal> {
+    values.iter().try_fold(Decimal::ZERO, |sum, (_, n)| {
+        sum.checked_add(*n)
+            .ok_or_else(|| bad("A report sum is too large."))
+    })
+}
+
 fn next_day(date: Date) -> Result<Date> {
     date.days()
         .checked_add(1)
@@ -948,13 +1112,20 @@ fn scope(env: &Env, agg: &Agg, options: &Options, group: usize) -> Result<Domain
                 day(d)
             }
         };
-        items.push(if *datetime {
-            json!([field, "<", start(next_day(period.to)?)])
+        if agg.date_scope == DateScope::BeforePeriod {
+            let from = period.from.ok_or_else(|| {
+                bad("The before_period date scope requires a date range with a start date.")
+            })?;
+            items.push(json!([field, "<", start(from)]));
         } else {
-            json!([field, "<=", day(period.to)])
-        });
-        if let (Some(from), false) = (period.from, agg.from_beginning) {
-            items.push(json!([field, ">=", start(from)]));
+            items.push(if *datetime {
+                json!([field, "<", start(next_day(period.to)?)])
+            } else {
+                json!([field, "<=", day(period.to)])
+            });
+            if let (Some(from), DateScope::StrictRange) = (period.from, agg.date_scope) {
+                items.push(json!([field, ">=", start(from)]));
+            }
         }
     }
     let company = env
@@ -1056,25 +1227,36 @@ async fn money(
     if !def.columns.iter().any(|c| c.kind == CellKind::Monetary) {
         return Ok((0, None));
     }
-    let company = *options
-        .companies
-        .first()
-        .ok_or_else(|| bad("A report with amounts needs a company."))?;
     let (env, tx) = cx.parts();
-    let read = rows(
-        env,
-        tx,
-        "res.company",
-        json!([["id", "=", company]]),
-        &["currency_id"],
-    )
-    .await?;
-    let currency = read
-        .first()
-        .map(|r| int(r, "currency_id"))
+    let companies = env
+        .records("res.company")?
+        .browse(options.companies.iter().copied())?
+        .read_with(tx, &["id", "currency_id"], Load::Raw)
+        .await?;
+    if companies.len() != options.companies.len() {
+        return Err(bad("Cannot read the currencies of all selected companies."));
+    }
+    let mut currency_ids = companies.iter().map(|company| {
+        let currency = int(company, "currency_id")?;
+        if currency <= 0 {
+            return Err(bad(format!(
+                "Company {} has no currency.",
+                int(company, "id")?
+            )));
+        }
+        Ok(currency)
+    });
+    let currency = currency_ids
+        .next()
         .transpose()?
-        .filter(|c| *c > 0)
-        .ok_or_else(|| bad(format!("Company {company} has no currency.")))?;
+        .ok_or_else(|| bad("A report with amounts needs a company."))?;
+    for other in currency_ids {
+        if other? != currency {
+            return Err(bad(
+                "Select companies with the same currency to total monetary columns.",
+            ));
+        }
+    }
     let read = rows(
         env,
         tx,
@@ -1126,13 +1308,13 @@ async fn top_values(
 ) -> Result<(Vec<BTreeMap<usize, Values>>, Vec<usize>)> {
     let mut per_group = vec![BTreeMap::new(); options.column_groups.len()];
     let mut hidden = Vec::new();
-    let (env, tx) = cx.parts();
+    let env = cx.env().clone();
     'line: for (l, line) in def.lines.iter().enumerate() {
         for (g, values) in per_group.iter_mut().enumerate() {
             let mut row = Values::new();
             for (label, agg) in aggs(line) {
-                let args = ReadGroup::new(scope(env, agg, options, g)?).aggregates([spec(agg)]);
-                match env.records(&agg.model)?._read_group(tx, args).await {
+                let args = ReadGroup::new(scope(&env, agg, options, g)?).aggregates([spec(agg)]);
+                match env.records(&agg.model)?._read_group(cx.tx(), args).await {
                     Ok(groups) => {
                         row.insert(label.to_owned(), Some(numeric(groups.column(0).first())?));
                     }
@@ -1145,6 +1327,29 @@ async fn top_values(
                 }
             }
             values.insert(l, row);
+        }
+    }
+    'native: for (l, line) in def.lines.iter().enumerate() {
+        if hidden.contains(&l) {
+            continue;
+        }
+        for (label, function, agg) in natives(line) {
+            for (g, values) in per_group.iter_mut().enumerate() {
+                let domain = scope(&env, agg, options, g)?;
+                match native(cx, function, options, agg, domain, None).await {
+                    Ok(found) => {
+                        values
+                            .entry(l)
+                            .or_default()
+                            .insert(label.to_owned(), Some(sum_of(&found)?));
+                    }
+                    Err(e) if e.kind() == ErrorKind::Access && line.optional => {
+                        hidden.push(l);
+                        continue 'native;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
         }
     }
     for values in &mut per_group {
@@ -1216,8 +1421,8 @@ fn definition_lines(
 }
 
 async fn top_lines(cx: &mut ReportCx<'_>, def: &ReportDef, options: &Options) -> Result<Expansion> {
-    let (values, hidden) = top_values(cx, def, options).await?;
     let money = money(cx, def, options).await?;
+    let (values, hidden) = top_values(cx, def, options).await?;
     let mut lines = Vec::new();
     definition_lines(def, &LineId::root(def.id), None, &values, money, &mut lines);
     let mut expansion = Expansion::new(lines);
@@ -1246,6 +1451,23 @@ fn rows_by_key(
     Ok(out)
 }
 
+// check_line requires the same model, domain and date field. Only date scope may differ.
+// Batch identical scopes so ordinary reports retain one grouped read per column group.
+fn scope_batches(found: &[(&str, &Agg)]) -> Vec<Vec<usize>> {
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    for (index, (_, agg)) in found.iter().enumerate() {
+        if let Some(batch) = batches
+            .iter_mut()
+            .find(|b| found[b[0]].1.date_scope == agg.date_scope)
+        {
+            batch.push(index);
+        } else {
+            batches.push(vec![index]);
+        }
+    }
+    batches
+}
+
 async fn expand(
     cx: &mut ReportCx<'_>,
     def: &ReportDef,
@@ -1261,8 +1483,8 @@ async fn expand(
         if line.children.is_empty() || line.foldable == Foldable::Never {
             return Err(bad(format!("Line {id} cannot be unfolded.")));
         }
-        let (values, _) = top_values(cx, def, options).await?;
         let money = money(cx, def, options).await?;
+        let (values, _) = top_values(cx, def, options).await?;
         let mut lines = Vec::new();
         definition_lines(def, id, Some(located.line), &values, money, &mut lines);
         return Ok(Expansion::new(lines));
@@ -1289,15 +1511,19 @@ async fn expand(
     let labels: Vec<&str> = found.iter().map(|(l, _)| *l).collect();
     let specs: Vec<String> = found.iter().map(|(_, a)| spec(a)).collect();
     let money = money(cx, def, options).await?;
-    let (env, tx) = cx.parts();
+    let env = cx.env().clone();
     let parent_keys = keys_domain(&located.keys)?;
     let domains = (0..options.column_groups.len())
-        .map(|g| Ok(scope(env, first, options, g)? & parent_keys.clone()))
-        .collect::<Result<Vec<Domain>>>()?;
-    let union = match domains.as_slice() {
-        [one] => one.clone(),
-        many => Domain::or(many.iter().cloned()),
-    };
+        .map(|g| {
+            found
+                .iter()
+                .map(|(_, agg)| Ok(scope(&env, agg, options, g)? & parent_keys.clone()))
+                .collect::<Result<Vec<Domain>>>()
+        })
+        .collect::<Result<Vec<Vec<Domain>>>>()?;
+    // Discover keys over every expression scope: an opening-only account and an account
+    // present only in a comparison period must both survive paging.
+    let union = Domain::or(domains.iter().flatten().cloned());
     let records = env.records(&first.model)?;
     let mut paging = ReadGroup::new(union)
         .groupby([group.name.clone()])
@@ -1309,12 +1535,25 @@ async fn expand(
     if let Some(order) = &options.order
         && let Some(i) = labels.iter().position(|l| *l == order.column)
     {
+        if found
+            .iter()
+            .any(|(_, agg)| agg.date_scope != first.date_scope)
+        {
+            return Err(bad(
+                "Sorting a grouped line with different date scopes is not supported until a later release.",
+            ));
+        }
         let direction = if order.descending { "desc" } else { "asc" };
         paging = paging
             .aggregates(specs.clone())
             .order(format!("{} {direction}, {}", specs[i], group.name));
     }
-    let paged = records._read_group(tx, paging).await?;
+    let paged = records._read_group(cx.tx(), paging).await?;
+    // Groups::group_count is absent for an empty result: its SQL window has no row.
+    // An authorized empty scope has no child lines.
+    if paged.is_empty() {
+        return Ok(Expansion::new(Vec::new()));
+    }
     let total = paged
         .group_count()
         .ok_or_else(|| Error::internal("reporting: the paging read has no group count"))?;
@@ -1327,15 +1566,48 @@ async fn expand(
     let keys: &[Key] = loaded.get(offset..).unwrap_or(&[]);
 
     let mut per_group: Vec<BTreeMap<String, Values>> = Vec::with_capacity(domains.len());
-    for domain in &domains {
-        let args = ReadGroup::new(domain.clone() & in_domain(&group.name, keys)?)
-            .groupby([group.name.clone()])
-            .aggregates(specs.clone());
-        per_group.push(rows_by_key(
-            &records._read_group(tx, args).await?,
-            &labels,
-            group,
-        )?);
+    for scopes in &domains {
+        let mut values = BTreeMap::<String, Values>::new();
+        for batch in scope_batches(&found) {
+            let domain = scopes[batch[0]].clone() & in_domain(&group.name, keys)?;
+            let batch_specs: Vec<String> = batch.iter().map(|i| specs[*i].clone()).collect();
+            let batch_labels: Vec<&str> = batch.iter().map(|i| labels[*i]).collect();
+            let args = ReadGroup::new(domain)
+                .groupby([group.name.clone()])
+                .aggregates(batch_specs);
+            for (key, row) in rows_by_key(
+                &records._read_group(cx.tx(), args).await?,
+                &batch_labels,
+                group,
+            )? {
+                values
+                    .entry(key)
+                    .or_insert_with(|| zeros(&labels))
+                    .extend(row);
+            }
+        }
+        per_group.push(values);
+    }
+    // registered functions: one value per page key and period (a key without a row has none)
+    let native_labels: Vec<&str> = natives(line).map(|(label, _, _)| label).collect();
+    for (label, function, nagg) in natives(line) {
+        if group.comodel.is_none() {
+            return Err(bad(format!(
+                "Line {id}: a native expression groups only by a many2one field, not {}.",
+                group.name
+            )));
+        }
+        for (g, rows) in per_group.iter_mut().enumerate() {
+            let domain = scope(&env, nagg, options, g)?
+                & parent_keys.clone()
+                & in_domain(&group.name, keys)?;
+            let found = native(cx, function, options, nagg, domain, Some(&group.name)).await?;
+            for (key, value) in found {
+                rows.entry(format!("{:?}", Key::Id(key)))
+                    .or_insert_with(|| zeros(&labels))
+                    .insert(label.to_owned(), Some(value));
+            }
+        }
     }
     let mut names = BTreeMap::new();
     if let Some(comodel) = &group.comodel {
@@ -1349,7 +1621,7 @@ async fn expand(
         let shown = env
             .records(comodel)?
             .browse(ids.iter().copied())?
-            .values(tx, "display_name")
+            .values(cx.tx(), "display_name")
             .await?;
         for (n, value) in ids.iter().zip(shown) {
             let Value::Str(name) = value else {
@@ -1372,6 +1644,9 @@ async fn expand(
             })
             .collect();
         for v in &mut values {
+            for label in &native_labels {
+                v.entry((*label).to_owned()).or_insert(Some(Decimal::ZERO));
+            }
             same_line(def, located.line, v)?;
         }
         let child = id.child(Segment::group(
@@ -1407,19 +1682,37 @@ async fn expand(
     }
     if total > end && !keys.is_empty() {
         let mut values = Vec::with_capacity(domains.len());
-        for domain in &domains {
-            let whole = records
-                ._read_group(tx, ReadGroup::new(domain.clone()).aggregates(specs.clone()))
-                .await?;
-            let seen = ReadGroup::new(domain.clone() & in_domain(&group.name, &loaded)?)
-                .aggregates(specs.clone());
-            let seen = records._read_group(tx, seen).await?;
+        let domain_of = |a: &Agg, g: usize| -> Result<Domain> {
+            Ok(scope(&env, a, options, g)? & parent_keys.clone())
+        };
+        for (g, scopes) in domains.iter().enumerate() {
             let mut rest = Values::new();
-            for (i, label) in labels.iter().enumerate() {
-                let left = numeric(whole.column(i).first())?
-                    .checked_sub(numeric(seen.column(i).first())?)
-                    .ok_or_else(|| bad("A remaining sum is too large."))?;
-                rest.insert((*label).to_owned(), Some(left));
+            for batch in scope_batches(&found) {
+                let domain = &scopes[batch[0]];
+                let batch_specs: Vec<String> = batch.iter().map(|i| specs[*i].clone()).collect();
+                let whole = records
+                    ._read_group(
+                        cx.tx(),
+                        ReadGroup::new(domain.clone()).aggregates(batch_specs.clone()),
+                    )
+                    .await?;
+                let seen = ReadGroup::new(domain.clone() & in_domain(&group.name, &loaded)?)
+                    .aggregates(batch_specs);
+                let seen = records._read_group(cx.tx(), seen).await?;
+                for (column, index) in batch.iter().enumerate() {
+                    let left = numeric(whole.column(column).first())?
+                        .checked_sub(numeric(seen.column(column).first())?)
+                        .ok_or_else(|| bad("A remaining sum is too large."))?;
+                    rest.insert(labels[*index].to_owned(), Some(left));
+                }
+            }
+            for (label, function, nagg) in natives(line) {
+                // A native function owns its precision/nonlinear total boundary. Evaluate
+                // the remaining source pool directly, rather than subtract rounded answers.
+                // Typed inversion includes/excludes NULL keys exactly as loaded membership.
+                let remaining = domain_of(nagg, g)? & !in_domain(&group.name, &loaded)?;
+                let remaining = native(cx, function, options, nagg, remaining, None).await?;
+                rest.insert(label.to_owned(), Some(sum_of(&remaining)?));
             }
             same_line(def, located.line, &mut rest)?;
             values.push(rest);
@@ -1512,13 +1805,17 @@ async fn drill(
                         line.code
                     ))
                 })?;
-            let Engine::Aggregate(agg) = &expr.engine else {
+            let (Engine::Aggregate(agg) | Engine::Native { agg, .. }) = &expr.engine else {
                 return Err(bad(format!(
                     "The {label} cell of line {} is a formula; no records are behind it.",
                     line.code
                 )));
             };
-            let domain = scope(env, agg, options, group)? & keys_domain(&located.keys)?;
+            let mut domain = scope(env, agg, options, group)? & keys_domain(&located.keys)?;
+            if let Engine::Native { function, .. } = &expr.engine {
+                let contribution = crate::functions::find(env, function)?;
+                domain = domain & (contribution.drill_domain)(env, tx, options, &agg.model).await?;
+            }
             Ok(
                 json!({"type": "ir.actions.act_window", "name": line.name, "res_model": agg.model,
                       "target": "current", "views": [[false, "list"], [false, "form"]],

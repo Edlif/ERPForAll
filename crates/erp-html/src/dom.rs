@@ -35,7 +35,7 @@ impl NodeId {
         NodeId(raw)
     }
 
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         usize::try_from(self.0).unwrap_or(usize::MAX)
     }
 }
@@ -98,6 +98,40 @@ impl Dom {
         self.nodes
             .get(id.index())
             .map_or(&[][..], |n| n.children.as_slice())
+    }
+
+    /// Verify every handle the immutable fragment facade can traverse before lending it.
+    pub(crate) fn validate_fragment_links(
+        &self,
+        budget: &HtmlBudget,
+    ) -> Result<(), crate::HtmlSanitizeError> {
+        if self.kind(self.document()).is_none() {
+            return Err(crate::HtmlSanitizeError::Internal {
+                reason: "fragment document is missing",
+            });
+        }
+        for node in &self.nodes {
+            budget
+                .admit_work(1)
+                .map_err(crate::budget::map_budget_error)?;
+            let template = match &node.kind {
+                NodeKind::Element {
+                    template_contents, ..
+                } => *template_contents,
+                _ => None, // Only elements have a detached template fragment.
+            };
+            for id in node.children.iter().copied().chain(template) {
+                budget
+                    .admit_work(1)
+                    .map_err(crate::budget::map_budget_error)?;
+                if self.kind(id).is_none() {
+                    return Err(crate::HtmlSanitizeError::Internal {
+                        reason: "fragment link names no node",
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// How many parse errors the parser reported (the messages are not kept).

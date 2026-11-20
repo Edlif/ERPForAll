@@ -161,7 +161,8 @@ fn visible(lines: &[Line], hide_zero: bool, search: &str) -> Vec<bool> {
         if own {
             stack.iter().for_each(|s| found[*s] = true);
         }
-        if !more && !line.is_zero() {
+        // A folded group or another page may contain a nonzero amount even when its header is blank.
+        if more || (line.unfoldable && !line.unfolded) || !line.is_zero() {
             stack.iter().for_each(|s| nonzero[*s] = true);
         }
     }

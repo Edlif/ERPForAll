@@ -55,6 +55,10 @@ fn run(body: impl std::future::Future<Output = ()> + Send + 'static) {
 /// A fresh database with `purchase` installed, and an ORM that enforces the installed access data
 /// as the server does.
 async fn install(db: &TestDb) -> Orm {
+    install_module(db, "purchase").await
+}
+
+async fn install_module(db: &TestDb, module: &str) -> Orm {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(addons_dir());
     let identities = index
@@ -73,15 +77,8 @@ async fn install(db: &TestDb) -> Orm {
     let system = ModuleSystem::builder(db.pool().clone(), index)
         .view_types(erp_addon_web::view_type_contributions())
         .native_artifact_identities(identities)
-        .code([
-            &erp_addon_base::ADDON,
-            &erp_addon_web::ADDON,
-            &erp_addon_uom::ADDON,
-            &erp_addon_product::ADDON,
-            &erp_addon_analytic::ADDON,
-            &erp_addon_account::ADDON,
-            &erp_addon_purchase::ADDON,
-        ])
+        .code(erp_cli::native_addons::DESCRIPTORS.iter().copied())
+        .require_sql_objects(erp_cli::native_addons::SQL_MANIFESTS.iter().copied())
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
         .require_core_tables(erp_security::auth::core_tables())
         .build()
@@ -91,7 +88,7 @@ async fn install(db: &TestDb) -> Orm {
         .unwrap();
     let env = init.orm.env(SUPERUSER_ID, Context::new());
     let installed =
-        Box::pin(system.button_immediate_install(&env, &[ModuleName::new("purchase").unwrap()]))
+        Box::pin(system.button_immediate_install(&env, &[ModuleName::new(module).unwrap()]))
             .await
             .unwrap();
     assert!(
@@ -99,7 +96,10 @@ async fn install(db: &TestDb) -> Orm {
         "{:?}",
         installed.post_commit
     );
-    let installed = installed.orm;
+    purchase_policy_orm(db, &installed.orm).await
+}
+
+async fn purchase_policy_orm(db: &TestDb, installed: &Orm) -> Orm {
     let source = PolicySource::build(Arc::clone(installed.registry()), db.pool().clone())
         .await
         .unwrap();
@@ -2792,6 +2792,461 @@ fn a_hand_priced_line_loses_the_row_and_discount_of_the_former_product_or_vendor
             cell(&mut tx, &found[1], "selected_seller_id").await,
             Cell::Null
         );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn approving_a_purchase_order_creates_one_direct_receipt() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install_module(&db, "purchase_stock").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let k = catalog(&mut tx, main).await;
+        let system_group = xmlid(&mut tx, "base", "group_system").await;
+        let admin = user(&mut tx, "receipt-admin", &[system_group], &[main]).await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        let manager_group = xmlid(&mut tx, "purchase", "group_purchase_manager").await;
+        let buyer = user(&mut tx, "receipt-buyer", &[buyer_group], &[main]).await;
+        let manager = user(&mut tx, "receipt-manager", &[manager_group], &[main]).await;
+        let po = order(
+            &mut tx,
+            &[main],
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(k.vendor))
+                .set_commands(
+                    "order_line",
+                    [Command::Create(
+                        line_vals(k.bolt)
+                            .set_cell("uom_id", Cell::Id(k.dozen))
+                            .set_cell("product_qty", Cell::Decimal(dec("2"))),
+                    )],
+                ),
+        )
+        .await;
+        let direct = po.ids()[0];
+        let direct_reference = name(&mut tx, &po).await;
+        let mut second = line_vals(k.bolt).set_cell("product_qty", Cell::Decimal(dec("1")));
+        second = second.set_cell("price_unit", Cell::Decimal(dec("2")));
+        let waiting = order(
+            &mut tx,
+            &[main],
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(k.vendor))
+                .set_commands("order_line", [Command::Create(second)]),
+        )
+        .await
+        .ids()[0];
+        tx.execute(
+            "UPDATE purchase_order_line SET uom_id = NULL, date_planned = NULL WHERE order_id = $1",
+            &[&waiting],
+        )
+        .await
+        .unwrap();
+        tx.install_audit_schema().await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let po = orders(&tx, &[main]).browse([direct]).unwrap();
+        act(&mut tx, &po, "button_confirm").await.unwrap();
+        assert_eq!(state(&mut tx, &po).await, "purchase");
+        let error = act(&mut tx, &po, "button_confirm").await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation);
+        assert_eq!(
+            error.message(),
+            format!(
+                "You can confirm a purchase order only in the state draft or sent; these are not: {direct_reference} (purchase)."
+            )
+        );
+        assert_direct_receipt(&mut tx, direct, main, k.bolt, k.dozen, dec("2"), dec("24")).await;
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(admin).await.unwrap();
+        set(
+            &mut tx,
+            main,
+            vec![
+                (APPROVAL_SETTING, Value::str("two_step")),
+                (AMOUNT_SETTING, Value::Float(0.0)),
+            ],
+        )
+        .await;
+        tx.commit().await.unwrap();
+        drop(tx);
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let pending = orders(&tx, &[main]).browse([waiting]).unwrap();
+        act(&mut tx, &pending, "button_confirm").await.unwrap();
+        assert_eq!(state(&mut tx, &pending).await, "to approve");
+        assert!(
+            tx.query(
+                "SELECT 1 FROM purchase_stock_receipt_link WHERE order_id=$1",
+                &[&waiting]
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let pending = orders(&tx, &[main]).browse([waiting]).unwrap();
+        let reference = name(&mut tx, &pending).await;
+        tx.execute(
+            "UPDATE stock_picking_type t SET active=false FROM stock_warehouse w WHERE w.company_id=$1 AND w.in_type_id=t.id",
+            &[&main],
+        ).await.unwrap();
+        let error = act(&mut tx, &pending, "button_approve").await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UserError);
+        assert_eq!(
+            error.message(),
+            format!(
+                "Purchase order {reference} needs the warehouse's active one-step incoming operation. Other receipt routes require a later release."
+            )
+        );
+        assert_eq!(state(&mut tx, &pending).await, "to approve");
+        assert!(
+            tx.query(
+                "SELECT 1 FROM purchase_stock_receipt_link WHERE order_id=$1",
+                &[&waiting]
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            tx.query(
+                "SELECT 1 FROM stock_picking WHERE company_id=$1 AND origin=$2",
+                &[&main, &reference],
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(manager).await.unwrap();
+        let pending = orders(&tx, &[main]).browse([waiting]).unwrap();
+        act(&mut tx, &pending, "button_approve").await.unwrap();
+        assert_direct_receipt(&mut tx, waiting, main, k.bolt, k.unit, dec("1"), dec("1")).await;
+        act(&mut tx, &pending, "button_cancel").await.unwrap();
+        assert_eq!(state(&mut tx, &pending).await, "cancel");
+        let row = &tx.query("SELECT p.state FROM purchase_stock_receipt_link l JOIN stock_picking p ON p.id=l.picking_id WHERE l.order_id=$1", &[&waiting]).await.unwrap()[0];
+        assert_eq!(row.get::<_, &str>(0), "cancel");
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+async fn assert_direct_receipt(
+    tx: &mut Transaction,
+    order: i64,
+    company: i64,
+    product: i64,
+    unit: i64,
+    demand: Decimal,
+    product_qty: Decimal,
+) {
+    let receipts = tx.query(
+        "SELECT m.company_id, m.product_id, m.uom_id, m.product_uom_qty, m.product_qty,
+                m.state, l.order_id, l.qty_received
+         FROM purchase_stock_receipt_link r
+         JOIN stock_picking p ON p.id = r.picking_id AND p.company_id = r.company_id
+         JOIN stock_move m ON m.picking_id = p.id AND m.company_id = r.company_id
+         JOIN purchase_stock_receipt_move_link ml ON ml.move_id = m.id AND ml.company_id = r.company_id
+         JOIN purchase_order_line l ON l.id = ml.purchase_line_id
+         WHERE r.order_id = $1",
+        &[&order],
+    ).await.unwrap();
+    assert_eq!(
+        receipts.len(),
+        1,
+        "one receipt move for the confirmed purchase line"
+    );
+    assert_eq!(receipts[0].get::<_, i64>(0), company);
+    assert_eq!(receipts[0].get::<_, i64>(1), product);
+    assert_eq!(receipts[0].get::<_, i64>(2), unit);
+    assert_eq!(receipts[0].get::<_, Decimal>(3), demand);
+    assert_eq!(receipts[0].get::<_, Decimal>(4), product_qty);
+    assert_ne!(receipts[0].get::<_, &str>(5), "done");
+    assert_eq!(receipts[0].get::<_, i64>(6), order);
+    assert_eq!(receipts[0].get::<_, Decimal>(7), dec("0"));
+}
+
+#[test]
+fn direct_receipt_requires_readable_demand_and_matching_stock_parents() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install_module(&db, "purchase_stock").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let catalog = catalog(&mut tx, main).await;
+        let admin_group = xmlid(&mut tx, "base", "group_system").await;
+        user(&mut tx, "receipt-access-admin", &[admin_group], &[main]).await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        let buyer = user(&mut tx, "receipt-access-buyer", &[buyer_group], &[main]).await;
+        let env = tx.env().with_company(main).unwrap();
+        let service = env
+            .records("product.product")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", text("Restricted service"))
+                        .set_cell("type", text("service"))
+                        .set_cell("uom_id", Cell::Id(catalog.unit)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let head = || RawVals::new().set_cell("partner_id", Cell::Id(catalog.vendor));
+        let visible = order(
+            &mut tx,
+            &[main],
+            head().set_commands("order_line", [Command::Create(line_vals(catalog.bolt))]),
+        )
+        .await;
+        let protected = order(
+            &mut tx,
+            &[main],
+            head().set_commands(
+                "order_line",
+                [
+                    Command::Create(line_vals(catalog.bolt)),
+                    Command::Create(line_vals(service)),
+                ],
+            ),
+        )
+        .await;
+        let protected_name = name(&mut tx, &protected).await;
+        let protected_order = protected.ids()[0];
+        let visible_order = visible.ids()[0];
+        let po_line_model = xmlid(&mut tx, "purchase", "model_purchase_order_line").await;
+        env.records("ir.access")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", text("Restricted source service fixture"))
+                        .set_cell("model_id", Cell::Id(po_line_model))
+                        .set_cell("operation", text("r"))
+                        .set_cell(
+                            "domain",
+                            text(&format!("[('product_id', '!=', {service})]")),
+                        ),
+                ],
+            )
+            .await
+            .unwrap();
+        let default_type: i64 = tx
+            .query(
+                "SELECT in_type_id FROM stock_warehouse WHERE company_id=$1 AND active",
+                &[&main],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let other_type = env
+            .records("stock.picking.type")
+            .unwrap()
+            .browse([default_type])
+            .unwrap()
+            .copy(
+                &mut tx,
+                Some(
+                    [
+                        ("name".into(), Value::str("Secondary incoming operation")),
+                        ("sequence_code".into(), Value::str("IN2")),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let other_receipt = env
+            .records("stock.picking")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("picking_type_id", Cell::Id(other_type))],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        tx.install_audit_schema().await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let orm = purchase_policy_orm(&db, &orm).await;
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let visible_lines = tx
+            .env()
+            .records("purchase.order.line")
+            .unwrap()
+            .search(
+                &mut tx,
+                &Domain::condition("order_id", Operator::Eq, protected_order).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            visible_lines.len(),
+            1,
+            "the buyer's policy must hide the service line"
+        );
+        let protected = orders(&tx, &[main]).browse([protected_order]).unwrap();
+        let refusal = act(&mut tx, &protected, "button_confirm")
+            .await
+            .unwrap_err();
+        assert_eq!(refusal.kind(), ErrorKind::Access);
+        assert_eq!(
+            refusal.message(),
+            "Purchase receipt demand is not accessible."
+        );
+        assert_eq!(state(&mut tx, &protected).await, "draft");
+        assert!(
+            tx.query(
+                "SELECT id FROM stock_picking WHERE company_id=$1 AND origin=$2",
+                &[&main, &protected_name],
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+
+        let visible = orders(&tx, &[main]).browse([visible_order]).unwrap();
+        act(&mut tx, &visible, "button_confirm").await.unwrap();
+        let row = &tx
+            .query(
+                "SELECT r.picking_id, m.id FROM purchase_stock_receipt_link r \
+             JOIN stock_move m ON m.picking_id=r.picking_id WHERE r.order_id=$1",
+                &[&visible_order],
+            )
+            .await
+            .unwrap()[0];
+        let original_receipt: i64 = row.get(0);
+        let move_id: i64 = row.get(1);
+        let scope = tx.env().with_company(main).unwrap();
+        let moves = scope.records("stock.move").unwrap();
+        let new_move = moves.clone();
+        let create_refusal = tx
+            .savepoint(async move |tx| {
+                new_move
+                    .create(
+                        tx,
+                        vec![
+                            RawVals::new()
+                                .set_cell("picking_id", Cell::Id(other_receipt))
+                                .set_cell("picking_type_id", Cell::Id(default_type))
+                                .set_cell("product_id", Cell::Id(catalog.bolt))
+                                .set_cell("product_uom_qty", Cell::Decimal(dec("1"))),
+                        ],
+                    )
+                    .await
+            })
+            .await
+            .map(|_| ())
+            .expect_err("a move needs its own transfer's operation type");
+        assert_eq!(create_refusal.kind(), ErrorKind::Access);
+        assert_eq!(
+            create_refusal.message(),
+            "Purchase receipt access requires matching incoming stock relations."
+        );
+        let stock_move = moves.browse([move_id]).unwrap();
+        let refusal = write(
+            &mut tx,
+            &stock_move,
+            RawVals::new().set_cell("picking_id", Cell::Id(other_receipt)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refusal.kind(), ErrorKind::Access);
+        assert_eq!(
+            refusal.message(),
+            "Purchase receipt access requires matching incoming stock relations."
+        );
+        assert_eq!(
+            cell(&mut tx, &stock_move, "picking_id").await,
+            Cell::Id(original_receipt)
+        );
+        assert!(
+            tx.query(
+                "SELECT id FROM stock_move WHERE picking_id=$1",
+                &[&other_receipt],
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        let detail_move = moves
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("picking_id", Cell::Id(other_receipt))
+                        .set_cell("product_id", Cell::Id(catalog.bolt))
+                        .set_cell("product_uom_qty", Cell::Decimal(dec("1"))),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let details = scope.records("stock.move.line").unwrap();
+        let detail_refusal = tx
+            .savepoint(async move |tx| {
+                details
+                    .create(
+                        tx,
+                        vec![
+                            RawVals::new()
+                                .set_cell("move_id", Cell::Id(detail_move))
+                                .set_cell("picking_id", Cell::Id(original_receipt)),
+                        ],
+                    )
+                    .await
+            })
+            .await
+            .map(|_| ())
+            .expect_err("an operation detail follows the move's transfer");
+        assert_eq!(
+            detail_refusal.kind(),
+            ErrorKind::UserError,
+            "{detail_refusal:?}"
+        );
+        assert_eq!(
+            detail_refusal.message(),
+            "Transfer of an operation line follows its stock move and cannot be changed; delete the line and add it on the other move."
+        );
+        assert!(
+            tx.query(
+                "SELECT id FROM stock_move_line WHERE move_id=$1",
+                &[&detail_move],
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        act(&mut tx, &visible, "button_cancel").await.unwrap();
+        let status = &tx
+            .query(
+                "SELECT state FROM stock_picking WHERE id=$1",
+                &[&original_receipt],
+            )
+            .await
+            .unwrap()[0];
+        assert_eq!(status.get::<_, &str>(0), "cancel");
         tx.rollback().await.unwrap();
         drop(tx);
         db.cleanup().await.unwrap();

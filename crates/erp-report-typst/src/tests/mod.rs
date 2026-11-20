@@ -208,7 +208,7 @@ fn renderer_headroom_is_measured_and_ends_in_a_diagnostic() {
     // Admission stops at 32 levels, so deeper inputs are written as encoded nodes: a leaf and
     // `levels - 1` padded blocks, each holding the previous node.
     let lays_out = |levels: i64| -> Result<usize, String> {
-        let (mut inputs, _) = encode::encode(&doc, &Limits::default()).unwrap();
+        let (mut inputs, _, _) = encode::encode(&doc, &Limits::default()).unwrap();
         let Value::Array(mut nodes) = inputs.get("nodes").unwrap().clone() else {
             panic!("nodes")
         };

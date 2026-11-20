@@ -117,3 +117,52 @@ pub fn collect(
 pub fn date() -> erp_pdf::PdfDate {
     erp_pdf::PdfDate::new(2026, 11, 15, 9, 30, 0, 420).unwrap()
 }
+
+/// One page per content string, all with the same MediaBox and no resources (paths only).
+pub fn drawing(media: [i64; 4], contents: &[&str]) -> Document {
+    let mut d = Document::with_version("1.7");
+    let root = d.new_object_id();
+    let mut pages = Vec::new();
+    for content in contents {
+        let stream = d.add_object(Stream::new(dictionary! {}, content.as_bytes().to_vec()));
+        let id = d.add_object(dictionary! {"Type"=>"Page", "Parent"=>root,"Contents"=>stream});
+        pages.push(Object::Reference(id));
+    }
+    let media: Vec<Object> = media.iter().map(|v| (*v).into()).collect();
+    d.objects.insert(root,Object::Dictionary(dictionary!{"Type"=>"Pages","Kids"=>pages,"Count"=>contents.len() as i64,"MediaBox"=>media}));
+    let catalog = d.add_object(dictionary! {"Type"=>"Catalog","Pages"=>root});
+    d.trailer.set("Root", catalog);
+    d
+}
+/// The page dictionary of a one-based page number.
+pub fn page_mut(d: &mut Document, number: u32) -> &mut lopdf::Dictionary {
+    let id = d.get_pages()[&number];
+    d.get_dictionary_mut(id).unwrap()
+}
+/// A rendered page: width, height and premultiplied RGBA bytes, one pixel per default unit.
+pub type Pixels = (usize, usize, Vec<u8>);
+pub fn pixels(b: &[u8], page: usize) -> Pixels {
+    let h = hayro::hayro_syntax::Pdf::new(b.to_vec()).unwrap();
+    let p = hayro::render(
+        &h.pages()[page],
+        &hayro::RenderCache::new(),
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+    );
+    (
+        usize::from(p.width()),
+        usize::from(p.height()),
+        p.data_as_u8_slice().to_vec(),
+    )
+}
+/// The pixel that holds the page point `(x, y)`, y counted upwards from the bottom edge.
+pub fn colour((w, h, data): &Pixels, (x, y): (i64, i64)) -> [u8; 4] {
+    let (x, y) = (usize::try_from(x).unwrap(), usize::try_from(y).unwrap());
+    assert!(
+        x < *w && y < *h,
+        "point ({x}, {y}) is outside a {w} by {h} page"
+    );
+    let at = ((h - 1 - y) * w + x) * 4;
+    data[at..at + 4].try_into().unwrap()
+}

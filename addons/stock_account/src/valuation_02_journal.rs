@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Schema only: /. No costing writer, trigger or grant.
-//! Codec checks arrive with; no ORM access grants are provided for ordinary users.
+//! Valuation storage declarations for. Database guards are in `history_guards`.
+//! Bounded numeric checks follow the valuation codec. Ordinary users have no valuation grants.
 
 use crate::recorded_now;
 use erp_sdk::prelude::*;
@@ -14,6 +14,7 @@ use erp_sdk::prelude::*;
     company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
     log_access = false,
     constraints = [
+        ("_valid_grid_delta", r#"CHECK (CASE WHEN "grid_delta" IS NOT NULL AND "grid_delta" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("grid_delta") <= 18 AND abs("grid_delta") < power(2::numeric, 256) THEN abs("grid_delta" * power(10::numeric, 18)) < power(2::numeric, 256) ELSE FALSE END)"#, "grid_delta must fit the 18-place valuation grid."),
         ("_id_company", "UNIQUE (id, company_id)", "A journal contribution is unique with its company."),
         ("_source_company_product", "FOREIGN KEY (source_id, company_id, product_id) REFERENCES stk_value_source (id, company_id, product_id) ON DELETE RESTRICT", "A valuation row must have its source company and product."),
         ("_lot_product", "FOREIGN KEY (lot_id, product_id) REFERENCES stock_lot (id, product_id) ON DELETE RESTRICT", "A valuation lot must belong to its product."),
@@ -142,6 +143,8 @@ pub struct ValuationJournal {
     company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
     log_access = false,
     constraints = [
+        ("_valid_operand_value", r#"CHECK (CASE WHEN "operand_value" IS NULL THEN TRUE WHEN "operand_value" IS NOT NULL AND "operand_value" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("operand_value") <= 18 AND abs("operand_value") < power(2::numeric, 256) THEN abs("operand_value" * power(10::numeric, 18)) < power(2::numeric, 256) ELSE FALSE END)"#, "operand_value must fit the 18-place valuation grid."),
+        ("_valid_fraction", r#"CHECK (CASE WHEN "remainder_num" IS NOT NULL AND "remainder_num" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND "remainder_den" IS NOT NULL AND "remainder_den" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("remainder_num") = 0 AND min_scale("remainder_den") = 0 AND "remainder_den" > 0 AND abs("remainder_num") < power(2::numeric, 4096) AND "remainder_den" < power(2::numeric, 4096) THEN gcd("remainder_num", "remainder_den") = 1 AND ("remainder_num" <> 0 OR "remainder_den" = 1) ELSE FALSE END)"#, "The valuation fraction must be reduced, within its bit limit and have a positive denominator."),
         ("_journal_company", "FOREIGN KEY (journal_id, company_id) REFERENCES stk_value_journal (id, company_id) ON DELETE RESTRICT", "A precision remainder must have its journal company."),
         ("_journal", "UNIQUE (journal_id)", "A journal contribution has one precision remainder."),
         ("_finite_operand_value", "CHECK (operand_value <> 'NaN' AND operand_value <> 'Infinity' AND operand_value <> '-Infinity')", "operand_value must be a finite number."),

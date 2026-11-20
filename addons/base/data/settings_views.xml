@@ -116,6 +116,7 @@ Each
                 <field name="currency_id"/>
               </group>
               <group string="Organization">
+                <field name="tz" widget="web.preference_choice"/>
                 <field name="parent_id" readonly="1"/>
               </group>
             </group>

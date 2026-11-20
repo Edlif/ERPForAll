@@ -1,0 +1,9 @@
+/*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+.stock-issue-preview { min-width: 0; }
+.stock-issue-controls, .stock-issue-preview dl { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: end; }
+.stock-issue-controls label { display: grid; gap: 4px; }
+.stock-issue-controls input { width: 12ch; }
+.stock-issue-preview dt, .stock-issue-preview p { color: var(--muted); }
+.stock-issue-preview dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stock-issue-preview [role="alert"] { color: var(--danger); }
+.stock-issue-preview button + button { margin-inline-start: 4px; }

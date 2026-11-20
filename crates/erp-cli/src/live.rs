@@ -96,6 +96,7 @@ async fn run(
     let demo_pool = pool.clone();
     let builder = ModuleSystem::builder(pool, index)
         .require_sql_objects(crate::native_addons::SQL_MANIFESTS.iter().copied())
+        .require_sql_uninstall_guards(crate::native_addons::UNINSTALL_MANIFESTS.iter().copied())
         .code(crate::native_addons::DESCRIPTORS.iter().copied())
         .not_linked(crate::native_addons::NOT_LINKED.iter().copied())
         .view_types(erp_addon_web::view_type_contributions())

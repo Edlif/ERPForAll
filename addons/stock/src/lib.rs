@@ -31,7 +31,7 @@
 erp_sdk::addon!(
     name = "stock",
     exact_only = true,
-    depends = ["product", "barcodes_gs1_nomenclature"]
+    depends = ["product", "barcodes_gs1_nomenclature", "reporting"]
 );
 
 mod barcode;
@@ -51,6 +51,7 @@ mod picking_detailed_operations;
 pub mod putaway;
 pub mod quant;
 pub mod reference;
+mod report_net;
 mod res_company;
 mod res_groups;
 mod res_partner;
@@ -91,6 +92,8 @@ pub mod quant_engine;
 mod quant_unit;
 pub use quant_unit::{QuantRetryExhausted, QuantUnit, run_quant_unit};
 mod quant_guards;
+mod quant_names;
+mod quant_scope;
 // Engine-owned move and line columns (done time, membership, correction counter), lead ruling L6'.
 mod move_guards;
 // The transfer's move counter vector and state: statement triggers, root locks and the

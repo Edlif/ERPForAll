@@ -465,7 +465,12 @@ async fn entry_total_body() {
         .await
         .unwrap()[0]
         .get(0);
-    assert_eq!(version, "1.4.0");
+    let manifest = erp_modules::Manifest::from_toml(
+        "account",
+        &std::fs::read_to_string(addons_dir().join("account/manifest.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(version, manifest.version().to_string());
     let domain: Option<String> = tx
         .query(
             "SELECT a.domain FROM ir_act_window a JOIN ir_model_data d ON a.id = d.res_id \

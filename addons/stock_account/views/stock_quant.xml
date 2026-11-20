@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_quant_issue_cost_preview" model="ir.ui.view">
+    <field name="name">stock.quant.form.issue.cost.preview</field>
+    <field name="model">stock.quant</field>
+    <field name="inherit_id" ref="stock.view_stock_quant_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//sheet" position="inside">
+        <group string="Issue cost preview" groups="stock.group_stock_manager">
+          <field name="id" widget="stock_account.issue_cost_preview"/>
+        </group>
+      </xpath>
+    </field>
+  </record>
+</erp>

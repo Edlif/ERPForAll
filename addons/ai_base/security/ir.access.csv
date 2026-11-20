@@ -1,0 +1,5 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_ai_provider_operator,Manage AI providers,model_ai_provider,base.group_system,crud,
+access_ai_provider_user,Read AI provider metadata,model_ai_provider,base.group_user,r,
+access_ai_route_operator,Manage AI routes in allowed companies,model_ai_route,base.group_system,crud,
+access_ai_route_user,Read AI routes in allowed companies,model_ai_route,base.group_user,r,

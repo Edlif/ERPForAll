@@ -170,7 +170,7 @@ async fn fields_get_rpc_resolves_the_caller_before_the_field_masks() {
     let currency = erp_testkit::fixtures::seed_currency(&client).await.unwrap();
     let company = one(
         &client,
-        "INSERT INTO res_company (name, currency_id) VALUES ('Main', $1) RETURNING id::int8",
+        "INSERT INTO res_company (tz, name, currency_id) VALUES ('UTC', 'Main', $1) RETURNING id::int8",
         &[&currency],
     )
     .await;

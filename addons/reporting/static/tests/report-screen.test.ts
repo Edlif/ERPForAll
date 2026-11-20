@@ -78,6 +78,36 @@ test("Refresh retries a first load that failed", async () => {
   expect(names(r)).toEqual(["Contacts"]);
 });
 
+test("a current stock position has no historical period picker", async () => {
+  const r = mount(standard({ erp_report_options: () => optionsAnswer(wireOptions(), wireFilters({
+    date_mode: "single", current_only: true, comparison: false
+  })) }));
+  await settle();
+  expect(names(r)).toEqual(["Contacts"]);
+  expect(r.env.host.querySelector("[data-filter=date]")).toBeNull();
+  expect(r.env.host.querySelector("[data-filter=comparison]")).toBeNull();
+});
+
+test("refreshing current stock resolves Today again after the session date changes", async () => {
+  const date = { mode: "single", preset: "today", from: null, to: "2026-11-19" };
+  const options = wireOptions({ date });
+  let today = "2026-11-20"; // midnight between options and the initial lines request
+  const r = mount(standard({
+    erp_report_options: () => optionsAnswer(options, wireFilters({ current_only: true, date_mode: "single" })),
+    erp_report_lines: args => {
+      const sent = (args["options"] as Record<string, unknown>)["date"] as typeof date;
+      if (sent.to && sent.to !== today) throw new Error("Historical stock dates are not supported.");
+      return linesAnswer([top()], wireOptions({ date: { ...date, to: today } }));
+    },
+  }));
+  await settle();
+  expect(screen!.captureState()).toMatchObject({ options: { date: { to: today } } });
+  today = "2026-11-21";
+  click(r.env.host.querySelector("[data-action=refresh]")); await settle();
+  expect(screen!.captureState()).toMatchObject({ options: { date: { to: today } } });
+  expect(r.env.host.querySelector(".report-error")).toBeNull();
+});
+
 /// (partial: a click unfolds through erp_report_expand at offset 0 and the children appear below the line)
 test("unfolding loads the children once and ignores a second request while loading", async () => {
   let release: (() => void) | undefined;
@@ -121,7 +151,7 @@ test("folding is local; the next request carries only the lines still unfolded",
   search.value = "bel";
   search.form?.dispatchEvent(new Event("submit", { cancelable: true }));
   await settle();
-  expect(r.calls.at(-1)?.args).toEqual({ options: wireOptions({ unfolded: [root], search: "bel" }) });
+  expect(screen!.captureState()).toMatchObject({ options: { unfolded: [root], search: "bel" } });
 });
 
 /// (partial: Show more fetches the parent's next page at the row's own offset)
@@ -137,7 +167,55 @@ test("load more asks for the next page of the parent at the offset the row names
   await settle();
   expect(r.calls.find(c => c.method === "erp_report_expand")?.args).toEqual({ options: wireOptions(), line_id: root, offset: 2 });
   expect(names(r)).toEqual(["Contacts", "Belgium", "France", "Italy"]);
+  const count = r.calls.length;
+  const search = r.env.host.querySelector<HTMLInputElement>("input[name=search]")!;
+  search.value = "ital"; search.form!.dispatchEvent(new Event("submit", { cancelable: true }));
+  await settle();
+  expect(names(r)).toEqual(["Contacts", "Italy"]);
+  expect(r.calls).toHaveLength(count);
   expect(r.env.host.querySelector(".report-more")).toBeNull();
+});
+
+test("loaded pages travel to export and breadcrumbs, and folding drops them", async () => {
+  const options = wireOptions({ unfolded: [root], loaded_pages: {} });
+  const more = wireLine(`${root}|more~~`, "More", { kind: "more", remaining: 1, next_offset: 2 });
+  const r = mount(standard({
+    erp_report_options: () => optionsAnswer(options),
+    erp_report_lines: args => {
+      const requested = args["options"] as typeof options;
+      const tail = (requested["loaded_pages"] as Record<string, number>)[root] ? country(france, "France", "5") : more;
+      return linesAnswer([top({ unfolded: true }), country(belgium, "Belgium", "4"), tail], requested);
+    },
+  }));
+  await settle();
+  click(r.env.host.querySelector(".report-more")); await settle();
+  expect(screen!.captureState()).toMatchObject({ options: { loaded_pages: { [root]: 1 } } });
+  r.postFile.mockRejectedValue(new Error("stop after inspecting the export request"));
+  click(r.env.host.querySelector("[data-action=xlsx]")); await settle();
+  expect(r.postFile.mock.calls[0]?.[1]).toMatchObject({ format: "xlsx", options: { loaded_pages: { [root]: 1 } } });
+  click(rows(r)[0]?.querySelector(".report-toggle"));
+  expect((screen!.captureState() as { options: Record<string, unknown> }).options["loaded_pages"]).toEqual({});
+});
+
+test("a refused extra page keeps the last admitted tree and breadcrumb options", async () => {
+  const other = lineId("OTHER");
+  const accepted = wireOptions({ unfolded: [other, root], loaded_pages: { [other]: 1 } });
+  const more = wireLine(`${root}|more~~`, "More", { kind: "more", remaining: 1, next_offset: 2 });
+  const r = mount(standard({
+    erp_report_options: () => optionsAnswer(accepted),
+    erp_report_lines: args => {
+      const requested = args["options"] as typeof accepted;
+      if ((requested["loaded_pages"] as Record<string, number>)[root]) throw new Error("reporting.max_screen_lines exceeded");
+      return linesAnswer([wireLine(other, "Other", { unfolded: true }), top({ unfolded: true }), more], requested);
+    },
+  }));
+  await settle();
+  const before = names(r);
+  click(r.env.host.querySelector(".report-more")); await settle();
+  expect(r.env.host.querySelector(".report-error")?.textContent).toContain("reporting.max_screen_lines");
+  expect(names(r)).toEqual(before);
+  expect(screen!.captureState()).toMatchObject({ options: { loaded_pages: { [other]: 1 } } });
+  expect(r.calls.some(call => call.method === "erp_report_expand")).toBe(false);
 });
 
 /// (partial: a header click sends the order and the answer's order marks the header)
@@ -164,6 +242,32 @@ test("a date preset is sent with the report's date mode", async () => {
   picker.dispatchEvent(new Event("change", { bubbles: true }));
   await settle();
   expect(r.calls.at(-1)?.args).toEqual({ options: wireOptions({ date: { mode: "range", preset: "last_month", from: null, to: null } }) });
+});
+
+test("ledger date changes and Refresh renew scoped options before fetching lines", async () => {
+  let epoch = 0;
+  const r = mount(standard({
+    erp_report_options: args => {
+      const previous = args["previous"] || wireOptions();
+      return optionsAnswer({ ...previous as Record<string, unknown>, provider: { epoch: String(++epoch) } });
+    },
+    erp_report_lines: args => {
+      const options = args["options"] as Record<string, unknown>;
+      if ((options["provider"] as Record<string, unknown>)["epoch"] !== String(epoch)) throw new Error("Ledger options expired");
+      return linesAnswer([top()], options);
+    }
+  }));
+  await settle();
+  click(r.env.host.querySelector("[data-filter=date] .report-filter-button"));
+  const picker = r.env.host.querySelector<HTMLSelectElement>("select[name=preset]")!;
+  picker.value = "last_month"; picker.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle();
+  expect(r.calls.slice(-2).map(c => c.method)).toEqual(["erp_report_options", "erp_report_lines"]);
+  expect(screen!.captureState()).toMatchObject({ options: { provider: { epoch: "2" }, date: { preset: "last_month" } } });
+  epoch++;
+  click(r.env.host.querySelector("[data-action=refresh]")); await settle();
+  expect(screen!.captureState()).toMatchObject({ options: { provider: { epoch: "4" } } });
+  expect(r.env.host.querySelector(".report-error")).toBeNull();
 });
 
 /// (partial: single-date reports offer Today)
@@ -203,6 +307,10 @@ test("with the oldest period first, the last column group is the sortable main p
   await settle();
   const heads = [...r.env.host.querySelectorAll("thead tr[data-names] th.report-col")];
   expect(heads.map(h => h.querySelector(".report-sort") !== null)).toEqual([false, true]);
+  click(rows(r)[0]?.querySelector(".report-caret"));
+  click([...r.env.host.querySelectorAll("[role=menuitem]")].find(item => item.textContent === "Records behind Contacts"));
+  await settle();
+  expect(r.calls.at(-1)?.args["target"]).toEqual({ cell: 1 });
 });
 
 /// (partial: with totals below, an unfold reloads the tree so the server adds the total row)
@@ -243,21 +351,54 @@ test("the companies menu sends the chosen ids and refuses none", async () => {
 });
 
 /// (partial: the Options menu offers what the report offers and sends the flag)
-/// (partial: hide zero is sent as an option)
-test("the Options menu sends unfold all and hide zero, and offers only what the report allows", async () => {
+test("the Options menu applies hide zero locally and offers only what the report allows", async () => {
   const r = mount(standard());
   await settle();
   const flags = (): HTMLInputElement[] => [...r.env.host.querySelectorAll<HTMLInputElement>("[data-filter=options] input")];
   expect(flags().map(f => f.name)).toEqual(["unfold_all", "hide_zero"]);
+  const before = r.calls.length;
   flags()[1]!.checked = true; flags()[1]!.dispatchEvent(new Event("change", { bubbles: true }));
   await settle();
-  expect(r.calls.at(-1)?.args).toEqual({ options: wireOptions({ hide_zero: true }) });
+  expect(r.calls).toHaveLength(before);
+  expect(screen!.captureState()).toMatchObject({ options: { hide_zero: true } });
   screen!.dispose(); r.dispose();
   const limited = mount(standard({ erp_report_options: () => optionsAnswer(wireOptions(), wireFilters({ unfold_all: false, hide_zero: "never", comparison: false, multi_company: false, search_bar: false })) }));
   await settle();
   expect(limited.env.host.querySelector("[data-filter=options]")).toBeNull();
   expect(limited.env.host.querySelector("[data-filter=comparison]")).toBeNull();
   expect(limited.env.host.querySelector("input[name=search]")).toBeNull();
+});
+
+test("hide zero keeps a partly loaded stock group and restores its zero products locally", async () => {
+  const zero = wireLine(france, "Empty bin", { cells: [cell("0", "integer", 0, true)] });
+  const empty = cell(null, "empty", 0, true);
+  const closed = wireLine(lineId("MOVES"), "Moves", { unfoldable: true, cells: [empty] });
+  const allZero = wireLine(lineId("EMPTY"), "Empty location", { cells: [empty], unfolded: true });
+  const emptyChild = wireLine(groupId(lineId("EMPTY"), "product", "product.product", 4), "Unused", { cells: [empty] });
+  const loaded = [top({ unfolded: true, cells: [empty] }), country(belgium, "Desk", "4"), zero, closed, allZero, emptyChild];
+  const r = mount(standard({ erp_report_lines: () => linesAnswer(loaded, wireOptions({ hide_zero: true })) }));
+  await settle();
+  expect(names(r)).toEqual(["Contacts", "Desk", "Moves"]);
+  const calls = r.calls.length;
+  const flag = r.env.host.querySelector<HTMLInputElement>("input[name=hide_zero]")!;
+  flag.checked = false; flag.dispatchEvent(new Event("change", { bubbles: true }));
+  expect(names(r)).toEqual(["Contacts", "Desk", "Empty bin", "Moves", "Empty location", "Unused"]);
+  expect(r.calls).toHaveLength(calls);
+});
+
+test("search matches the loaded names and retains their ancestors and descendants", async () => {
+  const loaded = [top({ unfolded: true }), country(belgium, "Belgium", "4"), country(france, "France", "5")];
+  const r = mount(standard({ erp_report_lines: args => linesAnswer(loaded, args["options"] as Record<string, unknown>) }));
+  await settle();
+  const search = async (term: string): Promise<void> => {
+    const field = r.env.host.querySelector<HTMLInputElement>("input[name=search]")!;
+    field.value = term; field.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+  };
+  await search("BEL"); expect(names(r)).toEqual(["Contacts", "Belgium"]);
+  await search("contacts"); expect(names(r)).toEqual(["Contacts", "Belgium", "France"]);
+  await search("absent"); expect(names(r)).toEqual([]);
+  await search(""); expect(names(r)).toEqual(["Contacts", "Belgium", "France"]);
 });
 
 /// (partial: Enter and the caret menu drill into the record and open the result through the page)

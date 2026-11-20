@@ -58,6 +58,19 @@ fn hide_zero_keeps_lines_with_a_non_zero_value_below() {
 }
 
 #[test]
+fn unknown_descendants_keep_blank_groups_reachable() {
+    let mut lines = tree();
+    for line in &mut lines {
+        line.cells.clear();
+    }
+    lines[5].unfoldable = true;
+    assert_eq!(
+        names(&lines, &visible(&lines, true, "")),
+        ["Stock", "WH/Stock", "3 more", "Empty"]
+    );
+}
+
+#[test]
 fn search_keeps_matches_with_ancestors_and_descendants() {
     let lines = tree();
     assert_eq!(

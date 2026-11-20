@@ -5100,7 +5100,7 @@ async fn staged_mail_checks_actor_and_company_at_adoption() {
         ))
         .await;
     ok(&allowed);
-    let company = one(&w.client,"INSERT INTO res_company(name,currency_id,active) SELECT 'Other company',currency_id,true FROM res_company ORDER BY id LIMIT 1 RETURNING id::int8",&[]).await;
+    let company = one(&w.client,"INSERT INTO res_company(tz, name,currency_id,active) SELECT 'UTC', 'Other company',currency_id,true FROM res_company ORDER BY id LIMIT 1 RETURNING id::int8",&[]).await;
     let foreign = one(&w.client,"INSERT INTO res_partner(name,company_id,active) VALUES ('foreign contact',$1,true) RETURNING id::int8",&[&company]).await;
     let id = staged_for(&w, w.ivy, b"company guarded").await;
     for method in ["thread_upload", "thread_attach"] {

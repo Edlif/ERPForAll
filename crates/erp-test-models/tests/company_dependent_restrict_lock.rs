@@ -74,7 +74,7 @@ async fn world(h: &Harness) -> World {
         .await
         .unwrap();
     tx.execute(
-        "INSERT INTO res_company (id, name, currency_id) VALUES (1, 'One', $1) ON CONFLICT DO NOTHING",
+        "INSERT INTO res_company (tz, id, name, currency_id) VALUES ('UTC', 1, 'One', $1) ON CONFLICT DO NOTHING",
         &[&currency],
     )
     .await

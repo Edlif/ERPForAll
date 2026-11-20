@@ -1113,8 +1113,8 @@ async fn overlapping_selection_cannot_truncate_hidden_descendant_preflight() {
     // Seed valid stored rows without making this functional admission test perform thousands
     // of unrelated company/contact creation calls. Root plus children is exactly 4096 rows.
     setup.execute(
-        "INSERT INTO res_company (id,name,parent_id,currency_id,active,parent_path) \
-         SELECT n,CASE WHEN n=104094 THEN 'Hidden boundary branch' ELSE 'Visible boundary branch' END, \
+        "INSERT INTO res_company (tz, id,name,parent_id,currency_id,active,parent_path) \
+         SELECT 'UTC', n,CASE WHEN n=104094 THEN 'Hidden boundary branch' ELSE 'Visible boundary branch' END, \
          $1::int8,$2::int8,true,($1::int8)::text || '/' || n::text || '/' FROM generate_series(100000,104094) n",
         &[&root_id, &usd],
     ).await.unwrap();

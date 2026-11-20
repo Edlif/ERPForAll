@@ -67,7 +67,7 @@ fn laid_out(
     let body = build(&mut b);
     let doc = b.finish(body, options).unwrap();
     let engine = engine();
-    let (inputs, warnings) = encode::encode(&doc, &engine.limits).unwrap();
+    let (inputs, warnings, failures) = encode::encode(&doc, &engine.limits).unwrap();
     let fonts = engine.fonts.select(doc.options().fonts()).unwrap();
     let world = ReportWorld::new(engine.source.clone(), inputs, fonts, date());
     let output = match typst::compile::<PagedDocument>(&world).output {
@@ -84,7 +84,17 @@ fn laid_out(
     for (number, page) in output.pages().iter().enumerate() {
         walk(&page.frame, Point::zero(), number, None, &mut placed);
     }
-    (placed, warnings)
+    let warnings = erp_report::RenderResult::new(
+        erp_report::RenderIdentity::new("pictures", "test"),
+        Vec::new(),
+        1,
+        warnings,
+    )
+    .with_image_failures(failures, engine.limits)
+    .unwrap()
+    .with_document_warnings(&doc)
+    .unwrap();
+    (placed, warnings.warnings().to_vec())
 }
 fn picture(data: &[u8], width: Option<f64>, height: Option<f64>, fit: ImageFit) -> Node {
     Node::Image {

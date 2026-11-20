@@ -100,7 +100,7 @@ async fn fixture() -> Fixture {
         .unwrap();
     let mut company = async |name: &str| -> i64 {
         tx.query(
-            "INSERT INTO res_company (name, active, currency_id) VALUES ($1, true, $2) \
+            "INSERT INTO res_company (tz, name, active, currency_id) VALUES ('UTC', $1, true, $2) \
              RETURNING id::int8",
             &[&name, &currency],
         )

@@ -1,0 +1,567 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Direct, one-step receipts of approved purchase orders.
+
+use std::collections::BTreeMap;
+
+use erp_addon_purchase::order::PurchaseOrder;
+use erp_sdk::prelude::*;
+use erp_sdk::{Env, ErrorKind, FieldOp, Operation};
+
+#[model(
+    name = "purchase.stock.receipt.link",
+    description = "Direct Purchase Receipt Link",
+    rec_name = "order_id",
+    company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
+    constraints = [
+        ("_order", "UNIQUE (order_id)", "A purchase order has one direct receipt."),
+        ("_picking", "UNIQUE (picking_id)", "A direct receipt belongs to one purchase order.")
+    ],
+)]
+struct PurchaseReceiptLink {
+    #[field(
+        many2one,
+        comodel = "res.company",
+        required = true,
+        ondelete = "restrict",
+        index = true
+    )]
+    company_id: Option<RecId>,
+    #[field(
+        many2one,
+        comodel = "purchase.order",
+        required = true,
+        ondelete = "restrict"
+    )]
+    order_id: Option<RecId>,
+    #[field(
+        many2one,
+        comodel = "stock.picking",
+        required = true,
+        ondelete = "restrict"
+    )]
+    picking_id: Option<RecId>,
+}
+
+#[model(
+    name = "purchase.stock.receipt.move.link",
+    description = "Direct Purchase Receipt Move Link",
+    rec_name = "purchase_line_id",
+    company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
+    constraints = [
+        ("_move", "UNIQUE (move_id)", "A receipt move has one purchase line.")
+    ],
+)]
+struct PurchaseReceiptMoveLink {
+    #[field(
+        many2one,
+        comodel = "res.company",
+        required = true,
+        ondelete = "restrict",
+        index = true
+    )]
+    company_id: Option<RecId>,
+    #[field(
+        many2one,
+        comodel = "stock.move",
+        required = true,
+        ondelete = "restrict"
+    )]
+    move_id: Option<RecId>,
+    #[field(
+        many2one,
+        comodel = "purchase.order.line",
+        required = true,
+        ondelete = "restrict",
+        index = true
+    )]
+    purchase_line_id: Option<RecId>,
+}
+
+struct OrderDemand {
+    order: i64,
+    company: i64,
+    vendor: i64,
+    reference: String,
+    lines: Vec<LineDemand>,
+}
+
+struct LineDemand {
+    line: i64,
+    product: i64,
+    unit: Option<i64>,
+    quantity: Decimal,
+    scheduled: DateTime,
+}
+
+struct ReceiptPlan {
+    order: OrderDemand,
+    operation: i64,
+    source: i64,
+    destination: i64,
+}
+
+fn decode(error: impl std::error::Error + Send + Sync + 'static) -> Error {
+    Error::db("The purchase receipt configuration could not be read.").with_source(error)
+}
+
+fn company_scope(env: &Env, company: i64) -> Env {
+    let mut context = erp_sdk::Context::new();
+    context.set("allowed_company_ids", Value::list([Value::Int(company)]));
+    env.with_context_replaced(context)
+}
+
+const DEMAND_ACCESS: &str = "Purchase receipt demand is not accessible.";
+
+fn redact_demand(error: Error) -> Error {
+    if matches!(error.kind(), ErrorKind::Access | ErrorKind::Missing) {
+        return Error::access(DEMAND_ACCESS);
+    }
+    error
+}
+
+async fn authorize_fields(tx: &mut Transaction, records: &Records, fields: &[&str]) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    records
+        .check_access(tx, Operation::Read)
+        .await
+        .map_err(redact_demand)?;
+    for field in fields {
+        if !tx
+            .has_field_access(records.env(), records.spec().name, field, FieldOp::Read)
+            .await?
+        {
+            return Err(Error::access(DEMAND_ACCESS));
+        }
+    }
+    Ok(())
+}
+
+async fn authorize_demand(tx: &mut Transaction, orders: &Records) -> Result<()> {
+    if orders.is_empty() {
+        return Ok(());
+    }
+    orders.check_access(tx, Operation::Write).await?;
+    authorize_fields(
+        tx,
+        orders,
+        &["name", "company_id", "partner_id", "date_order"],
+    )
+    .await?;
+    tx.flush().await?;
+    // Enumerate the complete membership first. A caller-filtered search would drop protected lines.
+    let memberships = tx
+        .query(
+            "SELECT id FROM purchase_order_line WHERE order_id = ANY($1) ORDER BY id",
+            &[&orders.ids()],
+        )
+        .await?;
+    let lines: Vec<i64> = memberships
+        .iter()
+        .map(|row| row.try_get(0))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(decode)?;
+    let env = orders.env();
+    authorize_fields(
+        tx,
+        &env.records("purchase.order.line")?
+            .browse(lines.iter().copied())?,
+        &[
+            "order_id",
+            "company_id",
+            "product_id",
+            "uom_id",
+            "product_qty",
+            "date_planned",
+            "sequence",
+        ],
+    )
+    .await?;
+    let source_refs = tx.query(
+        "SELECT array_agg(DISTINCT l.product_id) FILTER (WHERE l.product_id IS NOT NULL),                 array_agg(DISTINCT l.uom_id) FILTER (WHERE l.uom_id IS NOT NULL)          FROM purchase_order_line l WHERE l.id = ANY($1)", &[&lines],
+    ).await?;
+    let refs = source_refs.first().ok_or_else(|| {
+        Error::invariant("Purchase receipt reference lookup returned no summary.")
+    })?;
+    let products: Option<Vec<i64>> = refs.try_get(0).map_err(decode)?;
+    let units: Option<Vec<i64>> = refs.try_get(1).map_err(decode)?;
+    let products = products.unwrap_or_default();
+    authorize_fields(
+        tx,
+        &env.records("product.product")?
+            .browse(products.iter().copied())?,
+        &["type", "uom_id"],
+    )
+    .await?;
+    let fallback_rows = tx.query(
+        "SELECT DISTINCT t.uom_id FROM purchase_order_line l          JOIN product_product p ON p.id = l.product_id JOIN product_template t ON t.id = p.product_tmpl_id          WHERE l.id = ANY($1) AND l.uom_id IS NULL AND t.uom_id IS NOT NULL",
+        &[&lines],
+    ).await?;
+    let mut units = units.unwrap_or_default();
+    for row in fallback_rows {
+        units.push(row.try_get(0).map_err(decode)?);
+    }
+    units.sort_unstable();
+    units.dedup();
+    authorize_fields(tx, &env.records("uom.uom")?.browse(units)?, &[]).await?;
+    let vendors = tx
+        .query(
+            "SELECT DISTINCT partner_id FROM purchase_order WHERE id = ANY($1)",
+            &[&orders.ids()],
+        )
+        .await?;
+    let vendors: Vec<i64> = vendors
+        .iter()
+        .map(|row| row.try_get(0))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(decode)?;
+    authorize_fields(
+        tx,
+        &env.records("res.partner")?.browse(vendors)?,
+        &["property_stock_supplier"],
+    )
+    .await
+}
+
+async fn demands(tx: &mut Transaction, orders: &[i64]) -> Result<Vec<OrderDemand>> {
+    let mut result = BTreeMap::new();
+    let rows = tx
+        .query(
+            "SELECT o.id, o.company_id, o.partner_id, o.name, l.id, l.product_id, l.uom_id, \
+                    l.product_qty, COALESCE(l.date_planned, o.date_order), t.type \
+             FROM purchase_order o \
+             JOIN purchase_order_line l ON l.order_id = o.id AND l.company_id = o.company_id \
+             LEFT JOIN product_product p ON p.id = l.product_id \
+             LEFT JOIN product_template t ON t.id = p.product_tmpl_id \
+             WHERE o.id = ANY($1) \
+             ORDER BY o.company_id, o.id, l.sequence, l.id",
+            &[&orders],
+        )
+        .await?;
+    for row in rows {
+        let order: i64 = row.try_get(0).map_err(decode)?;
+        let kind: Option<&str> = row.try_get(9).map_err(decode)?;
+        match kind {
+            Some("service") => continue,
+            Some("consu") => {}
+            None => {
+                let reference: &str = row.try_get(3).map_err(decode)?;
+                return Err(Error::user(format!(
+                    "Purchase order {reference} has a line without a product."
+                )));
+            }
+            Some(_) => {
+                return Err(Error::user(
+                    "Receipts of bundled products require a later release.",
+                ));
+            }
+        }
+        let quantity: Decimal = row.try_get(7).map_err(decode)?;
+        if quantity == Decimal::ZERO {
+            continue;
+        }
+        if quantity < Decimal::ZERO {
+            return Err(Error::user(
+                "Negative purchase quantities require the purchase return workflow.",
+            ));
+        }
+        let demand = LineDemand {
+            line: row.try_get(4).map_err(decode)?,
+            product: row.try_get(5).map_err(decode)?,
+            unit: row.try_get(6).map_err(decode)?,
+            quantity,
+            scheduled: row.try_get(8).map_err(decode)?,
+        };
+        match result.entry(order) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(OrderDemand {
+                    order,
+                    company: row.try_get(1).map_err(decode)?,
+                    vendor: row.try_get(2).map_err(decode)?,
+                    reference: row.try_get(3).map_err(decode)?,
+                    lines: vec![demand],
+                });
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                slot.get_mut().lines.push(demand)
+            }
+        }
+    }
+    let mut demands: Vec<OrderDemand> = result.into_values().collect();
+    demands.sort_unstable_by_key(|demand| (demand.company, demand.order));
+    Ok(demands)
+}
+
+async fn prepare(tx: &mut Transaction, orders: &Records) -> Result<Vec<ReceiptPlan>> {
+    let mut plans = Vec::new();
+    for order in demands(tx, &orders.ids()).await? {
+        if !tx
+            .query(
+                "SELECT 1 FROM purchase_stock_receipt_link WHERE order_id = $1",
+                &[&order.order],
+            )
+            .await?
+            .is_empty()
+        {
+            return Err(Error::user(format!(
+                "Purchase order {} already has a receipt. Replacing that receipt requires a later release.",
+                order.reference
+            )));
+        }
+
+        let warehouses = tx
+            .query(
+                "SELECT w.reception_steps, w.lot_stock_id, t.id, t.default_location_src_id, \
+                    t.default_location_dest_id, t.code, t.active \
+             FROM stock_warehouse w \
+             LEFT JOIN stock_picking_type t ON t.id = w.in_type_id AND t.company_id = w.company_id \
+             WHERE w.company_id = $1 AND w.active ORDER BY w.id LIMIT 2",
+                &[&order.company],
+            )
+            .await?;
+        let [warehouse] = warehouses.as_slice() else {
+            return Err(Error::user(format!(
+                "Purchase order {} needs exactly one active warehouse for direct receiving.",
+                order.reference
+            )));
+        };
+        let steps: &str = warehouse.try_get(0).map_err(decode)?;
+        let stock: Option<i64> = warehouse.try_get(1).map_err(decode)?;
+        let operation: Option<i64> = warehouse.try_get(2).map_err(decode)?;
+        let source: Option<i64> = warehouse.try_get(3).map_err(decode)?;
+        let destination: Option<i64> = warehouse.try_get(4).map_err(decode)?;
+        let kind: Option<&str> = warehouse.try_get(5).map_err(decode)?;
+        let active: Option<bool> = warehouse.try_get(6).map_err(decode)?;
+        let (Some(operation), Some(source), Some(destination)) = (operation, source, destination)
+        else {
+            return Err(Error::user(format!(
+                "Purchase order {} needs an incoming operation with source and destination locations.",
+                order.reference
+            )));
+        };
+        if steps != "one_step"
+            || kind != Some("incoming")
+            || active != Some(true)
+            || stock != Some(destination)
+        {
+            return Err(Error::user(format!(
+                "Purchase order {} needs the warehouse's active one-step incoming operation. Other receipt routes require a later release.",
+                order.reference
+            )));
+        }
+        let scope = company_scope(orders.env(), order.company);
+        let vendor = scope.records("res.partner")?.browse([order.vendor])?;
+        let source = match vendor.cell(tx, "property_stock_supplier").await? {
+            Cell::Id(id) => id,
+            Cell::Null | Cell::Bool(false) => source,
+            _ => {
+                return Err(Error::invariant(
+                    "The vendor stock location is not a record identity.",
+                ));
+            }
+        };
+        let location = tx
+            .query(
+                "SELECT 1 FROM stock_location source CROSS JOIN stock_location destination \
+             WHERE source.id = $1 AND source.active AND source.usage = 'supplier' \
+               AND (source.company_id IS NULL OR source.company_id = $3) \
+               AND destination.id = $2 AND destination.active AND destination.usage = 'internal' \
+               AND destination.company_id = $3",
+                &[&source, &destination, &order.company],
+            )
+            .await?;
+        if location.is_empty() {
+            return Err(Error::user(format!(
+                "Purchase order {} needs a supplier source and an internal destination for its company.",
+                order.reference
+            )));
+        }
+        plans.push(ReceiptPlan {
+            order,
+            operation,
+            source,
+            destination,
+        });
+    }
+    Ok(plans)
+}
+
+impl ReceiptPlan {
+    async fn create(self, tx: &mut Transaction, env: &Env) -> Result<()> {
+        let company = self.order.company;
+        let env = company_scope(env, company);
+        let shared = RawVals::new()
+            .set_cell("company_id", Cell::Id(company))
+            .set_cell("picking_type_id", Cell::Id(self.operation))
+            .set_cell("location_id", Cell::Id(self.source))
+            .set_cell("location_dest_id", Cell::Id(self.destination))
+            .set_cell("origin", Cell::Str(self.order.reference.into()));
+        let scheduled = self
+            .order
+            .lines
+            .iter()
+            .map(|line| line.scheduled)
+            .min()
+            .ok_or_else(|| Error::invariant("A direct purchase receipt has no planned line."))?;
+        let picking = env
+            .records("stock.picking")?
+            .create(
+                tx,
+                vec![
+                    shared
+                        .clone()
+                        .set_cell("partner_id", Cell::Id(self.order.vendor))
+                        .set_cell("scheduled_date", Cell::DateTime(scheduled)),
+                ],
+            )
+            .await?;
+        let picking_id = match picking.ids().as_slice() {
+            [id] => *id,
+            _ => {
+                return Err(Error::invariant(
+                    "A purchase approval must create one direct receipt.",
+                ));
+            }
+        };
+        let lines: Vec<i64> = self.order.lines.iter().map(|line| line.line).collect();
+        let vals = self
+            .order
+            .lines
+            .into_iter()
+            .map(|line| {
+                let vals = shared
+                    .clone()
+                    .set_cell("picking_id", Cell::Id(picking_id))
+                    .set_cell("product_id", Cell::Id(line.product))
+                    .set_cell("product_uom_qty", Cell::Decimal(line.quantity))
+                    .set_cell("date", Cell::DateTime(line.scheduled));
+                match line.unit {
+                    Some(unit) => vals.set_cell("uom_id", Cell::Id(unit)),
+                    None => vals,
+                }
+            })
+            .collect();
+        let moves = env.records("stock.move")?.create(tx, vals).await?;
+        let move_ids = moves.ids();
+        if lines.len() != move_ids.len() {
+            return Err(Error::invariant(
+                "Receipt move creation did not preserve the purchase lines.",
+            ));
+        }
+        let () = picking.call(tx, "action_confirm", ()).await?;
+        tx.execute(
+            "INSERT INTO purchase_stock_receipt_link (company_id, order_id, picking_id) VALUES ($1, $2, $3)",
+            &[&company, &self.order.order, &picking_id],
+        ).await?;
+        tx.execute(
+            "INSERT INTO purchase_stock_receipt_move_link (company_id, move_id, purchase_line_id) \
+             SELECT $1, move_id, line_id FROM unnest($2::int8[], $3::int8[]) AS link(move_id, line_id)",
+            &[&company, &move_ids, &lines],
+        ).await?;
+        Ok(())
+    }
+}
+
+#[extend(PurchaseOrder, addon = "purchase_stock")]
+struct PurchaseOrderReceipt {
+    /// The immutable origin of a direct incoming transfer.
+    #[field(
+        one2many,
+        comodel = "purchase.stock.receipt.link",
+        inverse_name = "order_id",
+        readonly = true,
+        copy = false
+    )]
+    pub direct_receipt_link_ids: Vec<RecId>,
+}
+
+#[methods(PurchaseOrder, addon = "purchase_stock")]
+impl PurchaseOrderReceipt {
+    /// Authorize the entire order before the base confirmation validates its lines.
+    #[method(override)]
+    async fn button_confirm(
+        this: &RecordSet<PurchaseOrder>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
+        let orders = this.as_records();
+        tx.savepoint(async move |tx| {
+            authorize_demand(tx, orders).await?;
+            sup.call(tx, orders, ()).await
+        })
+        .await
+    }
+
+    /// Authorize the entire order before the base approval evaluates demand.
+    #[method(override)]
+    async fn button_approve(
+        this: &RecordSet<PurchaseOrder>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
+        let orders = this.as_records();
+        tx.savepoint(async move |tx| {
+            authorize_demand(tx, orders).await?;
+            sup.call(tx, orders, ()).await
+        })
+        .await
+    }
+
+    /// A single-step confirmation and a separately approved order use the same receipt hook.
+    #[method(override)]
+    async fn _approve(
+        this: &RecordSet<PurchaseOrder>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
+        let orders = this.as_records().clone();
+        orders.check_access(tx, Operation::Write).await?;
+        tx.savepoint(async move |tx| {
+            authorize_demand(tx, &orders).await?;
+            let plans = prepare(tx, &orders).await?;
+            let () = sup.call(tx, &orders, ()).await?;
+            for plan in plans {
+                plan.create(tx, orders.env()).await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Cancel the open direct receipt as part of cancelling the associated purchase order.
+    #[method(override)]
+    async fn _action_cancel(
+        this: &RecordSet<PurchaseOrder>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
+        let orders = this.as_records().clone();
+        orders.check_access(tx, Operation::Write).await?;
+        tx.savepoint(async move |tx| {
+            let rows = tx.query(
+                "SELECT l.company_id, l.picking_id, p.state, \
+                        EXISTS(SELECT 1 FROM stock_picking child WHERE child.backorder_id = p.id) \
+                 FROM purchase_stock_receipt_link l JOIN stock_picking p ON p.id = l.picking_id \
+                 WHERE l.order_id = ANY($1) ORDER BY l.company_id, l.picking_id",
+                &[&orders.ids()],
+            ).await?;
+            for row in rows {
+                let has_backorder: bool = row.try_get(3).map_err(decode)?;
+                if has_backorder {
+                    return Err(Error::user("Cancelling a purchase order with a receipt backorder requires a later release."));
+                }
+                let state: &str = row.try_get(2).map_err(decode)?;
+                if matches!(state, "done" | "cancel") {
+                    continue;
+                }
+                let company: i64 = row.try_get(0).map_err(decode)?;
+                let picking: i64 = row.try_get(1).map_err(decode)?;
+                let receipt = company_scope(orders.env(), company).records("stock.picking")?.browse([picking])?;
+                let () = receipt.call(tx, "action_cancel", ()).await?;
+            }
+            sup.call(tx, &orders, ()).await
+        })
+        .await
+    }
+}
