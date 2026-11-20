@@ -35,6 +35,8 @@ export interface FieldWidgetProps { field: Field; value: unknown; change: (value
 /** A window action named by its XML id, opened as its list (or a new record in its form) with a concrete domain and context. */
 export interface ActionRequest { xmlId: string; viewMode: "form" | "list" | null; domain: unknown[]; context: Record<string, unknown> }
 export interface WidgetEnvironment extends FieldWidgetProps {
+  /** Signed-in user and owning form view for local table preferences. */
+  columnScope?: string | undefined;
   numericLocale?: NumericLocale;
   currencies?: CurrencyDisplayCache;
   values?: Readonly<Record<string, unknown>>;

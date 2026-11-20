@@ -18,6 +18,7 @@ import { ClientErrorReporter, type ReportKind } from "./client-report.js";
 import { MobileDrawer } from "./mobile-drawer.js";
 import { documentScroller, lockDocumentScroll } from "./scroll-lock.js";
 import { headerMenuSearch } from "./header-search.js";
+import { columnChoices } from "./column-choices.js";
 import { resizeColumns } from "./columns.js";
 import { createListTabs, decodeSelectionCounts } from "./list-tabs.js";
 import { buildGroupByCatalogue, decodeGroupableFields } from "./group-by-catalogue.js";
@@ -2763,6 +2764,9 @@ export class HumanApp {
     const selectedIds = new Set<number>();
     // Groups the user opened (by group key); a new search, grouping or page starts folded again; a sort keeps them unless it moves the page or orders the groups.
     const resetGroups = (): void => { groupedModel?.dispose(); searchModel.clearListState(); };
+    let redrawColumns: (() => void) | undefined;
+    const choices = columnChoices(view.fields, JSON.stringify([this.userId, "list", description.model, view.id ?? route.action]),
+      this.messages.popovers, () => redrawColumns?.(), error => this.reportError(error));
     const columnWidths = new Map<string, number>();
     let settleColumns: (() => void) | undefined;
 
@@ -3234,8 +3238,7 @@ export class HumanApp {
         page
       };
 
-      const table = el("table", undefined, "list-table table-hover"), head = el("thead"), header = el("tr"), body = el("tbody");
-      table.setAttribute("aria-label", "Records");
+      const body = el("tbody");
 
       const updateSelectionUI = (): void => {
         selectionCount.textContent = `${selectedIds.size} selected`;
@@ -3271,34 +3274,42 @@ export class HumanApp {
         updateSelectionUI();
       });
       headerTh.append(headerCheckbox);
-      header.append(headerTh);
+      const drawTable = (): HTMLTableElement => {
+        const visible = choices.visible();
+        const table = el("table", undefined, "list-table table-hover"), head = el("thead"), header = el("tr");
+        table.setAttribute("aria-label", "Records");
+        header.append(headerTh);
 
-      for (const field of view.fields.filter(field => !field.invisible)) {
-        const th = el("th", undefined, "sortable-column");
-        if (field.kind === "integer" || field.kind === "float" || field.kind === "monetary") th.classList.add("list-number");
-        else if (field.kind === "boolean") th.classList.add("list-boolean");
-        th.scope = "col";
-        const isSorted = order.startsWith(field.name + " ");
-        const isAsc = isSorted && order.endsWith("asc");
-        th.setAttribute("aria-sort", isSorted ? (isAsc ? "ascending" : "descending") : "none");
-        const sortBtn = button(field.label, () => this.run(async () => {
-          order = `${field.name} ${isSorted && isAsc ? "desc" : "asc"}`;
-          // Back to the first page, or the groups themselves reordered: the open groups may not be on the page that follows.
-          if (offset > 0 || field.name === searchModel.getGroupBy()[0]?.split(":")[0]) searchModel.clearListState();
-          offset = 0;
-          await load();
-        }), "sort-button");
-        sortBtn.title = field.label; // a narrow column cuts its header; the full label stays one hover away
-        if (isSorted) {
-          const arrow = icon("chevron-down"); // ascending rotates it in CSS; aria-sort carries the meaning
-          arrow.classList.add("sort-indicator"); sortBtn.append(arrow);
+        for (const field of visible) {
+          const th = el("th", undefined, "sortable-column");
+          if (field.kind === "integer" || field.kind === "float" || field.kind === "monetary") th.classList.add("list-number");
+          else if (field.kind === "boolean") th.classList.add("list-boolean");
+          th.scope = "col";
+          const isSorted = order.startsWith(field.name + " ");
+          const isAsc = isSorted && order.endsWith("asc");
+          th.setAttribute("aria-sort", isSorted ? (isAsc ? "ascending" : "descending") : "none");
+          const sortBtn = button(field.label, () => this.run(async () => {
+            order = `${field.name} ${isSorted && isAsc ? "desc" : "asc"}`;
+            // Back to the first page, or the groups themselves reordered: the open groups may not be on the page that follows.
+            if (offset > 0 || field.name === searchModel.getGroupBy()[0]?.split(":")[0]) searchModel.clearListState();
+            offset = 0;
+            await load();
+          }), "sort-button");
+          sortBtn.title = field.label; // a narrow column cuts its header; the full label stays one hover away
+          if (isSorted) {
+            const arrow = icon("chevron-down"); // ascending rotates it in CSS; aria-sort carries the meaning
+            arrow.classList.add("sort-indicator"); sortBtn.append(arrow);
+          }
+          th.append(sortBtn);
+          header.append(th);
         }
-        th.append(sortBtn);
-        header.append(th);
-      }
-      head.append(header);
-      table.append(head, body);
-      settleColumns = resizeColumns(table, view.fields.filter(field => !field.invisible), columnWidths);
+        choices.attach(header.cells[header.cells.length - 1]);
+        head.append(header);
+        table.append(head, body);
+        settleColumns = resizeColumns(table, visible, columnWidths);
+
+        return table;
+      };
 
       for (const stop of fieldStops.splice(0)) stop();
 
@@ -3327,7 +3338,7 @@ export class HumanApp {
         selectorTd.append(rowCheckbox);
         row.append(selectorTd);
 
-        view.fields.filter(field => !field.invisible).forEach((field, index) => {
+        choices.visible().forEach((field, index) => {
           const cell = el("td");
           const adapter = resolveFieldWidget(field.widget ?? field.kind, "list");
           const handle = adapter.render({
@@ -3367,16 +3378,27 @@ export class HumanApp {
 
         return row;
       };
-      if (!groups) for (const raw of rows) body.append(buildRow(raw, fieldStops));
-      results.replaceChildren(table);
+      let drawRows = (): void => {
+        for (const stop of fieldStops.splice(0)) stop();
+        body.replaceChildren();
+        for (const raw of rows) body.append(buildRow(raw, fieldStops));
+      };
+      if (!groups) drawRows();
+      results.replaceChildren(drawTable());
+      redrawColumns = () => {
+        const prior = results.querySelector("table");
+        if (!prior) return;
+        drawRows();
+        prior.replaceWith(drawTable());
+        settleColumns?.();
+      };
       // Size the columns now, before the browser paints the content layout (columns.ts).
-      settleColumns();
+      settleColumns?.();
       if (tabCounts) tabs!.publish(tabCounts);
       else tabs?.finish();
       updateSelectionUI();
 
       if (groups) {
-        const visible = view.fields.filter(field => !field.invisible), columns = 1 + visible.length;
         const model = new ListGroupModel({
           dimensions: searchModel.getGroupBy().map(spec => {
             const field = searchModel.getGroupableField(spec.split(":")[0]!);
@@ -3391,6 +3413,7 @@ export class HumanApp {
         const current = () => mine === request && generation === this.generation && !this.expired;
         const render = (focus?: { path: string; control?: "previous" | "next" }): void => {
           if (!current()) return;
+          const visible = choices.visible(), columns = 1 + visible.length;
           const aggregates = activeAggregates(); // once per drawing, not per row and column
           // A redraw removes the control that was pressed: it takes focus again, unless the user has moved on (as the pivot does).
           const keepFocus = body.contains(document.activeElement) || !document.activeElement || document.activeElement === document.body;
@@ -3466,6 +3489,7 @@ export class HumanApp {
           }
           settleColumns?.();
         };
+        drawRows = render;
         render();
         try {
           const missing = await model.restore(savedOpen);
@@ -3500,7 +3524,7 @@ export class HumanApp {
 
     try { await load(); } catch (error) { disposeActionMenu(); disposeQuickFilters(); disposePageSize(); searchBar.dispose(); dashboard?.dispose(); throw error; }
     return {
-      dispose: () => { for (const stop of fieldStops.splice(0)) stop(); groupedModel?.dispose(); disposeActionMenu(); disposeQuickFilters(); disposePageSize(); searchBar.dispose(); dashboard?.dispose(); },
+      dispose: () => { choices.dispose(); for (const stop of fieldStops.splice(0)) stop(); groupedModel?.dispose(); disposeActionMenu(); disposeQuickFilters(); disposePageSize(); searchBar.dispose(); dashboard?.dispose(); },
       settle: () => { settleColumns?.(); }
     };
   }

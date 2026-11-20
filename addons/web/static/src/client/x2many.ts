@@ -9,6 +9,7 @@ import { CurrencyDisplayCache } from "./field-currency.js";
 import { constantRelationContext, relationQuery } from "./field-relations.js";
 import { resolveFieldWidget, registerFieldWidget, type WidgetEnvironment, type WidgetHandle, type WidgetDraft } from "./registry.js";
 import { ClientError } from "./transport.js";
+import { columnChoices } from "./column-choices.js";
 import { resizeColumns } from "./columns.js";
 
 /** Column widths of each sub-list, kept across the redraws a line change causes (one map per field's sub-view). */
@@ -89,7 +90,7 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
   const { field, value, change, run } = environment;
   const subview = field.subview, items = lineList(value);
   const editable = !field.readonly && subview?.form !== undefined;
-  const columns: Field[] = subview?.list.filter(field => !field.invisible) ?? [];
+
 
   const wrapper = el("div", undefined, "x2many-field");
   wrapper.setAttribute("role", "group");
@@ -111,81 +112,89 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
   const readonlyColumns = subview ? [...subview.fields.values()].map(candidate => ({ ...candidate, readonly: true })) : [];
   const lineCurrencies = new CurrencyDisplayCache(), cellStops: (() => void)[] = [];
   const scroller = el("div", undefined, "x2many-scroll");
-  const table = el("table", undefined, "x2many-table");
-  const head = el("thead"), headRow = el("tr");
-  if (columns.length) for (const column of columns) headRow.append(el("th", column.label, column.kind === "integer" || column.kind === "float" || column.kind === "monetary" ? "numeric" : column.kind === "boolean" ? "x2many-boolean" : undefined));
-  else headRow.append(el("th", "Name"));
-  if (editable) {
-    const th = el("th", undefined, "x2many-actions");
-    th.scope = "col";
-    th.setAttribute("aria-label", "Actions");
-    th.append(el("span", "Actions", "visually-hidden"));
-    headRow.append(th);
-  }
-  head.append(headRow);
-  const body = el("tbody");
-  const width = (columns.length || 1) + (editable ? 1 : 0);
-  if (!items.length) {
-    const row = el("tr", undefined, "x2many-empty"), cell = el("td", field.readonly ? "No lines." : "No lines yet.", "muted");
-    cell.colSpan = width; row.append(cell); body.append(row);
-  }
-  items.forEach((line, index) => {
-    const row = el("tr", undefined, "x2many-row");
-    if (line["id"] === undefined || line["__changed"] !== undefined) row.classList.add("x2many-row-dirty");
-    if (columns.length) for (const column of columns) {
-      const numeric = column.kind === "integer" || column.kind === "float" || column.kind === "monetary";
-      const cell = el("td", undefined, numeric ? "numeric" : column.kind === "boolean" ? "x2many-boolean" : undefined);
-      if (column.widget === "password" || column.options?.password === true) {
-        // Same masking as the main list and the form; reveal stays on those surfaces.
-        const raw = line[column.name];
-        cell.textContent = raw === false || raw === null || raw === undefined || raw === "" ? "" : "••••••••";
-      } else {
-        // The comodel's list widgets (color swatch, priority stars, badge, tags, percentage, favorite), read-only, the
-        // same adapters the main list uses, so a line reads the same in both places.
-        const handle = resolveFieldWidget(column.widget ?? column.kind, "list").render({
-          field: { ...column, readonly: true }, value: line[column.name], values: line, ...(field.relation === null ? {} : { model: field.relation }), fields: readonlyColumns, viewContext: "list",
-          rpc: environment.rpc, context: environment.context, currencies: lineCurrencies, numericLocale: environment.numericLocale,
-          editorLocale: environment.editorLocale, messages: environment.messages, run, report: environment.report, signal: environment.signal,
-          ...(environment.openRecord ? { openRecord: environment.openRecord } : {}),
-          change: () => { throw new ClientError("validation", "Line cells are edited in the line form."); },
-        });
-        cellStops.push(handle.dispose);
-        cell.append(handle.node);
-      }
-      row.append(cell);
-    } else row.append(el("td", lineLabel(line, subview)));
-    if (subview?.form) {
-      row.tabIndex = 0;
-      row.classList.add("x2many-row-open");
-      row.setAttribute("aria-label", `${editable ? "Edit" : "Open"} ${lineLabel(line, subview)}`);
-      const open = (): void => run(() => openLine(environment, items, index));
-      // A link or control inside a cell (a URL, a related record) keeps its own action.
-      row.addEventListener("click", event => { if (!(event.target instanceof HTMLElement && event.target.closest(".x2many-remove,a[href],button:not([disabled]),input:not([disabled]),select,textarea"))) open(); });
-      row.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
-    }
+  const scope = environment.columnScope && JSON.stringify([environment.columnScope, field.name, subview?.model, viewRefs(field)]);
+  const choices = columnChoices(subview?.list ?? [], scope, environment.messages?.popovers, () => drawTable(), environment.report);
+  function drawTable(): void {
+    for (const stop of cellStops.splice(0)) stop();
+    const columns = choices.visible();
+    const table = el("table", undefined, "x2many-table");
+    const head = el("thead"), headRow = el("tr");
+    if (columns.length) for (const column of columns) headRow.append(el("th", column.label, column.kind === "integer" || column.kind === "float" || column.kind === "monetary" ? "numeric" : column.kind === "boolean" ? "x2many-boolean" : undefined));
+    else headRow.append(el("th", "Name"));
     if (editable) {
-      const cell = el("td", undefined, "x2many-actions");
-      const remove = button("", () => change(items.filter((_, i) => i !== index)), "x2many-remove icon-button");
-      remove.append(icon("trash"));
-      remove.setAttribute("aria-label", `Remove ${lineLabel(line, subview)}`);
-      cell.append(remove); row.append(cell);
+      const th = el("th", undefined, "x2many-actions");
+      th.scope = "col";
+      th.setAttribute("aria-label", "Actions");
+      th.append(el("span", "Actions", "visually-hidden"));
+      headRow.append(th);
     }
-    body.append(row);
-  });
-  table.append(head, body);
-  // The main list's width rules (kind, arch width, even fill, resize); measured once the form attaches the table.
-  if (columns.length && subview) {
-    const widths = subListWidths.get(subview) ?? new Map<string, number>(); subListWidths.set(subview, widths);
-    for (const th of [...headRow.cells].slice(0, columns.length)) th.classList.add("x2many-column");
-    resizeColumns(table, columns, widths, { selector: false, actions: editable });
+    choices.attach(headRow.cells[headRow.cells.length - 1]);
+    head.append(headRow);
+    const body = el("tbody");
+    const width = (columns.length || 1) + (editable ? 1 : 0);
+    if (!items.length) {
+      const row = el("tr", undefined, "x2many-empty"), cell = el("td", field.readonly ? "No lines." : "No lines yet.", "muted");
+      cell.colSpan = width; row.append(cell); body.append(row);
+    }
+    items.forEach((line, index) => {
+      const row = el("tr", undefined, "x2many-row");
+      if (line["id"] === undefined || line["__changed"] !== undefined) row.classList.add("x2many-row-dirty");
+      if (columns.length) for (const column of columns) {
+        const numeric = column.kind === "integer" || column.kind === "float" || column.kind === "monetary";
+        const cell = el("td", undefined, numeric ? "numeric" : column.kind === "boolean" ? "x2many-boolean" : undefined);
+        if (column.widget === "password" || column.options?.password === true) {
+          // Same masking as the main list and the form; reveal stays on those surfaces.
+          const raw = line[column.name];
+          cell.textContent = raw === false || raw === null || raw === undefined || raw === "" ? "" : "••••••••";
+        } else {
+          // The comodel's list widgets (color swatch, priority stars, badge, tags, percentage, favorite), read-only, the
+          // same adapters the main list uses, so a line reads the same in both places.
+          const handle = resolveFieldWidget(column.widget ?? column.kind, "list").render({
+            field: { ...column, readonly: true }, value: line[column.name], values: line, ...(field.relation === null ? {} : { model: field.relation }), fields: readonlyColumns, viewContext: "list",
+            rpc: environment.rpc, context: environment.context, currencies: lineCurrencies, numericLocale: environment.numericLocale,
+            editorLocale: environment.editorLocale, messages: environment.messages, run, report: environment.report, signal: environment.signal,
+            ...(environment.openRecord ? { openRecord: environment.openRecord } : {}),
+            change: () => { throw new ClientError("validation", "Line cells are edited in the line form."); },
+          });
+          cellStops.push(handle.dispose);
+          cell.append(handle.node);
+        }
+        row.append(cell);
+      } else row.append(el("td", lineLabel(line, subview)));
+      if (subview?.form) {
+        row.tabIndex = 0;
+        row.classList.add("x2many-row-open");
+        row.setAttribute("aria-label", `${editable ? "Edit" : "Open"} ${lineLabel(line, subview)}`);
+        const open = (): void => run(() => openLine(environment, items, index));
+        // A link or control inside a cell (a URL, a related record) keeps its own action.
+        row.addEventListener("click", event => { if (!(event.target instanceof HTMLElement && event.target.closest(".x2many-remove,a[href],button:not([disabled]),input:not([disabled]),select,textarea"))) open(); });
+        row.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
+      }
+      if (editable) {
+        const cell = el("td", undefined, "x2many-actions");
+        const remove = button("", () => change(items.filter((_, i) => i !== index)), "x2many-remove icon-button");
+        remove.append(icon("trash"));
+        remove.setAttribute("aria-label", `Remove ${lineLabel(line, subview)}`);
+        cell.append(remove); row.append(cell);
+      }
+      body.append(row);
+    });
+    table.append(head, body);
+    // The main list's width rules (kind, arch width, even fill, resize); measured once the form attaches the table.
+    if (columns.length && subview) {
+      const widths = subListWidths.get(subview) ?? new Map<string, number>(); subListWidths.set(subview, widths);
+      for (const th of [...headRow.cells].slice(0, columns.length)) th.classList.add("x2many-column");
+      resizeColumns(table, columns, widths, { selector: false, actions: editable });
+    }
+    scroller.replaceChildren(table);
   }
-  scroller.append(table);
+  drawTable();
   wrapper.append(scroller);
   if (editable) {
     const add = button("Add a line", () => run(() => openLine(environment, items, null)), "x2many-add link-button");
     wrapper.append(add);
   }
-  return { node: wrapper, dispose: () => { for (const stop of cellStops.splice(0)) stop(); } };
+  return { node: wrapper, dispose: () => { choices.dispose(); for (const stop of cellStops.splice(0)) stop(); } };
 }
 
 /** Normalize a line default as the line form's widgets hold values. */
@@ -304,6 +313,7 @@ async function openLine(environment: WidgetEnvironment, items: readonly Line[], 
       if (node.field.name === field.relationField) return;
       const handle = resolveFieldWidget(node.widget, "form").render({
         field: { ...node.field, label: node.label, readonly: readonly || node.field.readonly || node.field.kind === "one2many" },
+        columnScope: environment.columnScope && JSON.stringify([environment.columnScope, field.name, subview.model, form.id]),
         value: values[node.field.name], values, ...(field.relation === null ? {} : { model: field.relation }), fields: policy.map(candidate => ({ ...candidate, readonly: readonly || candidate.readonly })), numericLocale: environment.numericLocale, currencies,
         changeValues: changes => {
           for (const name of Object.keys(changes)) if (!policy.some(field => field.name === name && !field.readonly) || readonly) throw new ClientError("validation", "Readonly line fields cannot be changed.");

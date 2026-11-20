@@ -5,6 +5,7 @@ import { describeViews, type Description, type Field, type Subview, type View } 
 import { RecordState, lineCommands, specification, touchNewLine } from "../src/client/record.js";
 import { fieldWidgets } from "../src/client/registry.js";
 import { RpcClient } from "../src/client/transport.js";
+import { MessageServices } from "../src/client/messages.js";
 import { PopoverService } from "../src/client/popover.js";
 import { DialogService } from "../src/client/dialog-service.js";
 import type { EditorEnvironment } from "../src/client/editor-types.js";
@@ -631,4 +632,31 @@ test("a sub-list drawn empty measures its columns again once it has lines", asyn
   const filled = sizedSubList([{ id: 1, title: "A", publication_year: 1990 }], target).table;
   await nextFrame();
   expect([...filled.querySelectorAll("col")].map(col => col.style.width)).toEqual(["", "90px", "40px"]);
+});
+
+test("line column choices survive reopening the field without changing draft lines or another table", () => {
+  const change = vi.fn(), value = [{title: "Draft line", publication_year: 2026}];
+  const messages = new MessageServices(document.body, error => { throw error; });
+  const render = (scope: string) => {
+    const h = fieldWidgets.get("one2many").render({field: books(), value, change, rpc: rpcWith(() => ({})),
+      context: {}, run, report: error => { throw error; }, messages, columnScope: scope});
+    document.body.append(h.node);
+    return h;
+  };
+  const handle = render("test-user-A");
+  handle.node.querySelector<HTMLButtonElement>('[aria-label="Choose columns"]')!.click();
+  const option = document.querySelector<HTMLInputElement>('.column-choices input')!;
+  expect(option.parentElement?.textContent).toContain("Year");
+  option.click();
+  expect(handle.node.textContent).toContain("Draft line");
+  expect(handle.node.textContent).not.toContain("2026");
+  expect(change).not.toHaveBeenCalled();
+  handle.dispose(); handle.node.remove();
+  const reopened = render("test-user-A"), other = render("test-user-B");
+  expect(reopened.node.textContent).not.toContain("2026");
+  expect(other.node.textContent).toContain("2026");
+  reopened.node.querySelector<HTMLButtonElement>('[aria-label="Choose columns"]')!.click();
+  document.querySelector<HTMLInputElement>('.column-choices input')!.click();
+  expect(reopened.node.textContent).toContain("2026");
+  reopened.dispose(); other.dispose(); messages.dispose();
 });

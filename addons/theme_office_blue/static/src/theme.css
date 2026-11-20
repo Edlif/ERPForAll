@@ -43,11 +43,11 @@
   --shadow-sm: 0 1px 3px rgb(20 40 70 / 6%); /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
   --shadow-menu: 0 8px 24px rgb(20 40 70 / 15%); /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
   --shadow-dialog: 0 16px 48px rgb(12 23 40 / 24%); /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
-  --office-nav-bg: #0e1e32; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
+  --office-nav-bg: #162e50; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
   --office-nav-fg: #edf3fb; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
   --office-nav-muted: #b5c4d9; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
-  --office-nav-hover: #213b59; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
-  --office-nav-selected: #285c93; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
+  --office-nav-hover: #254568; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
+  --office-nav-selected: #305f90; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
   --office-nav-line: #38506c; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
   --office-nav-focus: #a4ceff; /* ui-lint: allow raw-colour (Office Blue semantic token definition) */
   --header-bg: var(--surface);
@@ -58,7 +58,7 @@
   --header-control-line: var(--line);
   --radius-control: 6px;
   --radius-panel: 8px;
-  --office-sidebar-size: 208px;
+  --office-sidebar-size: clamp(196px, 16vw, 242px);
   --office-data-size: 13px;
   --office-menu-padding: 8px 12px;
 }
@@ -80,13 +80,13 @@
 @media (min-width: 769px) {
   :root[data-office-theme="office-blue"] .erp-client { display: grid; grid-template-columns: var(--office-sidebar-size) minmax(0,1fr); grid-template-rows: auto auto minmax(0,1fr); min-height: 100dvh; }
   :root[data-office-theme="office-blue"] .app-bar { grid-column: 2; grid-row: 1; position: sticky; top: 0; z-index: 30; min-height: var(--app-bar-height); padding-block: 0; }
-  :root[data-office-theme="office-blue"] .app-navigation { grid-column: 1; grid-row: 1 / 4; position: sticky; top: 0; align-self: start; height: 100dvh; overflow-y: auto; display: block; padding: 64px 12px 24px; background: var(--office-nav-bg); color: var(--office-nav-fg); border: 0; }
+  :root[data-office-theme="office-blue"] .app-navigation { grid-column: 1; grid-row: 1 / 4; position: sticky; top: 0; align-self: start; height: 100dvh; overflow: hidden; display: block; padding: 0; background: var(--office-nav-bg); color: var(--office-nav-fg); border: 0; }
   :root[data-office-theme="office-blue"] .app-bar .brand { position: fixed; left: 16px; top: 8px; margin: 0; z-index: 40; border-color: transparent; background: transparent; }
   :root[data-office-theme="office-blue"] .app-bar .brand-logo-light { display: none; }
   :root[data-office-theme="office-blue"] .app-bar .brand-logo-dark { display: block; }
   :root[data-office-theme="office-blue"] .app-bar .brand:hover { background: var(--office-nav-hover); }
   :root[data-office-theme="office-blue"] .app-navigation > :not(.office-navigation) { display: none; }
-  :root[data-office-theme="office-blue"] .office-navigation { display: flex; flex-direction: column; gap: 4px; }
+  :root[data-office-theme="office-blue"] .office-navigation { display: flex; flex-direction: column; gap: 4px; height: calc(100% - var(--app-bar-height)); margin-block-start: var(--app-bar-height); padding: 12px 8px 24px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; border-block-start: 1px solid var(--office-nav-line); }
   :root[data-office-theme="office-blue"] .client-notice { grid-column: 2; grid-row: 2; }
   :root[data-office-theme="office-blue"] #erp-content { grid-column: 2; grid-row: 3; min-width: 0; }
   :root[data-office-theme="office-blue"] :is(.office-nav-item,.office-nav-group > summary) { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 8px; color: var(--office-nav-fg); background: transparent; border: 0; border-radius: var(--radius-control); justify-content: flex-start; text-align: start; white-space: normal; overflow-wrap: anywhere; font-size: var(--office-data-size); font-weight: 500; cursor: pointer; }
@@ -98,7 +98,7 @@
   :root[data-office-theme="office-blue"] .office-nav-children { padding-inline-start: 4px; margin: 4px 0 4px 8px; border-inline-start: 1px solid var(--office-nav-line); }
   :root[data-office-theme="office-blue"] .office-nav-children .office-nav-children { margin-inline-start: 0; }
   :root[data-office-theme="office-blue"] .office-nav-children .office-nav-children .office-nav-children { padding-inline-start: 0; border: 0; }
-  :root[data-office-theme="office-blue"] .office-nav-children :is(.office-nav-item,.office-nav-group > summary) > svg:first-child { display: none; }
+  :root[data-office-theme="office-blue"] .office-nav-children :is(.office-nav-item,.office-nav-group > summary) > svg:first-child { width: 16px; height: 16px; flex-shrink: 0; color: var(--office-nav-muted); }
   :root[data-office-theme="office-blue"] :is(.office-nav-item,.office-nav-group > summary):hover { background: var(--office-nav-hover); }
   :root[data-office-theme="office-blue"] .office-nav-item[aria-current="page"] { background: var(--office-nav-selected); color: var(--office-nav-fg); }
   :root[data-office-theme="office-blue"] :is(.office-navigation,.app-bar .brand) :focus-visible { outline-color: var(--office-nav-focus); }
@@ -129,4 +129,489 @@
   :root[data-office-theme="office-blue"] .app-navigation { position: sticky; top: 0; z-index: 31; }
   /* The home overlay lives in the navigation and the systray menus in the bar (z-index 30): an open home menu must not cover a systray menu. */
   :root[data-office-theme="office-blue"] .app-navigation.home-menu-open { z-index: 29; }
+}
+
+
+/* Module navigation and the document workspace share a single alignment grid. */
+@media (min-width: 769px) {
+  :root[data-office-theme="office-blue"] .office-navigation > .office-nav-group > summary {
+    min-height: 38px;
+    padding-inline: 10px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  :root[data-office-theme="office-blue"] .office-nav-group[open] > summary {
+    color: var(--office-nav-fg);
+    background: var(--office-nav-hover);
+  }
+  :root[data-office-theme="office-blue"] .office-nav-children {
+    margin: 4px 0 8px 12px;
+    padding-inline-start: 6px;
+  }
+  :root[data-office-theme="office-blue"] .office-nav-children :is(.office-nav-item, summary) {
+    min-height: 32px;
+    padding-block: 6px;
+    line-height: 1.35;
+  }
+  :root[data-office-theme="office-blue"] .office-nav-item[aria-current="page"] {
+    color: var(--selected-text);
+    background: var(--selected);
+    font-weight: 600;
+  }
+  :root[data-office-theme="office-blue"] .office-nav-item[aria-current="page"] > svg:first-child {
+    color: currentColor;
+  }
+}
+:root[data-office-theme="office-blue"] .office-header-search > input {
+  border-color: var(--line);
+  border-radius: var(--radius-control);
+}
+:root[data-office-theme="office-blue"] .office-header-search > input:focus-visible {
+  background: var(--surface);
+  border-color: var(--focus);
+}
+:root[data-office-theme="office-blue"] .office-menu-results {
+  padding: 6px;
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-menu);
+}
+:root[data-office-theme="office-blue"] .office-menu-option {
+  min-height: 36px;
+  padding-inline: 10px;
+  line-height: 1.4;
+}
+
+/* Apps keep their names alongside their icons, including names that need a second line. */
+:root[data-office-theme="office-blue"] .home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: 8px;
+}
+:root[data-office-theme="office-blue"] .app-tile {
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 12px;
+  min-height: 66px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: none;
+}
+:root[data-office-theme="office-blue"] .app-tile:hover {
+  transform: none;
+  border-color: var(--selected-line);
+  background: var(--selected);
+}
+:root[data-office-theme="office-blue"] .app-icon {
+  width: 36px;
+  height: 36px;
+  margin: 0;
+}
+:root[data-office-theme="office-blue"] .app-icon > .erp-icon {
+  width: 22px;
+  height: 22px;
+}
+:root[data-office-theme="office-blue"] .app-caption {
+  text-align: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+@media (max-width: 768px) {
+  :root[data-office-theme="office-blue"] .mobile-drawer-header {
+    color: var(--office-nav-fg);
+    background: var(--office-nav-bg);
+    border-color: var(--office-nav-line);
+  }
+  :root[data-office-theme="office-blue"] .drawer-close-btn {
+    color: var(--office-nav-fg);
+  }
+  :root[data-office-theme="office-blue"] .drawer-close-btn:is(:hover, :active) {
+    background: var(--office-nav-hover);
+  }
+  :root[data-office-theme="office-blue"] .drawer-close-btn:focus-visible {
+    outline-color: var(--office-nav-focus);
+  }
+  :root[data-office-theme="office-blue"] .drawer-item {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    text-align: start;
+  }
+  :root[data-office-theme="office-blue"] .drawer-section-subtitle {
+    font-size: 13px;
+    font-weight: 600;
+    padding-block: 12px 4px;
+    color: var(--selected-text);
+  }
+  :root[data-office-theme="office-blue"] .home-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  }
+}
+
+/* Office Blue workspace views. Keep the application controls and their behavior. */
+:root[data-office-theme="office-blue"] .settings-container {
+  background: var(--surface);
+}
+
+:root[data-office-theme="office-blue"] .settings-sidebar {
+  width: clamp(164px, 15vw, 208px);
+  border-inline-start: 0;
+  border-inline-end: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
+
+:root[data-office-theme="office-blue"] .settings-sidebar-list {
+  gap: 4px;
+  padding: 12px 8px;
+}
+
+:root[data-office-theme="office-blue"] .settings-app-tab {
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  font-size: var(--office-data-size);
+}
+
+:root[data-office-theme="office-blue"] .settings-app-tab:focus-visible {
+  outline-offset: -2px;
+}
+
+:root[data-office-theme="office-blue"] .settings-section {
+  margin-block-end: 20px;
+}
+
+:root[data-office-theme="office-blue"] .settings-section-title {
+  gap: 8px;
+  min-height: 48px;
+  padding: 10px 20px;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+:root[data-office-theme="office-blue"] .settings-section-title .settings-app-icon {
+  margin-inline-end: 0;
+}
+
+:root[data-office-theme="office-blue"] .settings-block-title {
+  min-height: 34px;
+  padding: 6px 20px;
+  font-size: 13px;
+}
+
+:root[data-office-theme="office-blue"] .settings-blocks {
+  gap: 20px 28px;
+  padding: 16px 20px 20px;
+}
+
+:root[data-office-theme="office-blue"] .setting-block {
+  gap: 8px;
+  border-inline-start: 0;
+  padding-inline-start: 0;
+}
+
+:root[data-office-theme="office-blue"] .setting-help {
+  line-height: 1.45;
+}
+
+:root[data-office-theme="office-blue"] .settings-scope-option[aria-checked="true"] {
+  background: var(--selected);
+  color: var(--selected-text);
+  box-shadow: none;
+}
+
+:root[data-office-theme="office-blue"] .list-results {
+  background: var(--surface);
+  box-shadow: none;
+}
+
+:root[data-office-theme="office-blue"] .list-table {
+  font-size: var(--office-data-size);
+}
+
+:root[data-office-theme="office-blue"] .list-table thead th {
+  border-block-end-color: var(--selected-line);
+}
+
+:root[data-office-theme="office-blue"] .list-table th:is([aria-sort="ascending"], [aria-sort="descending"]) {
+  background: var(--selected);
+  color: var(--selected-text);
+}
+
+:root[data-office-theme="office-blue"] .list-table tbody .list-group-row > td {
+  font-weight: 600;
+}
+
+:root[data-office-theme="office-blue"] .list-table tbody .row-selected > td:first-child {
+  position: relative;
+}
+:root[data-office-theme="office-blue"] .list-table tbody .row-selected > td:first-child::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  inline-size: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+:root[data-office-theme="office-blue"] .report-screen {
+  gap: 8px;
+  min-width: 0;
+  padding: 8px var(--list-page-gutter) 20px;
+}
+
+:root[data-office-theme="office-blue"] .report-table :is(th, td) {
+  padding-block: 4px;
+}
+
+:root[data-office-theme="office-blue"] .report-table thead th {
+  border-block-end-color: var(--selected-line);
+}
+
+:root[data-office-theme="office-blue"] .report-table .report-line-total > :is(th, td) {
+  border-block-start-color: var(--selected-line);
+  background: var(--surface-subtle);
+}
+
+:root[data-office-theme="office-blue"] .report-table .report-line-total:hover > :is(th, td) {
+  background: var(--hover);
+}
+
+:root[data-office-theme="office-blue"] .report-table .report-name-inner {
+  min-width: 0;
+}
+
+:root[data-office-theme="office-blue"] .report-table .report-label {
+  min-width: 0;
+}
+
+@container (min-width: 901px) {
+  :root[data-office-theme="office-blue"] .control-panel-list:has(.selection-box) {
+    grid-template-columns: auto minmax(344px, 1fr) minmax(160px, 456px) auto;
+    column-gap: 12px;
+  }
+  :root[data-office-theme="office-blue"] .control-panel-list .breadcrumbs:has(> .selection-box) :is(h1, .breadcrumb-current) {
+    flex-shrink: 0;
+    max-inline-size: 20ch;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1040px) {
+  :root[data-office-theme="office-blue"] .settings-blocks {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  :root[data-office-theme="office-blue"] .settings-sidebar {
+    width: 100%;
+    border-inline-end: 0;
+  }
+
+  :root[data-office-theme="office-blue"] .settings-sidebar-list {
+    padding: 6px 12px;
+  }
+
+  :root[data-office-theme="office-blue"] .settings-app-tab {
+    min-height: 44px;
+    padding: 6px 10px;
+  }
+
+  :root[data-office-theme="office-blue"] .settings-scope-option {
+    min-height: 44px;
+  }
+
+  :root[data-office-theme="office-blue"] :is(.settings-section-title, .settings-block-title, .settings-blocks) {
+    padding-inline: 16px;
+  }
+
+  :root[data-office-theme="office-blue"] .control-panel-list [data-control-actions] button {
+    height: auto;
+    min-height: 44px;
+  }
+
+  :root[data-office-theme="office-blue"] .report-screen {
+    padding-inline: 12px;
+  }
+
+  :root[data-office-theme="office-blue"] .report-screen :is(.report-button, .report-search input) {
+    min-height: 44px;
+  }
+
+  :root[data-office-theme="office-blue"] .report-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--selected-line) var(--surface-subtle);
+  }
+
+  :root[data-office-theme="office-blue"] .report-table :is(.report-name, .report-name-head, .report-corner) {
+    min-width: 172px;
+    border-inline-end: 1px solid var(--line);
+  }
+
+  :root[data-office-theme="office-blue"] .report-table .report-name {
+    padding-inline-start: calc(8px + var(--level, 0) * 12px);
+  }
+
+  :root[data-office-theme="office-blue"] .report-table .report-name-inner {
+    max-inline-size: min(45vw, 200px);
+  }
+
+  :root[data-office-theme="office-blue"] .report-table .report-label {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* Office Blue dashboard and record workspace. Keep the existing data, action order and form grid. */
+:root[data-office-theme="office-blue"] .kanban-grid:has(:is(.dashboard-card, .dashboard-card-error)) {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr));
+  gap: 16px;
+}
+:root[data-office-theme="office-blue"] .kanban-card:has(:is(.dashboard-card, .dashboard-card-error)) {
+  padding: 16px;
+  box-shadow: none;
+}
+:root[data-office-theme="office-blue"] .kanban-card:has(:is(.dashboard-card, .dashboard-card-error)) .kanban-card-title {
+  font-size: 16px;
+  line-height: 24px;
+}
+:root[data-office-theme="office-blue"] .dashboard-card {
+  --dashboard-chart-height: 72px;
+  gap: 12px;
+  margin-block-start: 12px;
+}
+:root[data-office-theme="office-blue"] .dashboard-card-stats {
+  border-block-start: 1px solid var(--line);
+}
+:root[data-office-theme="office-blue"] .dashboard-card-stats > li + li {
+  border-block-start: 1px solid var(--line);
+}
+:root[data-office-theme="office-blue"] .dashboard-card button.dashboard-card-stat {
+  grid-template-columns: minmax(2ch, auto) minmax(0, 1fr);
+  gap: 8px;
+  min-height: 32px;
+  padding-inline: 4px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+:root[data-office-theme="office-blue"] .dashboard-card button.dashboard-card-stat:has(> .dashboard-card-stat-amount) {
+  grid-template-columns: minmax(2ch, auto) minmax(0, 1fr) minmax(0, max-content);
+}
+:root[data-office-theme="office-blue"] .dashboard-card-stat:focus-visible {
+  outline-offset: -2px;
+}
+:root[data-office-theme="office-blue"] .dashboard-card-stat-amount {
+  max-inline-size: 17ch;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+:root[data-office-theme="office-blue"] .dashboard-card-chart {
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+}
+
+/* Workflow counters sit in a single strip with a visibly selected filter. */
+:root[data-office-theme="office-blue"] .dashboard-strip {
+  padding: 8px;
+}
+:root[data-office-theme="office-blue"] .dashboard-items {
+  gap: 4px;
+}
+:root[data-office-theme="office-blue"] :is(.dashboard-count, .dashboard-kpi) {
+  padding: 8px 12px;
+  border-color: transparent;
+  background: var(--surface);
+}
+:root[data-office-theme="office-blue"] .dashboard-count:hover:not(:disabled) {
+  background: var(--hover);
+}
+:root[data-office-theme="office-blue"] .dashboard-count:is(:active:not(:disabled), [aria-pressed="true"]) {
+  border-color: var(--selected-line);
+  background: var(--selected);
+}
+:root[data-office-theme="office-blue"] .dashboard-value {
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+/* Shared record forms for invoices, transfers, purchase orders and sales orders. */
+:root[data-office-theme="office-blue"] #erp-content {
+  --office-record-gutter: 24px;
+}
+:root[data-office-theme="office-blue"] #erp-content :is(.record-form-viewport, .control-panel-form:has(> .form-record-smart)) {
+  padding-inline: max(var(--office-record-gutter), calc((100% - 1596px) / 2));
+}
+:root[data-office-theme="office-blue"] .record-form-viewport > .content-sheet:has(> .record-form:not(.settings-form)) {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 24px clamp(16px, 3vw, 32px);
+  box-shadow: none;
+}
+:root[data-office-theme="office-blue"] .record-form-viewport > .content-sheet .record-form:not(.settings-form) .form-group-title {
+  color: var(--text);
+  padding-block-end: 8px;
+}
+:root[data-office-theme="office-blue"] .record-form-viewport > .content-sheet .record-form:not(.settings-form) .form-tab-panel {
+  padding-block-start: 16px;
+}
+:root[data-office-theme="office-blue"] .record-form-viewport > .content-sheet .record-form :is(.form-title-heading, .form-title-field) input:not([type="checkbox"]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+@media (max-width: 1120px) {
+  :root[data-office-theme="office-blue"] #erp-content { --office-record-gutter: 16px; }
+}
+@media (max-width: 700px) {
+  :root[data-office-theme="office-blue"] #erp-content { --office-record-gutter: 12px; }
+  :root[data-office-theme="office-blue"] .kanban-grid:has(:is(.dashboard-card, .dashboard-card-error)) { gap: 12px; }
+  :root[data-office-theme="office-blue"] .dashboard-card :is(.dashboard-card-stat, .dashboard-card-buttons button) { min-height: 44px; }
+  :root[data-office-theme="office-blue"] .dashboard-items {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
+  }
+  :root[data-office-theme="office-blue"] .record-form-viewport > .content-sheet:has(> .record-form:not(.settings-form)) { padding: 16px; }
+}
+/* The settings scope gets its own row when the two navigation rails narrow the workspace. */
+@media (min-width: 769px) and (max-width: 1280px) {
+  :root[data-office-theme="office-blue"] .control-panel:has(.settings-toolbar) {
+    grid-template-columns: auto minmax(8rem, 1fr) minmax(10rem, 1fr);
+    row-gap: 8px;
+  }
+  :root[data-office-theme="office-blue"] .control-panel:has(.settings-toolbar) .settings-toolbar-scope {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+    max-width: 100%;
+  }
+}
+
+/* Count-only cards show the operational queue in two pairs; monetary rows keep full width. */
+:root[data-office-theme="office-blue"] .dashboard-card-stats:not(:has(.dashboard-card-stat-amount)) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+}
+:root[data-office-theme="office-blue"] .dashboard-card-stats:not(:has(.dashboard-card-stat-amount)) > li:nth-child(2) {
+  border-block-start: 0;
+}
+:root[data-office-theme="office-blue"] .dashboard-card-stats:not(:has(.dashboard-card-stat-amount)) .dashboard-card-stat {
+  min-height: 44px;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+:root[data-office-theme="office-blue"] .dashboard-card-stats:not(:has(.dashboard-card-stat-amount)) .dashboard-card-stat-count {
+  min-inline-size: 1.5ch;
+  font-size: 18px;
+  line-height: 1.25;
+}
+@media (min-width: 769px) {
+  :root[data-office-theme="office-blue"] .office-nav-children .office-nav-item[aria-current="page"] > svg:first-child {
+    color: var(--selected-text);
+  }
 }

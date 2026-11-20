@@ -185,6 +185,7 @@ test("a read-only value in a form is text like an editable one, and the record's
 });
 
 test("the open notebook tab carries its accent edge inside one hairline outline", () => {
+  expect(last(".record-form:not(.settings-form) .form-tabs")).toMatch(/background:\s*transparent/);
   // Not `last`: the reduced-motion rule of the same selector comes after it.
   expect(rulesFor(".record-form:not(.settings-form) .form-tab").some(body => /border:\s*1px solid transparent;\s*border-bottom:\s*0/.test(body))).toBe(true);
   expect(last(".record-form:not(.settings-form) .form-tab[aria-selected=true]::before")).toMatch(/height:\s*2px;\s*background:\s*var\(--accent\)/);

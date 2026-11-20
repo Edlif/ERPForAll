@@ -563,7 +563,7 @@ td button.link { border: 0; background: transparent; color: var(--accent); paddi
 .list-table tbody tr:hover { background: var(--hover); }
 .list-table tbody tr.row-selected { background: var(--selected); }
 .list-table tbody tr.row-selected:hover { background: var(--selected-hover); }
-.list-table tbody tr:has(:focus-visible) > :first-child { box-shadow: inset 3px 0 var(--accent); } /* ui-lint: allow raw-shadow (the accent edge of the focused row, unchanged device) */
+.list-table tbody tr:has(:focus-visible) > :first-child { border-inline-start: 3px solid var(--accent); } /* ui-lint: allow raw-shadow (the accent edge of the focused row, unchanged device) */
 .list-table input[type=checkbox]:focus-visible { outline-offset: 1px; }
 /* Group rows of a grouped list: the list's own row height (36px), one toggle button across the row. */
 .list-table tbody tr.list-group-row { background: var(--surface-subtle); }
@@ -920,7 +920,7 @@ mark.highlight { background: var(--highlight); color: inherit; padding: 0 2px; b
 
 /* Column handles do not participate in the sort button hit area. */
 .sortable-column { position: relative; padding-right: 18px; }
-.column-resize-handle { position: absolute; top: 0; right: 0; bottom: 0; width: 12px; cursor: col-resize; touch-action: none; user-select: none; }
+.column-resize-handle { position: absolute; top: 0; inset-inline-end: 0; bottom: 0; width: 12px; cursor: col-resize; touch-action: none; user-select: none; }
 .column-resize-handle::after { content: ""; position: absolute; top: 25%; bottom: 25%; left: 5px; border-left: 2px solid transparent; }
 .sortable-column:hover .column-resize-handle::after, .column-resize-handle:focus-visible::after { border-color: var(--accent); }
 .list-table[style] th, .list-table[style] td { overflow: hidden; text-overflow: ellipsis; }
@@ -2991,7 +2991,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .record-form .form-title-block > .field-label:not(.form-title-field) { flex: 0 0 auto; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; width: auto; height: 48px; min-height: 0; }
 .record-form .form-title-block > .field-label:not(.form-title-field) > span:first-child { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* The tab row never wraps: tabs that do not fit are in the More menu. */
-.record-form:not(.settings-form) .form-tabs { position: relative; flex-wrap: nowrap; overflow: visible; }
+.record-form:not(.settings-form) .form-tabs { position: relative; flex-wrap: nowrap; overflow: visible; background: transparent; }
 .form-tabs > .form-tab[hidden] { display: none; }
 .form-tab-more { flex: 0 0 auto; margin-inline-start: auto; min-height: 40px; background: transparent; border: 0; color: var(--muted); }
 .form-tab-more[hidden] { display: none; }
@@ -3069,7 +3069,15 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
    record menu's columns, so the menu always follows the record name, however long the parent's name is. */
 .control-panel-form:has(> .form-record-smart) .breadcrumbs { grid-template-rows: 14px 18px; align-self: center; }
 /* On a phone the way back is a 44px touch target: its row grows with it, so it cannot reach over the record name. */
-@media (max-width: 640px) { .control-panel-form:has(> .form-record-smart) .breadcrumbs { grid-template-rows: auto auto; } }
+@media (max-width: 640px) {
+  .control-panel-form:has(> .form-record-smart) .breadcrumbs { grid-template-rows: auto auto; }
+  .control-panel-form:has(> .form-record-smart) .form-status-indicator {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: start;
+    margin-inline-start: 0;
+  }
+}
 .control-panel-form:has(> .form-record-smart) .breadcrumb-previous { grid-column: 1 / 3; justify-self: start; }
 .control-panel-form:has(> .form-record-smart) .breadcrumbs:has(.breadcrumb-collapsed-dropdown) .breadcrumb-previous { grid-column: 2 / 3; }
 .control-panel-form:has(> .form-record-smart) .breadcrumb-back svg { width: 14px; height: 14px; margin-inline-start: -2px; }
@@ -3575,8 +3583,8 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .wizard-dialog .record-form :is(.form-title-heading, .form-title-field) .field-label > .field-read-value { min-height: 40px; font-size: 20px; }
 /* 3. Notebook tabs: one hairline around the open tab, its top corners rounded, and the accent edge inside that outline so it
       follows the corners (a 2px accent border met the 1px sides in a step at each corner). */
-.record-form:not(.settings-form) .form-tab { position: relative; overflow: hidden; border: 1px solid transparent; border-bottom: 0; transition: color var(--motion-fast) ease, background-color var(--motion-fast) ease; }
-.record-form:not(.settings-form) .form-tab:hover:not([aria-selected=true]) { color: var(--text); background: var(--hover); }
+.record-form:not(.settings-form) .form-tab { position: relative; overflow: hidden; border: 1px solid transparent; border-bottom: 0; padding-inline: 14px; transition: color var(--motion-fast) ease, background-color var(--motion-fast) ease; }
+.record-form:not(.settings-form) .form-tab:hover:not(:disabled, [aria-selected=true]) { color: var(--text); background: var(--surface-subtle); }
 .record-form:not(.settings-form) .form-tab[aria-selected=true] { border-color: var(--line); background: var(--surface); color: var(--text); font-weight: 600; }
 .record-form:not(.settings-form) .form-tab[aria-selected=true]::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px; background: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .record-form:not(.settings-form) .form-tab { transition: none; } }
@@ -3655,3 +3663,195 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 
 /* Register Payment dialog: the Documents tags stay on one line. */
 .wizard-dialog .many2many-tags .tag-list { flex-wrap: nowrap; overflow: hidden; }
+
+/* Default workspace. Office Blue owns its own chrome; print keeps the document layout. */
+@media screen {
+  :root:not([data-office-theme]) .app-bar {
+    border-bottom: 2px solid var(--selected-line);
+  }
+  :root:not([data-office-theme]) .app-brand-btn {
+    color: var(--selected-text);
+    background: var(--selected);
+  }
+  :root:not([data-office-theme]) .home-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr));
+    gap: 8px;
+  }
+  :root:not([data-office-theme]) .home-grid .app-tile {
+    align-items: center;
+    flex-direction: row;
+    justify-content: flex-start;
+    min-width: 0;
+    min-height: 68px;
+    padding: 12px;
+    gap: 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    text-align: start;
+  }
+  :root:not([data-office-theme]) .home-grid .app-tile:is(:hover, .is-focused, [aria-selected="true"]) {
+    background: var(--selected);
+    border-color: var(--selected-line);
+    transform: none;
+  }
+  :root:not([data-office-theme]) .home-grid .app-icon {
+    width: 40px;
+    height: 40px;
+    margin: 0;
+  }
+  :root:not([data-office-theme]) .home-grid .app-icon > .erp-icon { width: 24px; height: 24px; }
+  :root:not([data-office-theme]) .home-grid .app-caption {
+    min-width: 0;
+    font-weight: 600;
+    line-height: 1.35;
+    text-align: start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  :root:not([data-office-theme]) .home-menu-search {
+    max-width: 100%;
+    border-radius: var(--radius-control);
+    margin-block-end: 16px;
+    box-shadow: none;
+  }
+  :root:not([data-office-theme]) .kanban-grid:has(.dashboard-card) {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+    gap: 16px;
+  }
+  :root:not([data-office-theme]) .kanban-grid:has(.dashboard-card-stat-amount) {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 34rem), 1fr));
+  }
+  :root:not([data-office-theme]) .kanban-card:has(.dashboard-card) {
+    padding: 16px;
+    border-block-start: 2px solid var(--selected-line);
+  }
+  :root:not([data-office-theme]) .kanban-card:has(.dashboard-card) .kanban-card-title {
+    color: var(--selected-text);
+    line-height: 1.35;
+  }
+  :root:not([data-office-theme]) .dashboard-card {
+    grid-template-columns: minmax(0, 1fr);
+    margin-top: 8px;
+    gap: 8px;
+    --dashboard-chart-height: 80px;
+  }
+  :root:not([data-office-theme]) .dashboard-card-stats > li + li {
+    border-block-start: 1px solid var(--line);
+  }
+  :root:not([data-office-theme]) .dashboard-card-stat {
+    grid-template-columns: minmax(3ch, max-content) minmax(0, 1fr) auto;
+    min-height: 32px;
+    padding-inline: 4px;
+  }
+  :root:not([data-office-theme]) .dashboard-card-stats:not(:has(.dashboard-card-stat-amount)) {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
+    gap: 0 12px;
+  }
+  :root:not([data-office-theme]) .dashboard-card-stats:not(:has(.dashboard-card-stat-amount)) > li {
+    border-block-start: 1px solid var(--line);
+  }
+  :root:not([data-office-theme]) .dashboard-card-stat-amount {
+    font-weight: 600;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  :root:not([data-office-theme]) .dashboard-card-chart {
+    padding-block-start: 8px;
+    border-block-start: 1px solid var(--line);
+  }
+  :root:not([data-office-theme]) .settings-sidebar { background: var(--canvas); }
+  :root:not([data-office-theme]) .settings-section-title {
+    padding: 12px 20px;
+    min-height: 48px;
+    font-size: 18px;
+  }
+  :root:not([data-office-theme]) .settings-block-title {
+    margin-inline: 20px;
+    min-height: 32px;
+    padding: 4px 0;
+    color: var(--selected-text);
+    background: var(--surface);
+    border-block: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  :root:not([data-office-theme]) .settings-blocks { padding: 16px 20px 24px; gap: 16px 32px; }
+  :root:not([data-office-theme]) .list-results { box-shadow: none; }
+  :root:not([data-office-theme]) .list-table thead th {
+    background: var(--surface-subtle);
+    border-block-end: 1px solid var(--input-line);
+  }
+  :root:not([data-office-theme]) .list-table .row-selected > :first-child {
+    position: relative;
+  }
+  :root:not([data-office-theme]) .list-table .row-selected > :first-child::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: 0;
+    inline-size: 3px;
+    background: var(--accent);
+    pointer-events: none;
+  }
+  :root:not([data-office-theme]) .record-form-viewport > .content-sheet:has(.record-form) {
+    box-shadow: none;
+    border-block-start: 2px solid var(--selected-line);
+  }
+  :root:not([data-office-theme]) .record-form .form-group-title {
+    color: var(--selected-text);
+    border-block-end: 1px solid var(--line);
+    padding-block-end: 6px;
+  }
+  :root:not([data-office-theme]) .report-table .report-line-section > .report-name {
+    border-inline-start: 3px solid var(--selected-line);
+    color: var(--selected-text);
+  }
+}
+@media screen and (min-width: 769px) and (max-width: 1100px) {
+  :root:not([data-office-theme]) .control-panel:has(.settings-toolbar) {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    row-gap: 8px;
+  }
+  :root:not([data-office-theme]) .control-panel .settings-toolbar-scope {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+    max-width: 100%;
+  }
+}
+@media screen and (max-width: 700px) {
+  :root:not([data-office-theme]) [data-client-content] > .home-menu-container { padding: 20px 12px; }
+  :root:not([data-office-theme]) .home-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  :root:not([data-office-theme]) .home-grid .app-tile { padding: 8px; gap: 8px; min-height: 60px; }
+  :root:not([data-office-theme]) .home-grid .app-icon { width: 32px; height: 32px; }
+  .record-form:not(.settings-form) :is(.form-tab, .form-tab-more) { min-height: 44px; }
+  :root:not([data-office-theme]) .settings-app-tab,
+  :root:not([data-office-theme]) .dashboard-card-stat { min-height: 44px; }
+  :root:not([data-office-theme]) .kanban-grid:has(.dashboard-card) { gap: 12px; }
+}
+
+/* Keep the chooser beside the final label and leave the column edge free for resizing. */
+.list-table th.column-choices-anchor, .x2many-table th.column-choices-anchor {
+  --chooser-size: 28px;
+  --chooser-offset: 16px;
+  padding-inline-end: calc(var(--chooser-size) + var(--chooser-offset) + 6px);
+}
+.x2many-table th.column-choices-anchor { position: relative; }
+.column-choices-anchor .column-choices-trigger { position: absolute; inset-inline-end: var(--chooser-offset); top: 50%; transform: translateY(-50%); width: var(--chooser-size); height: var(--chooser-size); min-height: 0; padding: 3px; color: var(--muted); }
+.column-choices-trigger:hover, .column-choices-trigger[aria-expanded=true] { color: var(--accent); background: var(--hover); }
+.column-choices { display: grid; padding: 4px; min-width: min(13rem, 75vw); max-height: 65vh; overflow-y: auto; }
+.column-choices label { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer; color: var(--text); }
+.column-choices label:hover, .column-choices label:focus-within { background: var(--hover); }
+.column-choices input { accent-color: var(--accent); }
+
+@media (max-width: 768px), (pointer: coarse) {
+  .list-table th.column-choices-anchor, .x2many-table th.column-choices-anchor {
+    --chooser-size: 44px;
+    height: calc(var(--chooser-size) + 4px);
+  }
+  .column-choices label { min-height: 44px; }
+}
