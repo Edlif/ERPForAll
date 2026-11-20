@@ -304,6 +304,43 @@ async fn acceptance() {
     let main = xid("base", "main_company").await;
     let portal_group = xid("base", "group_portal").await;
     let report = xid("reporting", "report_partner_country").await;
+    let open = || {
+        let result = ok(
+            &call(
+                &admin,
+                "/erp/json/2/reporting.report/action_open_report",
+                json!({"ids":[report]}),
+            ),
+            "open report",
+        );
+        let normalized = ok(
+            &call(
+                &admin,
+                "/erp/json/2/reporting.report/erp_normalize_action_result",
+                json!({"wire_major":1,"result":result}),
+            ),
+            "normalize report",
+        );
+        assert_eq!(normalized["result"]["tag"], "reporting.report");
+        assert_eq!(normalized["result"]["params"]["report"], report);
+        normalized["result"]["name"].as_str().unwrap().to_owned()
+    };
+    let original = open();
+    let rename = |name: &str| {
+        ok(
+            &call(
+                &admin,
+                "/erp/json/2/reporting.report/write",
+                json!({"ids":[report],"vals":{"name":name}}),
+            ),
+            "rename report",
+        );
+    };
+    let long_title = "集計".repeat(80);
+    rename(&long_title);
+    let title = open();
+    assert!(!title.is_empty() && long_title.starts_with(&title) && title.len() < long_title.len());
+    rename(&original);
     let company_name: String = client
         .query_one("SELECT name FROM res_company WHERE id = $1", &[&main])
         .await

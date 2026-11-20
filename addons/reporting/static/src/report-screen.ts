@@ -5,6 +5,7 @@ import { icon } from "@erpforall/client";
 import type { ClientActionEnvironment, ClientActionHandle } from "@erpforall/client";
 import * as data from "./report-data.js";
 import type { Line, Options } from "./report-data.js";
+import { exportButtons, type Exports } from "./report-export.js";
 import { buildFilters, disclosure, message, type Disclosure } from "./report-filters.js";
 
 const MODEL = "reporting.report";
@@ -23,6 +24,7 @@ function make<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string,
 export class ReportScreen implements ClientActionHandle {
   private readonly root = make("section", "report-screen");
   private readonly bar = make("div", "report-bar");
+  private readonly actions = make("div", "report-actions");
   private readonly status = make("div", "report-status");
   private readonly scroller = make("div", "report-scroll");
   private readonly menu = make("div", "report-menu");
@@ -33,12 +35,12 @@ export class ReportScreen implements ClientActionHandle {
   private failure: { message: string; retry: () => void } | undefined;
   private phase: "loading" | "ready" | "refreshing" = "loading";
   private readonly busy = new Set<string>();
+  private exports: Exports | undefined;
   private generation = 0;
   private disposed = false;
   private activeId: string | undefined;
   private readonly report: number;
   private readonly lang: string;
-  private readonly listeners: (() => void)[] = [];
 
   constructor(private readonly env: ClientActionEnvironment) {
     const id = env.action.params["report"];
@@ -49,7 +51,9 @@ export class ReportScreen implements ClientActionHandle {
     this.menu.hidden = true;
     this.scroller.addEventListener("click", event => this.onClick(event));
     this.scroller.addEventListener("keydown", event => this.onKey(event));
-    this.root.append(this.bar, this.status, this.scroller, this.menu);
+    this.actions.setAttribute("role", "toolbar"); this.actions.setAttribute("aria-label", "Report actions");
+    const toolbar = make("div", "report-toolbar"); toolbar.append(this.bar, this.actions);
+    this.root.append(toolbar, this.status, this.scroller, this.menu);
     env.host.append(this.root);
     this.buildControls();
     this.render();
@@ -74,7 +78,7 @@ export class ReportScreen implements ClientActionHandle {
     catch (error) {
       if (this.disposed) return;
       if (previous === false) { this.fail(error, () => void this.start()); return; }
-      this.env.notice(`The previous options of this report could not be restored (${message(error)}) The defaults are shown.`);
+      this.env.notice(`The previous options of this report could not be restored: ${message(error)} The defaults are shown.`);
       try { await this.open(false); } catch (second) { if (!this.disposed) this.fail(second, () => void this.start()); return; }
     }
     if (typeof saved?.["scroll"] === "number") this.scroller.scrollTop = saved["scroll"];
@@ -113,25 +117,26 @@ export class ReportScreen implements ClientActionHandle {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true; this.generation++;
-    this.filtersBar?.dispose(); this.caret?.disclosure.dispose(); this.listeners.forEach(run => run());
-    this.root.remove(); this.env.controls.replaceChildren();
+    this.filtersBar?.dispose(); this.caret?.disclosure.dispose();
+    this.root.remove();
   }
 
-  // ---- controls (the control panel's actions slot) ----
+  // ---- actions (right of the filter bar) ----
   private buildControls(): void {
     const add = (key: string, text: string, iconName: Parameters<typeof icon>[0] | null, run: () => void): void => {
       const node = make("button", "erp-button report-button"); node.type = "button"; node.dataset["action"] = key;
       if (iconName) node.append(icon(iconName));
-      node.append(text); node.addEventListener("click", run); this.buttons.set(key, node); this.env.controls.append(node);
+      node.append(text); node.addEventListener("click", run); this.buttons.set(key, node); this.actions.append(node);
     };
-    add("refresh", "Refresh", "refresh-cw", () => { if (this.shown) this.reload(this.shown.options); });
+    add("refresh", "Refresh", "refresh-cw", () => { if (this.shown) this.reload(this.shown.options); else this.failure?.retry(); });
+    this.exports = exportButtons({ env: this.env, report: this.report, options: () => this.shown?.options, changed: () => this.syncControls() });
+    for (const [key, node] of this.exports.buttons) { this.buttons.set(key, node); this.actions.append(node); }
     this.syncControls();
   }
   private syncControls(): void {
-    const blocked = this.phase !== "ready" || this.shown === undefined && !this.failure;
-    for (const node of this.buttons.values()) node.disabled = blocked;
+    const idle = this.shown !== undefined && this.phase === "ready" && !this.exports?.busy();
+    for (const [key, node] of this.buttons) node.disabled = key === "refresh" ? this.phase !== "ready" || this.shown === undefined && !this.failure : !idle;
   }
-
   // ---- rendering ----
   private render(): void {
     this.renderBar(); this.renderStatus(); this.renderTable(); this.syncControls();

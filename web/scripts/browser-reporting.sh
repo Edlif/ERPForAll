@@ -4,7 +4,7 @@
 # install of the QA directory are needed; run it on a build host, never on the laptop):
 #   CHROME_BIN=/path/to/chrome CLIENT_BROWSER_OUTPUT=$PWD/logs/reporting-ui web/scripts/browser-reporting.sh
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 eval "$(scripts/web-toolchain.sh env)"
 (cd web && pnpm install --frozen-lockfile > /dev/null)
 scripts/build-gate.sh "browser-reporting" -- cargo build --locked -p erp-ui-compiler-cli --bin erp-ui-compile

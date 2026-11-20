@@ -30,26 +30,27 @@ export const optionsAnswer = (options = wireOptions(), filters = wireFilters()):
 export const linesAnswer = (lines: Record<string, unknown>[], options = wireOptions()): Record<string, unknown> => ({ options, lines, computed_at: "2026-11-19 10:00:00", hidden_lines: [] });
 
 export type Handler = (args: Record<string, unknown>) => unknown;
-export interface Rig { readonly env: ClientActionEnvironment; readonly calls: { method: string; args: Record<string, unknown> }[]; readonly errors: unknown[]; readonly open: ReturnType<typeof vi.fn>; readonly notice: ReturnType<typeof vi.fn>; dispose(): void }
+export interface Rig { readonly env: ClientActionEnvironment; readonly calls: { method: string; args: Record<string, unknown> }[]; readonly errors: unknown[]; readonly open: ReturnType<typeof vi.fn>; readonly notice: ReturnType<typeof vi.fn>; readonly postFile: ReturnType<typeof vi.fn>; dispose(): void }
 
 export function rig(handlers: Record<string, Handler>, params: Record<string, unknown> = { report: REPORT }, restored: unknown = null): Rig {
   const host = document.createElement("div"), controls = document.createElement("div"), panel = document.createElement("div");
-  document.body.append(host, controls);
+  const notices = document.createElement("div");
+  document.body.append(host, controls, notices);
   const calls: Rig["calls"] = [], errors: unknown[] = [];
-  const messages = new MessageServices(host, error => errors.push(error));
-  const open = vi.fn(async () => undefined), notice = vi.fn();
+  const messages = new MessageServices(notices, error => errors.push(error));
+  const open = vi.fn(async () => undefined), notice = vi.fn(), postFile = vi.fn();
   const rpc = { call: async (model: string, method: string, args: Record<string, unknown>) => {
     if (model !== "reporting.report") throw new Error(`unexpected model ${model}`);
     calls.push({ method, args });
     const handler = handlers[method];
     if (!handler) throw new Error(`unexpected method ${method}`);
     return handler(args);
-  } };
+  }, postFile };
   const env = {
     host, panel, controls, rpc, companies: [{ id: 1, name: "Arkana" }, { id: 2, name: "Beta" }], run: (job: () => Promise<void>) => { void job().catch(error => errors.push(error)); },
     notice, messages, editorLocale: { lang: "en_US", tz: "UTC", date_format: "%m/%d/%Y", time_format: "%H:%M:%S" },
     action: { id: 5, name: "Contacts by Country", tag: "reporting.report", params }, restored, open
   } as unknown as ClientActionEnvironment;
-  return { env, calls, errors, open, notice, dispose: () => { messages.dispose(); host.remove(); controls.remove(); } };
+  return { env, calls, errors, open, notice, postFile, dispose: () => { messages.dispose(); host.remove(); controls.remove(); notices.remove(); } };
 }
 export const settle = async (): Promise<void> => { for (let i = 0; i < 6; i++) await new Promise(resolve => setTimeout(resolve, 0)); };

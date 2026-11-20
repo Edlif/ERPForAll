@@ -78,9 +78,8 @@ export class RpcClient {
       if (options.write) this.written?.(path.startsWith("/erp/module/") ? "ir.module.module" : path.split("/")[4]!);
     }
   }
-  /** POST a JSON document to the pivot download route and take the spreadsheet it answers (the route answers a file, not JSON). */
-  postFile(path: "/erp/pivot/export", document: unknown): Promise<{ blob: Blob; fileName: string }> {
-    const type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  /** POST a JSON document to a download route (the pivot spreadsheet, a dynamic report as PDF or XLSX) and take the file it answers (the route answers a file, not JSON). */
+  postFile(path: "/erp/pivot/export" | "/erp/reporting/export", document: unknown, type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"): Promise<{ blob: Blob; fileName: string }> {
     return this.file(path, type, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(document) });
   }
   /** GET a file of this server (a printed report, a stored attachment); a refusal is thrown with the server's sentence. */

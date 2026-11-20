@@ -99,7 +99,8 @@ function dateChip(ctx: FilterContext): Chip {
   const { env, options, filters } = ctx, lang = env.editorLocale.lang;
   const date = obj(options["date"], "the date option"), mode = filters.dateMode, preset = textOf(date["preset"]) ?? "custom";
   const from = textOf(date["from"]), to = textOf(date["to"]);
-  return chip("date", `${label(PRESETS, preset)}: ${periodText(options, lang)}`, "calendar", (panel, close) => {
+  const period = periodText(options, lang);
+  return chip("date", period ? `${label(PRESETS, preset)}: ${period}` : label(PRESETS, preset), "calendar", (panel, close) => {
     const presets = PRESETS.filter(([key]) => key !== "today" || mode === "single");
     const picker = select("preset", presets, preset); const custom = document.createElement("div"); custom.className = "report-custom";
     custom.hidden = preset !== "custom";

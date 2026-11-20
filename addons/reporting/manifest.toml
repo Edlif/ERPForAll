@@ -9,5 +9,6 @@ depends = ["base", "web"]
 data = [
     "security/ir.access.csv",
     "data/reporting_data.xml",
+    "data/reporting_views.xml",
     "data/reporting_menus.xml",
 ]

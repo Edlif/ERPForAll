@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Settings > Technical > Reporting > Dynamic Reports: the report definitions, for administrators. -->
+<erp>
+    <record id="reporting_report_list" model="ir.ui.view">
+        <field name="name">reporting.report.list</field>
+        <field name="model">reporting.report</field>
+        <field name="arch" type="xml"><list><field name="name"/><field name="provider"/><field name="date_mode"/><field name="comparison"/><field name="active"/></list></field>
+    </record>
+    <record id="reporting_report_form" model="ir.ui.view">
+        <field name="name">reporting.report.form</field>
+        <field name="model">reporting.report</field>
+        <field name="arch" type="xml"><form record_mode="record">
+            <header><button name="action_open_report" type="object" string="Open Report" class="btn-primary"/></header>
+            <sheet>
+                <group>
+                    <group><field name="name"/><field name="provider"/><field name="active"/></group>
+                    <group><field name="date_mode"/><field name="date_default"/><field name="comparison"/><field name="multi_company"/></group>
+                </group>
+                <group>
+                    <group><field name="unfold_all"/><field name="hide_zero"/><field name="search_bar"/></group>
+                    <group><field name="totals_below"/><field name="load_more_limit"/></group>
+                </group>
+                <notebook>
+                    <page name="lines" string="Lines">
+                        <field name="line_ids"/>
+                    </page>
+                    <page name="columns" string="Columns">
+                        <field name="column_ids"/>
+                    </page>
+                </notebook>
+            </sheet>
+        </form></field>
+    </record>
+    <record id="reporting_report_search" model="ir.ui.view">
+        <field name="name">reporting.report.search</field>
+        <field name="model">reporting.report</field>
+        <field name="arch" type="xml"><search><field name="name"/><field name="provider"/></search></field>
+    </record>
+    <record id="reporting_report_line_list" model="ir.ui.view">
+        <field name="name">reporting.report.line.list</field>
+        <field name="model">reporting.report.line</field>
+        <field name="arch" type="xml"><list><field name="sequence"/><field name="name"/><field name="code"/><field name="groupby"/><field name="foldable"/></list></field>
+    </record>
+    <record id="reporting_report_line_form" model="ir.ui.view">
+        <field name="name">reporting.report.line.form</field>
+        <field name="model">reporting.report.line</field>
+        <field name="arch" type="xml"><form record_mode="record"><group><field name="sequence"/><field name="name"/><field name="code"/><field name="parent_id"/><field name="groupby"/><field name="foldable"/><field name="hide_if_zero"/><field name="optional"/><field name="expression_ids"/></group></form></field>
+    </record>
+    <record id="reporting_report_column_list" model="ir.ui.view">
+        <field name="name">reporting.report.column.list</field>
+        <field name="model">reporting.report.column</field>
+        <field name="arch" type="xml"><list><field name="sequence"/><field name="name"/><field name="label"/><field name="kind"/></list></field>
+    </record>
+    <record id="reporting_report_column_form" model="ir.ui.view">
+        <field name="name">reporting.report.column.form</field>
+        <field name="model">reporting.report.column</field>
+        <field name="arch" type="xml"><form record_mode="record"><group><field name="sequence"/><field name="name"/><field name="label"/><field name="kind"/><field name="scale"/><field name="sortable"/><field name="blank_if_zero"/><field name="rollup"/><field name="rollup_field"/></group></form></field>
+    </record>
+    <record id="reporting_report_expression_list" model="ir.ui.view">
+        <field name="name">reporting.report.expression.list</field>
+        <field name="model">reporting.report.expression</field>
+        <field name="arch" type="xml"><list><field name="label"/><field name="engine"/><field name="model"/><field name="field"/></list></field>
+    </record>
+    <record id="reporting_report_expression_form" model="ir.ui.view">
+        <field name="name">reporting.report.expression.form</field>
+        <field name="model">reporting.report.expression</field>
+        <field name="arch" type="xml"><form record_mode="record"><group><field name="label"/><field name="engine"/><field name="model"/><field name="domain"/><field name="field"/><field name="formula"/><field name="date_field"/><field name="date_scope"/><field name="zero_division"/></group></form></field>
+    </record>
+    <record id="action_reporting_report" model="ir.actions.act_window">
+        <field name="name">Dynamic Reports</field>
+        <field name="res_model">reporting.report</field>
+        <field name="view_mode">list,form</field>
+        <field name="view_id" ref="reporting_report_list"/>
+        <field name="search_view_id" ref="reporting_report_search"/>
+        <field name="group_ids" eval="[(4, ref('base.group_system'), 0)]"/>
+    </record>
+    <menuitem id="menu_reporting_report" name="Dynamic Reports" parent="base.technical_reporting_menu"
+              action="action_reporting_report" groups="base.group_system" sequence="5"/>
+</erp>

@@ -118,6 +118,7 @@ export class PopoverService {
     }
     fit(); if (closed) return handle;
     removed.observe(doc.documentElement, { childList: true, subtree: true }); resize?.observe(anchor); resize?.observe(node);
+    if (options.alignTo && options.alignTo !== anchor) resize?.observe(options.alignTo);
     doc.addEventListener("pointerdown", outside);
     try { if (options.role !== "tooltip" && options.role !== "status") hotkeys = createHotkeyBoundary(node, { report: this.report, onEscape: () => handle.close("escape") }); }
     catch (error) { handle.close("dispose"); throw error; }

@@ -306,6 +306,32 @@ impl ReportingReport {
         runtime::check_saved(this.env(), tx, &ids).await
     }
 
+    /// Open the saved definition in the report viewer as the current user.
+    #[method]
+    #[rpc(effect = read)]
+    async fn action_open_report(
+        this: &RecordSet<ReportingReport>,
+        tx: &mut Transaction,
+    ) -> Result<Value> {
+        let records = this.as_records();
+        let id = records.ensure_one()?.int()?;
+        let names = records.values(tx, "name").await?;
+        let name = names
+            .first()
+            .ok_or_else(|| Error::missing("Report definition no longer exists."))?;
+        let Value::Str(name) = name else {
+            return Err(Error::programming("The report name must be text."));
+        };
+        let name = name.trim();
+        let title = &name[..name.floor_char_boundary(erp_addon_web::MAX_TITLE_BYTES)];
+        Ok(out(serde_json::json!({
+            "type": "ir.actions.client",
+            "tag": crate::client_action::TAG,
+            "name": if title.is_empty() { "Dynamic Report" } else { title },
+            "params": { "report": id }
+        })))
+    }
+
     /// The options of report `report`, carrying `previous` over (SPEC-DYNREP, design §5).
     ///
     /// # Errors

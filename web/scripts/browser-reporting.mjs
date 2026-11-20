@@ -1,6 +1,6 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 // The compiled client (assets built with `--addons web,reporting`) opening the dynamic report screen from a menu, against explicit HTTP
-// fixtures of the four report calls. Not backend/auth/database acceptance: the server side is covered by the reporting tests.
+// fixtures of the four report calls and the export route. Not backend/auth/database acceptance: the server side is covered by the reporting tests.
 // Run through web/scripts/browser-reporting.sh (build, then this script); CHROME_BIN names a Chrome, CLIENT_BROWSER_OUTPUT an empty directory.
 import assert from "node:assert/strict";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
@@ -51,9 +51,15 @@ const server = createServer(async (req, res) => {
     let input = ""; for await (const chunk of req) { input += chunk; if (input.length > 65536) throw new Error("Oversized fixture request"); }
     const body = input ? JSON.parse(input) : {};
     calls.push({ path: pathname, body });
+    if (pathname === "/erp/reporting/export") {
+      res.writeHead(200, { "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="contacts.${body.format === "pdf" ? "pdf" : "xlsx"}"` }); res.end("%PDF-1.4 fixture"); return;
+    }
     let value;
     if (pathname.endsWith("erp_describe")) value = { wire_major: 1, registry_version: "r1", scope: body.scope, declarations: [] };
     else if (pathname.endsWith("erp_read_values")) value = { wire_major: 1, scope: body.scope, revision: "1", values: [] };
+    else if (pathname.endsWith("res.users/read")) value = [{ id: 2, color_scheme: "light" }];
+    else if (pathname.endsWith("res.users.settings/get_res_users_settings")) value = { homemenu_config: null };
+    else if (pathname.endsWith("mail.activity/erp_activity_groups")) value = { activity_counter: 0, groups: [] };
     else if (pathname.endsWith("erp_load_web_menus")) value = { wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: "Contacts by Country", action_id: 30, action_kind: "client", children: [], icon: null }] };
     else if (pathname.endsWith("ir.actions.client/erp_load_web_client_action")) value = { wire_major: 1, result: { kind: "client", id: 30, name: "Contacts by Country", tag: "reporting.report", params: { report: REPORT } } };
     else if (pathname.endsWith("reporting.report/erp_report_options")) value = { name: "Contacts by Country", options: baseOptions, filters };
@@ -73,7 +79,7 @@ const result = { status: "FAIL", scope: "compiled client assets with explicit HT
 let activePage;
 const rowNames = page => page.locator("tr.report-line .report-label").allTextContents();
 try {
-  const page = await browser.newPage(); activePage = page;
+  const page = await browser.newPage({ acceptDownloads: true }); activePage = page;
   page.on("pageerror", error => errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
   for (const width of [1440, 820, 390]) {
@@ -92,11 +98,14 @@ try {
     await page.getByRole("button", { name: "Unfold Contacts" }).click();
     await page.locator("tr.report-line", { hasText: "Belgium" }).waitFor();
     assert.deepEqual(await rowNames(page), ["Contacts", "Belgium", "France", "Germany"]);
-    assert.equal(await page.locator("tr.report-line[aria-level='2']").count(), 3);
+    assert.equal(await page.locator("tr.report-line[aria-level='2']").count(), 4, "three countries and the load-more row sit one level below the section");
     await page.getByRole("button", { name: "Show more (2 remaining)" }).click();
     await page.locator("tr.report-line", { hasText: "Spain" }).waitFor();
     assert.deepEqual(await rowNames(page), ["Contacts", "Belgium", "France", "Germany", "Italy", "Spain"]);
     assert.equal(calls.filter(c => c.path.endsWith("erp_report_expand")).at(-1).body.offset, 3);
+    const geometry = await page.evaluate(() => ({ labels: [...document.querySelectorAll("tr.report-line .report-label")].map(node => Math.round(node.getBoundingClientRect().left)), align: getComputedStyle(document.querySelector("tr.report-line .report-cell")).textAlign }));
+    assert.ok(geometry.labels[1] - geometry.labels[0] >= 16, `a child line is indented below its section: ${JSON.stringify(geometry.labels)}`);
+    assert.ok(["end", "right"].includes(geometry.align), `numbers are aligned to the end of the cell, not ${geometry.align}`);
     await page.screenshot({ path: path.join(output, `report-unfolded-${width}.png`), fullPage: true }); screenshots.push(`report-unfolded-${width}.png`);
     await page.getByRole("button", { name: "Fold Contacts" }).click();
     assert.deepEqual(await rowNames(page), ["Contacts"]);
@@ -125,11 +134,18 @@ try {
     await page.waitForFunction(() => document.querySelector(".report-status")?.textContent?.includes("Computed"));
     assert.equal(calls.findLast(c => c.path.endsWith("erp_report_lines")).body.options.search, "bel");
 
+    // exports: the file arrives as sent and the request carries options and a format, never rows
+    const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "PDF" }).click()]);
+    assert.equal(download.suggestedFilename(), "contacts.pdf");
+    const exported = calls.findLast(c => c.path === "/erp/reporting/export").body;
+    assert.deepEqual(Object.keys(exported).sort(), ["format", "options", "report"]);
+    assert.equal(exported.format, "pdf");
+    assert.equal(exported.options.search, "bel");
     if (width === 1440) { await auditPage(page); await page.screenshot({ path: path.join(output, "report-audit-1440.png"), fullPage: true }); screenshots.push("report-audit-1440.png"); }
-    checks.push({ width, open_from_menu: "PASS", unfold_load_more_fold: "PASS", keyboard: "PASS", sort_preset_search: "PASS", no_page_overflow: "PASS", axe_serious: width === 1440 ? "PASS" : "not run at this width" });
+    checks.push({ width, open_from_menu: "PASS", unfold_load_more_fold: "PASS", keyboard: "PASS", sort_preset_search: "PASS", export: "PASS", no_page_overflow: "PASS", axe_serious: width === 1440 ? "PASS" : "not run at this width" });
   }
   if (serverError) throw serverError;
   assert.deepEqual(unknown, []);
   assert.deepEqual(errors, []); result.status = "PASS";
 } catch (error) { result.error = error instanceof Error ? error.stack : String(error); if (activePage) await activePage.screenshot({ path: path.join(output, "failure.png"), fullPage: true }); process.exitCode = 1; }
-finally { await writeFile(path.join(output, "reporting.json"), JSON.stringify(result, null, 2) + "\n"); await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+finally { result.unknown_fixture_calls = unknown; await writeFile(path.join(output, "reporting.json"), JSON.stringify(result, null, 2) + "\n"); await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }

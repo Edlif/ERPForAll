@@ -21,6 +21,16 @@ path = "junit.xml"
 
 # plan_o2m_growth timing guard is explicitly deferred; its active plan-shape twin needs no timing retry.
 
+# Each multiuser fixture starts its own serving node and provisions several real logins.
+# Bound parallel fixture processes on the shared build host. Their in-process concurrency,
+# socket deadlines and all assertions still run as declared by each binary.
+[test-groups.native-session-fixtures]
+max-threads = 2
+
+[[profile.ci.overrides]]
+filter = 'binary(/^multiuser_/) | binary(=human_lifecycle_multinode)'
+test-group = "native-session-fixtures"
+
 # Forced-deadlock cases require a scheduling window to make the login backend the victim
 # (auth_login.rs until_the_login_waits). Reserve the global slots for just these two cases;
 # a parallel suite stall can otherwise let the other backend's detector win and test the

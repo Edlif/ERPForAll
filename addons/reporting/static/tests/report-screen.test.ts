@@ -67,6 +67,17 @@ test("an empty answer says so and a failed one shows the server's message with R
   expect(r.env.host.querySelector(".report-empty")?.textContent).toBe("No data for these filters");
 });
 
+test("Refresh retries a first load that failed", async () => {
+  let fail = true;
+  const r = mount(standard({ erp_report_lines: () => { if (fail) throw new Error("The server is busy."); return linesAnswer([top()]); } }));
+  await settle();
+  expect(r.env.host.querySelector(".report-error")?.textContent).toBe("The server is busy.");
+  fail = false;
+  click(r.env.host.querySelector("[data-action=refresh]"));
+  await settle();
+  expect(names(r)).toEqual(["Contacts"]);
+});
+
 /// (partial: a click unfolds through erp_report_expand at offset 0 and the children appear below the line)
 test("unfolding loads the children once and ignores a second request while loading", async () => {
   let release: (() => void) | undefined;
@@ -101,7 +112,7 @@ test("folding is local; the next request carries only the lines still unfolded",
   click(rows(r)[0]?.querySelector(".report-toggle"));
   expect(names(r)).toEqual(["Contacts"]);
   expect(r.calls).toHaveLength(before);
-  click(r.env.controls.querySelector("[data-action=refresh]"));
+  click(r.env.host.querySelector("[data-action=refresh]"));
   await settle();
   expect(r.calls.at(-1)?.args).toEqual({ options: wireOptions({ unfolded: [] }) });
   click(rows(r)[0]?.querySelector(".report-toggle"));
@@ -322,6 +333,71 @@ test("coming back restores the options and falls back to the defaults, saying so
   expect(stale.calls.filter(c => c.method === "erp_report_options").map(c => c.args["previous"])).toEqual([saved.options, false]);
 });
 
+/// (partial: PDF and XLSX post the report id, the current options and the format; the file is saved as received)
+/// (partial: only options are posted, never rows)
+test("the export buttons post the options and the format", async () => {
+  const save = vi.fn();
+  const urls = URL as unknown as { createObjectURL: unknown; revokeObjectURL: unknown };
+  urls.createObjectURL = () => "blob:test"; urls.revokeObjectURL = () => undefined;
+  const link = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(save);
+  const r = mount(standard());
+  r.postFile.mockResolvedValueOnce({ blob: new Blob(["%PDF"], { type: "application/pdf" }), fileName: "report.pdf" });
+  r.postFile.mockResolvedValueOnce({ blob: new Blob(["XLSX fixture"], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), fileName: "report.xlsx" });
+  await settle();
+  const button = (action: string): HTMLButtonElement => r.env.host.querySelector<HTMLButtonElement>(`[data-action=${action}]`)!;
+  click(button("pdf"));
+  await settle();
+  expect(r.postFile).toHaveBeenCalledWith("/erp/reporting/export", { report: REPORT, options: wireOptions(), format: "pdf" }, "application/pdf");
+  click(button("xlsx"));
+  await settle();
+  expect(r.postFile.mock.calls[1]).toEqual(["/erp/reporting/export", { report: REPORT, options: wireOptions(), format: "xlsx" }, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
+  expect(link).toHaveBeenCalledTimes(2);
+  expect(button("pdf").disabled).toBe(false);
+});
+
+test("Print reserves one viewer, falls back when blocked and closes a refused export", async () => {
+  const r = mount(standard());
+  await settle();
+  const viewer = { opener: window, location: { replace: vi.fn() }, close: vi.fn() };
+  const open = vi.spyOn(window, "open").mockReturnValue(viewer as unknown as Window);
+  const download = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  const prior = URL.createObjectURL;
+  URL.createObjectURL = () => "blob:report";
+  const file = { blob: new Blob(["pdf"]), fileName: "report.pdf" };
+  let release!: (value: typeof file) => void;
+  r.postFile.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const print = () => click(r.env.host.querySelector("[data-action=print]"));
+  print();
+  expect(open).toHaveBeenCalledOnce();
+  expect(viewer.opener).toBeNull();
+  release(file);
+  await settle();
+  expect(viewer.location.replace).toHaveBeenCalledWith("blob:report");
+  expect(download).not.toHaveBeenCalled();
+  open.mockReturnValueOnce(null);
+  r.postFile.mockResolvedValueOnce(file);
+  print();
+  await settle();
+  expect(download).toHaveBeenCalledOnce();
+  r.postFile.mockRejectedValueOnce(new Error("Export refused"));
+  print();
+  await settle();
+  expect(viewer.close).toHaveBeenCalledOnce();
+  expect(r.errors[0]).toEqual(new Error("Export refused"));
+  URL.createObjectURL = prior;
+});
+
+test("a refused export is reported and the buttons come back", async () => {
+  const r = mount(standard());
+  r.postFile.mockRejectedValue(new Error("The export is over the row limit (reporting.export_max_rows)."));
+  await settle();
+  click(r.env.host.querySelector("[data-action=pdf]"));
+  await settle();
+  expect(r.errors).toHaveLength(1);
+  expect((r.errors[0] as Error).message).toContain("reporting.export_max_rows");
+  expect(r.env.host.querySelector<HTMLButtonElement>("[data-action=pdf]")?.disabled).toBe(false);
+});
+
 test("a screen without a report in its params refuses to open, and a disposed screen ignores late answers", async () => {
   current = rig(standard(), {});
   expect(() => new ReportScreen(current!.env)).toThrow("does not name its report");
@@ -333,7 +409,7 @@ test("a screen without a report in its params refuses to open, and a disposed sc
   release?.();
   await settle();
   expect(r.env.host.querySelector("table")).toBeNull();
-  expect(r.env.controls.children).toHaveLength(0);
+  expect(r.env.host.children).toHaveLength(0);
 });
 
 /// DYNREP accessibility: labels, roles and names of the screen pass the structural axe audit (contrast is audited in the browser script)

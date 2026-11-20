@@ -15,7 +15,8 @@ pub(crate) const MAX_RESULT_BYTES: usize = 16 * 1024;
 /// Deepest JSON nesting admitted in a result.
 pub(crate) const MAX_RESULT_DEPTH: usize = 6;
 const MAX_TEXT_BYTES: usize = 4096;
-const MAX_TITLE_BYTES: usize = 256;
+/// Maximum UTF-8 byte length of a display title on the web action wire.
+pub const MAX_TITLE_BYTES: usize = 256;
 const MAX_MODEL_BYTES: usize = 256;
 const MAX_CONTEXT_KEYS: usize = 64;
 const ACT_WINDOW: &str = "ir.actions.act_window";

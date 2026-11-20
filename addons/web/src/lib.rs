@@ -61,6 +61,7 @@ erp_sdk::setting_declarations!(settings);
 pub mod assets;
 
 mod action_result;
+pub use action_result::MAX_TITLE_BYTES;
 mod calendar_settings;
 mod dashboard;
 mod dashboard_period;

@@ -313,6 +313,80 @@ fn refused(result: erp_sdk::Result<Json>, kind: ErrorKind, text: &str) {
 }
 
 #[test]
+fn open_definition_returns_the_selected_report() {
+    run(async {
+        let f = fixture().await;
+        let mut tx = f.orm.begin(f.clerk).await.unwrap();
+        let env = tx.env();
+        let form = xmlid(&mut tx, "reporting", "reporting_report_form").await;
+        let views = erp_addon_web::metadata_test_support::test_get_views(
+            &env,
+            &mut tx,
+            "reporting.report",
+            vec![Value::list([Value::Int(form), Value::str("form")])],
+            32 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+        assert!(
+            serde_json::to_string(&views)
+                .unwrap()
+                .contains("action_open_report")
+        );
+        // The relation editor supplies the parent link on save and hides its input.
+        // Forwarding a required inverse field in the child form prevents creating rows.
+        for (model, inverse) in [
+            ("reporting.report.line", "report_id"),
+            ("reporting.report.column", "report_id"),
+            ("reporting.report.expression", "line_id"),
+        ] {
+            let child = erp_addon_web::metadata_test_support::test_get_views(
+                &env,
+                &mut tx,
+                model,
+                vec![Value::list([Value::False, Value::str("form")])],
+                32 * 1024 * 1024,
+            )
+            .await
+            .unwrap();
+            let wire = serde_json::to_value(child).unwrap();
+            let fields: Vec<_> = wire["views"][0]["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|node| node["field"]["name"].as_str())
+                .collect();
+            assert!(!fields.is_empty());
+            assert!(!fields.contains(&inverse), "{model}: {fields:?}");
+        }
+        for id in [f.stock, f.partners] {
+            let records = tx
+                .env()
+                .records("reporting.report")
+                .unwrap()
+                .browse([id])
+                .unwrap();
+            let Exposure::Exposed(method) = tx
+                .exposure()
+                .get(records.model_id(), "action_open_report")
+                .unwrap()
+                .clone()
+            else {
+                panic!("action_open_report must be exposed")
+            };
+            let result = method
+                .call(&mut tx, records, RpcArgs::new(Default::default()))
+                .await
+                .unwrap();
+            let action = erp_fields::convert::value_to_json(&result).unwrap();
+            assert_eq!(action["type"], "ir.actions.client");
+            assert_eq!(action["tag"], "reporting.report");
+            assert_eq!(action["params"]["report"], id);
+        }
+    });
+}
+
+#[test]
 fn definition_reports_compute_unfold_page_and_compare() {
     run(async {
         let f = fixture().await;

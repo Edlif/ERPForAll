@@ -1870,6 +1870,10 @@ try {
     await evaluate('(()=>{const input=document.querySelector("input[name=owner_id]");input.focus();input.value="Rendering";input.dispatchEvent(new Event("input",{bubbles:true}));})()');
     await wait('document.querySelector(".editor-autocomplete-list")?.textContent.includes("Rendering fixture user")');
     assert.ok(await evaluate('document.querySelectorAll(".editor-autocomplete-list [role=option]").length >= 1'),`relation suggestions render at ${width}px`);
+    // The field and its buttons can still be resizing after the viewport change.
+    // Measure the painted layout after transitions and ResizeObserver delivery.
+    await wait('document.getAnimations().every(animation => animation.effect?.getComputedTiming().iterations === Infinity || animation.playState === "finished" || animation.playState === "idle")');
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     const menuBounds=await evaluate('(()=>{const r=document.querySelector(".editor-autocomplete-list").getBoundingClientRect();return {left:r.left,right:r.right,width:innerWidth};})()');
     assert.ok(menuBounds.left>=0&&menuBounds.right<=menuBounds.width,`relation dropdown fits ${width}px: ${JSON.stringify(menuBounds)}`);
     // On a pointer device the suggestion list lines up with the field box: same left edge, never narrower.

@@ -1,14 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
-<!-- Where the default report is reachable: Settings > Technical > Reporting (the reference has no
-     generic reporting app; stock and accounting put their own reports under their apps). -->
 <erp>
-    <menuitem id="technical_reporting_menu" name="Reporting" parent="base.technical_menu" sequence="90"/>
     <record id="action_report_partner_country" model="ir.actions.client">
         <field name="name">Contacts by Country</field>
         <field name="tag">reporting.report</field>
         <field name="params" eval="{'report': ref('report_partner_country')}"/>
     </record>
-    <menuitem id="menu_report_partner_country" name="Contacts by Country"
-              parent="technical_reporting_menu" action="action_report_partner_country" sequence="10"/>
 </erp>
