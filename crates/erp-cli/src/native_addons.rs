@@ -28,6 +28,7 @@ pub static DESCRIPTORS: &[&AddonDescriptor] = &[
     &erp_addon_account_reporting::ADDON,
     &erp_addon_stock::ADDON,
     &erp_addon_stock_account::ADDON,
+    &erp_addon_valuation::ADDON,
     &erp_addon_stock_mail::ADDON,
     &erp_addon_purchase_stock::ADDON,
     &erp_addon_sales_team::ADDON,
@@ -37,11 +38,16 @@ pub static DESCRIPTORS: &[&AddonDescriptor] = &[
 
 /// Expected SQL registrations of native addons; independent of the linked declarations.
 pub static SQL_MANIFESTS: &[&erp_registry::SqlObjectManifest] = &[
+    &erp_addon_account::reconcile::history_guard::MANIFEST,
     &erp_addon_stock::schema_guards::MANIFEST,
     &erp_addon_stock_account::history_guards::MANIFEST,
+    &erp_addon_valuation::MANIFEST,
     &erp_addon_account_reporting::schema::MANIFEST,
 ];
 
 /// Expected lifecycle guards for native addons linked by this host.
-pub static UNINSTALL_MANIFESTS: &[&erp_modules::sql_uninstall::SqlUninstallGuardManifest] =
-    &[&erp_addon_stock_account::uninstall_guard::MANIFEST];
+pub static UNINSTALL_MANIFESTS: &[&erp_modules::sql_uninstall::SqlUninstallGuardManifest] = &[
+    &erp_addon_account::reconcile::history_guard::UNINSTALL,
+    &erp_addon_stock_account::uninstall_guard::MANIFEST,
+    &erp_addon_valuation::lifecycle::MANIFEST,
+];

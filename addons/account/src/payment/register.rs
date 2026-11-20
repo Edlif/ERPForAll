@@ -16,11 +16,11 @@
 //! Refused by name: other currencies, write-offs of a difference, installments, early-payment
 //! discounts and blocked documents.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use erp_sdk::prelude::*;
 use erp_sdk::serde_json::{Value as Json, json};
-use erp_sdk::{Operation, ValueMap};
+use erp_sdk::{Command, Operation, ValueMap};
 
 use crate::moves::AccountMove;
 use crate::reconcile::reconcile_lines;
@@ -426,6 +426,67 @@ fn plan(
     Ok(out)
 }
 
+/// Resolve the company before the wizard row and its relations exist. Only the final
+/// link set determines the date; reads use the same principal as the dialog.
+async fn default_payment_date(
+    tx: &mut Transaction,
+    records: &Records,
+    values: &ValueMap,
+) -> Result<Date> {
+    let env = records.env();
+    let moves = env.records("account.move")?;
+    let mut ids = BTreeSet::new();
+    if let Some(value) = values.get("invoice_ids") {
+        for command in records.commands_from_value(&moves, "invoice_ids", value)? {
+            match command {
+                Command::Set(next) => {
+                    ids = next.into_iter().map(|id| id.get()).collect();
+                }
+                Command::Link(id) => {
+                    ids.insert(id.get());
+                }
+                Command::Clear => ids.clear(),
+                Command::Unlink(id) => {
+                    ids.remove(&id.get());
+                }
+                Command::Create(_) | Command::Update(..) | Command::Delete(_) => {
+                    return Err(Error::validation(
+                        "Choose existing invoice links before defaulting the payment date.",
+                    ));
+                }
+            }
+        }
+    }
+    let company = if ids.is_empty() {
+        // An empty new dialog uses its active company; document-linked dialogs never do.
+        env.company_id()?
+            .ok_or_else(|| Error::validation("Select a company before opening Register Payment."))?
+    } else {
+        let docs = moves.browse(ids)?;
+        let companies = docs.cells(tx, "company_id").await?;
+        let mut unique = BTreeSet::new();
+        for cell in companies {
+            unique.insert(
+                crate::moves::id_cell(Some(&cell), "company_id")?
+                    .ok_or_else(|| Error::validation("A payment document needs a company."))?,
+            );
+        }
+        if unique.len() != 1 {
+            return Err(Error::user(
+                "The documents belong to several companies; register their payments one company at a time.",
+            ));
+        }
+        unique
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::missing("The payment documents are unavailable."))?
+    };
+    let days = erp_addon_base::company_calendar::business_days(tx, env, &[company]).await?;
+    days.get(&company)
+        .map(|day| day.date)
+        .ok_or_else(|| Error::missing(format!("Company {company} is unavailable.")))
+}
+
 #[methods(AccountPaymentRegister, addon = "account")]
 impl AccountPaymentRegister {
     /// The company of the first document and its currency. Read-only (a candidate compute): a
@@ -640,7 +701,7 @@ impl AccountPaymentRegister {
         Ok(())
     }
 
-    /// The payment date is today when the dialog opens.
+    /// The payment date follows the documents' company when the dialog opens.
     #[method(override)]
     async fn default_get(
         this: &RecordSet<AccountPaymentRegister>,
@@ -648,14 +709,60 @@ impl AccountPaymentRegister {
         names: Vec<String>,
         sup: Super,
     ) -> Result<ValueMap> {
-        let mut values: ValueMap = sup.call(tx, this.as_records(), (names.clone(),)).await?;
-        if names.iter().any(|n| n == "payment_date") && !values.contains_key("payment_date") {
-            values.insert(
-                "payment_date".to_owned(),
-                Value::Date(this.env().context_today()?),
-            );
+        let wants_date = names.iter().any(|n| n == "payment_date");
+        let wants_documents = names.iter().any(|n| n == "invoice_ids");
+        let mut requested = names;
+        if wants_date && !wants_documents {
+            requested.push("invoice_ids".to_owned());
+        }
+        let mut values: ValueMap = sup.call(tx, this.as_records(), (requested,)).await?;
+        if wants_date && !values.contains_key("payment_date") {
+            let date = default_payment_date(tx, this.as_records(), &values).await?;
+            values.insert("payment_date".to_owned(), Value::Date(date));
+        }
+        if !wants_documents {
+            values.shift_remove("invoice_ids");
         }
         Ok(values)
+    }
+
+    /// Resolve a missing required date before the document relations are inserted.
+    #[method(override)]
+    async fn create(
+        this: &RecordSet<AccountPaymentRegister>,
+        tx: &mut Transaction,
+        mut vals_list: Vec<RawVals>,
+        sup: Super,
+    ) -> Result<Records> {
+        this.as_records()
+            .check_access(tx, Operation::Create)
+            .await?;
+        for vals in &mut vals_list {
+            if vals.contains("payment_date") {
+                continue;
+            }
+            let env = if let Some(commands) = vals.commands("invoice_ids") {
+                this.env().with_context([(
+                    "default_invoice_ids",
+                    Value::list(commands.iter().map(Command::to_value)),
+                )])
+            } else if let Some(value) = vals.get("invoice_ids") {
+                this.env()
+                    .with_context([("default_invoice_ids", Value::from_cell(value))])
+            } else {
+                this.env().clone()
+            };
+            let model = env.records("account.payment.register")?;
+            let defaults: ValueMap = model
+                .call(tx, "default_get", (vec!["payment_date".to_owned()],))
+                .await?;
+            let defaults = model.vals_from_values(&defaults)?;
+            let date = defaults
+                .get("payment_date")
+                .ok_or_else(|| Error::validation("Choose a payment date."))?;
+            vals.insert("payment_date".into(), date.clone());
+        }
+        sup.call(tx, this.as_records(), (vals_list,)).await
     }
 
     /// Creates and posts the payments, matches each with its documents, and closes the dialog.

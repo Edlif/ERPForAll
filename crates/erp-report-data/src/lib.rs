@@ -13,6 +13,7 @@
 
 mod helpers;
 mod html_images;
+mod precision;
 pub use helpers::report_helpers;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -127,7 +128,9 @@ impl LoadOptions {
 /// Every request of the data stage is one ORM read of its fields for all its records, in `env`:
 /// the caller's environment decides what may be read, and nothing here elevates it. Many2one
 /// values are read as ids, and their targets by the next request. Selection labels are the
-/// declared ones.
+/// declared ones. Literal widget precision names are loaded together once per batch from
+/// `decimal.precision` (`name` and `digits`) with the same caller rights. A missing or rule-hidden
+/// name is a data error; no elevated metadata lookup or missing-name default is used.
 ///
 /// A target
 /// reached any other way (a root, a one2many or many2many) is read with the caller's rights, and
@@ -167,6 +170,16 @@ pub async fn load_with_options(
     options: LoadOptions,
 ) -> Result<RecordStore, DataError> {
     let mut stage = DataStage::new(plan, roots, options.limits, options.document)?;
+    let precisions = match stage.precision_request() {
+        Some(request) => {
+            let names: Vec<_> = request.collect();
+            Some(precision::read(tx, env, &names).await?)
+        }
+        None => None,
+    };
+    if let Some(values) = precisions {
+        stage.supply_precisions(values)?;
+    }
     let names_only: BTreeSet<String> = plan
         .levels()
         .iter()

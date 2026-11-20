@@ -9,10 +9,11 @@ publish = false
 [dependencies]
 erp-sdk.workspace = true
 erp-addon-base.workspace = true
+getrandom.workspace = true
 url = "=2.5.8"
 serde = { workspace = true, features = ["derive"] }
 toml.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
 zeroize.workspace = true
 libc.workspace = true

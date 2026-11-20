@@ -42,6 +42,8 @@ async fn harness() -> (Harness, i64) {
         &erp_addon_account::ADDON,
         &erp_test_models::test_numbering::ADDON,
     ])
+    .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+    .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
     .build()
     .await
     .unwrap();

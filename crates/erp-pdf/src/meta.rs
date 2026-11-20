@@ -2,7 +2,7 @@
 use crate::edit::{Update, caller_text, text, text_object};
 use crate::error::{Result, guard, invalid, malformed};
 use crate::limits::Context;
-use crate::xmp::{self, Description, escape};
+use crate::xmp::{self, BagItem, Description, Form, Property};
 use crate::{Emitter, PdfDate, PdfLimits, graph};
 use lopdf::{Dictionary, Object, StringFormat};
 use std::collections::BTreeMap;
@@ -32,17 +32,17 @@ pub enum MetadataField {
     /// Info `ModDate`, XMP `xmp:ModifyDate`.
     ModDate,
 }
-const ALL: [MetadataField; 8] = [
-    MetadataField::Title,
-    MetadataField::Author,
-    MetadataField::Subject,
-    MetadataField::Keywords,
-    MetadataField::Creator,
-    MetadataField::Producer,
-    MetadataField::CreationDate,
-    MetadataField::ModDate,
-];
 impl MetadataField {
+    pub(crate) const ALL: [Self; 8] = [
+        Self::Title,
+        Self::Author,
+        Self::Subject,
+        Self::Keywords,
+        Self::Creator,
+        Self::Producer,
+        Self::CreationDate,
+        Self::ModDate,
+    ];
     fn info(self) -> &'static str {
         [
             "Title",
@@ -55,7 +55,7 @@ impl MetadataField {
             "ModDate",
         ][self as usize]
     }
-    fn xmp(self) -> (&'static str, &'static str, &'static str) {
+    pub(crate) fn xmp(self) -> (&'static str, &'static str, &'static str) {
         [
             (DC, "dc", "title"),
             (DC, "dc", "creator"),
@@ -137,7 +137,7 @@ pub fn metadata(input: &[u8], limits: &PdfLimits) -> Result<Metadata> {
         let mut info = BTreeMap::new();
         if let Ok(v) = u.doc.trailer.get(b"Info") {
             let d = graph::dict(&u.doc, v, l)?;
-            for f in ALL {
+            for f in MetadataField::ALL {
                 if let Ok(v) = d.get(f.info().as_bytes()) {
                     let s = graph::resolve(&u.doc, v, l)?.as_str().map_err(|e| {
                         malformed(format!("PDF Info {} must be a string", f.info())).source(e)
@@ -159,13 +159,14 @@ pub fn metadata(input: &[u8], limits: &PdfLimits) -> Result<Metadata> {
         let mut pdfa = None;
         if let Some(p) = &packet {
             let doc = xmp::parse(p, l)?;
-            for f in ALL {
+            let properties = xmp::Packet::new(&doc, l)?;
+            for f in MetadataField::ALL {
                 let (ns, _, local) = f.xmp();
-                if let Some(v) = xmp::read(&doc, ns, local)? {
+                if let Some(v) = properties.read(ns, local)? {
                     fields.insert(f, v);
                 }
             }
-            pdfa = xmp::pdfa(&doc)?;
+            pdfa = properties.pdfa()?;
         }
         Ok(Metadata {
             info,
@@ -176,8 +177,13 @@ pub fn metadata(input: &[u8], limits: &PdfLimits) -> Result<Metadata> {
     })
 }
 /// Write the given standard fields to Info and XMP as an incremental update: the original bytes
-/// are emitted unchanged as the prefix and unrelated XMP properties are kept verbatim.
-/// Unsafe XMP (DTD, entities, malformed, nested or structured standard properties) is refused.
+/// are emitted unchanged as the prefix. In the XMP packet a field is rewritten where it stands
+/// (its element or attribute on the selected document subject, across outer RDF roots) and added
+/// when absent; every other byte of the packet is kept, including a same-named field inside
+/// another property's value. Titles/subjects update x-default and preserve translations;
+/// authors replace the list with one entry, refusing removal of qualified later entries. Conflicting
+/// standard properties or PDF/A identification on the selected subject fail before emission, even
+/// when the edit touches a different field. Unsafe XMP (DTD, entities, malformed) is refused.
 /// Discard all emitted bytes on error.
 pub fn update_metadata(
     input: &[u8],
@@ -192,15 +198,16 @@ pub fn update_metadata(
         let context = Context::new(limits);
         let l = &context;
         let mut u = Update::load(input, l)?;
-        apply(&mut u, update, &[], l)?;
+        apply(&mut u, update, &[], None, l)?;
         u.save(input, l, emit)
     })
 }
-/// Apply `update` plus any extra XMP descriptions in one packet revision.
+/// Apply `update`, any extra XMP descriptions and a bag item in one packet revision.
 pub(crate) fn apply(
     u: &mut Update,
     update: &MetadataUpdate,
     extra: &[Description<'_>],
+    bag: Option<&BagItem<'_>>,
     l: &Context<'_>,
 ) -> Result<()> {
     if !update.0.is_empty() {
@@ -234,39 +241,27 @@ pub(crate) fn apply(
     }
     let old = u.xmp(l)?;
     let old = old.as_deref().unwrap_or(xmp::EMPTY);
-    let remove: Vec<_> = update
+    let set: Vec<_> = update
         .0
-        .keys()
-        .map(|f| {
-            let (ns, _, local) = f.xmp();
-            (ns, local)
+        .iter()
+        .map(|(f, v)| {
+            let (ns, prefix, local) = f.xmp();
+            Property {
+                ns,
+                prefix,
+                local,
+                form: match f {
+                    MetadataField::Title | MetadataField::Subject => Form::LangAlt,
+                    MetadataField::Author => Form::Seq,
+                    _ => Form::Simple,
+                },
+                value: match v {
+                    Value::Text(s) => s.clone(),
+                    Value::Date(d) => d.to_xmp_string(),
+                },
+            }
         })
         .collect();
-    let mut body = String::new();
-    for (f, v) in &update.0 {
-        let (_, prefix, local) = f.xmp();
-        let value = match v {
-            Value::Text(s) => escape(s),
-            Value::Date(d) => d.to_xmp_string(),
-        };
-        let inner = match f {
-            MetadataField::Title | MetadataField::Subject => {
-                format!("<rdf:Alt><rdf:li xml:lang=\"x-default\">{value}</rdf:li></rdf:Alt>")
-            }
-            MetadataField::Author => format!("<rdf:Seq><rdf:li>{value}</rdf:li></rdf:Seq>"),
-            _ => value,
-        };
-        body.push_str(&format!("<{prefix}:{local}>{inner}</{prefix}:{local}>"));
-    }
-    let mut add = Vec::new();
-    let ns = [("dc", DC), ("xmp", XMP), ("pdf", PDF)];
-    if !body.is_empty() {
-        add.push(Description { ns: &ns, body });
-    }
-    add.extend(extra.iter().map(|d| Description {
-        ns: d.ns,
-        body: d.body.clone(),
-    }));
-    let packet = xmp::edit(old, &remove, &add, l)?;
+    let packet = xmp::edit(old, &set, extra, bag, l)?;
     u.set_xmp(packet, l)
 }

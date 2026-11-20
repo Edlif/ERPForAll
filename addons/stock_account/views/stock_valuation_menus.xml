@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+    <record id="action_report_stock_valuation" model="ir.actions.client">
+        <field name="name">Stock Valuation</field>
+        <field name="tag">reporting.report</field>
+        <field name="params" eval="{'report': ref('stock.report_stock_position')}"/>
+    </record>
+    <menuitem id="menu_report_stock_valuation" name="Stock Valuation" parent="stock.menu_stock_reporting"
+              action="action_report_stock_valuation" groups="stock.group_stock_manager" sequence="25"/>
+</erp>

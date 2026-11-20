@@ -18,8 +18,11 @@
 //! amounts), not yet by the line triggers. Developer page.
 
 mod apply;
+mod coverage;
+pub mod history_guard;
 mod lines;
 pub(crate) mod plan;
+mod removal;
 
 pub use apply::{reconcile_lines, unreconcile_partials};
 

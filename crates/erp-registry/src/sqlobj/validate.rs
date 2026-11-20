@@ -207,7 +207,7 @@ pub(crate) fn describe_dep(dep: &SqlDep) -> String {
     }
 }
 
-/// Map the general trigger shape onto one of the four closed variants (contract §2), or name the
+/// Map the general trigger shape onto one of the closed variants (contract §2), or name the
 /// violated rule.
 fn check_trigger(who: Who<'_>, t: &SqlTriggerDecl) -> Result<SqlTriggerShape> {
     check_ident(who, "trigger name", t.name)?;
@@ -246,9 +246,10 @@ fn shape(t: &SqlTriggerDecl) -> std::result::Result<SqlTriggerShape, &'static st
             );
         }
         (SqlTiming::Before, SqlEvent::Insert, None, true) => SqlTriggerShape::BeforeInsertRow,
+        (SqlTiming::Before, SqlEvent::Delete, None, true) => SqlTriggerShape::BeforeDeleteRow,
         (SqlTiming::Before, ..) => {
             return Err(
-                "BEFORE triggers are supported only as BEFORE INSERT FOR EACH ROW or \
+                "BEFORE triggers are supported only as BEFORE INSERT/DELETE FOR EACH ROW or \
                         BEFORE TRUNCATE FOR EACH STATEMENT",
             );
         }

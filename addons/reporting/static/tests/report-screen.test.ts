@@ -244,6 +244,64 @@ test("a date preset is sent with the report's date mode", async () => {
   expect(r.calls.at(-1)?.args).toEqual({ options: wireOptions({ date: { mode: "range", preset: "last_month", from: null, to: null } }) });
 });
 
+/// (partial: historical open-item selection is scoped to providers that support it)
+test("open-item selection at period end preserves provider scope when enabled and cleared", async () => {
+  const defaults = wireOptions({ provider: { epoch: "scope-1", unreconciled: false } });
+  const filters = wireFilters({ provider: "account_reporting.partner_ledger", unfold_all: false, hide_zero: "never" });
+  const r = mount(standard({
+    erp_report_options: args => optionsAnswer((args["previous"] || defaults) as Record<string, unknown>, filters),
+    erp_report_lines: args => linesAnswer([top()], args["options"] as Record<string, unknown>),
+  }));
+  await settle();
+  for (const enabled of [true, false]) {
+    click(r.env.host.querySelector("[data-filter=options] .report-filter-button"));
+    const input = r.env.host.querySelector<HTMLInputElement>('input[name="unreconciled"]');
+    expect(input?.labels?.[0]?.textContent).toBe("Unreconciled at period end");
+    expect(input?.checked).toBe(!enabled);
+    input!.click();
+    await settle();
+    expect(r.calls.at(-1)).toMatchObject({ method: "erp_report_lines", args: { options: {
+      provider: { epoch: "scope-1", unreconciled: enabled }
+    } } });
+    expect(screen!.captureState()).toMatchObject({ options: { provider: { unreconciled: enabled } } });
+  }
+});
+
+test("reports without an open-item provider option omit the reconciliation control", async () => {
+  const r = mount(standard());
+  await settle();
+  expect(r.env.host.querySelector('input[name="unreconciled"]')).toBeNull();
+});
+
+test.each(["open", true])("keeps another provider's reconciliation options private", async unreconciled => {
+  const options = wireOptions({ provider: { unreconciled } });
+  const filters = wireFilters({ provider: "thirdparty.other", unfold_all: false, hide_zero: "never" });
+  const r = mount(standard({
+    erp_report_options: () => optionsAnswer(options, filters),
+    erp_report_lines: () => linesAnswer([top()], options)
+  }));
+  await settle();
+  expect(r.env.host.querySelector(".report-table")).not.toBeNull();
+  expect(r.env.host.querySelector("[data-filter=options]")).toBeNull();
+});
+
+test("invalid Partner Ledger line options show Retry and recover", async () => {
+  let malformed = true;
+  const options = wireOptions({ provider: { unreconciled: false } });
+  const filters = wireFilters({ provider: "account_reporting.partner_ledger" });
+  const r = mount(standard({
+    erp_report_options: () => optionsAnswer(options, filters),
+    erp_report_lines: () => linesAnswer([top()], malformed ? wireOptions({ provider: { unreconciled: "open" } }) : options)
+  }));
+  await settle();
+  expect(r.env.host.querySelector("[role=alert]")?.textContent).toContain("unreconciled");
+  malformed = false;
+  click([...r.env.host.querySelectorAll("button")].find(b => b.textContent === "Retry"));
+  await settle();
+  expect(r.env.host.querySelector(".report-table")).not.toBeNull();
+  expect(r.env.host.querySelector("[role=alert]")).toBeNull();
+});
+
 test("ledger date changes and Refresh renew scoped options before fetching lines", async () => {
   let epoch = 0;
   const r = mount(standard({

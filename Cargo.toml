@@ -21,6 +21,7 @@ members = [
     "addons/product_expiry",
     "addons/stock_sms",
     "addons/stock_account",
+    "addons/valuation",
     "addons/stock_landed_costs",
     "addons/purchase_stock",
     "addons/sale_stock",
@@ -115,6 +116,7 @@ erp-addon-stock_delivery = { path = "addons/stock_delivery" }
 erp-addon-product_expiry = { path = "addons/product_expiry" }
 erp-addon-stock_sms = { path = "addons/stock_sms" }
 erp-addon-stock_account = { path = "addons/stock_account" }
+erp-addon-valuation = { path = "addons/valuation" }
 erp-addon-stock_landed_costs = { path = "addons/stock_landed_costs" }
 erp-addon-purchase_stock = { path = "addons/purchase_stock" }
 erp-addon-sale_stock = { path = "addons/sale_stock" }

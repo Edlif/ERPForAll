@@ -254,3 +254,192 @@ fn merged_download_of_archival_invoices_is_plain() {
     assert!(m.pdfa.is_none() && m.packet.is_none());
     assert!(embedded_files(&merged, &l).unwrap().is_empty());
 }
+
+// Original synthetic packets exercise shapes not present in the producer samples.
+#[test]
+fn existing_schema_bags_accept_aliases_and_refuse_ambiguous_or_repeated_schemas() {
+    const EXT: &str = "http://www.aiim.org/pdfa/ns/extension/";
+    const SCHEMA: &str = "http://www.aiim.org/pdfa/ns/schema#";
+    const FX: &str = "urn:factur-x:pdfa:CrossIndustryDocument:invoice:1p0#";
+    let l = PdfLimits::default();
+    let xml = cii("urn:cen.eu:en16931:2017");
+    let schema = |body: &str| format!("<e:schemas xmlns:e='{EXT}'>{body}</e:schemas>");
+    for inner in [
+        "<rdf:Bag/>",
+        "<rdf:Bag></rdf:Bag>",
+        "<q:Bag xmlns:q='http://www.w3.org/1999/02/22-rdf-syntax-ns#'/>",
+    ] {
+        let packet = packet(3, &schema(inner));
+        let input = with_xmp(&["A"], &packet, dictionary! {});
+        let out = collect(|e| {
+            einvoice(&input, &xml, &opts(EInvoiceName::FacturX, &l), &l, e).map(|_| ())
+        })
+        .unwrap();
+        assert!(out.starts_with(&input));
+        let m = metadata(&out, &l).unwrap();
+        let p = m.packet.unwrap();
+        let d = roxmltree::Document::parse(&p).unwrap();
+        assert_eq!(
+            d.descendants()
+                .filter(|n| n.has_tag_name((EXT, "schemas")))
+                .count(),
+            1
+        );
+        assert_eq!(fx(&p, "DocumentFileName").as_deref(), Some("factur-x.xml"));
+        assert_eq!(m.pdfa.unwrap().conformance.as_deref(), Some("B"));
+    }
+    let existing = schema(&format!(
+        "<rdf:Bag><rdf:li rdf:parseType='Resource' xmlns:s='{SCHEMA}' s:namespaceURI='{FX}'/></rdf:Bag>"
+    ));
+    for (body, kind, message) in [
+        (
+            schema("<rdf:Seq/>"),
+            PdfErrorKind::Malformed,
+            "PDF XMP extension schemas must hold one rdf:Bag",
+        ),
+        (
+            format!("{}{}", schema("<rdf:Bag/>"), schema("<rdf:Bag/>")),
+            PdfErrorKind::Malformed,
+            "PDF XMP ambiguous extension schema containers",
+        ),
+        (
+            existing,
+            PdfErrorKind::InvalidOptions,
+            "PDF input already carries Factur-X metadata",
+        ),
+    ] {
+        let input = with_xmp(&["A"], &packet(3, &body), dictionary! {});
+        let mut emitted = 0;
+        let err = einvoice(
+            &input,
+            &xml,
+            &opts(EInvoiceName::FacturX, &l),
+            &l,
+            &mut |b| {
+                emitted += b.len();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), kind);
+        assert_eq!(err.to_string(), message);
+        assert_eq!(emitted, 0);
+    }
+}
+
+#[test]
+fn contradictory_or_ambiguous_schema_resources_are_malformed() {
+    let l = PdfLimits::default();
+    let xml = cii("urn:cen.eu:en16931:2017");
+    let o = opts(EInvoiceName::FacturX, &l);
+    for (item, message) in [
+        (
+            "<rdf:li rdf:parseType='Resource'>stray<s:namespaceURI>urn:other</s:namespaceURI></rdf:li>",
+            "PDF XMP mixed structured value",
+        ),
+        (
+            "<rdf:li rdf:resource='urn:else' rdf:parseType='Resource'><s:namespaceURI>urn:other</s:namespaceURI></rdf:li>",
+            "PDF XMP schema resource has conflicting RDF attributes",
+        ),
+        (
+            "<rdf:li rdf:parseType='Resource'><s:schema>Missing namespace</s:schema></rdf:li>",
+            "PDF XMP schema lacks namespaceURI",
+        ),
+        (
+            "<rdf:li rdf:parseType='Resource' s:namespaceURI='urn:first'><s:namespaceURI>urn:second</s:namespaceURI></rdf:li>",
+            "PDF XMP schema namespaceURI is ambiguous",
+        ),
+    ] {
+        let body = format!(
+            "<e:schemas xmlns:e='http://www.aiim.org/pdfa/ns/extension/' xmlns:s='http://www.aiim.org/pdfa/ns/schema#'><rdf:Bag>{item}</rdf:Bag></e:schemas>"
+        );
+        let input = with_xmp(&["A"], &packet(3, &body), dictionary! {});
+        let mut emitted = 0;
+        let e = einvoice(&input, &xml, &o, &l, &mut |b| {
+            emitted += b.len();
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(e.kind(), PdfErrorKind::Malformed);
+        assert_eq!(e.to_string(), message);
+        assert_eq!(emitted, 0);
+    }
+}
+
+fn extension_schema_item(item: &str) -> String {
+    format!(
+        "<e:schemas xmlns:e='http://www.aiim.org/pdfa/ns/extension/' xmlns:s='http://www.aiim.org/pdfa/ns/schema#'><rdf:Bag>{item}</rdf:Bag></e:schemas>"
+    )
+}
+
+fn refuse_nested_schema(item: &str, message: &str) {
+    let l = PdfLimits::default();
+    let input = with_xmp(
+        &["A"],
+        &packet(3, &extension_schema_item(item)),
+        dictionary! {},
+    );
+    let xml = cii("urn:cen.eu:en16931:2017");
+    let mut emitted = 0;
+    let error = einvoice(
+        &input,
+        &xml,
+        &opts(EInvoiceName::FacturX, &l),
+        &l,
+        &mut |bytes| {
+            emitted += bytes.len();
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), PdfErrorKind::Malformed);
+    assert_eq!(error.to_string(), message);
+    assert_eq!(emitted, 0);
+}
+
+#[test]
+fn nested_schema_refuses_an_outer_namespace_without_output() {
+    refuse_nested_schema(
+        "<rdf:li s:namespaceURI='urn:outer'><rdf:Description><s:namespaceURI>urn:inner</s:namespaceURI></rdf:Description></rdf:li>",
+        "PDF XMP schema namespaceURI is ambiguous",
+    );
+}
+
+#[test]
+fn nested_schema_refuses_description_parse_type_without_output() {
+    refuse_nested_schema(
+        "<rdf:li><rdf:Description rdf:parseType='Resource'><s:namespaceURI>urn:inner</s:namespaceURI></rdf:Description></rdf:li>",
+        "PDF XMP schema item must be a resource",
+    );
+}
+
+#[test]
+fn nested_schema_preserves_supported_namespace_forms() {
+    let limits = PdfLimits::default();
+    let xml = cii("urn:cen.eu:en16931:2017");
+    for description in [
+        "<rdf:Description s:namespaceURI='urn:other'/>",
+        "<rdf:Description><s:namespaceURI>urn:other</s:namespaceURI></rdf:Description>",
+    ] {
+        let item = format!("<rdf:li>{description}</rdf:li>");
+        let body = extension_schema_item(&item);
+        let input = with_xmp(&["A"], &packet(3, &body), dictionary! {});
+        let output = collect(|emit| {
+            einvoice(
+                &input,
+                &xml,
+                &opts(EInvoiceName::FacturX, &limits),
+                &limits,
+                emit,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        let packet = metadata(&output, &limits).unwrap().packet.unwrap();
+        assert!(packet.contains(&item), "{packet}");
+        assert_eq!(
+            fx(&packet, "DocumentFileName").as_deref(),
+            Some("factur-x.xml")
+        );
+    }
+}

@@ -107,7 +107,8 @@ impl HelperProgress {
 }
 /// The reads of one batch, in order. Ask for [`DataStage::request`], run it, hand the records to
 /// [`DataStage::supply`], and repeat until there is no request; [`DataStage::finish`] gives the
-/// store. The number of requests is at most the plan's levels, whatever the batch size. An error
+/// store. Also answer [`DataStage::precision_request`] once when present. Record requests are
+/// bounded by plan levels, plus one precision lookup, whatever the batch size. An error
 /// ends the stage.
 ///
 /// ```
@@ -152,6 +153,7 @@ pub struct DataStage<'p> {
     helper_results: Vec<crate::records::HelperResults>,
     limits: ReportLimits,
     helper_bytes: usize,
+    precisions: Option<BTreeMap<String, u8>>,
     html_images: crate::html_images::HtmlImages,
 }
 impl<'p> DataStage<'p> {
@@ -168,6 +170,12 @@ impl<'p> DataStage<'p> {
         limits: ReportLimits,
         document: Limits,
     ) -> Result<Self, ReportError> {
+        if plan.precision_names().len() > limits.data_records {
+            return Err(ReportError::Limit {
+                name: "data_records",
+                maximum: limits.data_records,
+            });
+        }
         let mut held = vec![Vec::new(); plan.paths.len()];
         let mut given = BTreeSet::new();
         for (name, ids) in roots {
@@ -206,6 +214,7 @@ impl<'p> DataStage<'p> {
             helper_results: Vec::new(),
             limits,
             helper_bytes: 0,
+            precisions: (plan.precision_names().len() == 0).then(BTreeMap::new),
             html_images: crate::html_images::HtmlImages::default(),
         };
         stage.schedule()?;
@@ -230,7 +239,16 @@ impl<'p> DataStage<'p> {
                         .filter(|id| asked.insert(*id)),
                 );
             }
-            let total: usize = self.asked.values().map(BTreeSet::len).sum();
+            let total = self
+                .asked
+                .values()
+                .try_fold(plan.precision_names().len(), |total, ids| {
+                    total.checked_add(ids.len())
+                })
+                .ok_or(ReportError::Limit {
+                    name: "data_records",
+                    maximum: self.maximum,
+                })?;
             if total > self.maximum {
                 return Err(ReportError::Limit {
                     name: "data_records",
@@ -525,13 +543,64 @@ impl<'p> DataStage<'p> {
         });
         Ok(())
     }
+    /// The names for one set-based precision read, in name order. None means no read is pending.
+    /// The caller reads `decimal.precision` name/digits under the printing user's rights.
+    pub fn precision_request(&self) -> Option<impl ExactSizeIterator<Item = &str>> {
+        self.precisions
+            .is_none()
+            .then(|| self.plan.precision_names())
+    }
+    /// Supply the complete precision answer atomically. Missing, repeated, duplicate or extra
+    /// names are [`ReportError::Data`] errors. An invalid answer leaves the request pending.
+    pub fn supply_precisions(
+        &mut self,
+        values: Vec<crate::LoadedPrecision>,
+    ) -> Result<(), ReportError> {
+        if self.precisions.is_some() {
+            return Err(data("no decimal precision read is pending"));
+        }
+        let requested: BTreeSet<_> = self.plan.precision_names().collect();
+        let mut precisions = BTreeMap::new();
+        for value in values {
+            if !requested.contains(value.name.as_str()) {
+                return Err(data(format!(
+                    "decimal precision `{}` was not requested",
+                    value.name
+                )));
+            }
+            if precisions.contains_key(&value.name) {
+                return Err(data(format!(
+                    "decimal precision `{}` was supplied twice",
+                    value.name
+                )));
+            }
+            precisions.insert(value.name, value.digits);
+        }
+        for name in requested {
+            if !precisions.contains_key(name) {
+                return Err(crate::precision::missing(name));
+            }
+        }
+        self.precisions = Some(precisions);
+        self.reads += 1;
+        Ok(())
+    }
     /// The next auxiliary HTML image projection, after the declared field reads. No I/O occurs here.
     /// Distinct model/field groups and the total records/bytes are bounded by ReportLimits.
     pub fn image_request(&mut self) -> Result<Option<crate::HtmlImageRequest>, ReportError> {
         if !self.pending.is_empty() {
             return Err(data("field reads must complete before HTML images"));
         }
-        let ordinary = self.asked.values().map(BTreeSet::len).sum();
+        let ordinary = self
+            .asked
+            .values()
+            .try_fold(self.plan.precision_names().len(), |total, ids| {
+                total.checked_add(ids.len())
+            })
+            .ok_or(ReportError::Limit {
+                name: "data_records",
+                maximum: self.maximum,
+            })?;
         self.html_images.prepare(self.limits, ordinary)?;
         Ok(self.html_images.request())
     }
@@ -574,7 +643,7 @@ impl<'p> DataStage<'p> {
         self.html_images
             .supply(Vec::new(), Some(reason), self.limits, self.document)
     }
-    /// The reads answered so far.
+    /// The record reads and precision lookup answered so far; excludes helper calls.
     pub fn reads(&self) -> usize {
         self.reads
     }
@@ -590,10 +659,18 @@ impl<'p> DataStage<'p> {
         if self.helper_request()?.is_some() {
             return Err(data("a report helper answer is still pending"));
         }
+        if let Some(mut names) = self.precision_request()
+            && let Some(name) = names.next()
+        {
+            return Err(crate::precision::missing(name));
+        }
         if self.image_request()?.is_some() {
             return Err(data("an HTML image read is still pending"));
         }
         let mut store = RecordStore::new();
+        store.precisions = self
+            .precisions
+            .ok_or_else(|| data("decimal precision answer is still pending"))?;
         store.html_images = self.html_images;
         store.helpers = self.helper_results;
         for (model, records) in self.loaded {

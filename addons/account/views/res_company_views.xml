@@ -33,6 +33,7 @@
             <field name="account_default_pos_receivable_account_id" domain="[('company_ids', 'parent_of', id)]"/>
           </group>
           <group string="Accounting options">
+            <field name="cost_method" groups="base.group_system"/>
             <field name="tax_calculation_rounding_method"/>
             <field name="anglo_saxon_accounting"/>
             <field name="expects_chart_of_accounts"/>

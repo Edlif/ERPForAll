@@ -59,7 +59,6 @@ pub(crate) mod owner {
     pub const OVERLAY: &str = "a later release";
     pub const DEST: &str = "a later release";
     pub const FILTERS: &str = "a later release";
-    pub const XMP: &str = "a later release";
     pub const ARCHIVAL: &str = "a later release";
 }
 /// A feature outside the profile that `owner` (one of [`owner`]) will add.

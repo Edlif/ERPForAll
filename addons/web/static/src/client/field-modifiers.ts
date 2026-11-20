@@ -6,13 +6,18 @@ import { ClientError } from "./transport.js";
 /** Evaluate policy using one record snapshot. Failures block validation and are returned to the owner. */
 export function effectiveField(field: Field, fields: readonly Field[], values: Readonly<Record<string, unknown>>): Field {
   if (!field.modifiers) return field;
-  const names: Record<string, ExprValue> = Object.create(null);
-  for (const item of fields) names[item.name] = recordExpressionValue(item, values[item.name]);
   const effective = { ...field };
   for (const key of ["readonly", "required", "invisible"] as const) {
     const expression = field.modifiers[key];
     if (!expression) continue;
-    try { effective[key] = isTruthy(evalAst(expression, createContext({ names }))) || key === "readonly" && field.readonly; }
+    try {
+      const requested = new Set(expression.nodes.filter(node => node.kind === "name").map(node => node.name));
+      const names: Record<string, ExprValue> = Object.create(null);
+      for (const item of fields) {
+        if (requested.has(item.name)) names[item.name] = recordExpressionValue(item, values[item.name]);
+      }
+      effective[key] = isTruthy(evalAst(expression, createContext({ names }))) || key === "readonly" && field.readonly;
+    }
     catch (error) { throw new ClientError("validation", `Cannot evaluate ${key} for ${field.label}: ${error instanceof Error ? error.message : String(error)}`); }
   }
   if (field.name === "id") effective.readonly = true;

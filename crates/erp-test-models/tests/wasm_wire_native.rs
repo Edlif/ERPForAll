@@ -243,6 +243,8 @@ async fn harness() -> Harness {
         &layer::ADDON,
         &upper::ADDON,
     ])
+    .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+    .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
     .build()
     .await
     .unwrap()

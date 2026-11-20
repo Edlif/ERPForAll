@@ -8,7 +8,7 @@
 erp_sdk::addon!(
     name = "stock_account",
     exact_only = true,
-    depends = ["stock", "account", "reporting"]
+    depends = ["base", "stock", "account", "reporting"]
 );
 
 pub mod history_guards;
@@ -21,6 +21,8 @@ pub mod valuation_03_state;
 pub mod valuation_04_layer;
 mod valuation_guards;
 
+mod cost_book;
+mod cost_policy;
 mod issue_preview;
 mod report_value;
 

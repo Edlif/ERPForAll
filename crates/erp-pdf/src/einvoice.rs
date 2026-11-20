@@ -4,16 +4,17 @@
 //! incremental update.
 use crate::attach::{Duplicate, EmbeddedFileOptions, Relationship, embed};
 use crate::edit::{Update, caller_text};
-use crate::error::{PdfError, Result, guard, invalid, owner, refused, unsupported};
+use crate::error::{PdfError, Result, guard, invalid, refused};
 use crate::limits::Context;
 use crate::meta::{MetadataUpdate, apply};
-use crate::xmp::{self, Description};
+use crate::xmp::{self, BagItem, Description, Packet};
 use crate::{Emitter, Limit, PdfDate, PdfErrorKind, PdfLimits};
 
 const FX: &str = "urn:factur-x:pdfa:CrossIndustryDocument:invoice:1p0#";
 const CII: &str = "urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100";
 const RAM: &str =
     "urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100";
+const PROPERTY: &str = "http://www.aiim.org/pdfa/ns/property#";
 
 /// Factur-X / ZUGFeRD profile, taken from the XML guideline identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,9 +173,10 @@ fn property(name: &str, kind: &str, about: &str) -> String {
 ///
 /// The input must declare `pdfaid:part` 3; its `pdfaid` level, Info and other XMP properties are
 /// kept, so Info and XMP stay equal. `fx:ConformanceLevel` and `AFRelationship` follow the XML
-/// profile. Encrypted and signed inputs and existing Factur-X data or PDF/A extension schemas are
-/// refused. Structural success is not a veraPDF or Factur-X validator verdict. Discard all
-/// emitted bytes on error.
+/// profile. The Factur-X extension schema joins the input's `pdfaExtension:schemas` bag when it
+/// has one, whose entries stay byte for byte. Encrypted and signed inputs and existing Factur-X
+/// data are refused. Structural success is not a veraPDF or Factur-X validator verdict. Discard
+/// all emitted bytes on error.
 pub fn einvoice(
     input: &[u8],
     xml: &[u8],
@@ -202,7 +204,8 @@ pub fn einvoice(
             .xmp(l)?
             .ok_or_else(|| conformance("input has no XMP metadata"))?;
         let doc = xmp::parse(&packet, l)?;
-        match xmp::pdfa(&doc)? {
+        let packet_view = Packet::new(&doc, l)?;
+        match packet_view.pdfa()? {
             Some(id) if id.part == 3 => {}
             Some(id) => {
                 return Err(conformance(&format!(
@@ -212,12 +215,8 @@ pub fn einvoice(
             }
             None => return Err(conformance("input declares no PDF/A part")),
         }
-        if xmp::uses(&doc, FX) {
+        if packet_view.has_namespace(FX) || packet_view.declares_schema(FX)? {
             return Err(invalid("PDF input already carries Factur-X metadata"));
-        }
-        if xmp::uses(&doc, xmp::EXTENSION) {
-            // shortcut: no merge into an existing extension-schema bag; add it when an input needs it.
-            return Err(unsupported("existing PDF/A extension schemas", owner::XMP));
         }
         drop(doc);
         let file = options.name.file();
@@ -233,19 +232,15 @@ pub fn einvoice(
                 level.as_str()
             ),
         };
-        let schema = Description {
-            ns: &[
-                ("pdfaExtension", xmp::EXTENSION),
-                ("pdfaSchema", "http://www.aiim.org/pdfa/ns/schema#"),
-                ("pdfaProperty", "http://www.aiim.org/pdfa/ns/property#"),
-            ],
-            body: format!(
-                "<pdfaExtension:schemas><rdf:Bag><rdf:li rdf:parseType=\"Resource\">\
+        // One schema entry; it declares its own prefixes so it is valid in any existing bag.
+        let entry = |declarations: &str| {
+            format!(
+                "<rdf:li{declarations} rdf:parseType=\"Resource\">\
                  <pdfaSchema:schema>Factur-X PDFA Extension Schema</pdfaSchema:schema>\
                  <pdfaSchema:namespaceURI>{FX}</pdfaSchema:namespaceURI>\
                  <pdfaSchema:prefix>fx</pdfaSchema:prefix>\
                  <pdfaSchema:property><rdf:Seq>{}{}{}{}</rdf:Seq></pdfaSchema:property>\
-                 </rdf:li></rdf:Bag></pdfaExtension:schemas>",
+                 </rdf:li>",
                 property(
                     "DocumentFileName",
                     "Text",
@@ -258,9 +253,29 @@ pub fn einvoice(
                     "Text",
                     "Profile of the embedded invoice XML"
                 ),
-            ),
+            )
         };
-        apply(&mut u, &MetadataUpdate::new(), &[fx, schema], l)?;
+        let schema = BagItem {
+            ns: xmp::EXTENSION,
+            local: "schemas",
+            item: entry(&format!(
+                " xmlns:rdf=\"{}\" xmlns:pdfaSchema=\"{}\" xmlns:pdfaProperty=\"{PROPERTY}\"",
+                xmp::RDF,
+                xmp::SCHEMA
+            )),
+            absent: Description {
+                ns: &[
+                    ("pdfaExtension", xmp::EXTENSION),
+                    ("pdfaSchema", xmp::SCHEMA),
+                    ("pdfaProperty", PROPERTY),
+                ],
+                body: format!(
+                    "<pdfaExtension:schemas><rdf:Bag>{}</rdf:Bag></pdfaExtension:schemas>",
+                    entry("")
+                ),
+            },
+        };
+        apply(&mut u, &MetadataUpdate::new(), &[fx], Some(&schema), l)?;
         u.save(input, l, emit)?;
         Ok(level)
     })

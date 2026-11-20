@@ -226,6 +226,7 @@ fn inventory_addons_registry_builder() {
     let all = all_addons();
     let registry = Harness::builder(all.iter().copied())
         .require_sql_objects([
+            &erp_addon_account::reconcile::history_guard::MANIFEST,
             &erp_addon_stock::schema_guards::MANIFEST,
             &erp_addon_stock_account::history_guards::MANIFEST,
         ])
@@ -241,6 +242,7 @@ fn inventory_addons_registry_order_independent_of_input_order() {
     reversed.reverse();
     let registry = Harness::builder(reversed.iter().copied())
         .require_sql_objects([
+            &erp_addon_account::reconcile::history_guard::MANIFEST,
             &erp_addon_stock::schema_guards::MANIFEST,
             &erp_addon_stock_account::history_guards::MANIFEST,
         ])
@@ -294,6 +296,7 @@ async fn inventory_addons_testkit_harness_install() {
     let all = all_addons();
     let h = Harness::builder(all.iter().copied())
         .require_sql_objects([
+            &erp_addon_account::reconcile::history_guard::MANIFEST,
             &erp_addon_stock::schema_guards::MANIFEST,
             &erp_addon_stock_account::history_guards::MANIFEST,
         ])

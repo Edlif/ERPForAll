@@ -2057,9 +2057,7 @@ fn classify(error: Error, debug: DebugInfo) -> Attempt {
         }
         cause = current.source();
     }
-    let retryable = error.is_superseded()
-        || (error.kind() == ErrorKind::Concurrency
-            && matches!(error.sqlstate(), Some("40001" | "40P01")));
+    let retryable = error.is_superseded() || error.retries_transaction();
     if retryable {
         Attempt::Retry(error)
     } else {

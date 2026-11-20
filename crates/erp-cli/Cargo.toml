@@ -39,6 +39,7 @@ erp-addon-sale.workspace = true
 erp-addon-reporting.workspace = true
 erp-addon-account-reporting.workspace = true
 erp-addon-stock_account.workspace = true
+erp-addon-valuation.workspace = true
 erp-server.workspace = true
 # `erp report-worker`: the render worker the report pool starts
 erp-report-typst.workspace = true

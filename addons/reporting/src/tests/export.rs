@@ -128,6 +128,7 @@ fn a_request_has_exactly_report_options_and_format() {
 #[test]
 fn rows_over_the_setting_are_refused_by_name() {
     let bounds = Bounds {
+        max_filter_source_rows: 1000,
         max_load_more_limit: 500,
         max_unfold_depth: 8,
         max_screen_lines: 10_000,

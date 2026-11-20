@@ -1103,9 +1103,10 @@ impl OrmBuilder {
 }
 
 /// Retried in [`Orm::run`]: serialization failures and deadlocks. `55P03` (lock not
-/// available) is not: it answers a caller who asked not to wait.
+/// available) normally answers the caller who asked not to wait. A statement that explicitly
+/// opts its detected lock timeout into retry can also restart the entire unit.
 pub(crate) fn is_retryable(error: &Error) -> bool {
-    error.kind() == ErrorKind::Concurrency && matches!(error.sqlstate(), Some("40001" | "40P01"))
+    error.retries_transaction()
 }
 
 /// A small xorshift generator for backoff jitter (no cryptographic use).
@@ -1598,6 +1599,7 @@ impl Orm {
             after_commit: Vec::new(),
             engine: EngineState::default(),
             poison: None,
+            retry_required: None,
             savepoints: Vec::new(),
             cursors: cursors::Cursors::default(),
             write_gens: write_gens::WriteGens::default(),
@@ -2609,6 +2611,8 @@ pub struct Transaction {
     /// operation that had already changed data (F1): commit refuses until rollback (or
     /// until the savepoint it happened in is rolled back).
     poison: Option<(ErrorKind, String)>,
+    /// Explicit whole-unit retry. Only ending the database transaction clears this reason.
+    retry_required: Option<Box<Error>>,
     /// ORMs this transaction switched away from since its last commit or rollback
     /// ([`Transaction::switch_orm`]): their shared ormcache is cleared when it commits, since it
     /// may hold values of data this transaction changed.
@@ -4906,6 +4910,10 @@ impl Transaction {
                  discarded",
             ));
         }
+        // The explicit whole-unit reason predates any later aborted SQL statement.
+        if let Some(reason) = self.retry_required.as_deref() {
+            return Err(reason.clone());
+        }
         // A database error already doomed the transaction: report it (below), poisoned or not.
         if !matches!(self.state, State::Aborted { .. })
             && let Some(error) = self.poison_error()
@@ -5289,17 +5297,17 @@ impl Transaction {
                 "cannot switch the ORM of an aborted transaction ({message}); roll back first"
             )));
         }
-        let refuse_poisoned = |poison: &(ErrorKind, String)| {
+        let refuse_poisoned = |poison: Error| {
             Error::programming(format!(
                 "cannot switch the ORM of a transaction that must be rolled back ({})",
-                poison.1
+                poison.message()
             ))
         };
-        if let Some(poison) = &self.poison {
+        if let Some(poison) = self.poison_error() {
             return Err(refuse_poisoned(poison));
         }
         self.flush().await?;
-        if let Some(poison) = &self.poison {
+        if let Some(poison) = self.poison_error() {
             return Err(refuse_poisoned(poison));
         }
         self.cache.reset();
@@ -5623,6 +5631,7 @@ impl Transaction {
         self.scoped_ids.clear();
         self.versions.clear();
         self.tracking.clear();
+        self.retry_required = None;
         self.poison = None;
         self.now = None;
         self.html_reports.clear();
@@ -5704,6 +5713,9 @@ impl Transaction {
     }
 
     pub(crate) fn poison_error(&self) -> Option<Error> {
+        if let Some(reason) = self.retry_required.as_deref() {
+            return Some(reason.clone());
+        }
         self.poison
             .as_ref()
             .map(|(kind, message)| Error::new(*kind, message.clone()))
@@ -5725,6 +5737,19 @@ impl Transaction {
         self.poison_with(error);
     }
 
+    /// Require a fresh database transaction when an operation's contract forbids continuing
+    /// after this retryable failure. The first such reason survives nested savepoint rollbacks.
+    /// Both commit paths return its original classification and source. Ordinary validation
+    /// and lock refusals retain their existing recovery policy.
+    pub fn require_transaction_retry(&mut self, reason: &Error) {
+        if reason.retries_transaction()
+            && self.retry_required.is_none()
+            && self.refuse_effect().is_ok()
+        {
+            self.retry_required = Some(Box::new(reason.clone()));
+        }
+    }
+
     /// The number of changes made so far (rows inserted, deleted or written, pending writes). A
     /// layer that caches reads compares it between calls: it moved when something was written.
     pub fn change_count(&self) -> u64 {
@@ -5734,7 +5759,8 @@ impl Transaction {
     /// True when commit will refuse: a `Validation` error, or an error of an operation that had
     /// already changed data, was raised since the last rollback (F1).
     pub fn is_poisoned(&self) -> bool {
-        self.poison.is_some()
+        self.retry_required.is_some()
+            || self.poison.is_some()
             || self
                 .engine
                 .cancelled

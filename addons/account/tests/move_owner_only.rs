@@ -34,6 +34,8 @@ async fn another_addon_cannot_store_a_field_on_journal_items() {
         &erp_addon_account::ADDON,
         &ADDON,
     ])
+    .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+    .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
     .build()
     .await
     .err()

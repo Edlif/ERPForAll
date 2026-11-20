@@ -155,6 +155,7 @@ pub(crate) struct Record {
 /// Every record a document prints, keyed by model and id.
 #[derive(Debug, Default)]
 pub struct RecordStore {
+    pub(crate) precisions: BTreeMap<String, u8>,
     records: BTreeMap<(String, i64), Record>,
     pub(crate) html_images: crate::html_images::HtmlImages,
     pub(crate) helpers: Vec<HelperResults>,

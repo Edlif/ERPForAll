@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 pub enum CredentialError {
     /// Unknown fields or malformed table/value types.
     #[error(
-        "invalid [ai] configuration: expected max_providers, max_key_bytes and provider.<name>.key_file only"
+        "invalid [ai] configuration: expected max_providers, max_key_bytes, max_request_bytes and provider.<name>.key_file only"
     )]
     Configuration,
     /// Node admission setting outside its safety bounds.
@@ -58,6 +58,7 @@ pub enum CredentialError {
 struct RawConfig {
     max_providers: Option<usize>,
     max_key_bytes: Option<usize>,
+    max_request_bytes: Option<usize>,
     #[serde(default)]
     provider: BTreeMap<String, RawProvider>,
 }
@@ -70,10 +71,23 @@ struct RawProvider {
 /// Validated credentials. Secret buffers are erased on drop and omitted from Debug.
 /// This type deliberately implements neither Clone nor serialization; adapters live in this addon.
 #[non_exhaustive]
-#[derive(Default)]
 pub struct Credentials {
     keys: BTreeMap<String, Zeroizing<Vec<u8>>>,
+    request_bytes: usize,
 }
+pub(crate) const DEFAULT_REQUEST_BYTES: usize = 1024 * 1024;
+const MIN_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+
+impl Default for Credentials {
+    fn default() -> Self {
+        Self {
+            keys: BTreeMap::new(),
+            request_bytes: DEFAULT_REQUEST_BYTES,
+        }
+    }
+}
+
 impl fmt::Debug for Credentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Credentials")
@@ -112,6 +126,13 @@ impl Credentials {
                 range: "1..=65536",
             });
         }
+        let request_bytes = raw.max_request_bytes.unwrap_or(DEFAULT_REQUEST_BYTES);
+        if !(MIN_REQUEST_BYTES..=MAX_REQUEST_BYTES).contains(&request_bytes) {
+            return Err(CredentialError::Limit {
+                setting: "ai.max_request_bytes",
+                range: "65536..=4194304",
+            });
+        }
         if raw.provider.len() > max_providers {
             return Err(CredentialError::ProviderCount);
         }
@@ -128,7 +149,14 @@ impl Credentials {
             let path = directory.join(provider.key_file);
             keys.insert(name.clone(), read_key(&name, &path, max_key_bytes)?);
         }
-        Ok(Self { keys })
+        Ok(Self {
+            keys,
+            request_bytes,
+        })
+    }
+
+    pub(crate) fn request_bytes(&self) -> usize {
+        self.request_bytes
     }
 
     /// Number of configured credentials; does not expose names, paths or key bytes.

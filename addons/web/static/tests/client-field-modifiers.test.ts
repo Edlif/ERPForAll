@@ -16,3 +16,12 @@ test("modifier evaluation failure never substitutes a boolean", () => {
   const expr = decodeAst(parseBoundedJson(JSON.stringify({ schema: 1, nodes: [{ kind: "name", name: "missing" }] })));
   expect(() => effectiveField({ ...field, modifiers: { readonly: expr, required: null, invisible: null } }, [field], {})).toThrowError(expect.objectContaining({ kind: "validation", message: "Cannot evaluate readonly for Name: NameError: name 'missing' is not defined" }));
 });
+
+test("a field modifier reads only its expression operands", () => {
+  const models: Field = {...field, name: "allowed_models", kind: "text"};
+  const values = {allowed_models: ["local-model"]};
+  const visible = effectiveField({...field, modifiers: {readonly: null, required: null, invisible: boolean(false)}}, [field, models], values);
+  expect(visible.invisible).toBe(false);
+  const operand = decodeAst(parseBoundedJson(JSON.stringify({schema: 1, nodes: [{kind: "name", name: "allowed_models"}]})));
+  expect(() => effectiveField({...field, modifiers: {readonly: null, required: null, invisible: operand}}, [field, models], values)).toThrow("Cannot evaluate invisible");
+});

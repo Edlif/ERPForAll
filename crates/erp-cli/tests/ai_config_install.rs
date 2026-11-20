@@ -103,6 +103,18 @@ fn fresh_install_seeds_disabled_provider_and_company_route() {
     big(async {
         let db = TestDb::create().await.unwrap();
         let orm = install(&db).await;
+        for name in [
+            "provider_list",
+            "provider_form",
+            "provider_action",
+            "provider_menu",
+            "route_list",
+            "route_form",
+            "route_action",
+            "route_menu",
+        ] {
+            assert!(xid(&orm, name).await > 0);
+        }
         let provider = xid(&orm, "provider_local").await;
         let route = xid(&orm, "route_assistant_main").await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();

@@ -1088,6 +1088,207 @@ async fn reservation_date(tx: &mut Transaction, mv: i64) -> Option<String> {
 }
 
 #[tokio::test]
+async fn mixed_company_confirmation_uses_company_days_and_preserves_manual_dates() {
+    let mut f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let first = f.company;
+    let currency: i64 = tx
+        .query(
+            "SELECT currency_id FROM res_company WHERE id = $1",
+            &[&first],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let second = create(
+        &mut tx,
+        "res.company",
+        RawVals::new()
+            .set_cell("name", text("Date line company"))
+            .set_cell("currency_id", Cell::Id(currency))
+            .set_cell("tz", text("Pacific/Pago_Pago")),
+    )
+    .await;
+    f.env(&tx)
+        .records("res.company")
+        .unwrap()
+        .browse([first])
+        .unwrap()
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("tz", text("Pacific/Kiritimati")),
+        )
+        .await
+        .unwrap();
+    let mut pickings = Vec::new();
+    let mut automatic = Vec::new();
+    let mut manual = Vec::new();
+    for company in [first, second] {
+        f.company = company;
+        f.stock(&mut tx, f.p, "10").await;
+        for method in ["at_confirm", "manual"] {
+            let kind = create(
+                &mut tx,
+                "stock.picking.type",
+                RawVals::new()
+                    .set_cell("name", text(&format!("Calendar {company} {method}")))
+                    .set_cell("code", text("outgoing"))
+                    .set_cell("company_id", Cell::Id(company))
+                    .set_cell("default_location_src_id", Cell::Id(f.l))
+                    .set_cell("default_location_dest_id", Cell::Id(f.customer))
+                    .set_cell("reservation_method", text(method)),
+            )
+            .await;
+            let picking = f.picking(&mut tx, kind, f.l, f.customer).await;
+            let mv = f
+                .move_in(&mut tx, Some(picking), f.p, f.l, f.customer, "2")
+                .await;
+            pickings.push(picking);
+            if method == "manual" {
+                manual.push(mv);
+            } else {
+                automatic.push(mv);
+            }
+        }
+    }
+    tx.commit().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    // The two zones differ by 25 hours: their dates differ at every transaction instant.
+    let dates: Vec<Date> = tx
+        .query(
+            "SELECT (transaction_timestamp() AT TIME ZONE tz)::date \
+             FROM res_company WHERE id = ANY($1) ORDER BY id",
+            &[&vec![first, second]],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert!(dates[0] > dates[1]);
+    // Explicit manual dates survive confirmation; only the eastern company's date is due.
+    for mv in &manual {
+        f.env(&tx)
+            .records("stock.move")
+            .unwrap()
+            .browse([*mv])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_cell("reservation_date", Cell::Date(dates[0])),
+            )
+            .await
+            .unwrap();
+    }
+    call_on(
+        &f,
+        &mut tx,
+        &pickings,
+        "action_confirm",
+        vec![("tz", Value::str("Pacific/Pago_Pago"))],
+    )
+    .await
+    .unwrap();
+    for (mv, expected) in automatic.iter().zip(&dates) {
+        assert_eq!(
+            reservation_date(&mut tx, *mv).await,
+            Some(expected.to_string())
+        );
+        assert_eq!(move_row(&mut tx, *mv).await.2, "assigned");
+    }
+    for mv in &manual {
+        assert_eq!(
+            reservation_date(&mut tx, *mv).await,
+            Some(dates[0].to_string())
+        );
+    }
+    assert_eq!(move_row(&mut tx, manual[0]).await.2, "assigned");
+    assert_eq!(move_row(&mut tx, manual[1]).await.2, "confirmed");
+    assert_eq!(engine_calls(&mut tx).await, 1);
+}
+
+#[tokio::test]
+async fn confirmation_rejects_invalid_company_zone_without_changing_moves() {
+    let mut f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let picking = f.picking(&mut tx, f.delivery_type, f.l, f.customer).await;
+    let mv = f
+        .move_in(&mut tx, Some(picking), f.p, f.l, f.customer, "2")
+        .await;
+    let currency: i64 = tx
+        .query(
+            "SELECT currency_id FROM res_company WHERE id = $1",
+            &[&f.company],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    f.company = create(
+        &mut tx,
+        "res.company",
+        RawVals::new()
+            .set_cell("name", text("Invalid calendar company"))
+            .set_cell("currency_id", Cell::Id(currency))
+            .set_cell("tz", text("UTC")),
+    )
+    .await;
+    let kind = create(
+        &mut tx,
+        "stock.picking.type",
+        RawVals::new()
+            .set_cell("name", text("Invalid calendar deliveries"))
+            .set_cell("code", text("outgoing"))
+            .set_cell("company_id", Cell::Id(f.company))
+            .set_cell("default_location_src_id", Cell::Id(f.l))
+            .set_cell("default_location_dest_id", Cell::Id(f.customer))
+            .set_cell("reservation_method", text("at_confirm")),
+    )
+    .await;
+    let invalid_picking = f.picking(&mut tx, kind, f.l, f.customer).await;
+    let invalid_mv = f
+        .move_in(&mut tx, Some(invalid_picking), f.p, f.l, f.customer, "2")
+        .await;
+    tx.flush().await.unwrap();
+    // Simulate corrupt stored configuration beyond the ORM's write validation.
+    tx.execute(
+        "UPDATE res_company SET tz = 'Invalid/Company' WHERE id = $1",
+        &[&f.company],
+    )
+    .await
+    .unwrap();
+    f.env(&tx)
+        .records("res.company")
+        .unwrap()
+        .browse([f.company])
+        .unwrap()
+        .modified_external(&mut tx, &["tz"])
+        .await
+        .unwrap();
+    // The valid company's earlier transfer must remain untouched when the later zone fails.
+    let error = call_on(
+        &f,
+        &mut tx,
+        &[picking, invalid_picking],
+        "action_confirm",
+        vec![],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "Unknown company time zone 'Invalid/Company'."
+    );
+    for move_id in [mv, invalid_mv] {
+        assert_eq!(move_row(&mut tx, move_id).await.2, "draft");
+        assert_eq!(reservation_date(&mut tx, move_id).await, None);
+    }
+    for picking_id in [picking, invalid_picking] {
+        assert_eq!(picking_state(&mut tx, picking_id).await, "draft");
+    }
+}
+
+#[tokio::test]
 async fn confirming_a_delivery_reserves_at_confirmation() {
     let f = fixture().await;
     let mut tx = f.h.begin().await.unwrap();

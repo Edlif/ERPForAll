@@ -9,8 +9,9 @@
 //! operation type reserves at confirmation, and reserves at once the moves that bypass reservation,
 //! whose type reserves at confirmation, whose reservation date has come, or that return earlier
 //! moves. Check availability confirms draft transfers first. Adopted: those rules. Modified: one
-//! statement confirms every draft move of the call; the early reservation is one reservation call
-//! for all of them; a transfer without a draft move to confirm is refused by name (the reference
+//! statement per company confirms its draft moves; the early reservation is one reservation call
+//! for all of them, with reservation stamps and eligibility using each company's transaction day;
+//! a transfer without a draft move to confirm is refused by name (the reference
 //! does nothing).
 //!
 //! Not here yet, each refused by name or listed: make-to-order and make-to-stock-else-order moves
@@ -18,8 +19,9 @@
 //! negative demands turned into returns; assigning transfers to moves without one; the zero-demand
 //! confirmation dialog; the replenishment trigger after confirmation.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use erp_addon_base::company_calendar::business_days;
 use erp_sdk::Operation;
 use erp_sdk::prelude::*;
 
@@ -150,8 +152,8 @@ pub(crate) async fn fill_from_pickings(
 ///
 /// # Errors
 ///
-/// [`StockError::NeedsProcurement`] for a make-to-order move; the reservation's errors; read and
-/// database errors.
+/// [`StockError::NeedsProcurement`] for a make-to-order move; company calendar admission and zone
+/// errors; the reservation's errors; read and database errors.
 pub(crate) async fn confirm_moves(
     records: &Records,
     tx: &mut Transaction,
@@ -173,14 +175,42 @@ pub(crate) async fn confirm_moves(
     if blocked > 0 {
         return Err(StockError::NeedsProcurement.into());
     }
-    let today = records.env().context_today()?.to_string();
+    // The whole request is locked above, before partitioning by company. Resolve every calendar
+    // before changing any move so a bad zone cannot leave an earlier company confirmed.
+    let mut by_company: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+    for row in tx
+        .query(
+            "SELECT id, company_id FROM stock_move \
+             WHERE id = ANY($1) AND state = 'draft' ORDER BY id",
+            &[&moves],
+        )
+        .await?
+    {
+        let id = row.try_get::<_, i64>(0).map_err(decode)?;
+        let company = row.try_get::<_, i64>(1).map_err(decode)?;
+        by_company.entry(company).or_default().push(id);
+    }
+    let companies: Vec<i64> = by_company.keys().copied().collect();
+    let days = business_days(tx, records.env(), &companies).await?;
     let mut confirmed = Vec::new();
-    for row in tx.query(CONFIRM, &[&moves, &today]).await? {
-        confirmed.push(row.try_get::<_, i64>(0).map_err(decode)?);
+    let mut partitions = Vec::new();
+    for (company, drafts) in by_company {
+        let today = days
+            .get(&company)
+            .ok_or_else(|| Error::internal("A stock move's company calendar was not read."))?
+            .date
+            .to_string();
+        let mut company_confirmed = Vec::new();
+        for row in tx.query(CONFIRM, &[&drafts, &today]).await? {
+            company_confirmed.push(row.try_get::<_, i64>(0).map_err(decode)?);
+        }
+        confirmed.extend(company_confirmed.iter().copied());
+        partitions.push((company_confirmed, today));
     }
     if confirmed.is_empty() {
         return Ok(());
     }
+    confirmed.sort_unstable();
     records
         .env()
         .records("stock.move")?
@@ -192,9 +222,15 @@ pub(crate) async fn confirm_moves(
         return Ok(());
     }
     let mut eligible = Vec::new();
-    for row in tx.query(ASSIGN_AT_CONFIRM, &[&confirmed, &today]).await? {
-        eligible.push(row.try_get::<_, i64>(0).map_err(decode)?);
+    for (company_confirmed, today) in partitions {
+        for row in tx
+            .query(ASSIGN_AT_CONFIRM, &[&company_confirmed, &today])
+            .await?
+        {
+            eligible.push(row.try_get::<_, i64>(0).map_err(decode)?);
+        }
     }
+    eligible.sort_unstable();
     assign_moves(records, tx, &eligible).await
 }
 

@@ -2,9 +2,10 @@
 //! Explicit caller-company routing; no elevation, transport or provider fallback.
 use crate::{
     config::Credentials,
+    encoding::RequestEncoder,
     models::{allowed_models, id, text},
 };
-use erp_sdk::prelude::*;
+use erp_sdk::{ai::ProviderError, prelude::*};
 
 /// Validated route metadata. It contains no credential bytes or protected file paths.
 #[derive(Debug)]
@@ -14,6 +15,7 @@ pub struct ConfiguredRoute {
     model: String,
     family: String,
     base_url: String,
+    request_bytes: usize,
 }
 impl ConfiguredRoute {
     /// Stable configured provider name.
@@ -31,6 +33,21 @@ impl ConfiguredRoute {
     pub fn family(&self) -> &str {
         &self.family
     }
+    /// Creates a request encoder using this route's provider family and model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::InvalidRequest`] for an unsupported provider protocol
+    /// and [`ProviderError::Unavailable`] when the operating system cannot supply randomness.
+    pub fn request_encoder(&self) -> std::result::Result<RequestEncoder<'_>, ProviderError> {
+        RequestEncoder::new(
+            self.provider(),
+            self.model(),
+            self.family(),
+            self.request_bytes,
+        )
+    }
+
     /// Administrator-selected endpoint, never visited by this slice.
     #[must_use]
     pub fn base_url(&self) -> &str {
@@ -83,5 +100,9 @@ pub async fn resolve(
         model,
         family: text(provider.cell(tx, "family").await?, "ai.provider.family")?,
         base_url: text(provider.cell(tx, "base_url").await?, "ai.provider.base_url")?,
+        request_bytes: credentials.request_bytes(),
     })
 }
+
+#[cfg(test)]
+mod response_tests;

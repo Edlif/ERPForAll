@@ -992,3 +992,147 @@ async fn partner_ledger() {
     expected.sort_unstable();
     assert_eq!(items, expected);
 }
+
+#[test]
+fn partner_ledger_unreconciled_uses_the_requested_cutoff() {
+    big_stack(partner_ledger_unreconciled);
+}
+
+async fn partner_ledger_unreconciled() {
+    let f = fixture().await;
+    let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    let p = partner(&mut tx, "Historical customer").await;
+    let ar = (f.books.receivable, f.books.bank);
+    let invoice = partner_entry(&mut tx, &f, ar, Some(p), "120", d(2024, 1, 31)).await;
+    let first = partner_entry(&mut tx, &f, ar, Some(p), "-50", d(2024, 2, 2)).await;
+    let second = partner_entry(&mut tx, &f, ar, None, "-70", d(2024, 2, 10)).await;
+    let invoice = items_on(&mut tx, &[&invoice], ar.0).await;
+    let first = items_on(&mut tx, &[&first], ar.0).await;
+    let second = items_on(&mut tx, &[&second], ar.0).await;
+    for payment in [&first, &second] {
+        try_call(&invoice.union(payment).unwrap(), &mut tx, "reconcile")
+            .await
+            .unwrap();
+    }
+    try_call(&second, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap();
+    let removed = erp_addon_base::company_calendar::business_date(&mut tx, f.company)
+        .await
+        .unwrap();
+    let (year, month, day) = removed.ymd();
+    let removed = format!("{year:04}-{month:02}-{day:02}");
+    let report = xml_id(&mut tx, "account_reporting", "report_partner_ledger").await;
+    tx.commit().await.unwrap();
+
+    let mut tx = f.orm.begin(f.reader).await.unwrap();
+    let env = tx.env();
+    let initial = runtime::report_options(&env, &mut tx, report, &json!({}))
+        .await
+        .unwrap();
+    assert_eq!(initial["options"]["provider"]["unreconciled"], false);
+    let denied = json!({"report":report, "companies":[f.other], "provider":{"unreconciled":true}});
+    let error = runtime::report_lines(&env, &mut tx, &denied)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert!(error.message().contains("not one of the companies"));
+    for (cutoff, mut expected) in [
+        ("2024-02-01", invoice.ids()),
+        ("2024-02-02", invoice.ids()),
+        ("2024-02-10", vec![]),
+        (removed.as_str(), invoice.union(&second).unwrap().ids()),
+    ] {
+        let options = json!({"report":report, "companies":[f.company],
+            "date":{"preset":"custom","from":"2024-01-01","to":cutoff},
+            "provider":{"unreconciled":true}});
+        let shown = runtime::report_lines(&env, &mut tx, &options)
+            .await
+            .unwrap();
+        let root = &shown["lines"][0];
+        let values = numbers(root);
+        let expected_closing = if cutoff == "2024-02-10" {
+            "0"
+        } else if cutoff == removed {
+            "50"
+        } else {
+            "120"
+        };
+        assert_eq!(
+            values[3],
+            num(expected_closing),
+            "filtered booked balance at {cutoff}"
+        );
+        let drill = runtime::report_drill(
+            &env,
+            &mut tx,
+            &options,
+            root["id"].as_str().unwrap(),
+            &json!({"cell":3}),
+        )
+        .await
+        .unwrap();
+        let mut actual = env
+            .records("account.move.line")
+            .unwrap()
+            .search(&mut tx, &Domain::from_json(&drill["domain"]).unwrap())
+            .await
+            .unwrap()
+            .ids();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected, "unreconciled closing drill at {cutoff}");
+    }
+
+    drop(tx);
+    let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    let env = tx.env();
+    let items = env.records("account.move.line").unwrap();
+    let replacement = items.browse(invoice.union(&second).unwrap().ids()).unwrap();
+    try_call(&replacement, &mut tx, "reconcile").await.unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = f.orm.begin(f.reader).await.unwrap();
+    let env = tx.env();
+    let historical = json!({"report":report, "companies":[f.company], "date":{"preset":"custom","from":"2024-01-01","to":"2024-02-10"}, "provider":{"unreconciled":true}});
+    let error = runtime::report_lines(&env, &mut tx, &historical)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert!(
+        error.message().contains("overlapping re-matches"),
+        "{error}"
+    );
+}
+
+#[test]
+fn partner_ledger_refuses_dates_before_existing_ledger_capture() {
+    big_stack(|| async {
+        let f = fixture().await;
+        let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+        let report = xml_id(&mut tx, "account_reporting", "report_partner_ledger").await;
+        let env = tx.env().with_user(f.reader);
+        // Transaction-local simulation of a predecessor without the coverage table. Real module
+        // metadata and posted journal items remain in place. No prior binary is used.
+        tx.execute("CREATE TEMP TABLE account_reconcile_coverage (LIKE public.account_reconcile_coverage INCLUDING ALL) ON COMMIT DROP", &[]).await.unwrap();
+        let historical = json!({"report":report, "companies":[f.company], "date":{"preset":"custom","from":"2024-01-01","to":"2024-02-10"}, "provider":{"unreconciled":true}});
+        let missing = runtime::report_lines(&env, &mut tx, &historical)
+            .await
+            .unwrap_err();
+        assert!(
+            missing
+                .message()
+                .contains("coverage has not been established"),
+            "{missing}"
+        );
+        let establish = include_str!("../../../addons/account/src/reconcile/coverage.sql");
+        tx.execute(establish, &[]).await.unwrap();
+        tx.execute(establish, &[]).await.unwrap();
+        let rows = tx.query("SELECT safe_from=((statement_timestamp() AT TIME ZONE 'UTC')::date+1) FROM account_reconcile_coverage", &[]).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].get::<_, bool>(0));
+        let earlier = runtime::report_lines(&env, &mut tx, &historical)
+            .await
+            .unwrap_err();
+        assert!(earlier.message().contains("history is available from"));
+    });
+}

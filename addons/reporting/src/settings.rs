@@ -23,7 +23,17 @@ pub const EXPORT_MAX_REQUEST_BYTES: &str = "reporting.export_max_request_bytes";
 
 // (key, label, default, floor, hard bound): design §10. The hard bounds keep one answer inside
 // 's 8 MiB page and its 16 comparison columns.
-const BOUNDS: [(&str, &str, i64, i64, i64); 6] = [
+/// Maximum visible items admitted for historical filtering.
+pub const MAX_FILTER_SOURCE_ROWS: &str = "reporting.max_filter_source_rows";
+
+const BOUNDS: [(&str, &str, i64, i64, i64); 7] = [
+    (
+        MAX_FILTER_SOURCE_ROWS,
+        "Dynamic reports: maximum journal items for a historical filter",
+        10_000,
+        1,
+        50_000,
+    ),
     (
         MAX_LOAD_MORE_LIMIT,
         "Dynamic reports: maximum load-more page",
@@ -88,6 +98,8 @@ pub struct Bounds {
     pub max_load_more_limit: u64,
     /// [`MAX_UNFOLD_DEPTH`].
     pub max_unfold_depth: usize,
+    /// Maximum candidate items for a historical source filter.
+    pub max_filter_source_rows: usize,
     /// [`MAX_SCREEN_LINES`].
     pub max_screen_lines: usize,
     /// [`MAX_COMPARISON_PERIODS`].
@@ -126,6 +138,7 @@ pub async fn read(env: &Env, tx: &mut Transaction) -> Result<Bounds> {
     Ok(Bounds {
         max_load_more_limit: value(MAX_LOAD_MORE_LIMIT)?,
         max_unfold_depth: narrow(MAX_UNFOLD_DEPTH)?,
+        max_filter_source_rows: narrow(MAX_FILTER_SOURCE_ROWS)?,
         max_screen_lines: narrow(MAX_SCREEN_LINES)?,
         max_comparison_periods: u32::try_from(value(MAX_COMPARISON_PERIODS)?).map_err(|_| {
             Error::internal(format!(

@@ -2,6 +2,7 @@
 
 use std::error::Error as StdError;
 use std::fmt;
+use std::sync::Arc;
 
 /// What went wrong, in the terms.
 // An exhaustive `match` turns a newly added kind into a compile error at each of those
@@ -125,6 +126,7 @@ pub enum Condition {
     Overloaded,
 }
 
+#[derive(Clone)]
 pub struct Error {
     kind: ErrorKind,
     message: String,
@@ -132,16 +134,17 @@ pub struct Error {
     /// and every `Result` carries the error's size).
     db: Option<Box<DbDetails>>,
     condition: Option<Condition>,
-    source: Option<Box<dyn StdError + Send + Sync + 'static>>,
+    source: Option<Arc<dyn StdError + Send + Sync + 'static>>,
     context: Option<Box<crate::Value>>,
 }
 
 /// What a database error adds to an [`Error`].
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct DbDetails {
     sqlstate: Option<String>,
     /// The constraint or index a violation (`23xxx`) names, set by the ORM's error mapping.
     constraint: Option<String>,
+    retry_lock_timeout: bool,
 }
 
 impl Error {
@@ -237,10 +240,11 @@ impl Error {
                 Box::new(DbDetails {
                     sqlstate: Some(sqlstate),
                     constraint: None,
+                    retry_lock_timeout: false,
                 })
             }),
             condition: None,
-            source: Some(Box::new(source)),
+            source: Some(Arc::new(source)),
             context: None,
         }
     }
@@ -248,7 +252,7 @@ impl Error {
     /// Attach a source error.
     #[must_use]
     pub fn with_source(mut self, source: impl StdError + Send + Sync + 'static) -> Self {
-        self.source = Some(Box::new(source));
+        self.source = Some(Arc::new(source));
         self
     }
 
@@ -283,10 +287,35 @@ impl Error {
                 self.db = Some(Box::new(DbDetails {
                     sqlstate: Some(sqlstate),
                     constraint: None,
+                    retry_lock_timeout: false,
                 }));
             }
         }
         self
+    }
+
+    /// Opt a positively identified server lock timeout into a retry of the complete operation.
+    /// Use this only at a statement whose contract requires a fresh transaction after a
+    /// bounded lock wait. Ordinary lock refusals, including NOWAIT, keep their original policy.
+    #[must_use]
+    pub fn retry_whole_unit_on_lock_timeout(mut self) -> Self {
+        if self.condition() == Some(Condition::LockTimeout)
+            && self.sqlstate() == Some("55P03")
+            && let Some(db) = self.db.as_mut()
+        {
+            db.retry_lock_timeout = true;
+        }
+        self
+    }
+
+    /// Whether the unit owner can retry this concurrency failure with a fresh transaction.
+    /// A lock timeout joins serialization failures and deadlocks only for an opted-in statement.
+    pub fn retries_transaction(&self) -> bool {
+        (self.kind() == ErrorKind::Concurrency
+            && matches!(self.sqlstate(), Some("40001" | "40P01")))
+            || (self.condition() == Some(Condition::LockTimeout)
+                && self.sqlstate() == Some("55P03")
+                && self.db.as_ref().is_some_and(|db| db.retry_lock_timeout))
     }
 
     /// Mark the error with a [`Condition`] (only the code that detects the condition does this).
@@ -467,6 +496,23 @@ mod tests {
         assert!(unavailable.is_read_pool_unavailable());
         assert!(!unavailable.is_superseded());
         assert!(!regression.is_read_pool_unavailable());
+    }
+
+    #[test]
+    fn bounded_timeout_requires_both_detection_and_statement_opt_in() {
+        let unavailable =
+            || Error::new(ErrorKind::Concurrency, "locked").with_sqlstate(Some("55P03".into()));
+        assert!(
+            !unavailable()
+                .retry_whole_unit_on_lock_timeout()
+                .retries_transaction()
+        );
+        let timeout = unavailable().with_condition(Condition::LockTimeout);
+        assert!(!timeout.retries_transaction());
+        let scoped = timeout.retry_whole_unit_on_lock_timeout();
+        assert_eq!(scoped.sqlstate(), Some("55P03"));
+        assert_eq!(scoped.condition(), Some(Condition::LockTimeout));
+        assert!(scoped.retries_transaction());
     }
 
     #[test]

@@ -126,6 +126,8 @@ fn system(db: &TestDb) -> ModuleSystem {
         })
         .collect();
     ModuleSystem::builder(db.pool().clone(), index)
+        .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+        .require_sql_uninstall_guards([&erp_addon_account::reconcile::history_guard::UNINSTALL])
         .require_sql_objects([&erp_addon_stock::schema_guards::MANIFEST])
         .native_artifact_identities(identities)
         .view_types(erp_addon_web::view_type_contributions())

@@ -30,9 +30,6 @@ pub(super) async fn fill_defaults(
     env: &Env,
     vals: &mut RawVals,
 ) -> Result<()> {
-    if !vals.contains("date") {
-        vals.insert("date".into(), Cell::Date(env.context_today()?));
-    }
     let journal = match vals.get("journal_id") {
         Some(Cell::Id(id)) => *id,
         Some(Cell::Int(id)) => i64::from(*id),
@@ -47,6 +44,17 @@ pub(super) async fn fill_defaults(
         && let Some(company) = company
     {
         vals.insert("company_id".into(), Cell::Id(company));
+    }
+    if !vals.contains("date") {
+        let company =
+            crate::moves::id_cell(vals.get("company_id"), "company_id")?.ok_or_else(|| {
+                Error::validation("A payment needs a company before its date can be set.")
+            })?;
+        let days = erp_addon_base::company_calendar::business_days(tx, env, &[company]).await?;
+        let day = days
+            .get(&company)
+            .ok_or_else(|| Error::missing(format!("Company {company} is unavailable.")))?;
+        vals.insert("date".into(), Cell::Date(day.date));
     }
     if !vals.contains("currency_id") {
         let currency = match crate::moves::id_cell(

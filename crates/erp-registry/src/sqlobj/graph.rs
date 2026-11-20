@@ -240,6 +240,7 @@ pub struct SqlTableGrant {
     model: SqlModelRef,
     binding: SqlBinding,
     ops: &'static [SqlTableOp],
+    exclusive_grantees: bool,
     exclusive_id_sequence: Option<&'static str>,
 }
 
@@ -255,6 +256,10 @@ impl SqlTableGrant {
     /// The operations, each once.
     pub fn ops(&self) -> &'static [SqlTableOp] {
         self.ops
+    }
+    /// Whether an unbound direct ACL holder on this table or its identity must block publication.
+    pub fn exclusive_grantees(&self) -> bool {
+        self.exclusive_grantees
     }
     /// Exclusive named sequence requiring definer USAGE on the installed database.
     pub fn exclusive_id_sequence(&self) -> Option<&'static str> {
@@ -290,7 +295,7 @@ impl SqlTrigger {
     }
 }
 
-/// The four supported trigger shapes (contract §2). Closed: every consumer matches all of them,
+/// The supported trigger shapes (contract §2). Closed: every consumer matches all of them,
 /// and a new shape needs an amendment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlTriggerShape {
@@ -300,6 +305,8 @@ pub enum SqlTriggerShape {
     BeforeTruncate,
     /// `BEFORE INSERT FOR EACH ROW`.
     BeforeInsertRow,
+    /// `BEFORE DELETE FOR EACH ROW` validates OLD before referential actions.
+    BeforeDeleteRow,
     /// `CREATE CONSTRAINT TRIGGER … AFTER INSERT FOR EACH ROW` with an explicit deferral.
     AfterInsertConstraintRow(SqlDeferral),
 }
@@ -695,6 +702,7 @@ fn resolve_one(
                 binding: g.binding,
                 ops: g.ops,
                 exclusive_id_sequence: g.exclusive_id_sequence,
+                exclusive_grantees: g.exclusive_grantees,
             };
             (
                 vec![SqlReference::Model(model)],

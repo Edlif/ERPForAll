@@ -257,6 +257,8 @@ async fn a_nonmanager_cannot_change_lock_dates() {
         &erp_addon_analytic::ADDON,
         &erp_addon_account::ADDON,
     ])
+    .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+    .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
     .policy(erp_testkit::FieldPolicy::new().member(3, ["account.group_account_manager"]))
     .build()
     .await
@@ -356,6 +358,8 @@ async fn unavailable_audit_store_cannot_leave_a_company_date_changed() {
         &erp_addon_analytic::ADDON,
         &erp_addon_account::ADDON,
     ])
+    .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+    .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
     .without_audit_store()
     .build()
     .await

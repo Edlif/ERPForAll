@@ -61,7 +61,52 @@ async fn served_ai_configuration_is_installable_and_never_returns_credentials() 
         state_of(&catalogue(fixture.port, &fixture.cookies), "ai_base").as_deref(),
         Some("installed")
     );
-    for model in ["ai.provider", "ai.route"] {
+    let panel = rpc(
+        &fixture,
+        "ir.config.setting",
+        "erp_describe",
+        serde_json::json!({"scope":{"kind":"global"}}),
+    );
+    let links = panel["items"].as_array().unwrap();
+    for key in ["ai_base.providers", "ai_base.routes"] {
+        let item = links.iter().find(|item| item["key"] == key).unwrap();
+        assert_eq!(item["block"], "AI");
+        assert_eq!(item["target"]["kind"], "menu");
+        assert!(item["target"]["id"].as_i64().unwrap() > 0);
+    }
+    for (model, action_name) in [
+        ("ai.provider", "provider_action"),
+        ("ai.route", "route_action"),
+    ] {
+        let action: i64 = fixture
+            .client
+            .query_one(
+                "SELECT res_id FROM ir_model_data WHERE module='ai_base' AND name=$1",
+                &[&action_name],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        rpc(
+            &fixture,
+            "ir.actions.act_window",
+            "erp_load_web_action",
+            serde_json::json!({"ids":[action]}),
+        );
+        for mobile in [false, true] {
+            let views = rpc(
+                &fixture,
+                model,
+                "get_views",
+                serde_json::json!({"wire_major":1,"views":[[null,"list"],[null,"form"]],"options":{"mobile":mobile}}),
+            );
+            assert!(views["notices"].as_array().unwrap().is_empty(), "{views}");
+            assert_eq!(views["views"].as_array().unwrap().len(), 2);
+            assert!(!views.to_string().contains(key.to_str().unwrap()));
+            if model == "ai.provider" {
+                assert!(views.to_string().contains("ai_base.model_list"));
+            }
+        }
         let fields = rpc(&fixture, model, "fields_get", serde_json::json!({}));
         for forbidden in ["key", "key_file", "api_key", "credentials"] {
             assert!(

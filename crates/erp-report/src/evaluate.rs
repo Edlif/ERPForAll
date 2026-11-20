@@ -1360,7 +1360,18 @@ impl<'p> Run<'p> {
         };
         match self.eval(options, scope, at)? {
             ExprValue::None | ExprValue::Bool(false) => Ok(None),
-            ExprValue::Dict(map) => Ok(Some(map)),
+            ExprValue::Dict(map) => {
+                let name = crate::precision::literal_name(options)
+                    .map_err(|reason| at.evaluate(format!("`{}`: {reason}", options.source)))?;
+                if map.get_str(crate::precision::OPTION).is_some() && name.is_none() {
+                    return Err(at.evaluate(format!(
+                        "`{}`: {}",
+                        options.source,
+                        crate::precision::LITERAL_REQUIRED
+                    )));
+                }
+                Ok(Some(map))
+            }
             other => Err(at.evaluate(format!(
                 "t-options needs a mapping, got a value of type {}",
                 other.type_name()

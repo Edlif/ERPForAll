@@ -15,6 +15,8 @@ use erp_test_models::base_users;
 use erp_testkit::Harness;
 use std::sync::Arc;
 
+mod stock_account;
+
 static ADDON: AddonDescriptor = AddonDescriptor {
     name: "publish_fixture",
     depends: &["base"],

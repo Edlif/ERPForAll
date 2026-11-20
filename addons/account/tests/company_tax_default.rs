@@ -21,6 +21,8 @@ async fn a_company_created_without_the_price_inclusion_gets_tax_excluded() {
         &erp_addon_analytic::ADDON,
         &erp_addon_account::ADDON,
     ])
+    .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+    .schema_sync_options(erp_testkit::SchemaSyncOptions::inline().lifecycle(true))
     .build()
     .await
     .unwrap();

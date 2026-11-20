@@ -1,22 +1,28 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Advisory financial layer allocation over the explicitly unbooked current FIFO projection.
-//! write/undo/close/book/posting gates remain unimplemented.
+//! Configured management books select the comparison policy. No journal or layer is written.
 use erp_addon_stock::StockQuant;
 use erp_sdk::money::{CanonicalFraction, CanonicalInteger, ExactRatio, GridValue, parse_decimal};
 use erp_sdk::prelude::*;
 use erp_sdk::serde_json::{Value as Json, json};
-use erp_sdk::{Load, Operation};
+use erp_sdk::{ErrorKind, Load, Operation};
 use std::collections::{BTreeMap, BTreeSet};
 
 const SCOPE: &str = "primary_unbooked_receipt_projection";
+const BOOK_SCOPE: &str = "management_cost_book";
 
 /// Adds a read-only costing comparison to the existing caller-readable stock quant.
 #[extend(StockQuant, addon = "stock_account")]
 pub struct QuantCostPreview {}
 
+enum Policy {
+    Unbooked { lifo: bool },
+    ManagementBook { id: i64 },
+}
+
 struct Request {
     quantity: ExactRatio,
-    lifo: bool,
+    policy: Policy,
 }
 impl Request {
     fn parse(input: &Value) -> Result<Self> {
@@ -29,28 +35,48 @@ impl Request {
             Some(Value::Str(value)) => Some(value.as_ref()),
             _ => None,
         };
-        if object.len() != 3
-            || object
-                .keys()
-                .any(|key| !matches!(key.as_str(), "scope" | "quantity" | "method"))
-        {
-            return Err(Error::validation(
-                "Issue preview request requires exactly scope, method and decimal-text quantity.",
-            ));
-        }
-        if text("scope") != Some(SCOPE) {
-            return Err(Error::validation(
-                "Issue preview supports only the primary unbooked receipt projection; named cost books are not available.",
-            ));
-        }
-        let lifo = match text("method") {
-            Some("fifo") => false,
-            Some("lifo") => true,
-            _ => {
+        let policy = if text("scope") == Some(BOOK_SCOPE) {
+            if object.len() != 3 || !object.contains_key("quantity") {
                 return Err(Error::validation(
-                    "Issue preview method must be fifo or lifo.",
+                    "Management issue preview requires exactly scope, cost_book_id and decimal-text quantity.",
                 ));
             }
+            let Some(Value::Int(id)) = object.get("cost_book_id") else {
+                return Err(Error::validation(
+                    "Issue preview cost_book_id must be a positive record ID.",
+                ));
+            };
+            if *id <= 0 {
+                return Err(Error::validation(
+                    "Issue preview cost_book_id must be a positive record ID.",
+                ));
+            }
+            Policy::ManagementBook { id: *id }
+        } else {
+            if object.len() != 3
+                || object
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "scope" | "quantity" | "method"))
+            {
+                return Err(Error::validation(
+                    "Issue preview request requires exactly scope, method and decimal-text quantity.",
+                ));
+            }
+            if text("scope") != Some(SCOPE) {
+                return Err(Error::validation(
+                    "Issue preview scope must be primary_unbooked_receipt_projection or management_cost_book.",
+                ));
+            }
+            let lifo = match text("method") {
+                Some("fifo") => false,
+                Some("lifo") => true,
+                _ => {
+                    return Err(Error::validation(
+                        "Issue preview method must be fifo or lifo.",
+                    ));
+                }
+            };
+            Policy::Unbooked { lifo }
         };
         let quantity =
             parse_decimal(text("quantity").ok_or_else(|| {
@@ -63,7 +89,7 @@ impl Request {
         }
         Ok(Self {
             quantity: ExactRatio::from_decimal(quantity)?,
-            lifo,
+            policy,
         })
     }
 }
@@ -80,6 +106,69 @@ fn required_id(row: &BTreeMap<String, Value>, field: &str) -> Result<i64> {
     identifier(row, field)?
         .ok_or_else(|| Error::internal(format!("Issue preview is missing {field}.")))
 }
+fn book_refusal() -> Error {
+    Error::access("Issue preview requires a readable cost book for the stock line's company.")
+}
+
+async fn select_management_method(
+    tx: &mut Transaction,
+    env: &Env,
+    id: i64,
+    company: i64,
+    currency: i64,
+) -> Result<bool> {
+    let books = env
+        .records(crate::cost_book::MODEL)?
+        .browse([id])?
+        .read_with(
+            tx,
+            &[
+                "company_id",
+                "currency_id",
+                "purpose",
+                "method",
+                "effective_from",
+                "active",
+            ],
+            Load::Raw,
+        )
+        .await
+        .map_err(|error| match error.kind() {
+            ErrorKind::Access | ErrorKind::Missing => book_refusal(),
+            _ => error,
+        })?;
+    let row = books.first().ok_or_else(book_refusal)?;
+    if required_id(row, "company_id")? != company {
+        return Err(book_refusal());
+    }
+    let effective_from = match row.get("effective_from") {
+        Some(Value::Date(value)) => *value,
+        _ => return Err(Error::invariant("A cost book has no effective date.")),
+    };
+    let days = erp_addon_base::company_calendar::business_days(tx, env, &[company]).await?;
+    let today = days.get(&company).ok_or_else(book_refusal)?.date;
+    if row.get("active") != Some(&Value::Bool(true))
+        || !matches!(row.get("purpose"), Some(Value::Str(value)) if value.as_ref() == "management")
+        || effective_from > today
+    {
+        return Err(Error::validation(
+            "Choose an active management cost book effective on the company business date.",
+        ));
+    }
+    if required_id(row, "currency_id")? != currency {
+        return Err(Error::validation(
+            "Management issue preview requires a cost book in the company currency.",
+        ));
+    }
+    match row.get("method") {
+        Some(Value::Str(method)) if method.as_ref() == "fifo" => Ok(false),
+        Some(Value::Str(method)) if method.as_ref() == "lifo" => Ok(true),
+        _ => Err(Error::invariant(
+            "A management cost book has an unsupported costing method.",
+        )),
+    }
+}
+
 fn origin_refusal() -> Error {
     Error::access("Issue preview requires readable original cost source records.")
 }
@@ -167,8 +256,8 @@ struct Layer {
 }
 #[methods(StockQuant, addon = "stock_account")]
 impl QuantCostPreview {
-    /// Compare exact FIFO/LIFO shares without reserving, consuming, posting or selecting a cost book.
-    /// The selected quant authorizes a company/product/lot cost pool, not location availability.
+    /// Compare exact FIFO/LIFO shares from the current receipt pool, optionally using a management book.
+    /// The selected quant authorizes a company/product/lot pool. The comparison neither reserves nor posts.
     #[method]
     #[rpc(effect = read)]
     async fn preview_issue_cost(
@@ -259,6 +348,13 @@ impl QuantCostPreview {
                 return Err(Error::access("Issue preview requires a readable lot."));
             }
         }
+        let (lifo, selected_book) = match request.policy {
+            Policy::Unbooked { lifo } => (lifo, None),
+            Policy::ManagementBook { id } => (
+                select_management_method(tx, env, id, company, currency).await?,
+                Some(id),
+            ),
+        };
         let max = erp_addon_reporting::settings::read(env, tx)
             .await?
             .export_max_rows;
@@ -430,7 +526,7 @@ impl QuantCostPreview {
                 "The receipt cost pool does not cover the requested issue quantity.",
             ));
         }
-        if request.lifo {
+        if lifo {
             layers.reverse();
         }
         let mut remaining = request.quantity.clone();
@@ -469,13 +565,13 @@ impl QuantCostPreview {
                 "remaining_value": fraction(&layer.value.checked_sub(&value)?),
             }));
         }
-        Ok(Value::Json(Arc::new(json!({
-            "scope": SCOPE,
+        let mut result = json!({
+            "scope": if selected_book.is_some() {BOOK_SCOPE} else {SCOPE},
             "comparison_only": true,
             "quantity_scope": "company_product_lot_cost_pool",
             "location_availability_checked": false,
-            "cost_book": null,
-            "method": if request.lifo {"lifo"} else {"fifo"},
+            "cost_book": selected_book.map(|id| json!({"id":id,"purpose":"management"})),
+            "method": if lifo {"lifo"} else {"fifo"},
             "cost_key": {"company_id":company,"product_id":product,"lot_id":lot},
             "currency_id": currency,
             "generation": generation,
@@ -484,6 +580,10 @@ impl QuantCostPreview {
             "pool_remaining_quantity": fraction(&available.checked_sub(&request.quantity)?),
             "pool_remaining_value": fraction(&pool_value.checked_sub(&total)?),
             "allocations": allocations,
-        }))))
+        });
+        if selected_book.is_some() {
+            result["receipt_scope"] = json!(SCOPE);
+        }
+        Ok(Value::Json(Arc::new(result)))
     }
 }

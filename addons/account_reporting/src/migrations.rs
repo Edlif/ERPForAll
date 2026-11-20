@@ -13,3 +13,14 @@ async fn guard_builtin_balance_sheet(tx: &mut Transaction, _from: &SemverVersion
     ).await?;
     Ok(())
 }
+
+#[erp_sdk::migration(addon = "account_reporting", version = "1.8", stage = post)]
+async fn guard_builtin_partner_ledger(tx: &mut Transaction, _from: &SemverVersion) -> Result<()> {
+    tx.execute(
+        "UPDATE reporting_report r SET provider = 'account_reporting.partner_ledger' \
+         FROM ir_model_data d WHERE d.module = 'account_reporting' AND d.name = 'report_partner_ledger' \
+           AND d.model = 'reporting.report' AND d.res_id = r.id AND r.provider = 'reporting.definition'",
+        &[],
+    ).await?;
+    Ok(())
+}

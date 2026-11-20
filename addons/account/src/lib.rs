@@ -9,6 +9,7 @@ erp_sdk::addon!(
 );
 
 pub mod company;
+mod costing;
 pub mod fiscal;
 pub mod fpos;
 pub mod invoice;

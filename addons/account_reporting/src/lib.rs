@@ -8,5 +8,6 @@ erp_sdk::addon!(
 mod balance_sheet;
 mod general_ledger;
 mod migrations;
+mod partner_ledger;
 pub mod schema;
 erp_addon_reporting::provider_declarations!(general_ledger::GeneralLedger);

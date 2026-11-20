@@ -4,6 +4,7 @@
     <data noupdate="1">
         <record id="report_partner_ledger" model="reporting.report">
             <field name="name">Partner Ledger</field>
+            <field name="provider">account_reporting.partner_ledger</field>
             <field name="multi_company" eval="False"/>
         </record>
         <record id="partner_ledger_column_opening" model="reporting.report.column">

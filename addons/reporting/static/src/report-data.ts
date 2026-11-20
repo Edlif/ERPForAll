@@ -12,6 +12,7 @@ export interface Line {
 export interface Column { readonly group: number; readonly name: string; readonly label: string; readonly kind: CellKind; readonly sortable: boolean }
 export interface Period { readonly from: string | null; readonly to: string }
 export interface Filters {
+  readonly partnerLedger: boolean;
   readonly dateMode: "range" | "single"; readonly currentOnly: boolean; readonly comparison: boolean; readonly multiCompany: boolean; readonly unfoldAll: boolean;
   readonly hideZero: "never" | "optional" | "by_default"; readonly searchBar: boolean; readonly maxSearchChars: number; readonly totalsBelow: boolean;
 }
@@ -97,12 +98,21 @@ export function filters(raw: unknown): Filters {
   // Older reporting servers use the original wire bound of 256 Unicode characters.
   const maxSearchChars = f["max_search_chars"] === undefined ? 256 : num(f["max_search_chars"], "the search limit");
   if (!Number.isSafeInteger(maxSearchChars) || maxSearchChars < 1) throw new Error("The report search limit is invalid.");
-  return { dateMode: mode, currentOnly, maxSearchChars, hideZero: hide, comparison: bool(f["comparison"], "the filters"), multiCompany: bool(f["multi_company"], "the filters"),
+  const partnerLedger = f["provider"] !== undefined && str(f["provider"], "the report provider") === "account_reporting.partner_ledger";
+  return { dateMode: mode, partnerLedger, currentOnly, maxSearchChars, hideZero: hide, comparison: bool(f["comparison"], "the filters"), multiCompany: bool(f["multi_company"], "the filters"),
     unfoldAll: bool(f["unfold_all"], "the filters"), searchBar: bool(f["search_bar"], "the filters"), totalsBelow: bool(f["totals_below"], "the filters") };
+}
+/** Only the accounting Partner Ledger owns the reconciliation control. */
+export function validateProviderOptions(options: Options, filters: Filters): void {
+  if (filters.partnerLedger) {
+    bool(obj(options["provider"], "the Partner Ledger options")["unreconciled"], "the unreconciled filter");
+  }
 }
 export function decodeOptions(raw: unknown): { name: string; options: Options; filters: Filters } {
   const a = obj(raw, "the report options");
-  return { name: str(a["name"], "the report name"), options: obj(a["options"], "the options"), filters: filters(a["filters"]) };
+  const options = obj(a["options"], "the options"), controls = filters(a["filters"]);
+  validateProviderOptions(options, controls);
+  return { name: str(a["name"], "the report name"), options, filters: controls };
 }
 export function decodeLines(raw: unknown): Loaded {
   const a = obj(raw, "the report lines");

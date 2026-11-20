@@ -13,10 +13,12 @@ pub static MANIFEST: SqlObjectManifest = SqlObjectManifest::new(
         "receipt_final",
         "control_keys",
         "layer_original",
+        "book_policy",
         "fn_history",
         "fn_receipt",
         "fn_control",
         "fn_layer",
+        "fn_book_policy",
         "source_update",
         "source_delete",
         "source_truncate",
@@ -39,6 +41,21 @@ pub static MANIFEST: SqlObjectManifest = SqlObjectManifest::new(
         "control_delete",
         "control_truncate",
         "layer_update",
+        "book_update",
+        "cost_method_transition",
+        "cost_method_default_scope",
+        "fn_cost_category",
+        "fn_cost_product",
+        "fn_cost_variant",
+        "fn_cost_category_delete",
+        "cost_variant_update",
+        "cost_category_delete",
+        "fn_cost_default",
+        "cost_category_update",
+        "cost_product_update",
+        "cost_default_insert",
+        "cost_default_update",
+        "cost_default_delete",
     ],
 );
 
@@ -86,6 +103,20 @@ condition!(
     "ERP64",
     "layer_original",
     "An existing valuation layer must keep its identity and original receipt values."
+);
+
+object!(
+    BOOK_POLICY,
+    SqlObjectDecl::condition(
+        "stock_account",
+        "book_policy",
+        SqlConditionDecl::new(
+            "ERP65",
+            "stock_valuation_book_policy",
+            "Create a new cost book to change its company, purpose, method, currency or effective date.",
+        )
+        .kind(SqlConditionKind::Validation)
+    )
 );
 
 macro_rules! function {
@@ -196,6 +227,27 @@ END
 "#
 );
 
+// A book's policy is write-once regardless of which Stock Account writer is used.
+function!(
+    BOOK_FN,
+    "fn_book_policy",
+    "book_policy",
+    r#"
+BEGIN
+    IF EXISTS (
+        SELECT FROM old_rows o LEFT JOIN new_rows n USING(id)
+        WHERE n.id IS NULL OR
+            (n.company_id, n.purpose, n.method, n.currency_id, n.effective_from)
+            IS DISTINCT FROM
+            (o.company_id, o.purpose, o.method, o.currency_id, o.effective_from)
+    ) THEN
+        RAISE EXCEPTION 'cost book policy changed' USING ERRCODE='ERP65', CONSTRAINT='stock_valuation_book_policy';
+    END IF;
+    RETURN NULL;
+END
+"#
+);
+
 macro_rules! update {
     ($symbol:ident, $table:literal, $model:literal, $function:literal) => {
         object!(
@@ -274,3 +326,6 @@ permanent!(
 permanent!(receipt, "receipt", "stock.valuation.receipt", "fn_receipt");
 permanent!(control, "control", "stock.valuation.control", "fn_control");
 update!(LAYER_UPDATE, "layer", "stock.valuation.layer", "fn_layer");
+update!(BOOK_UPDATE, "book", "stock.cost.book", "fn_book_policy");
+
+mod cost_policy;

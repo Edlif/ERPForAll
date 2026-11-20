@@ -187,6 +187,7 @@ pub struct SqlTableGrantDecl {
     pub(crate) model: &'static str,
     pub(crate) binding: SqlBinding,
     pub(crate) ops: &'static [SqlTableOp],
+    pub(crate) exclusive_grantees: bool,
     pub(crate) exclusive_id_sequence: Option<&'static str>,
 }
 
@@ -198,7 +199,14 @@ impl SqlTableGrantDecl {
             binding,
             ops,
             exclusive_id_sequence: None,
+            exclusive_grantees: false,
         }
+    }
+    /// Require direct ACL holders on the table, its columns and owned identity sequence to be
+    /// the owner or configured roles. An unbound holder requires explicit operator remediation.
+    pub const fn exclusive_grantees(mut self) -> Self {
+        self.exclusive_grantees = true;
+        self
     }
     /// Request USAGE on this model's exclusive named id sequence for a definer INSERT.
     /// The registry and installed database must both confirm exclusivity.

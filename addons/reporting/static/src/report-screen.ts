@@ -112,6 +112,7 @@ export class ReportScreen implements ClientActionHandle {
     });
   }
   private commit(next: Shown): void {
+    data.validateProviderOptions(next.options, next.filters);
     this.shown = next; this.failure = undefined; this.phase = "ready"; this.busy.clear();
     this.render();
   }

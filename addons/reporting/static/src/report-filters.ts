@@ -165,9 +165,18 @@ function companiesChip(ctx: FilterContext): Chip {
   });
 }
 
-function optionsChip(ctx: FilterContext): Chip {
+function optionsChip(ctx: FilterContext, provider: Options): Chip {
   const { options, filters } = ctx;
   return chip("options", "Options", "sliders-horizontal", (panel, close) => {
+    if (filters.partnerLedger) {
+      const row = checkbox("unreconciled", "Unreconciled at period end", provider["unreconciled"] === true);
+      const input = row.querySelector("input")!;
+      input.addEventListener("change", () => {
+        close();
+        ctx.apply({ provider: { ...provider, unreconciled: input.checked } });
+      });
+      panel.append(row);
+    }
     if (filters.unfoldAll) {
       const row = checkbox("unfold_all", "Unfold all lines", options["unfold_all"] === true);
       row.querySelector("input")?.addEventListener("change", event => { close(); ctx.apply({ unfold_all: (event.currentTarget as HTMLInputElement).checked }); });
@@ -197,7 +206,10 @@ export function buildFilters(ctx: FilterContext): { node: HTMLElement; dispose()
   const chips: Chip[] = ctx.filters.currentOnly ? [] : [dateChip(ctx)];
   if (ctx.filters.comparison) chips.push(comparisonChip(ctx));
   if (ctx.filters.multiCompany && ctx.env.companies.length > 1) chips.push(companiesChip(ctx));
-  if (ctx.filters.unfoldAll || ctx.filters.hideZero !== "never") chips.push(optionsChip(ctx));
+  const provider = ctx.filters.partnerLedger ? obj(ctx.options["provider"], "the Partner Ledger options") : {};
+  if (ctx.filters.unfoldAll || ctx.filters.hideZero !== "never" || ctx.filters.partnerLedger) {
+    chips.push(optionsChip(ctx, provider));
+  }
   node.append(...chips.map(c => c.node));
   if (ctx.filters.searchBar) node.append(searchForm(ctx));
   return { node, dispose: () => chips.forEach(c => c.dispose()) };

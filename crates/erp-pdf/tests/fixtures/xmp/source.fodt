@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.text">
+<office:meta><dc:title>Original XMP fixture</dc:title><dc:subject>Public test document</dc:subject><meta:initial-creator>Fixture Author</meta:initial-creator><dc:creator>Fixture Author</dc:creator><dc:language>en-US</dc:language><meta:creation-date>2026-01-01T00:00:00</meta:creation-date></office:meta>
+<office:body><office:text><text:p>Original public fixture. No personal or business data.</text:p></office:text></office:body>
+</office:document>

@@ -3,6 +3,7 @@
 //! runtime; fiscal calendars, lock policies and taxes remain in their owning modules.
 mod settings;
 pub(crate) mod validation;
+pub(crate) mod valuation;
 
 use erp_sdk::prelude::*;
 

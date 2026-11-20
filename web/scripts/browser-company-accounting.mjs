@@ -7,7 +7,8 @@ import path from "node:path";
 import { chromium } from "playwright";
 let input = "";
 for await (const chunk of process.stdin) input += chunk;
-const { origin, cookies, action, company } = JSON.parse(input);
+const { origin, cookies, action, company, companiesAction } = JSON.parse(input);
+assert.ok(Number.isSafeInteger(companiesAction) && companiesAction > 0, "installed Companies action is required");
 const output = process.env.ACCOUNT_COMPANY_OUTPUT;
 assert.ok(output, "ACCOUNT_COMPANY_OUTPUT is required");
 await mkdir(output); // Refuse stale captures or an earlier successful receipt.
@@ -65,10 +66,78 @@ try {
     await prefix.waitFor({ state: "visible" });
     await page.screenshot({ path: path.join(output, `company-${width}.png`), fullPage: true });
   }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(`${origin}/erp/action-${companiesAction}?id=${company}&view_type=form`, { waitUntil: "networkidle" });
+  const zone = page.locator('select[name="tz"]');
+  await zone.waitFor({ state: "visible" });
+  assert.equal(await zone.count(), 1, "installed Settings Companies form exposes one timezone selector");
+  assert.equal(await zone.inputValue(), "UTC", "bootstrap company has UTC business timezone");
+  assert.equal(await zone.isEnabled(), true, "company administrator can edit the timezone");
+  assert.equal(await zone.getAttribute("required"), "", "timezone selector is required");
+  const changeZone = async action => {
+    const [response] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith("/erp/json/2/res.company/onchange")),
+      action(),
+    ]);
+    assert.equal(response.status(), 200, "company timezone onchange succeeds");
+    await page.waitForFunction(() => {
+      const select = document.querySelector('select[name="tz"]');
+      return select && !select.disabled;
+    });
+  };
+  const previousZone = await zone.evaluate(select => {
+    const options = [...select.options];
+    const index = options.findIndex(option => option.value === "Asia/Jakarta");
+    if (index < 1) throw new Error("Asia/Jakarta must have a preceding keyboard choice");
+    return options[index - 1].value;
+  });
+  await changeZone(() => zone.selectOption(previousZone));
+  await zone.focus();
+  await changeZone(() => zone.press("ArrowDown"));
+  await zone.press("Tab");
+  await page.waitForLoadState("networkidle");
+  assert.equal(await zone.inputValue(), "Asia/Jakarta", "keyboard chooses the company timezone");
+  await page.getByRole("button", { name: "Save", exact: true }).waitFor({ state: "visible" });
+  await page.screenshot({ path: path.join(output, "company-timezone-dirty.png"), fullPage: true });
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForLoadState("networkidle");
+  await page.reload({ waitUntil: "networkidle" });
+  await zone.waitFor({ state: "visible" });
+  assert.equal(await zone.inputValue(), "Asia/Jakarta", "company timezone save survives reload");
+  await changeZone(() => zone.selectOption("Pacific/Pago_Pago"));
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await page.waitForLoadState("networkidle");
+  assert.equal(await zone.inputValue(), "Asia/Jakarta", "discard restores the saved company timezone");
+  for (const width of [1440, 800, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await zone.waitFor({ state: "visible" });
+    await page.screenshot({ path: path.join(output, `company-timezone-${width}.png`), fullPage: true });
+  }
+  await zone.selectOption("");
+  const zoneError = page.locator('[data-field="tz"] .field-error');
+  await zoneError.waitFor({ state: "visible" });
+  assert.equal(await zone.getAttribute("aria-invalid"), "true", "empty timezone has accessible invalid state");
+  const zoneLabel = await page.locator('[data-field="tz"] label').innerText();
+  assert.equal(await zoneError.innerText(), `${zoneLabel} is required.`, "empty timezone explains the required value");
+  assert.equal(await zone.inputValue(), "", "invalid empty choice stays visible");
+  await page.screenshot({ path: path.join(output, "company-timezone-invalid.png"), fullPage: true });
+  await changeZone(() => zone.selectOption("UTC"));
+  await page.waitForLoadState("networkidle");
+  assert.equal(await zone.getAttribute("aria-invalid"), null, "valid timezone clears the invalid empty choice without reload");
+  assert.equal(await zoneError.isVisible(), false, "correcting the timezone hides required feedback");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForLoadState("networkidle");
+  await page.reload({ waitUntil: "networkidle" });
+  await zone.waitFor({ state: "visible" });
+  assert.equal(await zone.inputValue(), "UTC", "corrected timezone saves and survives reload");
   assert.deepEqual(errors, []);
   const result = { ...stamp, status: "PASS", server: "actual installed native account addon", save_reload: true,
     discard: true, failed_save_retains_draft: true, readonly_chart: true, keyboard_relation_saved: true,
-    screenshots: [1440, 800, 390], performance: "DEFERRED_PERFORMANCE" };
+    screenshots: [1440, 800, 390], performance: "DEFERRED_PERFORMANCE",
+    company_timezone: { action: companiesAction, initial: "UTC", required: true, editable: true,
+      keyboard_selected: "Asia/Jakarta", save_reload: "Asia/Jakarta", discarded: "Pacific/Pago_Pago",
+      empty_feedback: `${zoneLabel} is required.`, corrected_save_reload: "UTC",
+      invalid_correction_without_reload: true, screenshots: [1440, 800, 390] } };
   await writeFile(path.join(output, "result.json"), JSON.stringify(result, null, 2) + "\n");
   console.log(JSON.stringify(result));
   await context.close();

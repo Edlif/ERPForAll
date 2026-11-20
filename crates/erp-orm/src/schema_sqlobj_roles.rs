@@ -621,6 +621,8 @@ impl Transaction {
             self.sql_object_ddl(id, &sqlobj::table_grants(table, &all, &grants))
                 .await?;
         }
+        self.fence_identity_sequences(graph, bound, deferred, true)
+            .await?;
         self.check_named_sequences(graph, bound, deferred, true)
             .await?;
         self.fence_sql_object_descendants(graph, bound, deferred, true)
@@ -789,6 +791,10 @@ impl Transaction {
         deferred: &BTreeSet<SqlObjectId>,
     ) -> Result<()> {
         self.check_sql_object_owners(graph, bound, deferred).await?;
+        self.verify_exclusive_grantees(graph, bound, deferred)
+            .await?;
+        self.fence_identity_sequences(graph, bound, deferred, false)
+            .await?;
         self.check_named_sequences(graph, bound, deferred, false)
             .await?;
         self.fence_sql_object_descendants(graph, bound, deferred, false)

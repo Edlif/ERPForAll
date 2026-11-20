@@ -1473,6 +1473,7 @@ version = "0.1.0"
 dependencies = [
  "erp-addon-base",
  "erp-sdk",
+ "getrandom 0.4.3",
  "libc",
  "rustix",
  "serde",
@@ -1893,6 +1894,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "erp-addon-valuation"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-stock",
+ "erp-sdk",
+]
+
+[[package]]
 name = "erp-addon-web"
 version = "0.1.0"
 dependencies = [
@@ -1974,6 +1983,7 @@ dependencies = [
  "erp-addon-stock_account",
  "erp-addon-theme-office-blue",
  "erp-addon-uom",
+ "erp-addon-valuation",
  "erp-addon-web",
  "erp-data",
  "erp-fields",
@@ -2207,6 +2217,7 @@ dependencies = [
 name = "erp-report-data"
 version = "0.1.0"
 dependencies = [
+ "erp-domain",
  "erp-expr",
  "erp-fields",
  "erp-orm",

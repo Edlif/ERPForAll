@@ -271,6 +271,9 @@ pub fn create_trigger(t: &SqlTrigger, function: &SqlFunction) -> String {
         SqlTriggerShape::BeforeTruncate => {
             format!("CREATE TRIGGER {name} BEFORE TRUNCATE ON {table} FOR EACH STATEMENT {run}")
         }
+        SqlTriggerShape::BeforeDeleteRow => {
+            format!("CREATE TRIGGER {name} BEFORE DELETE ON {table} FOR EACH ROW {run}")
+        }
         SqlTriggerShape::BeforeInsertRow => {
             format!("CREATE TRIGGER {name} BEFORE INSERT ON {table} FOR EACH ROW {run}")
         }
@@ -355,6 +358,7 @@ fn shape(object: &SqlObject) -> Vec<(&'static str, Option<String>)> {
                 SqlTriggerShape::BeforeTruncate => {
                     ("BEFORE", "TRUNCATE", "STATEMENT", None, None, None)
                 }
+                SqlTriggerShape::BeforeDeleteRow => ("BEFORE", "DELETE", "ROW", None, None, None),
                 SqlTriggerShape::BeforeInsertRow => ("BEFORE", "INSERT", "ROW", None, None, None),
                 SqlTriggerShape::AfterInsertConstraintRow(d) => {
                     ("AFTER", "INSERT", "ROW", s(deferral_sql(d)), None, None)

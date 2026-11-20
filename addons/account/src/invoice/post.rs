@@ -159,12 +159,32 @@ pub async fn before_post(tx: &mut Transaction, env: &Env, moves: &[i64]) -> Resu
     if undated.is_empty() {
         return Ok(());
     }
-    let today = env.context_today()?;
-    records
-        .browse(undated)?
-        .write(
-            tx,
-            RawVals::new().set_cell("invoice_date", Cell::Date(today)),
-        )
-        .await
+    let undated = records.browse(undated)?;
+    let companies = undated.cells(tx, "company_id").await?;
+    let mut groups = std::collections::BTreeMap::<i64, Vec<i64>>::new();
+    for (id, company) in undated.ids().into_iter().zip(companies) {
+        let company = crate::moves::id_cell(Some(&company), "company_id")?.ok_or_else(|| {
+            Error::validation("An invoice needs a company before its date can be set.")
+        })?;
+        groups.entry(company).or_default().push(id);
+    }
+    let days = erp_addon_base::company_calendar::business_days(
+        tx,
+        env,
+        &groups.keys().copied().collect::<Vec<_>>(),
+    )
+    .await?;
+    for (company, ids) in groups {
+        let day = days
+            .get(&company)
+            .ok_or_else(|| Error::missing(format!("Company {company} is unavailable.")))?;
+        records
+            .browse(ids)?
+            .write(
+                tx,
+                RawVals::new().set_cell("invoice_date", Cell::Date(day.date)),
+            )
+            .await?;
+    }
+    Ok(())
 }

@@ -6,6 +6,7 @@
 
   <record id="main_company" model="res.company">
     <field name="name">Main Company</field>
+    <field name="tz">UTC</field>
     <field name="partner_id" ref="base.main_partner"/>
     <field name="currency_id" ref="base.USD"/>
   </record>

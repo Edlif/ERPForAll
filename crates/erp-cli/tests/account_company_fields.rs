@@ -62,6 +62,7 @@ async fn install() -> (TestDb, Orm, ModuleSystem) {
         .collect();
     let system = ModuleSystem::builder(db.pool().clone(), index)
         .view_types(erp_addon_web::view_type_contributions())
+        .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
         .native_artifact_identities(identities)
         .code([
             &erp_addon_base::ADDON,
@@ -71,6 +72,8 @@ async fn install() -> (TestDb, Orm, ModuleSystem) {
             &erp_addon_analytic::ADDON,
             &erp_addon_account::ADDON,
         ])
+        .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+        .require_sql_uninstall_guards([&erp_addon_account::reconcile::history_guard::UNINSTALL])
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
         .require_core_tables(erp_security::auth::core_tables())
         .build()
@@ -611,6 +614,571 @@ async fn relations_body() {
 }
 
 #[test]
+fn company_stock_valuation_account_uses_the_dated_chart_default() {
+    big_stack(valuation_account_body);
+}
+
+async fn valuation_account_body() {
+    use erp_addon_account::mapping::{CompanyDefault, DefaultRole, ResolutionDate};
+
+    const FIELD: &str = "account_stock_valuation_id";
+    let (db, orm, _system) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let main = main_company(&mut tx).await;
+    let branch = company(&mut tx, main, "Valuation branch", Some(main)).await;
+    let foreign = company(&mut tx, main, "Unrelated chart", None).await;
+    let asset = |name, code| {
+        RawVals::new()
+            .set_cell("name", text(name))
+            .set_cell("account_type", text("asset_current"))
+            .set_cell("code", text(code))
+    };
+    let accounts = records(&tx, main, "account.account");
+    let ids = create(
+        &accounts,
+        &mut tx,
+        vec![asset("Chart stock", "190010"), asset("New stock", "190011")],
+    )
+    .await
+    .unwrap()
+    .ids();
+    let unsuitable = create(
+        &accounts,
+        &mut tx,
+        vec![
+            asset("Wrong valuation type", "190012").set_cell("account_type", text("expense")),
+            asset("Archived valuation", "190013").set_cell("active", Cell::Bool(false)),
+        ],
+    )
+    .await
+    .unwrap()
+    .ids();
+    let foreign_accounts = records(&tx, foreign, "account.account");
+    let foreign_asset = create(
+        &foreign_accounts,
+        &mut tx,
+        vec![asset("Foreign stock", "190010")],
+    )
+    .await
+    .unwrap()
+    .ids()[0];
+    let system_group = group(&mut tx, "base", "group_system").await;
+    let admin = user_of(&mut tx, main, "valuation-admin", &[main], system_group).await;
+    let reader_group = group(&mut tx, "account", "group_account_readonly").await;
+    let reader = user_of(&mut tx, main, "valuation-reader", &[main], reader_group).await;
+    let key = CompanyDefault::new(main, DefaultRole::StockValuation).unwrap();
+    let company_model = records(&tx, main, "res.company");
+    let root = company_model.browse([main]).unwrap();
+    exact_error(
+        company_model
+            .search(
+                &mut tx,
+                &Domain::condition(FIELD, Operator::Eq, ids[0]).unwrap(),
+            )
+            .await,
+        ErrorKind::UserError,
+        "Searching account_stock_valuation_id needs a later release.",
+    );
+    match create(
+        &company_model,
+        &mut tx,
+        vec![
+            RawVals::new()
+                .set_cell("name", text("Premature mapping"))
+                .set_cell(FIELD, Cell::Id(ids[0])),
+        ],
+    )
+    .await
+    {
+        Ok(_) => panic!("company creation accepted a stock account"),
+        Err(e) => {
+            assert_eq!(e.kind(), ErrorKind::Validation);
+            assert_eq!(
+                e.message(),
+                "Set account_stock_valuation_id after creating the company."
+            );
+        }
+    }
+    let defaulted =
+        company_model.with_context([("default_account_stock_valuation_id", Value::Int(ids[0]))]);
+    exact_error(
+        create(
+            &defaulted,
+            &mut tx,
+            vec![RawVals::new().set_cell("name", text("Defaulted mapping"))],
+        )
+        .await,
+        ErrorKind::Validation,
+        "Set account_stock_valuation_id after creating the company.",
+    );
+    assert_eq!(root.cell(&mut tx, FIELD).await.unwrap(), Cell::Null);
+    assert!(key.install_if_absent(&mut tx, Some(ids[0])).await.unwrap());
+    assert_eq!(root.cell(&mut tx, FIELD).await.unwrap(), Cell::Id(ids[0]));
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let root = records(&tx, main, "res.company").browse([main]).unwrap();
+    let branch_record = records(&tx, main, "res.company").browse([branch]).unwrap();
+    assert_eq!(
+        branch_record.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Null
+    );
+    exact_error(
+        write(
+            &root,
+            &mut tx,
+            RawVals::new().set_cell(FIELD, Cell::Id(foreign_asset)),
+        )
+        .await,
+        ErrorKind::UserError,
+        &format!(
+            "Account is not applicable to company {}",
+            match root.cell(&mut tx, "name").await.unwrap() {
+                Cell::Str(name) => name,
+                other => panic!("invalid company name {other:?}"),
+            }
+        ),
+    );
+    for target in unsuitable {
+        exact_error(
+            write(
+                &root,
+                &mut tx,
+                RawVals::new().set_cell(FIELD, Cell::Id(target)),
+            )
+            .await,
+            ErrorKind::UserError,
+            "Configured account is inactive or invalid for role stock valuation",
+        );
+        assert_eq!(root.cell(&mut tx, FIELD).await.unwrap(), Cell::Id(ids[0]));
+    }
+    write(
+        &root,
+        &mut tx,
+        RawVals::new().set_cell(FIELD, Cell::Id(ids[1])),
+    )
+    .await
+    .unwrap();
+    let branch_key = CompanyDefault::new(branch, DefaultRole::StockValuation).unwrap();
+    assert_eq!(
+        branch_key
+            .resolve(&mut tx, ResolutionDate::Current)
+            .await
+            .unwrap(),
+        None
+    );
+    // Account applicability can include the parent chart without inheriting its setting.
+    write(
+        &branch_record,
+        &mut tx,
+        RawVals::new().set_cell(FIELD, Cell::Id(ids[0])),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        branch_record.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(ids[0])
+    );
+    assert_eq!(root.cell(&mut tx, FIELD).await.unwrap(), Cell::Id(ids[1]));
+    write(
+        &branch_record,
+        &mut tx,
+        RawVals::new().set_cell(FIELD, Cell::Null),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !branch_key
+            .install_if_absent(&mut tx, Some(ids[1]))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        branch_record.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Null
+    );
+    assert_eq!(root.cell(&mut tx, FIELD).await.unwrap(), Cell::Id(ids[1]));
+    let past = Date::from_ymd(2000, 1, 1).unwrap();
+    assert_eq!(
+        key.require(&mut tx, ResolutionDate::Document(past))
+            .await
+            .unwrap(),
+        ids[0]
+    );
+    assert_eq!(
+        key.require(&mut tx, ResolutionDate::Current).await.unwrap(),
+        ids[1]
+    );
+    assert_eq!(root.cell(&mut tx, FIELD).await.unwrap(), Cell::Id(ids[1]));
+    write(&root, &mut tx, RawVals::new().set_cell(FIELD, Cell::Null))
+        .await
+        .unwrap();
+    assert_eq!(root.cell(&mut tx, FIELD).await.unwrap(), Cell::Null);
+    assert!(!key.install_if_absent(&mut tx, Some(ids[0])).await.unwrap());
+    tx.rollback().await.unwrap();
+    drop(tx);
+    // A failed batch must roll back the earlier company mapping as well as ordinary fields.
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let companies = records(&tx, main, "res.company")
+        .browse([foreign, main])
+        .unwrap();
+    let main_record = companies.browse([main]).unwrap();
+    let foreign_record = companies.browse([foreign]).unwrap();
+    let original_name = main_record.cell(&mut tx, "name").await.unwrap();
+    let batch_ids = ids.clone();
+    let error = tx
+        .savepoint(async move |tx| {
+            let error = companies
+                .write(
+                    tx,
+                    RawVals::new()
+                        .set_cell(FIELD, Cell::Id(batch_ids[1]))
+                        .set_cell("name", text("Attempted batch rename")),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                main_record.cell(tx, FIELD).await.unwrap(),
+                Cell::Id(batch_ids[0])
+            );
+            assert_eq!(foreign_record.cell(tx, FIELD).await.unwrap(), Cell::Null);
+            assert_eq!(main_record.cell(tx, "name").await.unwrap(), original_name);
+            assert_eq!(
+                foreign_record.cell(tx, "name").await.unwrap(),
+                text("Unrelated chart")
+            );
+            assert_eq!(
+                key.resolve(tx, ResolutionDate::Current).await.unwrap(),
+                Some(batch_ids[0])
+            );
+            Err::<(), _>(error)
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError);
+    assert_eq!(
+        error.message(),
+        "Account is not applicable to company Attempted batch rename"
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    let orm = policy_orm(&db, &orm).await;
+    let mut tx = orm
+        .begin(erp_sdk::UserId::new(reader).unwrap())
+        .await
+        .unwrap();
+    let company_model = tx.env().records("res.company").unwrap();
+    let root = company_model.browse([main]).unwrap();
+    assert_eq!(root.cell(&mut tx, FIELD).await.unwrap(), Cell::Id(ids[0]));
+    let denied = write(
+        &root,
+        &mut tx,
+        RawVals::new().set_cell(FIELD, Cell::Id(ids[1])),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.kind(), ErrorKind::Access);
+    // The remaining ACL text lists installed groups; assert its stable operation/model clause.
+    assert!(
+        denied
+            .message()
+            .contains("Your access rights do not let you modify 'Company'")
+    );
+    let out_of_scope = CompanyDefault::new(foreign, DefaultRole::StockValuation).unwrap();
+    exact_error(
+        out_of_scope.resolve(&mut tx, ResolutionDate::Current).await,
+        ErrorKind::Access,
+        "Accounting configuration is not accessible for this company",
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    let mut tx = orm
+        .begin(erp_sdk::UserId::new(admin).unwrap())
+        .await
+        .unwrap();
+    let company = tx
+        .env()
+        .records("res.company")
+        .unwrap()
+        .browse([main])
+        .unwrap();
+    write(
+        &company,
+        &mut tx,
+        RawVals::new().set_cell(FIELD, Cell::Id(ids[1])),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        company.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(ids[1])
+    );
+    exact_error(
+        write(
+            &company,
+            &mut tx,
+            RawVals::new().set_cell(FIELD, Cell::Id(foreign_asset)),
+        )
+        .await,
+        ErrorKind::Access,
+        "Accounting configuration target does not exist or is not accessible",
+    );
+    assert_eq!(
+        company.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(ids[1])
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    // Only a system principal can legitimately switch users without an impersonation capability.
+    let mut tx = orm.begin(erp_orm::PrincipalHint::system()).await.unwrap();
+    let company = records(&tx, main, "res.company").browse([main]).unwrap();
+    assert_eq!(
+        company.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(ids[0])
+    );
+    // Warm the privileged cache, then change only the record environment in this transaction.
+    let reader_env = tx.env().with_user(reader);
+    let restricted = reader_env
+        .records("res.company")
+        .unwrap()
+        .browse([main])
+        .unwrap();
+    assert_eq!(
+        restricted.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(ids[0])
+    );
+    let denied = write(
+        &restricted,
+        &mut tx,
+        RawVals::new().set_cell(FIELD, Cell::Id(ids[1])),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.kind(), ErrorKind::Access);
+    // Installed group details follow this stable operation/model clause.
+    assert!(
+        denied
+            .message()
+            .contains("Your access rights do not let you modify 'Company'")
+    );
+    assert_eq!(
+        company.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(ids[0])
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    db.cleanup().await.unwrap();
+}
+
+#[test]
+fn company_stock_valuation_account_revalidates_warm_cache() {
+    big_stack(valuation_cache_body);
+}
+
+async fn valuation_cache_body() {
+    const FIELD: &str = "account_stock_valuation_id";
+    let (db, orm, _system) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let main = main_company(&mut tx).await;
+    let account = create(
+        &records(&tx, main, "account.account"),
+        &mut tx,
+        vec![
+            RawVals::new()
+                .set_cell("name", text("Cached valuation"))
+                .set_cell("code", text("190021"))
+                .set_cell("account_type", text("asset_current")),
+        ],
+    )
+    .await
+    .unwrap();
+    let selected_company = records(&tx, main, "res.company").browse([main]).unwrap();
+    write(
+        &selected_company,
+        &mut tx,
+        RawVals::new().set_cell(FIELD, Cell::Id(account.ids()[0])),
+    )
+    .await
+    .unwrap();
+    for (field, invalid, valid) in [
+        ("active", Cell::Bool(false), Cell::Bool(true)),
+        ("account_type", text("expense"), text("asset_current")),
+    ] {
+        assert_eq!(
+            selected_company.cell(&mut tx, FIELD).await.unwrap(),
+            Cell::Id(account.ids()[0])
+        );
+        write(&account, &mut tx, RawVals::new().set_cell(field, invalid))
+            .await
+            .unwrap();
+        exact_error(
+            selected_company.cell(&mut tx, FIELD).await,
+            ErrorKind::UserError,
+            "Configured account is inactive or invalid for role stock valuation",
+        );
+        write(&account, &mut tx, RawVals::new().set_cell(field, valid))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        selected_company.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(account.ids()[0])
+    );
+    let other = company(&mut tx, main, "Other valuation chart", None).await;
+    write(
+        &account,
+        &mut tx,
+        RawVals::new().set_commands(
+            "company_ids",
+            vec![Command::set([RecId::from_real(other).unwrap()])],
+        ),
+    )
+    .await
+    .unwrap();
+    let company_name = match selected_company.cell(&mut tx, "name").await.unwrap() {
+        Cell::Str(name) => name,
+        other => panic!("invalid company name {other:?}"),
+    };
+    exact_error(
+        selected_company.cell(&mut tx, FIELD).await,
+        ErrorKind::UserError,
+        &format!("Account is not applicable to company {company_name}"),
+    );
+    write(
+        &account,
+        &mut tx,
+        RawVals::new().set_commands(
+            "company_ids",
+            vec![Command::set([RecId::from_real(main).unwrap()])],
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        selected_company.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(account.ids()[0])
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    db.cleanup().await.unwrap();
+}
+
+#[test]
+fn company_stock_valuation_account_refuses_hidden_target() {
+    big_stack(valuation_hidden_target_body);
+}
+
+async fn valuation_hidden_target_body() {
+    const FIELD: &str = "account_stock_valuation_id";
+    let (db, orm, _system) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let main = main_company(&mut tx).await;
+    let account = create(
+        &records(&tx, main, "account.account"),
+        &mut tx,
+        vec![
+            RawVals::new()
+                .set_cell("name", text("Restricted valuation account"))
+                .set_cell("code", text("190031"))
+                .set_cell("account_type", text("asset_current")),
+        ],
+    )
+    .await
+    .unwrap()
+    .ids()[0];
+    let company = records(&tx, main, "res.company").browse([main]).unwrap();
+    write(
+        &company,
+        &mut tx,
+        RawVals::new().set_cell(FIELD, Cell::Id(account)),
+    )
+    .await
+    .unwrap();
+    let administrator = group(&mut tx, "base", "group_system").await;
+    user_of(
+        &mut tx,
+        main,
+        "valuation-target-admin",
+        &[main],
+        administrator,
+    )
+    .await;
+    let readonly = group(&mut tx, "account", "group_account_readonly").await;
+    let reader = user_of(&mut tx, main, "valuation-target-reader", &[main], readonly).await;
+    let model_id = id_of(
+        &mut tx,
+        "SELECT id::int8 FROM ir_model WHERE model = 'account.account'",
+    )
+    .await;
+    create(
+        &records(&tx, main, "ir.access"),
+        &mut tx,
+        vec![
+            RawVals::new()
+                .set_cell("name", text("Valuation target restriction fixture"))
+                .set_cell("model_id", Cell::Id(model_id))
+                .set_cell("operation", text("r"))
+                .set_cell("domain", text(&format!("[('id', '!=', {account})]"))),
+        ],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+    let orm = policy_orm(&db, &orm).await;
+    // Cold read: company access succeeds, but the configured account is redacted.
+    let mut tx = orm
+        .begin(erp_sdk::UserId::new(reader).unwrap())
+        .await
+        .unwrap();
+    let company = records(&tx, main, "res.company").browse([main]).unwrap();
+    assert!(matches!(
+        company.cell(&mut tx, "name").await.unwrap(),
+        Cell::Str(_)
+    ));
+    exact_error(
+        company.cell(&mut tx, FIELD).await,
+        ErrorKind::Access,
+        "Accounting configuration target does not exist or is not accessible",
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    // Same transaction, different record environment: a privileged cache slot must not leak.
+    let mut tx = orm.begin(erp_orm::PrincipalHint::system()).await.unwrap();
+    let company = records(&tx, main, "res.company").browse([main]).unwrap();
+    assert_eq!(
+        company.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(account)
+    );
+    let restricted = tx
+        .env()
+        .with_user(reader)
+        .with_company(main)
+        .unwrap()
+        .records("res.company")
+        .unwrap()
+        .browse([main])
+        .unwrap();
+    assert!(matches!(
+        restricted.cell(&mut tx, "name").await.unwrap(),
+        Cell::Str(_)
+    ));
+    exact_error(
+        restricted.cell(&mut tx, FIELD).await,
+        ErrorKind::Access,
+        "Accounting configuration target does not exist or is not accessible",
+    );
+    assert_eq!(
+        company.cell(&mut tx, FIELD).await.unwrap(),
+        Cell::Id(account)
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    db.cleanup().await.unwrap();
+}
+
+#[test]
 fn settings_links_to_selected_company_without_granting_company_writes() {
     big_stack(settings_body);
 }
@@ -846,6 +1414,7 @@ async fn browser_body() {
     );
     assert_eq!(install.status, 200, "account install: {}", install.body);
     let action: i64 = fixture.client.query_one("SELECT res_id::int8 FROM ir_model_data WHERE module='account' AND name='company_accounting_action'", &[]).await.unwrap().get(0);
+    let companies_action: i64 = fixture.client.query_one("SELECT res_id::int8 FROM ir_model_data WHERE module='base' AND name='settings_companies_action'", &[]).await.unwrap().get(0);
     let company: i64 = fixture
         .client
         .query_one(
@@ -872,6 +1441,14 @@ async fn browser_body() {
     let fields: erp_sdk::serde_json::Value = erp_sdk::serde_json::from_str(&fields.body).unwrap();
     assert!(fields.get("transfer_account_id").is_some());
     assert!(fields.get("tax_calculation_rounding_method").is_some());
+    assert_eq!(fields["tz"]["required"], true);
+    let initial_zone: String = fixture
+        .client
+        .query_one("SELECT tz FROM res_company WHERE id=$1", &[&company])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(initial_zone, "UTC");
     let changed = native_http::json_post(
         fixture.port,
         &fixture.cookies,
@@ -918,7 +1495,8 @@ async fn browser_body() {
             .write_all(
                 erp_sdk::serde_json::json!({
                     "origin":format!("http://127.0.0.1:{}", fixture.port),
-                    "cookies":fixture.cookies,"action":action,"company":company
+                    "cookies":fixture.cookies,"action":action,"company":company,
+                    "companiesAction":companies_action
                 })
                 .to_string()
                 .as_bytes(),

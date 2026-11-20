@@ -631,7 +631,14 @@ async fn fill_defaults(tx: &mut Transaction, env: &Env, vals: &mut RawVals) -> R
         vals.get("date"),
         None | Some(Cell::Null | Cell::Bool(false))
     ) {
-        vals.insert("date".into(), Cell::Date(env.context_today()?));
+        let company = id_cell(vals.get("company_id"), "company_id")?.ok_or_else(|| {
+            Error::validation("A journal entry needs a company before its date can be set.")
+        })?;
+        let days = erp_addon_base::company_calendar::business_days(tx, env, &[company]).await?;
+        let day = days
+            .get(&company)
+            .ok_or_else(|| Error::missing(format!("Company {company} is unavailable.")))?;
+        vals.insert("date".into(), Cell::Date(day.date));
     }
     Ok(())
 }

@@ -1178,7 +1178,7 @@ async fn dynamic_report_body() {
     )
     .await;
     let env = tx.env();
-    let position = one(&mut tx, "SELECT res_id::int8 FROM ir_model_data WHERE module='stock' AND name='report_stock_position'").await;
+    let position = one(&mut tx, "SELECT res_id::int8 FROM ir_model_data WHERE module='stock' AND name='report_stock_quantity'").await;
     let options = report_options(&env, &mut tx, position, &Json::Null)
         .await
         .unwrap()["options"]

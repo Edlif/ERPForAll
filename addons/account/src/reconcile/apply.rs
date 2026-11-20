@@ -676,8 +676,9 @@ pub async fn unreconcile_partials(tx: &mut Transaction, partials: &Records) -> R
         tx.flush().await?;
         let rows = tx
             .query(
-                "SELECT debit_move_id::int8, credit_move_id::int8 FROM account_partial_reconcile \
-                 WHERE id = ANY($1::int8[])",
+                "SELECT p.debit_move_id::int8, p.credit_move_id::int8, dl.company_id::int8, cl.company_id::int8 \
+                 FROM account_partial_reconcile p JOIN account_move_line dl ON dl.id = p.debit_move_id \
+                 JOIN account_move_line cl ON cl.id = p.credit_move_id WHERE p.id = ANY($1::int8[])",
                 &[&ids],
             )
             .await?;
@@ -685,9 +686,12 @@ pub async fn unreconcile_partials(tx: &mut Transaction, partials: &Records) -> R
             return Err(Error::missing("Some of the matches no longer exist."));
         }
         let mut endpoints = Vec::new();
+        let mut companies = BTreeSet::new();
         for row in &rows {
             endpoints.push(row.try_get::<_, i64>(0).map_err(db)?);
             endpoints.push(row.try_get::<_, i64>(1).map_err(db)?);
+            companies.insert(row.try_get::<_, i64>(2).map_err(db)?);
+            companies.insert(row.try_get::<_, i64>(3).map_err(db)?);
         }
         let endpoints = sorted(endpoints);
         env.records("account.move.line")?
@@ -698,11 +702,35 @@ pub async fn unreconcile_partials(tx: &mut Transaction, partials: &Records) -> R
         hold(tx, &graph).await?;
         let lines: Vec<i64> = graph.lines.iter().copied().collect();
         unsettle(tx, &lines).await?;
-        tx.execute(
-            "DELETE FROM account_partial_reconcile WHERE id = ANY($1::int8[])",
-            &[&ids],
-        )
-        .await?;
+        let companies: Vec<_> = companies.into_iter().collect();
+        let days = erp_addon_base::company_calendar::business_days(tx, &env, &companies).await?;
+        let (company_ids, removal_dates): (Vec<_>, Vec<_>) =
+            days.into_iter().map(|(id, day)| (id, day.date)).unzip();
+        let count = tx.execute(
+            "WITH gone AS (DELETE FROM account_partial_reconcile WHERE id = ANY($1::int8[]) \
+             RETURNING id, debit_move_id, credit_move_id, company_id, debit_currency_id, \
+                       credit_currency_id, amount, max_date) \
+             INSERT INTO account_reconcile_removal (original_partial_id, company_id, account_id, \
+                 line_id, partner_id, currency_id, matched_delta, matched_on, removed_on, \
+                 create_uid, create_date, write_uid, write_date) \
+             SELECT p.id, l.company_id, l.account_id, l.id, l.partner_id, side.currency_id, \
+                    side.delta, p.max_date, c.removed_on, $4, transaction_timestamp() AT TIME ZONE 'UTC', \
+                    $4, transaction_timestamp() AT TIME ZONE 'UTC' \
+             FROM gone p CROSS JOIN LATERAL (VALUES \
+                 (p.debit_move_id, p.debit_currency_id, -p.amount), \
+                 (p.credit_move_id, p.credit_currency_id, p.amount)) AS side(line_id, currency_id, delta) \
+             JOIN account_move_line l ON l.id = side.line_id \
+             JOIN unnest($2::int8[], $3::date[]) c(company_id, removed_on) ON c.company_id = l.company_id \
+             JOIN res_company co ON co.id = l.company_id \
+             WHERE side.currency_id = co.currency_id AND l.currency_id = side.currency_id \
+               AND p.max_date IS NOT NULL",
+            &[&ids, &company_ids, &removal_dates, &env.uid()],
+        ).await?;
+        if count != 2 * ids.len() as u64 {
+            return Err(Error::validation(
+                "Cannot remove a match without dated company-currency facts for both journal items.",
+            ));
+        }
         rebuild(tx, &lines).await?;
         let graph = closure(tx, &lines).await?;
         settle(tx, &graph, false).await?;

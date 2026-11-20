@@ -80,6 +80,8 @@ async fn install_on_base_and_product() {
             &erp_addon_analytic::ADDON,
             &erp_addon_account::ADDON,
         ])
+        .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+        .require_sql_uninstall_guards([&erp_addon_account::reconcile::history_guard::UNINSTALL])
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
         .require_core_tables(erp_security::auth::core_tables())
         .build()

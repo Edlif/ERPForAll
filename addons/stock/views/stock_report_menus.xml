@@ -2,18 +2,21 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <!-- Inventory > Reporting: the dynamic reports (client action `reporting.report`). -->
 <erp>
-    <record id="action_report_stock_position" model="ir.actions.client">
-        <field name="name">Stock Report</field>
-        <field name="tag">reporting.report</field>
-        <field name="params" eval="{'report': ref('report_stock_position')}"/>
-    </record>
+    <!-- The upgrade retargets the shipped action only when it still opens the legacy report. -->
+    <data noupdate="1">
+        <record id="action_report_stock_position" model="ir.actions.client">
+            <field name="name">Stock Report</field>
+            <field name="tag">reporting.report</field>
+            <field name="params" eval="{'report': ref('report_stock_quantity')}"/>
+        </record>
+    </data>
     <record id="action_report_moves_analysis" model="ir.actions.client">
         <field name="name">Moves Analysis</field>
         <field name="tag">reporting.report</field>
         <field name="params" eval="{'report': ref('report_moves_analysis')}"/>
     </record>
     <menuitem id="menu_report_stock_position" name="Stock Report" parent="menu_stock_reporting"
-              action="action_report_stock_position" sequence="20"/>
+              action="action_report_stock_position" groups="stock.group_stock_user" sequence="20"/>
     <menuitem id="menu_report_moves_analysis" name="Moves Analysis" parent="menu_stock_reporting"
-              action="action_report_moves_analysis" sequence="30"/>
+              action="action_report_moves_analysis" groups="stock.group_stock_manager" sequence="30"/>
 </erp>

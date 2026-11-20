@@ -3,7 +3,7 @@ summary = "Journals, ledgers, taxes, invoices and payments"
 category = "Accounting"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.5.0"
+version = "1.8.0"
 depends = ["base", "web", "product", "analytic"]
 application = true
 exact_only = true
@@ -19,6 +19,7 @@ data = [
     "data/fiscal_country_groups.xml",
     "data/payment_term_data.xml",
     "views/product_tax_views.xml",
+    "views/product_costing_views.xml",
     "views/account_views.xml",
     "views/account_journal_views.xml",
     "views/account_tax_views.xml",

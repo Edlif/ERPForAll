@@ -60,6 +60,8 @@ async fn install_with_used(used: bool) -> (TestDb, Orm) {
         })
         .collect();
     let system = ModuleSystem::builder(db.pool().clone(), index)
+        .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+        .require_sql_uninstall_guards([&erp_addon_account::reconcile::history_guard::UNINSTALL])
         .view_types(erp_addon_web::view_type_contributions())
         .native_artifact_identities(identities)
         .code([
@@ -1983,6 +1985,8 @@ async fn upgrade_existing() {
         })
         .collect();
     let system = ModuleSystem::builder(db.pool().clone(), index)
+        .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
+        .require_sql_uninstall_guards([&erp_addon_account::reconcile::history_guard::UNINSTALL])
         .view_types(erp_addon_web::view_type_contributions())
         .native_artifact_identities(identities)
         .code([

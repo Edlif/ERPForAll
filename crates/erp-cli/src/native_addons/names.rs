@@ -25,6 +25,7 @@ pub const LINKED: &[&str] = &[
     "account_reporting",
     "stock",
     "stock_account",
+    "valuation",
     "stock_mail",
     "purchase_stock",
     "sales_team",

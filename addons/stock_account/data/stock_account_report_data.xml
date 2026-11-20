@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <!--
-The Value column of the Stock Report (stock.report_stock_position), added by data: a column of
+The Value column of the legacy position definition, opened as Stock Valuation (stock.report_stock_position), added by data: a column of
      stock managers only and one native expression on its Stock line. Observed,
      :47-64 (value only for stock managers, valued locations and not consigned stock). 
 -->

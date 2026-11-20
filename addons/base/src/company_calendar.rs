@@ -44,6 +44,7 @@ pub(crate) async fn creator_zone(tx: &mut Transaction, env: &Env) -> Result<Valu
 
 /// A stock cutoff is the first real instant of the local day, encoded in the system's UTC format.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct BusinessDay {
     /// Calendar date of the company's transaction.
     pub date: Date,
@@ -109,6 +110,14 @@ pub async fn business_days(
             "Reading the company time zone is not allowed.",
         ));
     }
+    // Raw SQL must see a pending timezone write without flushing unrelated compute graphs.
+    let records = env.records("res.company")?;
+    let field = records
+        .spec()
+        .field("tz")
+        .ok_or_else(|| Error::programming("The company calendar requires res.company.tz."))?
+        .id;
+    tx.flush_fields(records.model_id(), &[field]).await?;
     let rows = tx.query(
         "SELECT id::int8, tz, transaction_timestamp() AT TIME ZONE 'UTC' FROM res_company WHERE id = ANY($1::int8[])",
         &[&ids],

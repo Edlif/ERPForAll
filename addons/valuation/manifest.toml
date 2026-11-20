@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name = "Stock Valuation Admission"
+summary = "Protect valuation control rows during incoming stock validation"
+category = "Inventory"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "stock_account"]
+exact_only = true

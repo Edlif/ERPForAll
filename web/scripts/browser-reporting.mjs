@@ -45,6 +45,14 @@ const files = {
 };
 const calls = [], errors = [], unknown = [], checks = [], screenshots = [];
 let serverError;
+let showPartnerLedger = false;
+const ledgerOptions = { ...baseOptions, provider: { unreconciled: false },
+  columns: ["Opening", "Debit", "Credit", "Closing"].map(name => ({ group: 0, name, label: name.toLowerCase(), kind: "monetary", sortable: false })) };
+const ledgerLines = [
+  { code: "RECEIVABLE", name: "Receivables", amounts: ["100", "50", "30", "120"] },
+  { code: "PAYABLE", name: "Payables", amounts: ["-80", "10", "20", "-90"] },
+].map(({ code, name, amounts }) => ({ ...topLine(false), id: rootId + "|line:" + code + "~~", name,
+  cells: amounts.map(value => ({ ...cell(value, "monetary"), currency: "USD", scale: 2 })) }));
 const server = createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url, "http://fixture").pathname, asset = assets.get(pathname);
@@ -62,19 +70,23 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": file.mime, "Content-Disposition": `attachment; filename="contacts.${body.format}"` });
       res.end(file.bytes); return;
     }
+    const reportName = showPartnerLedger ? "Partner Ledger" : "Contacts by Country";
     let value;
     if (pathname.endsWith("erp_describe")) value = { wire_major: 1, registry_version: "r1", scope: body.scope, declarations: [] };
     else if (pathname.endsWith("erp_read_values")) value = { wire_major: 1, scope: body.scope, revision: "1", values: [] };
     else if (pathname.endsWith("res.users/read")) value = [{ id: 2, color_scheme: "light" }];
     else if (pathname.endsWith("res.users.settings/get_res_users_settings")) value = { homemenu_config: null };
     else if (pathname.endsWith("mail.activity/erp_activity_groups")) value = { activity_counter: 0, groups: [] };
-    else if (pathname.endsWith("erp_load_web_menus")) value = { wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: "Contacts by Country", action_id: 30, action_kind: "client", children: [], icon: null }] };
-    else if (pathname.endsWith("ir.actions.client/erp_load_web_client_action")) value = { wire_major: 1, result: { kind: "client", id: 30, name: "Contacts by Country", tag: "reporting.report", params: { report: REPORT } } };
-    else if (pathname.endsWith("reporting.report/erp_report_options")) value = { name: "Contacts by Country", options: baseOptions, filters };
+    else if (pathname.endsWith("erp_load_web_menus")) value = { wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: reportName, action_id: 30, action_kind: "client", children: [], icon: null }] };
+    else if (pathname.endsWith("ir.actions.client/erp_load_web_client_action")) value = { wire_major: 1, result: { kind: "client", id: 30, name: reportName, tag: "reporting.report", params: { report: REPORT } } };
+    else if (pathname.endsWith("reporting.report/erp_report_options")) value = {
+      name: reportName, options: showPartnerLedger ? body.previous || ledgerOptions : baseOptions,
+      filters: showPartnerLedger ? { ...filters, provider: "account_reporting.partner_ledger", unfold_all: false, hide_zero: "never" } : filters,
+    };
     else if (pathname.endsWith("reporting.report/erp_report_lines")) {
       const open = body.options.unfolded.includes(section);
       const children = body.options.loaded_pages?.[section] ? countries.map((_, i) => country(i)) : [0, 1, 2].map(country).concat(more(3));
-      value = { options: body.options, lines: open ? [topLine(true), ...children] : [topLine(false)], computed_at: "2026-11-19 10:00:00", hidden_lines: [] };
+      value = { options: body.options, lines: showPartnerLedger ? ledgerLines : open ? [topLine(true), ...children] : [topLine(false)], computed_at: "2026-11-19 10:00:00", hidden_lines: [] };
     } else if (pathname.endsWith("reporting.report/erp_report_expand")) {
       value = { lines: body.offset === 0 ? [0, 1, 2].map(country).concat([more(3)]) : [3, 4].map(country), computed_at: "2026-11-19 10:00:01" };
     } else { unknown.push(pathname); throw new Error(`Unknown fixture RPC: ${pathname}`); }
@@ -163,6 +175,29 @@ try {
     if (width === 1440) { await auditPage(page); await page.screenshot({ path: path.join(output, "report-audit-1440.png"), fullPage: true }); screenshots.push("report-audit-1440.png"); }
     checks.push({ width, open_from_menu: "PASS", unfold_load_more_fold: "PASS", keyboard: "PASS", sort_preset_search: "PASS", export: "PASS", no_page_overflow: "PASS", axe_serious: width === 1440 ? "PASS" : "not run at this width" });
   }
+  // A provider with historical open items can offer its checkbox without other Options controls.
+  showPartnerLedger = true;
+  await page.setViewportSize({ width: 820, height: 900 });
+  await page.goto(origin + "/erp/action-30?menu=10");
+  await page.locator("tr.report-line", { hasText: "Receivables" }).waitFor();
+  assert.deepEqual(await rowNames(page), ["Receivables", "Payables"]);
+  for (const enabled of [true, false]) {
+    await page.getByRole("button", { name: "Options", exact: true }).click();
+    const box = page.getByRole("checkbox", { name: "Unreconciled at period end", exact: true });
+    assert.equal(await box.isChecked(), !enabled);
+    if (!enabled) {
+      const shot = "report-open-items-820.png";
+      await page.screenshot({ path: path.join(output, shot), fullPage: true });
+      screenshots.push(shot);
+    }
+    const [response] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/erp_report_lines")),
+      box.setChecked(enabled),
+    ]);
+    assert.equal(response.request().postDataJSON().options.provider.unreconciled, enabled);
+    await page.locator('.report-scroll[data-dim="false"]').waitFor();
+  }
+  checks.push({ width: 820, historical_open_items_selection: "PASS" });
   if (serverError) throw serverError;
   assert.deepEqual(unknown, []);
   assert.deepEqual(errors, []); result.status = "PASS";

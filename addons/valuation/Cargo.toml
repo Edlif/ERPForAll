@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "erp-addon-valuation"
+description = "Transaction-scoped admission of original stock receipts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+erp-addon-stock.workspace = true
+erp-sdk.workspace = true
+
+[lints]
+workspace = true

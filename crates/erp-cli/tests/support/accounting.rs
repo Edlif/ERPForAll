@@ -83,7 +83,11 @@ pub fn system(
             &erp_addon_reporting::ADDON,
             &erp_addon_account_reporting::ADDON,
         ])
-        .require_sql_objects([&erp_addon_account_reporting::schema::MANIFEST])
+        .require_sql_objects([
+            &erp_addon_account::reconcile::history_guard::MANIFEST,
+            &erp_addon_account_reporting::schema::MANIFEST,
+        ])
+        .require_sql_uninstall_guards([&erp_addon_account::reconcile::history_guard::UNINSTALL])
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
         .require_core_tables(erp_security::auth::core_tables());
     if let Some(previous) = previous {

@@ -116,7 +116,7 @@ fn malformed_config_is_sanitized_and_bounded() {
         assert!(matches!(error, CredentialError::Configuration));
         assert_eq!(
             error.to_string(),
-            "invalid [ai] configuration: expected max_providers, max_key_bytes and provider.<name>.key_file only"
+            "invalid [ai] configuration: expected max_providers, max_key_bytes, max_request_bytes and provider.<name>.key_file only"
         );
     }
     for (text, setting) in [

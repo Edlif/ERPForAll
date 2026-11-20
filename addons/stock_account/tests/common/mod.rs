@@ -31,6 +31,7 @@ pub fn harness_builder() -> erp_testkit::HarnessBuilder {
         &erp_addon_stock_account::ADDON,
     ])
     .require_sql_objects([
+        &erp_addon_account::reconcile::history_guard::MANIFEST,
         &erp_addon_stock::schema_guards::MANIFEST,
         &erp_addon_stock_account::history_guards::MANIFEST,
     ])

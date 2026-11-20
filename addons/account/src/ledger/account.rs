@@ -198,6 +198,27 @@ fn text_of(value: &Option<Arc<str>>) -> &str {
 
 #[methods(AccountAccount, addon = "account")]
 impl AccountAccount {
+    /// Suitability is read by the nonstored company valuation field. Its target is stored in
+    /// dated mapping tables, so the ORM's relation dependency graph cannot see this edge.
+    #[method(override)]
+    async fn write(
+        this: &RecordSet<AccountAccount>,
+        tx: &mut Transaction,
+        vals: RawVals,
+        sup: Super,
+    ) -> Result<()> {
+        let suitability_changed = ["active", "account_type", "company_ids"]
+            .iter()
+            .any(|field| vals.contains(field) || vals.commands(field).is_some());
+        sup.call(tx, this.as_records(), (vals,)).await?;
+        if suitability_changed {
+            // Invalidate every caller-context slot without reading or exposing other companies.
+            tx.invalidate_model("res.company", Some(&[crate::company::valuation::FIELD]))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// `internal_group` and `include_initial_balance` follow the type.
     #[compute(depends = ["account_type"])]
     fn _compute_type_flags(batch: &mut Batch<'_, AccountAccount>) -> Result<()> {

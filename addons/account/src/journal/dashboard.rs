@@ -841,7 +841,7 @@ impl AccountJournal {
     /// The dashboard card of each journal (contract v1), from one batch of grouped reads.
     #[compute(
         depends = ["type", "company_id", "default_account_id"],
-        depends_context = ["uid", "allowed_company_ids", "tz"]
+        depends_context = ["uid", "allowed_company_ids"]
     )]
     async fn _compute_dashboard_card(
         this: &RecordSet<AccountJournal>,
@@ -852,13 +852,46 @@ impl AccountJournal {
             return Ok(());
         }
         let env = this.env().clone();
-        let today = env.context_today()?;
         let settings = DashboardSettings::read(tx).await?;
         let journals = journals(tx, this.as_records()).await?;
-        let figures = figures(tx, &env, &journals, today, settings).await?;
-        for (i, journal) in journals.iter().enumerate() {
-            let text = card(journal, &figures, today, settings)?.to_string();
-            out.set(i, AccountJournal::DASHBOARD_CARD, Some(text.into()))?;
+        let companies: Vec<_> = journals
+            .iter()
+            .map(|j| j.company)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if !tx
+            .has_field_access(&env, "res.company", "tz", erp_sdk::FieldOp::Read)
+            .await?
+        {
+            return Err(Error::access(
+                "Reading the company time zone is not allowed.",
+            ));
+        }
+        // A dotted company_id.tz dependency would prefetch the parent company before this
+        // admission. Account's company write hook invalidates the card when tz changes.
+        // Like the currency lookup in journals(), only companies reached through journals
+        // already read with the caller's rights are admitted here. Branch readers may read
+        // an ancestor's journal without reading its company. Elevate this configuration
+        // lookup alone; all entry figures below retain the caller's access rules.
+        let days = erp_addon_base::company_calendar::business_days(tx, &env.sudo(true), &companies)
+            .await?;
+        // Keep grouped reads within each calendar partition, and preserve record order in Assign.
+        for (company, day) in days {
+            let partition: Vec<_> = journals
+                .iter()
+                .filter(|j| j.company == company)
+                .cloned()
+                .collect();
+            let figures = figures(tx, &env, &partition, day.date, settings).await?;
+            for (i, journal) in journals
+                .iter()
+                .enumerate()
+                .filter(|(_, j)| j.company == company)
+            {
+                let text = card(journal, &figures, day.date, settings)?.to_string();
+                out.set(i, AccountJournal::DASHBOARD_CARD, Some(text.into()))?;
+            }
         }
         Ok(())
     }

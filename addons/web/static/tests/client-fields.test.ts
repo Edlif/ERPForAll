@@ -46,6 +46,26 @@ test("selection field renders as styled select with options", () => {
   expect(changed).toHaveBeenCalledWith("done");
 });
 
+/// (partial: required selection used by company timezone recovers from an empty value)
+test("required selection accepts a valid value after required feedback", () => {
+  const changed = vi.fn();
+  const field: Field = { name: "tz", kind: "selection", label: "Business Time Zone", readonly: false, required: true, relation: null, relationField: null, selection: [["UTC", "UTC"], ["Asia/Jakarta", "Asia/Jakarta"]] };
+  const node = fieldControl({ field, value: "UTC", rpc: new RpcClient(fetch, () => {}), context: {}, change: changed, run: job => { void job(); }, editor: relationEnvironment() });
+  document.body.append(node);
+  const select = node.querySelector<HTMLSelectElement>("select")!;
+  select.value = "";
+  select.dispatchEvent(new Event("change"));
+  expect(select.getAttribute("aria-invalid")).toBe("true");
+  expect(select.validationMessage).toBe("Business Time Zone is required.");
+  expect(changed).not.toHaveBeenCalled();
+  select.value = "Asia/Jakarta";
+  select.dispatchEvent(new Event("change"));
+  expect(select.validity.valid).toBe(true);
+  expect(select.getAttribute("aria-invalid")).toBeNull();
+  expect(node.querySelector<HTMLElement>(".field-error")!.hidden).toBe(true);
+  expect(changed).toHaveBeenCalledExactlyOnceWith("Asia/Jakarta");
+});
+
 test("many2one control searches records on input and selects via click", async () => {
   const calls: { path: string; body: unknown }[] = [];
   const rpc = new RpcClient(async (path, init) => {

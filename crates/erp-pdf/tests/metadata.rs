@@ -88,10 +88,6 @@ fn unsafe_or_unpreservable_xmp_is_refused_without_output() {
     let u = update(&l);
     let doctype =
         "<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY e SYSTEM \"file:///etc/passwd\">]><x>&e;</x>";
-    let nested = packet(
-        3,
-        "<custom:Wrap rdf:parseType=\"Resource\"><pdf:Producer>inner</pdf:Producer></custom:Wrap>",
-    );
     for (xmp, kind, message) in [
         (
             doctype.to_string(),
@@ -107,11 +103,6 @@ fn unsafe_or_unpreservable_xmp_is_refused_without_output() {
             "<x/>".to_string(),
             PdfErrorKind::Malformed,
             "PDF XMP lacks rdf:RDF",
-        ),
-        (
-            nested,
-            PdfErrorKind::Unsupported,
-            "PDF feature XMP nested standard property is unsupported (a later release)",
         ),
     ] {
         let input = with_xmp(&["A"], &xmp, dictionary! {});

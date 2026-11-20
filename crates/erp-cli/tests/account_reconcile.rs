@@ -107,7 +107,7 @@ async fn two_parts_body() {
         &b,
         b.receivable,
         b.bank,
-        Some(b.customer),
+        None,
         "-700",
         d(2024, 2, 5),
     )
@@ -142,10 +142,114 @@ async fn two_parts_body() {
         .get(0);
     assert_eq!(open, 0, "a settled component keeps no open-item rows");
 
+    let removed_id = partial_ids(&mut tx, &second_item).await[0];
+    let removal_day = erp_addon_base::company_calendar::business_date(&mut tx, company)
+        .await
+        .unwrap();
+    // A writer running the earlier binary cannot remove evidence after the marker was installed.
+    let lost = tx
+        .savepoint(async |tx| {
+            tx.execute(
+                "DELETE FROM account_partial_reconcile WHERE id=$1",
+                &[&removed_id],
+            )
+            .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(lost.kind(), ErrorKind::Validation);
+    assert!(lost.message().contains("dated company-currency facts"));
+    // A damaged old match must neither disappear nor manufacture a date for the report.
+    let denied = tx
+        .savepoint(async |tx| {
+            tx.execute(
+                "UPDATE account_partial_reconcile SET max_date = NULL WHERE id = $1",
+                &[&removed_id],
+            )
+            .await?;
+            try_call(&second_item, tx, "remove_move_reconcile").await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(denied.kind(), ErrorKind::Validation);
+    assert!(denied.message().contains("dated company-currency facts"));
+    assert_eq!(partial_ids(&mut tx, &second_item).await, [removed_id]);
     // unmatching the second payment: back to partial, the settlement is gone
     try_call(&second_item, &mut tx, "remove_move_reconcile")
         .await
         .unwrap();
+    let history = tx
+        .query(
+            "SELECT matched_delta, matched_on, removed_on, company_id::int8, line_id, \
+                    partner_id, account_id, currency_id::int8 \
+             FROM account_reconcile_removal WHERE original_partial_id = $1 ORDER BY matched_delta",
+            &[&removed_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    let currency = inv_item.cell(&mut tx, "currency_id").await.unwrap();
+    for (fact, item_id, partner, delta) in [
+        (&history[0], inv_item.ids()[0], Some(b.customer), "-700"),
+        (&history[1], second_item.ids()[0], None, "700"),
+    ] {
+        assert_eq!(fact.get::<_, Decimal>(0), num(delta));
+        assert_eq!(fact.get::<_, Date>(1), d(2024, 2, 5));
+        assert_eq!(fact.get::<_, Date>(2), removal_day);
+        assert_eq!(fact.get::<_, i64>(3), company);
+        assert_eq!(fact.get::<_, i64>(4), item_id);
+        assert_eq!(fact.get::<_, Option<i64>>(5), partner);
+        assert_eq!(fact.get::<_, i64>(6), b.receivable);
+        assert_eq!(Cell::Id(fact.get::<_, i64>(7)), currency);
+    }
+    let removal_id: i64 = tx.query(
+        "SELECT id::int8 FROM account_reconcile_removal WHERE original_partial_id = $1 AND line_id = $2",
+        &[&removed_id, &inv_item.ids()[0]],
+    ).await.unwrap()[0].get(0);
+    let row = tx
+        .env()
+        .records("account.reconcile.removal")
+        .unwrap()
+        .browse([removal_id])
+        .unwrap();
+    let update_error = tx
+        .savepoint(async |tx| {
+            row.write_base(
+                tx,
+                RawVals::new().set_cell("matched_delta", Cell::Decimal(num("12"))),
+            )
+            .await?;
+            tx.flush().await
+        })
+        .await
+        .unwrap_err();
+    let assert_immutable = |error: erp_sdk::Error| {
+        assert_eq!(error.kind(), ErrorKind::Programming, "{error:?}");
+        assert_eq!(
+            error.constraint(),
+            Some("account_removal_immutable"),
+            "{error:?}"
+        );
+        assert_eq!(error.sqlstate(), Some("ERP65"));
+    };
+    assert_immutable(update_error);
+    for statement in [
+        "DELETE FROM account_reconcile_removal WHERE original_partial_id = $1",
+        "UPDATE account_reconcile_removal SET matched_delta = 0 WHERE original_partial_id = $1",
+    ] {
+        let err = tx
+            .savepoint(async |tx| tx.execute(statement, &[&removed_id]).await)
+            .await
+            .unwrap_err();
+        assert_immutable(err);
+    }
+    let truncate = tx
+        .savepoint(async |tx| tx.execute("TRUNCATE account_reconcile_removal", &[]).await)
+        .await
+        .unwrap_err();
+    assert_immutable(truncate);
+    // The earlier payment is still an active match. Only the undone match was archived.
+    assert_eq!(partial_ids(&mut tx, &first_item).await, partials);
     assert_eq!(
         inv_item.cell(&mut tx, "full_reconcile_id").await.unwrap(),
         Cell::Null
@@ -878,6 +982,62 @@ async fn access_body() {
         tx.rollback().await.unwrap();
     }
     drop(policy);
+    let mut check = orm.begin(SUPERUSER_ID).await.unwrap();
+    let written = check
+        .query(
+            "SELECT count(*)::int8 FROM account_reconcile_removal WHERE original_partial_id = ANY($1::int8[])",
+            &[&settled_match],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        written[0].get::<_, i64>(0),
+        0,
+        "refused unmatching left evidence"
+    );
+    // These two IANA zones are 26 hours apart, so the same transaction falls on distinct local dates.
+    check.execute("UPDATE res_company SET tz = CASE WHEN id = $1 THEN 'Pacific/Kiritimati' ELSE 'Etc/GMT+12' END WHERE id IN ($1, $2)",
+        &[&company, &branch]).await.unwrap();
+    let parent_day = erp_addon_base::company_calendar::business_date(&mut check, company)
+        .await
+        .unwrap();
+    let branch_day = erp_addon_base::company_calendar::business_date(&mut check, branch)
+        .await
+        .unwrap();
+    assert!(parent_day > branch_day);
+    let matches = check
+        .env()
+        .records("account.partial.reconcile")
+        .unwrap()
+        .browse(settled_match.clone())
+        .unwrap();
+    matches.unlink(&mut check).await.unwrap();
+    let by_company = check
+        .query(
+            "SELECT company_id::int8, matched_delta, removed_on FROM account_reconcile_removal \
+         WHERE original_partial_id = ANY($1::int8[]) ORDER BY matched_delta",
+            &[&settled_match],
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_company.len(), 2);
+    assert_eq!(by_company[0].get::<_, Date>(2), parent_day);
+    assert_eq!(by_company[1].get::<_, Date>(2), branch_day);
+    assert_eq!(
+        (
+            by_company[0].get::<_, i64>(0),
+            by_company[0].get::<_, Decimal>(1)
+        ),
+        (company, num("-70"))
+    );
+    assert_eq!(
+        (
+            by_company[1].get::<_, i64>(0),
+            by_company[1].get::<_, Decimal>(1)
+        ),
+        (in_branch.company, num("70"))
+    );
+    check.rollback().await.unwrap();
 
     // two units on the same items: the later one fails, one match exists
     let mut late = orm.begin(SUPERUSER_ID).await.unwrap();

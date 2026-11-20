@@ -5,8 +5,8 @@
   <menuitem id="menu_stock_product_templates" name="Products" parent="menu_stock_products" action="product.product_template_action" sequence="10"/>
   <menuitem id="menu_stock_lot" name="Lots/Serial Numbers" parent="menu_stock_products" action="action_stock_lot" groups="stock.group_production_lot" sequence="20"/>
 
-  <menuitem id="menu_stock_reporting" name="Reporting" parent="menu_stock_root" sequence="50" groups="stock.group_stock_manager"/>
-  <menuitem id="menu_stock_quant" name="Stock" parent="menu_stock_reporting" action="action_stock_quant" sequence="10"/>
+  <menuitem id="menu_stock_reporting" name="Reporting" parent="menu_stock_root" sequence="50" groups="stock.group_stock_user"/>
+  <menuitem id="menu_stock_quant" name="Stock" parent="menu_stock_reporting" action="action_stock_quant" groups="stock.group_stock_manager" sequence="10"/>
 
   <menuitem id="menu_stock_warehouse" name="Warehouses" parent="menu_stock_config_settings" action="action_stock_warehouse" groups="stock.group_stock_multi_warehouses" sequence="20"/>
   <menuitem id="menu_stock_picking_type_config" name="Operation Types" parent="menu_stock_config_settings" action="action_stock_picking_type_config" sequence="30"/>

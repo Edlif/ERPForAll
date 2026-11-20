@@ -60,7 +60,7 @@ impl Update {
     }
     pub fn pdfa(&self, l: &Context<'_>) -> Result<Option<crate::PdfaId>> {
         match self.xmp(l)? {
-            Some(text) => xmp::pdfa(&xmp::parse(&text, l)?),
+            Some(text) => xmp::Packet::new(&xmp::parse(&text, l)?, l)?.pdfa(),
             None => Ok(None),
         }
     }

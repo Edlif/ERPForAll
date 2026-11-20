@@ -9,12 +9,17 @@
 )]
 use erp_modules::{AddonIndex, InitOptions, ModuleName, ModuleSystem};
 use erp_sdk::{
-    Cell, Command, Context, ErrorKind, Operation, Orm, RawVals, RecId, SUPERUSER_ID, UserId,
+    Cell, Command, Context, Date, ErrorKind, Operation, Orm, RawVals, RecId, SUPERUSER_ID, UserId,
 };
 use erp_security::{resolver::Resolver, source::PolicySource};
 use erp_testkit::TestDb;
 use std::path::Path;
 use std::sync::Arc;
+
+#[path = "stock_account_install/cost_policy.rs"]
+mod cost_policy;
+#[path = "support/report_frame.rs"]
+mod report_frame;
 
 const MODELS: [&str; 10] = [
     "stock.valuation.source",
@@ -52,6 +57,7 @@ fn system(db: &TestDb) -> ModuleSystem {
         .collect();
     ModuleSystem::builder(db.pool().clone(), index)
         .require_sql_objects([
+            &erp_addon_account::reconcile::history_guard::MANIFEST,
             &erp_addon_stock::schema_guards::MANIFEST,
             &erp_addon_stock_account::history_guards::MANIFEST,
         ])
@@ -172,6 +178,22 @@ async fn install() {
         .unwrap()[0]
         .get(0);
     let stock_group = tx.query("SELECT res_id::int8 FROM ir_model_data WHERE module='stock' AND name='group_stock_user'", &[]).await.unwrap()[0].get::<_,i64>(0);
+    let accounting_group: i64 = tx
+        .query(
+            "SELECT res_id FROM ir_model_data WHERE module='account' AND name='group_account_manager'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let stock_manager_group = tx
+        .query(
+            "SELECT res_id FROM ir_model_data WHERE module='stock' AND name='group_stock_manager'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get::<_, i64>(0);
     let users = tx.env().records("res.users").unwrap();
     let create_user = |name: &str, group: i64| {
         RawVals::new()
@@ -193,12 +215,16 @@ async fn install() {
             vec![
                 create_user("valuation_admin", admin_group),
                 create_user("inventory_reader", stock_group),
+                create_user("valuation_book_admin", accounting_group),
+                create_user("valuation_book_reader", stock_manager_group),
             ],
         )
         .await
         .unwrap();
     let uid = UserId::new(created.rec_ids()[0].get()).unwrap();
     let stock_user = UserId::new(created.rec_ids()[1].get()).unwrap();
+    let book_admin = UserId::new(created.rec_ids()[2].get()).unwrap();
+    let book_reader = UserId::new(created.rec_ids()[3].get()).unwrap();
     tx.commit().await.unwrap();
     drop(tx);
     // ModuleSystem's operation ORM is SuperuserOnly. Exercise actual installed ACLs through
@@ -215,6 +241,15 @@ async fn install() {
         .unlink_hook(erp_data::model_data::UNLINK_HOOK)
         .build()
         .unwrap();
+    let book = verify_management_book(
+        &installed.orm,
+        &runtime,
+        company,
+        book_admin,
+        book_reader,
+        stock_user,
+    )
+    .await;
     let mut denied = runtime.begin_caller(uid).await.unwrap();
     for model in MODELS {
         let records = denied.env().records(model).unwrap();
@@ -288,15 +323,72 @@ async fn install() {
     let id: i64 = tx.query("INSERT INTO stk_cost_control(company_id,product_id,worker_epoch,seal_revision,sealed,publication_generation,recorded_at) VALUES($1,$2,0,0,false,0,'2026-01-01') RETURNING id", &[&c,&product]).await.unwrap()[0].get(0);
     tx.commit().await.unwrap();
     drop(tx);
-    verify_valuation_report(&installed.orm, &runtime, company, product, uid, stock_user).await;
+    verify_valuation_report(
+        &installed.orm,
+        &runtime,
+        company,
+        product,
+        book_reader,
+        stock_user,
+    )
+    .await;
+    let old_report = rewind_stock_report(&installed.orm).await;
+    let stock_addon = ModuleName::new("stock").unwrap();
+    let accounting_addon = ModuleName::new("stock_account").unwrap();
     let upgraded = Box::pin(system.button_immediate_upgrade(
         &installed.orm.env(SUPERUSER_ID, Context::new()),
-        &[ModuleName::new("stock_account").unwrap()],
+        &[stock_addon.clone(), accounting_addon],
     ))
     .await
     .unwrap();
     assert!(upgraded.post_commit.is_clean());
     let mut tx = upgraded.orm.begin(SUPERUSER_ID).await.unwrap();
+    let built_in_target = stock_report_route(&mut tx).await;
+    assert_ne!(built_in_target, old_report);
+    let report = tx.env().records("reporting.report").unwrap();
+    assert_eq!(
+        report
+            .browse([old_report])
+            .unwrap()
+            .cell(&mut tx, "name")
+            .await
+            .unwrap(),
+        Cell::Str("Customized legacy stock report".into())
+    );
+    assert_eq!(
+        report
+            .browse([built_in_target])
+            .unwrap()
+            .cell(&mut tx, "name")
+            .await
+            .unwrap(),
+        Cell::Str("Stock Report".into())
+    );
+    assert_eq!(
+        tx.query(
+            "SELECT a.params->>'custom' FROM ir_act_client a JOIN ir_model_data x ON x.res_id=a.id
+             WHERE x.module='stock' AND x.name='action_report_stock_position'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+            .get::<_, String>(0),
+        "preserve me"
+    );
+    let configured_book = tx
+        .env()
+        .records("stock.cost.book")
+        .unwrap()
+        .browse([book])
+        .unwrap();
+    assert_eq!(
+        configured_book.cell(&mut tx, "method").await.unwrap(),
+        Cell::Str("lifo".into())
+    );
+    assert_eq!(
+        configured_book.cell(&mut tx, "purpose").await.unwrap(),
+        Cell::Str("management".into())
+    );
     assert_eq!(
         tx.query(
             "SELECT worker_epoch FROM stk_cost_control WHERE id=$1",
@@ -309,6 +401,27 @@ async fn install() {
     );
     tx.rollback().await.unwrap();
     drop(tx);
+    // Reapply the cutover to a copy of the older version marker with a customized target.
+    let mut tx = upgraded.orm.begin(SUPERUSER_ID).await.unwrap();
+    let custom_target: i64 = tx.query(
+        "SELECT res_id FROM ir_model_data WHERE module='stock' AND name='report_moves_analysis'",
+        &[],
+    ).await.unwrap()[0].get(0);
+    set_stock_report_route(&mut tx, custom_target).await;
+    tx.commit().await.unwrap();
+    drop(tx);
+    let upgraded = Box::pin(system.button_immediate_upgrade(
+        &upgraded.orm.env(SUPERUSER_ID, Context::new()),
+        &[stock_addon],
+    ))
+    .await
+    .unwrap();
+    assert!(upgraded.post_commit.is_clean());
+    let mut tx = upgraded.orm.begin(SUPERUSER_ID).await.unwrap();
+    assert_eq!(stock_report_route(&mut tx).await, custom_target);
+    tx.rollback().await.unwrap();
+    drop(tx);
+
     // The control row has no protected source or journal. Empty-history uninstall must work.
     let module = [ModuleName::new("stock_account").unwrap()];
     let caller = system.system_env(Context::new());
@@ -358,6 +471,448 @@ async fn install() {
     db.cleanup().await.unwrap();
 }
 
+async fn stock_report_route(tx: &mut erp_sdk::Transaction) -> i64 {
+    tx.query(
+        "SELECT (a.params->>'report')::int8 FROM ir_act_client a
+         JOIN ir_model_data x ON x.res_id=a.id AND x.model='ir.actions.client'
+         WHERE x.module='stock' AND x.name='action_report_stock_position'",
+        &[],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+async fn set_stock_report_route(tx: &mut erp_sdk::Transaction, target: i64) {
+    tx.execute(
+        "UPDATE ir_act_client a
+         SET params=jsonb_build_object('report', $1::int8, 'custom', 'preserve me')
+         FROM ir_model_data x WHERE x.res_id=a.id AND x.model='ir.actions.client'
+           AND x.module='stock' AND x.name='action_report_stock_position'",
+        &[&target],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "UPDATE ir_model_data SET noupdate=false
+         WHERE module='stock' AND name='action_report_stock_position'",
+        &[],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "UPDATE ir_module_module SET latest_version='1.11.0' WHERE name='stock'",
+        &[],
+    )
+    .await
+    .unwrap();
+}
+
+async fn rewind_stock_report(orm: &Orm) -> i64 {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let legacy: i64 = tx.query(
+        "SELECT res_id FROM ir_model_data WHERE module='stock' AND name='report_stock_position'",
+        &[],
+    ).await.unwrap()[0].get(0);
+    let quantity = stock_report_route(&mut tx).await;
+    set_stock_report_route(&mut tx, legacy).await;
+    tx.execute("DELETE FROM reporting_report WHERE id=$1", &[&quantity])
+        .await
+        .unwrap();
+    tx.execute(
+        "DELETE FROM ir_model_data
+         WHERE module='stock' AND starts_with(name, 'report_stock_quantity')",
+        &[],
+    )
+    .await
+    .unwrap();
+    for (name, model) in [
+        ("menu_report_stock_valuation", "ir.ui.menu"),
+        ("action_report_stock_valuation", "ir.actions.client"),
+    ] {
+        let id: i64 = tx.query(
+            "DELETE FROM ir_model_data WHERE module='stock_account' AND name=$1 RETURNING res_id",
+            &[&name],
+        ).await.unwrap()[0].get(0);
+        tx.env()
+            .records(model)
+            .unwrap()
+            .browse([id])
+            .unwrap()
+            .unlink(&mut tx)
+            .await
+            .unwrap();
+    }
+    tx.execute(
+        "UPDATE ir_module_module SET latest_version='1.6.0' WHERE name='stock_account'",
+        &[],
+    )
+    .await
+    .unwrap();
+    tx.env()
+        .records("reporting.report")
+        .unwrap()
+        .browse([legacy])
+        .unwrap()
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("name", Cell::Str("Customized legacy stock report".into())),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    legacy
+}
+
+#[test]
+fn management_cost_book_policy_is_immutable_through_base_writer() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(verify_base_writer_cost_book_policy());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn verify_base_writer_cost_book_policy() {
+    let db = TestDb::create().await.unwrap();
+    let lifecycle = system(&db);
+    let initialized = lifecycle
+        .initialize(InitOptions::new().with_skip_auto_install(true))
+        .await
+        .unwrap();
+    assert!(initialized.post_commit.is_clean());
+    let installed = lifecycle
+        .button_immediate_install(
+            &lifecycle.system_env(Context::new()),
+            &[ModuleName::new("stock_account").unwrap()],
+        )
+        .await
+        .unwrap();
+    assert!(installed.post_commit.is_clean());
+    let orm = installed.orm;
+
+    let mut root = orm.begin(SUPERUSER_ID).await.unwrap();
+    let data = root.query(
+        "SELECT c.id, c.currency_id,
+                (SELECT id FROM res_currency r WHERE r.id <> c.currency_id ORDER BY id LIMIT 1),
+                (SELECT res_id FROM ir_model_data WHERE module='account' AND name='group_account_manager'),
+                (SELECT res_id FROM ir_model_data WHERE module='base' AND name='group_system')
+         FROM res_company c ORDER BY c.id LIMIT 1",
+        &[],
+    ).await.unwrap();
+    let company: i64 = data[0].get(0);
+    let currency: i64 = data[0].get(1);
+    let other_currency: i64 = data[0].get(2);
+    let group: i64 = data[0].get(3);
+    let administrator: i64 = data[0].get(4);
+    let other_company = root
+        .env()
+        .records("res.company")
+        .unwrap()
+        .create(
+            &mut root,
+            vec![
+                RawVals::new()
+                    .set_cell("name", Cell::Str("Peer book company".into()))
+                    .set_cell("currency_id", Cell::Id(currency)),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    let allowed = [company, other_company];
+    let create_user = |login: &str, group: i64| {
+        RawVals::new()
+            .set_cell("name", Cell::Str(login.into()))
+            .set_cell("login", Cell::Str(login.into()))
+            .set_cell("company_id", Cell::Id(company))
+            .set_commands(
+                "company_ids",
+                [Command::set(
+                    allowed.map(|id| RecId::from_real(id).unwrap()),
+                )],
+            )
+            .set_commands(
+                "group_ids",
+                [Command::set([RecId::from_real(group).unwrap()])],
+            )
+    };
+    let users = root
+        .env()
+        .records("res.users")
+        .unwrap()
+        .create(
+            &mut root,
+            vec![
+                create_user("book_fixture_administrator", administrator),
+                create_user("two_company_book_manager", group),
+            ],
+        )
+        .await
+        .unwrap();
+    let user = users.ids()[1];
+    root.commit().await.unwrap();
+    drop(root);
+
+    let policy = PolicySource::build(Arc::clone(orm.registry()), db.pool().clone())
+        .await
+        .unwrap();
+    let runtime = Orm::builder(Arc::clone(orm.registry()), db.pool().clone())
+        .require_core_tables(erp_security::auth::core_tables())
+        .resolver(Resolver::for_registry(orm.registry()).unwrap())
+        .policy(Arc::new(policy) as Arc<dyn erp_orm::PolicyProvider>)
+        .impls(erp_modules::base_models::IMPLS.iter().copied())
+        .constraints(erp_modules::base_models::CONSTRAINTS.iter().copied())
+        .build()
+        .unwrap();
+    let mut tx = runtime
+        .begin_caller(UserId::new(user).unwrap())
+        .await
+        .unwrap();
+    let scope = tx.env().with_context([(
+        "allowed_company_ids",
+        erp_sdk::Value::list(allowed.map(erp_sdk::Value::Int)),
+    )]);
+    let books = scope.records("stock.cost.book").unwrap();
+    let book = books
+        .create(
+            &mut tx,
+            vec![book_values(
+                "Original book",
+                company,
+                currency,
+                "management",
+            )],
+        )
+        .await
+        .unwrap();
+    let peer = books
+        .create(
+            &mut tx,
+            vec![book_values(
+                "Peer book",
+                other_company,
+                currency,
+                "management",
+            )],
+        )
+        .await
+        .unwrap();
+    peer.check_access(&mut tx, Operation::Write).await.unwrap();
+    book.check_access(&mut tx, Operation::Write).await.unwrap();
+
+    for (field, changed) in [
+        ("method", Cell::Str("fifo".into())),
+        ("company_id", Cell::Id(other_company)),
+        ("currency_id", Cell::Id(other_currency)),
+        (
+            "effective_from",
+            Cell::Date(Date::from_ymd(2026, 1, 2).unwrap()),
+        ),
+    ] {
+        let error = tx
+            .savepoint(async |tx| {
+                book.write_base(tx, RawVals::new().set_cell(field, changed))
+                    .await?;
+                tx.flush().await
+            })
+            .await
+            .expect_err(field);
+        assert_eq!(error.kind(), ErrorKind::Validation, "{field}: {error:?}");
+        assert_eq!(
+            error.constraint(),
+            Some("stock_valuation_book_policy"),
+            "{field}: {error:?}"
+        );
+        assert_eq!(error.sqlstate(), Some("ERP65"), "{field}: {error:?}");
+        assert_eq!(
+            error.message(),
+            "Create a new cost book to change its company, purpose, method, currency or effective date."
+        );
+    }
+    book.write_base(
+        &mut tx,
+        book_values("Renamed book", company, currency, "management")
+            .set_cell("active", Cell::Bool(false)),
+    )
+    .await
+    .unwrap();
+    book.write(
+        &mut tx,
+        RawVals::new().set_cell("method", Cell::Str("lifo".into())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        book.cell(&mut tx, "company_id").await.unwrap(),
+        Cell::Id(company)
+    );
+    assert_eq!(
+        book.cell(&mut tx, "currency_id").await.unwrap(),
+        Cell::Id(currency)
+    );
+    assert_eq!(
+        book.cell(&mut tx, "method").await.unwrap(),
+        Cell::Str("lifo".into())
+    );
+    assert_eq!(
+        book.cell(&mut tx, "name").await.unwrap(),
+        Cell::Str("Renamed book".into())
+    );
+    assert_eq!(
+        book.cell(&mut tx, "active").await.unwrap(),
+        Cell::Bool(false)
+    );
+    tx.commit().await.unwrap();
+    drop(tx);
+    drop(runtime);
+    drop(orm);
+    drop(lifecycle);
+    db.cleanup().await.unwrap();
+}
+
+fn book_values(name: &str, company: i64, currency: i64, purpose: &str) -> RawVals {
+    RawVals::new()
+        .set_cell("name", Cell::Str(name.into()))
+        .set_cell("company_id", Cell::Id(company))
+        .set_cell("currency_id", Cell::Id(currency))
+        .set_cell("purpose", Cell::Str(purpose.into()))
+        .set_cell("method", Cell::Str("lifo".into()))
+        .set_cell(
+            "effective_from",
+            Cell::Date(Date::from_ymd(2026, 1, 1).unwrap()),
+        )
+}
+
+async fn verify_management_book(
+    installed: &Orm,
+    runtime: &Orm,
+    company: i64,
+    administrator: UserId,
+    book_reader: UserId,
+    stock_user: UserId,
+) -> i64 {
+    let mut root = installed.begin(SUPERUSER_ID).await.unwrap();
+    let books = root.env().records("stock.cost.book").unwrap();
+    assert!(
+        books
+            .search(&mut root, &erp_sdk::Domain::TRUE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let currency: i64 = root
+        .query(
+            "SELECT currency_id FROM res_company WHERE id=$1",
+            &[&company],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    root.rollback().await.unwrap();
+
+    let mut caller = runtime.begin_caller(administrator).await.unwrap();
+    let model = caller.env().records("stock.cost.book").unwrap();
+    let book = model
+        .create(
+            &mut caller,
+            vec![book_values(
+                "Management LIFO",
+                company,
+                currency,
+                "management",
+            )],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        book.cell(&mut caller, "currency_id").await.unwrap(),
+        Cell::Id(currency)
+    );
+    let error = caller
+        .savepoint(async |tx| {
+            model
+                .create(
+                    tx,
+                    vec![book_values(
+                        "Statutory LIFO",
+                        company,
+                        currency,
+                        "statutory",
+                    )],
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "The database refused the change: Only management cost books can be configured until statutory posting is supported."
+    );
+    let error = caller
+        .savepoint(async |tx| {
+            book.write(
+                tx,
+                RawVals::new().set_cell("method", Cell::Str("fifo".into())),
+            )
+            .await?;
+            tx.flush().await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "Create a new cost book to change its company, purpose, method, currency or effective date."
+    );
+    book.write(
+        &mut caller,
+        RawVals::new().set_cell("name", Cell::Str("Management comparison".into())),
+    )
+    .await
+    .unwrap();
+    let id = book.ids()[0];
+    caller.commit().await.unwrap();
+
+    let mut reader = runtime.begin_caller(book_reader).await.unwrap();
+    let readable = reader
+        .env()
+        .records("stock.cost.book")
+        .unwrap()
+        .browse([id])
+        .unwrap();
+    assert_eq!(
+        readable.cell(&mut reader, "name").await.unwrap(),
+        Cell::Str("Management comparison".into())
+    );
+    let denied = readable
+        .check_access(&mut reader, Operation::Write)
+        .await
+        .unwrap_err();
+    assert_eq!(denied.kind(), ErrorKind::Access);
+    reader.rollback().await.unwrap();
+
+    let mut clerk = runtime.begin_caller(stock_user).await.unwrap();
+    let records = clerk.env().records("stock.cost.book").unwrap();
+    for operation in [Operation::Read, Operation::Create] {
+        let error = records
+            .check_access(&mut clerk, operation)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Access);
+    }
+    clerk.rollback().await.unwrap();
+    id
+}
+
 // Called by the install/upgrade test after an unprivileged database policy has been built.
 async fn verify_valuation_report(
     system: &Orm,
@@ -385,6 +940,71 @@ async fn verify_valuation_report(
         .ids()[0];
     let quants = setup.query("INSERT INTO stock_quant(company_id,product_id,location_id,owner_id,quantity,reserved_quantity,in_date) VALUES ($1,$2,$3,NULL,4,0,now()),($1,$2,$3,$4,19,0,now()) RETURNING id", &[&company,&product,&place,&external]).await.unwrap();
     let owned = quants[0].get::<_, i64>(0);
+    let currency: i64 = setup
+        .query(
+            "SELECT currency_id FROM res_company WHERE id=$1",
+            &[&company],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let foreign_company = setup
+        .env()
+        .records("res.company")
+        .unwrap()
+        .create(
+            &mut setup,
+            vec![
+                RawVals::new()
+                    .set_cell(
+                        "name",
+                        Cell::Str("Out of scope stock report company".into()),
+                    )
+                    .set_cell("currency_id", Cell::Id(currency)),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    let foreign_location: i64 = setup
+        .query(
+            "INSERT INTO stock_location(name,usage,company_id)
+         VALUES('Out of scope stock report location','internal',$1) RETURNING id",
+            &[&foreign_company],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    setup.execute(
+        "INSERT INTO stock_quant(company_id,product_id,location_id,quantity,reserved_quantity,in_date)
+         VALUES ($1,$2,$3,100,0,now())",
+        &[&foreign_company, &product, &foreign_location],
+    ).await.unwrap();
+    let quantity = stock_report_route(&mut setup).await;
+    assert_ne!(quantity, report);
+    let valuation_action = setup
+        .query(
+            "SELECT (a.params->>'report')::int8 FROM ir_act_client a
+         JOIN ir_model_data x ON x.res_id=a.id AND x.model='ir.actions.client'
+         WHERE x.module='stock_account' AND x.name='action_report_stock_valuation'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(valuation_action[0].get::<_, i64>(0), report);
+    let menus = setup
+        .query(
+            "SELECT name, res_id FROM ir_model_data
+         WHERE (module, name) IN (('stock', 'menu_report_stock_position'),
+                                  ('stock', 'menu_report_moves_analysis'),
+                                  ('stock', 'menu_stock_quant'),
+                                  ('stock_account', 'menu_report_stock_valuation'))
+         ORDER BY name",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(menus.len(), 4);
     setup.commit().await.unwrap();
     drop(setup);
     for (user, expected) in [(manager, true), (clerk, false)] {
@@ -399,6 +1019,83 @@ async fn verify_valuation_report(
             view.arch().contains("stock_account.issue_cost_preview"),
             expected
         );
+        let visible = erp_addon_base::ir_ui_menu::IrUiMenu::visible_menu_ids(&env, &mut tx, false)
+            .await
+            .unwrap();
+        for menu in &menus {
+            let name: &str = menu.get(0);
+            let id: i64 = menu.get(1);
+            assert_eq!(
+                visible.contains(&id),
+                name == "menu_report_stock_position" || expected,
+                "visibility of {name}"
+            );
+        }
+
+        let mut options = report_options(&env, &mut tx, quantity, &Json::Null)
+            .await
+            .unwrap()["options"]
+            .clone();
+        let labels: Vec<_> = options["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|column| column["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["on_hand", "reserved", "available"]);
+        options["unfold_all"] = json!(true);
+        let rows = report_lines(&env, &mut tx, &options).await.unwrap();
+        assert!(
+            rows["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["name"] != "Out of scope stock report location")
+        );
+        let amounts = rows["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == "Valuation fixture")
+            .unwrap()["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|cell| {
+                cell["value"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<erp_sdk::Decimal>()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(amounts, [23, 0, 23].map(erp_sdk::Decimal::from));
+        for format in ["pdf", "xlsx"] {
+            let body = json!({"report": quantity, "options": options, "format": format});
+            let file = erp_addon_reporting::export::prepare(&mut tx, body.to_string().as_bytes())
+                .await
+                .unwrap();
+            assert_eq!(file.file_name(), format!("Stock Report.{format}"));
+            if format == "pdf" {
+                use erp_report::LayoutEngine as _;
+                let document = report_frame::through_frame(&file.document().unwrap());
+                let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../addons/report_fonts");
+                let engine =
+                    erp_report_typst::TypstEngine::new(&fonts, erp_report::Limits::default())
+                        .unwrap();
+                let rendered = engine.render(&document).unwrap();
+                let pdf = lopdf::Document::load_mem(rendered.bytes()).unwrap();
+                let text = pdf.extract_text(&[1]).unwrap();
+                assert!(
+                    text.split_whitespace()
+                        .collect::<String>()
+                        .contains("Valuationfixture")
+                );
+            } else {
+                let workbook = file.xlsx().unwrap();
+                assert!(workbook.bytes.starts_with(b"PK\x03\x04"));
+            }
+        }
         tx.rollback().await.unwrap();
     }
     let mut tx = runtime.begin_caller(manager).await.unwrap();
@@ -414,6 +1111,7 @@ async fn verify_valuation_report(
         .position(|c| c["label"] == "value")
         .unwrap();
     let missing = report_lines(&env, &mut tx, &options).await.unwrap_err();
+    assert_eq!(missing.kind(), ErrorKind::Validation);
     assert!(
         missing.message().contains("no published valuation"),
         "{}",
@@ -930,6 +1628,68 @@ async fn verify_receipt_preview(
     assert!(earlier > later && sources[0] < sources[1]);
     setup.execute("INSERT INTO stk_cost_state(company_id,product_id,method,policy,grid_value,quantity,currency_carry,currency_id,currency_increment,generation) SELECT id,$2,'fifo','cost_scale_v1',162,12,0,currency_id,0.01,1 FROM res_company WHERE id=$1", &[&company,&product]).await.unwrap();
     setup.execute("INSERT INTO stk_value_receipt(source_id,company_id,product_id,state,applied_mode,applied_generation,applied_at,recorded_at) SELECT s.id,s.company_id,s.product_id,'applied','inline',1,'2026-01-01','2026-01-01' FROM stk_value_source s WHERE s.company_id=$1 AND NOT EXISTS(SELECT 1 FROM stk_value_receipt r WHERE r.source_id=s.id)", &[&company]).await.unwrap();
+    let currency = setup
+        .query(
+            "SELECT currency_id FROM res_company WHERE id=$1",
+            &[&company],
+        )
+        .await
+        .unwrap()[0]
+        .get::<_, i64>(0);
+    let books = setup.env().records("stock.cost.book").unwrap();
+    let foreign_company = setup
+        .env()
+        .records("res.company")
+        .unwrap()
+        .create(
+            &mut setup,
+            vec![
+                RawVals::new()
+                    .set_cell("name", Cell::Str("Preview foreign company".into()))
+                    .set_cell("currency_id", Cell::Id(currency)),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    let other_currency: i64 = setup
+        .query(
+            "SELECT id FROM res_currency WHERE id <> $1 ORDER BY id LIMIT 1",
+            &[&currency],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let selected = books
+        .create(
+            &mut setup,
+            vec![
+                book_values("Receipt LIFO comparison", company, currency, "management"),
+                book_values("Receipt FIFO comparison", company, currency, "management")
+                    .set_cell("method", Cell::Str("fifo".into())),
+                book_values("Future comparison", company, currency, "management").set_cell(
+                    "effective_from",
+                    Cell::Date(Date::from_ymd(2199, 1, 1).unwrap()),
+                ),
+                book_values("Archived comparison", company, currency, "management")
+                    .set_cell("active", Cell::Bool(false)),
+                book_values(
+                    "Foreign-company comparison",
+                    foreign_company,
+                    currency,
+                    "management",
+                ),
+                book_values(
+                    "Foreign-currency comparison",
+                    company,
+                    other_currency,
+                    "management",
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+    let book_ids = selected.ids();
     setup.commit().await.unwrap();
     drop(setup);
     let policy = PolicySource::build(Arc::clone(system.registry()), db.pool().clone())
@@ -991,17 +1751,91 @@ async fn verify_receipt_preview(
         .await
         .unwrap();
     assert_eq!(full["total"], json!({"numerator":"162","denominator":"1"}));
-    let snapshot: Json = tx
-        .query(
-            "SELECT jsonb_build_object('layers',(SELECT jsonb_agg(to_jsonb(l) ORDER BY id) FROM stk_cost_layer l WHERE product_id=$1),'state',(SELECT jsonb_agg(to_jsonb(s) ORDER BY id) FROM stk_cost_state s WHERE product_id=$1),'sources',(SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM stk_value_source v WHERE product_id=$1),'receipts',(SELECT jsonb_agg(to_jsonb(r) ORDER BY id) FROM stk_value_receipt r WHERE product_id=$1))",
-            &[&product],
-        )
-        .await
-        .unwrap()[0]
-        .get(0);
+    let fingerprint = "SELECT jsonb_build_object(
+        'layers',(SELECT jsonb_agg(to_jsonb(l) ORDER BY id) FROM stk_cost_layer l WHERE product_id=$1),
+        'state',(SELECT jsonb_agg(to_jsonb(s) ORDER BY id) FROM stk_cost_state s WHERE product_id=$1),
+        'sources',(SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM stk_value_source v WHERE product_id=$1),
+        'receipts',(SELECT jsonb_agg(to_jsonb(r) ORDER BY id) FROM stk_value_receipt r WHERE product_id=$1),
+        'consumptions',(SELECT jsonb_agg(to_jsonb(c) ORDER BY id) FROM stk_layer_consumption c WHERE product_id=$1),
+        'journal',(SELECT jsonb_agg(to_jsonb(j) ORDER BY id) FROM stk_value_journal j WHERE product_id=$1),
+        'quants',(SELECT jsonb_agg(to_jsonb(q) ORDER BY id) FROM stock_quant q WHERE product_id=$1),
+        'account_moves',(SELECT count(*) FROM account_move))";
+    let snapshot: Json = tx.query(fingerprint, &[&product]).await.unwrap()[0].get(0);
+    let book_request = |id: i64, quantity: &str| json!({"scope":"management_cost_book","cost_book_id":id,"quantity":quantity});
+    let fraction = |numerator: i64, denominator: i64| json!({"numerator":numerator.to_string(),"denominator":denominator.to_string()});
+    // Deliberately compare every component against the authored expectation. These
+    // are reusable expectations for future durable issue tests, not issued rows.
+    let lifo_lines = [
+        (later, sources[1], "later", 5, 85, 0, 0),
+        (earlier, sources[0], "earlier", 1, 11, 6, 66),
+    ];
+    let fifo_lines = [(earlier, sources[0], "earlier", 6, 66, 1, 11)];
+    for (index, method, issued, remaining, expected) in [
+        (0, "lifo", 96, 66, lifo_lines.as_slice()),
+        (1, "fifo", 66, 96, fifo_lines.as_slice()),
+    ] {
+        let book = book_ids[index];
+        let result = preview_issue(&record, &mut tx, book_request(book, "6"))
+            .await
+            .unwrap();
+        assert_eq!(result["scope"], "management_cost_book");
+        assert_eq!(
+            result["receipt_scope"],
+            "primary_unbooked_receipt_projection"
+        );
+        assert_eq!(
+            result["cost_book"],
+            json!({"id":book,"purpose":"management"})
+        );
+        assert_eq!(result["comparison_only"], true);
+        assert_eq!(result["method"], method);
+        assert_eq!(result["total"], fraction(issued, 1));
+        assert_eq!(result["pool_remaining_quantity"], fraction(6, 1));
+        assert_eq!(result["pool_remaining_value"], fraction(remaining, 1));
+        let allocations = result["allocations"].as_array().unwrap();
+        assert_eq!(allocations.len(), expected.len());
+        for (allocation, &(layer, source, component, quantity, value, left, left_value)) in
+            allocations.iter().zip(expected)
+        {
+            assert_eq!(allocation["layer_id"], layer);
+            assert_eq!(allocation["source_id"], source);
+            assert_eq!(allocation["source_sequence"], source);
+            assert_eq!(
+                allocation["origin"],
+                json!({"model":"product.product","id":product,"component":component,"revision":0})
+            );
+            assert_eq!(allocation["quantity"], fraction(quantity, 1));
+            assert_eq!(allocation["value"], fraction(value, 1));
+            assert_eq!(allocation["remaining_quantity"], fraction(left, 1));
+            assert_eq!(allocation["remaining_value"], fraction(left_value, 1));
+        }
+    }
+    let inactive = "Choose an active management cost book effective on the company business date.";
+    let inaccessible = "Issue preview requires a readable cost book for the stock line's company.";
+    for (id, kind, message) in [
+        (book_ids[2], ErrorKind::Validation, inactive),
+        (book_ids[3], ErrorKind::Validation, inactive),
+        (book_ids[4], ErrorKind::Access, inaccessible),
+        (
+            book_ids[5],
+            ErrorKind::Validation,
+            "Management issue preview requires a cost book in the company currency.",
+        ),
+        (i64::MAX, ErrorKind::Access, inaccessible),
+    ] {
+        let error = preview_issue(&record, &mut tx, book_request(id, "6"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert_eq!(error.message(), message);
+    }
     for (input, message) in [
         (
             request("fifo", "13"),
+            "The receipt cost pool does not cover the requested issue quantity.",
+        ),
+        (
+            book_request(book_ids[0], "13"),
             "The receipt cost pool does not cover the requested issue quantity.",
         ),
         (
@@ -1018,21 +1852,14 @@ async fn verify_receipt_preview(
         ),
         (
             json!({"scope":"book","method":"fifo","quantity":"1"}),
-            "Issue preview supports only the primary unbooked receipt projection; named cost books are not available.",
+            "Issue preview scope must be primary_unbooked_receipt_projection or management_cost_book.",
         ),
     ] {
         let error = preview_issue(&record, &mut tx, input).await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Validation);
         assert_eq!(error.message(), message);
     }
-    let unchanged: Json = tx
-        .query(
-            "SELECT jsonb_build_object('layers',(SELECT jsonb_agg(to_jsonb(l) ORDER BY id) FROM stk_cost_layer l WHERE product_id=$1),'state',(SELECT jsonb_agg(to_jsonb(s) ORDER BY id) FROM stk_cost_state s WHERE product_id=$1),'sources',(SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM stk_value_source v WHERE product_id=$1),'receipts',(SELECT jsonb_agg(to_jsonb(r) ORDER BY id) FROM stk_value_receipt r WHERE product_id=$1))",
-            &[&product],
-        )
-        .await
-        .unwrap()[0]
-        .get(0);
+    let unchanged: Json = tx.query(fingerprint, &[&product]).await.unwrap()[0].get(0);
     assert_eq!(snapshot, unchanged);
     tx.rollback().await.unwrap();
     drop(tx);
@@ -1142,6 +1969,11 @@ async fn verify_receipt_preview(
         partial["pool_remaining_value"],
         json!({"numerator":"68","denominator":"1"})
     );
+    let named_partial = preview_issue(&record, &mut tx, book_request(book_ids[1], "6"))
+        .await
+        .unwrap();
+    assert_eq!(named_partial["allocations"], partial["allocations"]);
+    assert_eq!(named_partial["total"], fraction(72, 1));
     tx.rollback().await.unwrap();
     drop(tx);
     let mut setup = system.begin(SUPERUSER_ID).await.unwrap();
@@ -1172,6 +2004,11 @@ async fn verify_receipt_preview(
         exhausted["total"],
         json!({"numerator":"85","denominator":"1"})
     );
+    let named_exhausted = preview_issue(&record, &mut tx, book_request(book_ids[1], "5"))
+        .await
+        .unwrap();
+    assert_eq!(named_exhausted["allocations"], exhausted["allocations"]);
+    assert_eq!(named_exhausted["pool_remaining_value"], fraction(0, 1));
     tx.rollback().await.unwrap();
     drop(tx);
 
@@ -1241,6 +2078,17 @@ async fn verify_receipt_preview(
             result["allocations"][0]["prior_consumed_residual"],
             json!({"numerator":"1","denominator":"3000000000000000000"})
         );
+        let named = preview_issue(&record, &mut tx, book_request(book_ids[0], quantity))
+            .await
+            .unwrap();
+        assert_eq!(named["total"], result["total"]);
+        assert_eq!(named["allocations"], result["allocations"]);
+        let remaining = if quantity == "1" {
+            fraction(1, 3)
+        } else {
+            fraction(0, 1)
+        };
+        assert_eq!(named["pool_remaining_value"], remaining);
     }
     tx.rollback().await.unwrap();
     drop(tx);
@@ -1356,29 +2204,6 @@ async fn verify_receipt_preview(
 
     // The same caller's ordinary read refusal is preserved for another company's anchor.
     let mut setup = system.begin(SUPERUSER_ID).await.unwrap();
-    let currency: i64 = setup
-        .query(
-            "SELECT currency_id FROM res_company WHERE id=$1",
-            &[&company],
-        )
-        .await
-        .unwrap()[0]
-        .get(0);
-    let foreign_company = setup
-        .env()
-        .records("res.company")
-        .unwrap()
-        .create(
-            &mut setup,
-            vec![
-                RawVals::new()
-                    .set_cell("name", Cell::Str("Preview foreign company".into()))
-                    .set_cell("currency_id", Cell::Id(currency)),
-            ],
-        )
-        .await
-        .unwrap()
-        .ids()[0];
     let foreign_location: i64 = setup.query("INSERT INTO stock_location(name,usage,company_id) VALUES('Preview other company','internal',$1) RETURNING id", &[&foreign_company]).await.unwrap()[0].get(0);
     let foreign_quant: i64 = setup.query("INSERT INTO stock_quant(company_id,product_id,location_id,quantity,reserved_quantity,in_date) VALUES($1,$2,$3,1,0,now()) RETURNING id", &[&foreign_company,&product,&foreign_location]).await.unwrap()[0].get(0);
     setup.commit().await.unwrap();
@@ -1717,13 +2542,20 @@ async fn preview_issue(
     tx: &mut erp_sdk::Transaction,
     input: serde_json::Value,
 ) -> erp_sdk::Result<serde_json::Value> {
-    // Same dynamic object shape as the JSON-2 binder. Every fixture request value is text.
+    // Same dynamic object shape as the JSON-2 binder.
     let request = erp_sdk::Value::Map(Arc::new(
         input
             .as_object()
             .unwrap()
             .iter()
-            .map(|(key, value)| (key.clone(), erp_sdk::Value::str(value.as_str().unwrap())))
+            .map(|(key, value)| {
+                let value = if let Some(id) = value.as_i64() {
+                    erp_sdk::Value::Int(id)
+                } else {
+                    erp_sdk::Value::str(value.as_str().unwrap())
+                };
+                (key.clone(), value)
+            })
             .collect(),
     ));
     let result: erp_sdk::Value = record.call(tx, "preview_issue_cost", (request,)).await?;

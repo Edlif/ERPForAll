@@ -85,7 +85,7 @@ export function scalarControl(options: FieldControlOptions): FieldControl {
     const select = el("select", undefined, "styled-select"); select.name = field.name; select.required = field.required;
     select.append(new Option(placeholder, "")); for (const [key, label] of choices) select.append(new Option(label, key)); select.value = empty ? "" : String(value);
     const shell = wrap(select);
-    select.addEventListener("change", () => { if (!select.checkValidity()) { shell.invalid(`${field.label} is required.`); return; } shell.clear(); change(select.value === "" ? false : select.value); });
+    select.addEventListener("change", () => { shell.clear(); if (!select.checkValidity()) { shell.invalid(`${field.label} is required.`); return; } change(select.value === "" ? false : select.value); });
     if (widget === "badges_selection") {
       const badges = el("div", undefined, "field-badge-choices"); badges.setAttribute("role", "group"); badges.setAttribute("aria-label", field.label);
       const limit = config.badge_limit ?? 5;

@@ -227,8 +227,8 @@ fn raw(
     if option(options, "format").is_some() {
         return unsupported("the format option of date widgets", FORMATS_TASK);
     }
-    if option(options, "decimal_precision").is_some() {
-        return unsupported("the decimal_precision widget option", "a later release");
+    if option(options, "decimal_precision").is_some() && widget != "float" {
+        return Err(at.evaluate("widget option `decimal_precision` requires the float widget"));
     }
     Ok(match widget {
         "char" => text(value.to_py_str()),
@@ -247,7 +247,16 @@ fn raw(
             text(env.formats.integer(value).replace('-', MINUS))
         }
         "float" => {
-            let precision = digits(options, "precision", at)?.or(field_digits);
+            let precision = match option(options, crate::precision::OPTION) {
+                Some(ExprValue::Str(name)) => Some(usize::from(
+                    *env.records
+                        .precisions
+                        .get(name.as_str())
+                        .ok_or_else(|| crate::precision::missing(name))?,
+                )),
+                Some(_) => return Err(at.evaluate(crate::precision::LITERAL_REQUIRED)),
+                None => digits(options, "precision", at)?.or(field_digits),
+            };
             let minimum = digits(options, "min_precision", at)?;
             text(float(env, number(value, at)?, precision, minimum)?)
         }
@@ -514,6 +523,9 @@ pub(crate) fn value(env: &Env<'_>, value: &ExprValue, options: Option<&Map>, at:
         None if matches!(value,ExprValue::Object(o) if o.type_name()=="report.html") => {
             Err(at.evaluate("HTML value belongs to another report store"))
         }
+        None if option(options, crate::precision::OPTION).is_some() => {
+            Err(at.evaluate("widget option `decimal_precision` requires the float widget"))
+        }
         None => Ok(text(value.to_py_str())),
     }
 }
@@ -527,6 +539,11 @@ pub(crate) fn field(
     at: &At,
 ) -> Printed {
     let named = widget_option(options, at)?;
+    if option(options, crate::precision::OPTION).is_some()
+        && !(named == Some("float") || (named.is_none() && matches!(field.kind, Kind::Float(_))))
+    {
+        return Err(at.evaluate("widget option `decimal_precision` requires the float widget"));
+    }
     let unset = matches!(field.value, ExprValue::Bool(false));
     match &field.kind {
         Kind::One(model, id) if matches!(named, None | Some("many2one")) => {

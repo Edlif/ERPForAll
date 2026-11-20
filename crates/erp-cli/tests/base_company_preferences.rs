@@ -751,6 +751,34 @@ async fn installed() {
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Access, "{field}: {error:?}");
     }
+    let ordinary_env = ordinary_tx.env();
+    let allowed_day = erp_addon_base::company_calendar::business_days(
+        &mut ordinary_tx,
+        &ordinary_env,
+        &[company],
+    )
+    .await
+    .unwrap();
+    assert!(allowed_day.contains_key(&company));
+    let denied_records = ordinary_env
+        .records("res.company")
+        .unwrap()
+        .browse([company, other])
+        .unwrap();
+    let policy_error = denied_records
+        .check_access(&mut ordinary_tx, erp_sdk::Operation::Read)
+        .await
+        .unwrap_err();
+    let calendar_error = erp_addon_base::company_calendar::business_days(
+        &mut ordinary_tx,
+        &ordinary_env,
+        &[company, other],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(calendar_error.kind(), ErrorKind::Access);
+    // Policy diagnostics include installed record/rule identities; require their full propagation.
+    assert_eq!(calendar_error.message(), policy_error.message());
     ordinary_tx.rollback().await.unwrap();
     drop(ordinary_tx);
 
@@ -892,12 +920,20 @@ async fn company_business_zone_is_required_and_invalid_changes_leave_it_intact()
         record.cell(&mut tx, "tz").await.unwrap(),
         text("Asia/Jakarta")
     );
-    for invalid in [text("Warehouse/West"), text(""), Cell::Null] {
+    for (invalid, message) in [
+        (
+            text("Warehouse/West"),
+            "Unknown company time zone 'Warehouse/West'.",
+        ),
+        (text(""), "Unknown company time zone ''."),
+        (Cell::Null, "Choose a company time zone."),
+    ] {
         let error = record
             .write(&mut tx, RawVals::new().set_cell("tz", invalid))
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("time zone"), "{error}");
+        assert_eq!(error.kind(), ErrorKind::Validation);
+        assert_eq!(error.message(), message);
         assert_eq!(
             record.cell(&mut tx, "tz").await.unwrap(),
             text("Asia/Jakarta")
@@ -964,4 +1000,159 @@ async fn companies_use_their_own_day_at_one_transaction_start() {
     assert_eq!(days[&company].date, rows[0].get::<_, erp_fields::Date>(0));
     assert_eq!(days[&west].date, rows[0].get::<_, erp_fields::Date>(1));
     assert!(days[&company].date > days[&west].date);
+}
+
+#[tokio::test]
+async fn company_calendar_defaults_and_transaction_clock_are_explicit() {
+    let h = Harness::builder([&erp_addon_base::ADDON])
+        .build()
+        .await
+        .unwrap();
+    let mut tx = h.begin().await.unwrap();
+    let env = tx.env();
+    let currency = currency(&mut tx).await;
+    let vals = |name| {
+        RawVals::new()
+            .set_cell("name", text(name))
+            .set_cell("currency_id", Cell::Id(currency))
+    };
+    let company = create(&mut tx, "res.company", vals("UTC fallback")).await;
+    assert_eq!(
+        cell(&mut tx, "res.company", company, "tz").await,
+        text("UTC")
+    );
+    let model = env
+        .with_context([("default_tz", erp_fields::Value::str("Asia/Jakarta"))])
+        .records("res.company")
+        .unwrap();
+    let rows = model
+        .create(
+            &mut tx,
+            vec![
+                vals("Context"),
+                vals("Explicit").set_cell("tz", text("Pacific/Pago_Pago")),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.cells(&mut tx, "tz").await.unwrap(),
+        vec![text("Asia/Jakarta"), text("Pacific/Pago_Pago")]
+    );
+    let count = env
+        .records("res.company")
+        .unwrap()
+        .search_count(&mut tx, &erp_sdk::domain::Domain::constant(true), None)
+        .await
+        .unwrap();
+    let error = model
+        .create(
+            &mut tx,
+            vec![
+                vals("Rollback"),
+                vals("Bad").set_cell("tz", text("No/SuchZone")),
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation);
+    assert_eq!(error.message(), "Unknown company time zone 'No/SuchZone'.");
+    assert_eq!(
+        env.records("res.company")
+            .unwrap()
+            .search_count(&mut tx, &erp_sdk::domain::Domain::constant(true), None)
+            .await
+            .unwrap(),
+        count
+    );
+    let first = erp_addon_base::company_calendar::business_days(&mut tx, &env, &[company, company])
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    tx.query("SET LOCAL TIME ZONE 'Pacific/Kiritimati'", &[])
+        .await
+        .unwrap();
+    let other_env = env.with_context([("tz", erp_fields::Value::str("Pacific/Pago_Pago"))]);
+    let second = erp_addon_base::company_calendar::business_days(&mut tx, &other_env, &[company])
+        .await
+        .unwrap();
+    assert_eq!(first[&company].date, second[&company].date);
+    assert_eq!(first[&company].start_utc, second[&company].start_utc);
+    assert!(
+        erp_addon_base::company_calendar::business_days(&mut tx, &env, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    env.records("res.company")
+        .unwrap()
+        .browse([company])
+        .unwrap()
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("tz", text("Pacific/Kiritimati")),
+        )
+        .await
+        .unwrap();
+    let changed = erp_addon_base::company_calendar::business_days(&mut tx, &env, &[company])
+        .await
+        .unwrap();
+    let expected: erp_fields::Date = tx
+        .query(
+            "SELECT (transaction_timestamp() AT TIME ZONE 'Pacific/Kiritimati')::date",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(changed[&company].date, expected);
+    let error = erp_addon_base::company_calendar::business_days(&mut tx, &env, &[i64::MAX])
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Missing);
+    assert_eq!(
+        error.message(),
+        format!("Company {} is unavailable.", i64::MAX)
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    h.cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn company_calendar_denies_zone_field_before_raw_lookup() {
+    let policy = erp_testkit::FieldPolicy::new().deny("res.company", "tz", erp_sdk::FieldOp::Read);
+    let h = Harness::builder([&erp_addon_base::ADDON])
+        .policy(policy.clone())
+        .build()
+        .await
+        .unwrap();
+    policy.attach(h.registry()).unwrap();
+    let mut tx = h.begin().await.unwrap();
+    let currency = currency(&mut tx).await;
+    let company = create(
+        &mut tx,
+        "res.company",
+        RawVals::new()
+            .set_cell("name", text("Field restricted"))
+            .set_cell("currency_id", Cell::Id(currency)),
+    )
+    .await;
+    // FieldPolicy is an isolated permission fixture, with no user resolver or installed data.
+    let caller = tx
+        .env()
+        .records("res.company")
+        .unwrap()
+        .with_user(erp_orm::UserId::new(2).unwrap());
+    let error = erp_addon_base::company_calendar::business_days(&mut tx, caller.env(), &[company])
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Access);
+    assert_eq!(
+        error.message(),
+        "Reading the company time zone is not allowed."
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    h.cleanup().await.unwrap();
 }

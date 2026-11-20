@@ -65,7 +65,7 @@ async fn prepare(tx: &mut Transaction, company: i64, patch: &LockPatch) -> Resul
     let rows=tx.query("SELECT fiscalyear_lock_date,sale_lock_date,purchase_lock_date,tax_lock_date,hard_lock_date \
         FROM res_company WHERE id=$1 FOR UPDATE",&[&company]).await?;
     let row = rows.first().ok_or_else(|| Error::access(NOT_ALLOWED))?;
-    let today = tx.env().context_today()?;
+    let today = erp_addon_base::company_calendar::business_date(tx, company).await?;
     let mut changes = Vec::new();
     for (i, field) in FIELDS.iter().copied().enumerate() {
         let Some(new) = patch.dates[i] else {
@@ -204,12 +204,21 @@ impl AccountLockPolicy {
         crate::fpos::reject_fence_value(&vals)?;
         let configuration =
             crate::company::validation::prepare_write(this.as_records(), tx, &vals).await?;
+        let calendar_changed = vals.contains("tz");
+        let valuation_changed = vals.contains(crate::company::valuation::FIELD);
         let patch = patch_from(&vals)?;
         if patch.empty() {
-            if configuration {
+            if configuration || calendar_changed || valuation_changed {
                 // Roll back even when a native caller catches a later company/field constraint.
                 return tx
-                    .savepoint(async move |tx| sup.call(tx, this.as_records(), (vals,)).await)
+                    .savepoint(async move |tx| {
+                        sup.call(tx, this.as_records(), (vals,)).await?;
+                        if calendar_changed {
+                            tx.invalidate_model("account.journal", Some(&["dashboard_card"]))
+                                .await?;
+                        }
+                        Ok(())
+                    })
                     .await;
             }
             return sup.call(tx, this.as_records(), (vals,)).await;
@@ -226,6 +235,10 @@ impl AccountLockPolicy {
         tx.savepoint(async |tx| {
             let changes = prepare(tx, ids[0], &patch).await?;
             sup.call(tx, this.as_records(), (vals,)).await?;
+            if calendar_changed {
+                tx.invalidate_model("account.journal", Some(&["dashboard_card"]))
+                    .await?;
+            }
             tx.flush().await?;
             finish(tx, ids[0], &changes).await
         })
@@ -251,6 +264,15 @@ impl AccountLockPolicy {
                 "A new company cannot take {field} from a default in the context; create it \
                  without lock dates, then change them through the lock policy."
             )));
+        }
+        if context.contains("default_account_stock_valuation_id")
+            || vals_list
+                .iter()
+                .any(|vals| vals.contains(crate::company::valuation::FIELD))
+        {
+            return Err(Error::validation(
+                "Set account_stock_valuation_id after creating the company.",
+            ));
         }
         if context.contains("default_fpos_revision") {
             return Err(Error::validation(crate::fpos::FENCE_REFUSED));

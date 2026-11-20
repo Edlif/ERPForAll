@@ -140,10 +140,15 @@ pub struct PrefetchPlan {
     pub(crate) models: BTreeMap<String, ModelFields>,
     helpers: BTreeSet<(String, String)>,
     pub(crate) invocations: Vec<crate::helper::Invocation>,
+    precisions: BTreeSet<String>,
 }
 impl PrefetchPlan {
+    /// Distinct literal precision names, in name order; loaded together once per batch.
+    pub fn precision_names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.precisions.iter().map(String::as_str)
+    }
     /// The reads of the plan, by depth then model. Their number bounds the reads of a batch,
-    /// whatever its size.
+    /// whatever its size. A nonempty precision name set adds one metadata read.
     pub fn levels(&self) -> Vec<PlanLevel> {
         let keys: BTreeSet<(usize, &str)> = self
             .paths
@@ -221,6 +226,7 @@ struct Analysis<'a, F> {
     paths: Vec<Path>,
     helpers: BTreeSet<(String, String)>,
     pub(crate) invocations: Vec<crate::helper::Invocation>,
+    precisions: BTreeSet<String>,
     work: Work,
     helper_bytes: usize,
 }
@@ -595,6 +601,20 @@ impl<F: Fn(&str, &str) -> Option<FieldInfo>> Analysis<'_, F> {
             at,
             source: &code.source,
         };
+        if let Some(name) = crate::precision::literal_name(code)
+            .map_err(|reason| at.compile(format!("`{}`: {reason}", code.source)))?
+        {
+            self.work.charge(name.len())?;
+            if !self.precisions.contains(name) {
+                if self.precisions.len() >= self.program.limits.plan_paths {
+                    return Err(ReportError::Limit {
+                        name: "plan_paths",
+                        maximum: self.program.limits.plan_paths,
+                    });
+                }
+                self.precisions.insert(name.to_owned());
+            }
+        }
         let Expr::Dict(entries) = &code.expr else {
             self.infer(&code.expr, &cx, scope)?;
             return Ok(());
@@ -788,6 +808,7 @@ impl ReportProgram {
             paths: Vec::new(),
             helpers: BTreeSet::new(),
             invocations: Vec::new(),
+            precisions: BTreeSet::new(),
             work: self.limits.work(),
             helper_bytes: 0,
         };
@@ -823,6 +844,7 @@ impl ReportProgram {
             models,
             helpers: analysis.helpers,
             invocations: analysis.invocations,
+            precisions: analysis.precisions,
         })
     }
 }

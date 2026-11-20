@@ -150,7 +150,7 @@ impl ReportLimits {
         self.plan_paths = value;
         Ok(self)
     }
-    /// Bound the records the data stage loads for one batch, related records included; floor 1,
+    /// Bound the records the data stage loads for one batch, related and named precision rows included; floor 1,
     /// ceiling 200,000.
     pub fn with_data_records(mut self, value: usize) -> Result<Self, ReportError> {
         if !(1..=200_000).contains(&value) {

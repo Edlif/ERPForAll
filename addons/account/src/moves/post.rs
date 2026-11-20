@@ -208,13 +208,12 @@ pub async fn post_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
         if !messages.is_empty() {
             return Err(Error::user(messages.join("\n")));
         }
-        let today = moves.env().context_today()?;
         let taxed: BTreeSet<i64> = facts
             .iter()
             .filter(|(_, f)| f.taxed)
             .map(|(id, _)| *id)
             .collect();
-        let dates = accounting_dates(tx, moves.env(), &headers, &taxed, today).await?;
+        let dates = accounting_dates(tx, moves.env(), &headers, &taxed).await?;
         let locked = lock_headers(tx, &ids).await?;
         let unchanged = headers.len() == locked.len()
             && headers
@@ -696,8 +695,14 @@ async fn accounting_dates(
     env: &Env,
     headers: &[Header],
     taxed: &BTreeSet<i64>,
-    today: Date,
 ) -> Result<Vec<Date>> {
+    let companies: Vec<_> = headers
+        .iter()
+        .map(|h| h.company)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let days = erp_addon_base::company_calendar::business_days(tx, env, &companies).await?;
     let check = |header: &Header, date: Date| {
         let tax = if taxed.contains(&header.id) {
             TaxImpact::Report
@@ -726,7 +731,11 @@ async fn accounting_dates(
                 let reset = SequenceReset::parse(&header.journal_reset)?;
                 dates.push(shifted_date(
                     next_day(latest),
-                    today,
+                    days.get(&header.company)
+                        .ok_or_else(|| {
+                            Error::missing(format!("Company {} is unavailable.", header.company))
+                        })?
+                        .date,
                     reset,
                     header.journal_numbered_before,
                     header.is_sale_document(),

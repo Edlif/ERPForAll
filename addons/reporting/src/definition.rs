@@ -153,6 +153,33 @@ pub struct ReportDef {
 }
 
 impl ReportDef {
+    /// Clone this definition with an additional source restriction for every aggregate
+    /// expression. Refuses a different source model so custom definitions cannot escape the scope.
+    /// The same narrowed definition drives values, unfolding and the drill action's domain.
+    pub fn restricted_to(&self, model: &str, restriction: &Domain) -> Result<Self> {
+        let mut scoped = self.clone();
+        for line in &mut scoped.lines {
+            for expr in &mut line.exprs {
+                let agg = match &mut expr.engine {
+                    Engine::Aggregate(agg) => agg,
+                    Engine::Native { .. } => {
+                        return Err(bad(
+                            "Historical item filtering requires aggregate or formula expressions.",
+                        ));
+                    }
+                    Engine::Formula { .. } => continue,
+                };
+                if agg.model != model {
+                    return Err(bad(format!(
+                        "This report filter requires all source expressions to use {model}."
+                    )));
+                }
+                agg.domain = agg.domain.clone() & restriction.clone();
+            }
+        }
+        Ok(scoped)
+    }
+
     /// Whether every grouped line can order this column before it pages its results.
     pub(crate) fn can_sort(&self, column: &ColumnDef) -> bool {
         column.sortable
@@ -169,6 +196,7 @@ impl ReportDef {
     pub(crate) fn filters(&self) -> Json {
         json!({
             "date_mode": match self.date_mode { DateMode::Range => "range", DateMode::Single => "single" },
+            "provider": self.provider,
             "current_only": self.current_only,
             "comparison": self.comparison,
             "multi_company": self.multi_company,

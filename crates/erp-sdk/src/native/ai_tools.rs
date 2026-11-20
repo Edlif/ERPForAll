@@ -549,6 +549,31 @@ impl Instruction {
         self
     }
 
+    /// Bounds rendering work without allocating or exposing the instruction pieces.
+    ///
+    /// Returns the upper bound on UTF-8 bytes and the number of pieces if both fit.
+    /// Integer and flag pieces are charged their maximum rendered lengths.
+    #[must_use]
+    pub fn render_budget(&self, byte_limit: usize, piece_limit: usize) -> Option<(usize, usize)> {
+        let count = self.pieces.len();
+        if count > piece_limit {
+            return None;
+        }
+        let mut bytes = 0_usize;
+        for piece in &self.pieces {
+            let width = match piece {
+                InstructionPiece::Text(text) => text.len(),
+                InstructionPiece::Integer(_) => 20,
+                InstructionPiece::Flag(_) => 5,
+            };
+            bytes = bytes.checked_add(width)?;
+            if bytes > byte_limit {
+                return None;
+            }
+        }
+        Some((bytes, count))
+    }
+
     /// The text sent to the model: the pieces concatenated.
     #[must_use]
     pub fn render(&self) -> String {

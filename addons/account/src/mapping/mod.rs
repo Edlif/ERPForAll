@@ -4,7 +4,7 @@
 mod models;
 mod storage;
 
-use erp_addon_base::company_calendar::business_date;
+use erp_addon_base::company_calendar::business_days;
 use erp_sdk::prelude::*;
 use erp_sdk::{ErrorKind, Operation, PrincipalKind};
 
@@ -121,10 +121,18 @@ impl CompanyDefault {
     /// Company or account access failure, an invalid configured account, an invalid date, or a
     /// database error. Invalid configured accounts never become absence.
     pub async fn resolve(self, tx: &mut Transaction, date: ResolutionDate) -> Result<Option<i64>> {
-        self.authorize(tx, Operation::Read).await?;
-        tx.flush().await?;
+        self.resolve_as(tx, &tx.env(), date).await
+    }
+
+    pub(crate) async fn resolve_as(
+        self,
+        tx: &mut Transaction,
+        env: &Env,
+        date: ResolutionDate,
+    ) -> Result<Option<i64>> {
+        self.authorize(tx, env, Operation::Read).await?;
         let date = match date {
-            ResolutionDate::Current => business_date(tx, self.company).await?,
+            ResolutionDate::Current => self.business_date(tx, env).await?,
             ResolutionDate::Document(date) if (1..=9999).contains(&date.ymd().0) => date,
             ResolutionDate::Document(_) => {
                 return Err(Error::validation("Invalid accounting configuration date"));
@@ -133,7 +141,7 @@ impl CompanyDefault {
         let role = self.role_id(tx).await?;
         let account = storage::resolve(tx, self.company, role, date).await?;
         if let Some(account) = account {
-            self.validate_account(tx, account, false).await?;
+            self.validate_account(tx, env, account, false).await?;
         }
         Ok(account)
     }
@@ -147,7 +155,7 @@ impl CompanyDefault {
         match self.resolve(tx, date).await? {
             Some(account) => Ok(account),
             None => {
-                let name = self.company_name(tx).await?;
+                let name = self.company_name(tx, &tx.env()).await?;
                 Err(Error::user(format!(
                     "No {} account configured for company {name}",
                     self.role.key().replace('_', " ")
@@ -164,7 +172,16 @@ impl CompanyDefault {
     ///
     /// Invalid input, role or account; company or target access failure; a refused database write.
     pub async fn set(self, tx: &mut Transaction, account: Option<i64>) -> Result<()> {
-        self.edit(tx, account, false).await?;
+        self.set_as(tx, &tx.env(), account).await
+    }
+
+    pub(crate) async fn set_as(
+        self,
+        tx: &mut Transaction,
+        env: &Env,
+        account: Option<i64>,
+    ) -> Result<()> {
+        self.edit(tx, env, account, false).await?;
         Ok(())
     }
 
@@ -182,14 +199,20 @@ impl CompanyDefault {
         tx: &mut Transaction,
         account: Option<i64>,
     ) -> Result<bool> {
-        self.edit(tx, account, true).await
+        self.edit(tx, &tx.env(), account, true).await
     }
 
-    async fn edit(self, tx: &mut Transaction, account: Option<i64>, seed: bool) -> Result<bool> {
+    async fn edit(
+        self,
+        tx: &mut Transaction,
+        env: &Env,
+        account: Option<i64>,
+        seed: bool,
+    ) -> Result<bool> {
         if account.is_some_and(|account| account <= 0) {
             return Err(Error::validation(INVALID_ID));
         }
-        self.authorize(tx, Operation::Write).await?;
+        self.authorize(tx, env, Operation::Write).await?;
         tx.savepoint(async move |tx| {
             let role = self.role_id(tx).await?;
             let mut writer = storage::lock_generation(tx, self.company).await?;
@@ -198,20 +221,32 @@ impl CompanyDefault {
                 return Ok(false);
             }
             if let Some(account) = account {
-                self.validate_account(tx, account, true).await?;
+                self.validate_account(tx, env, account, true).await?;
             }
-            let date = business_date(tx, self.company).await?;
+            let date = self.business_date(tx, env).await?;
             writer.advance(tx).await?;
             writer.write(tx, role, key, date, account).await?;
+            if self.role == DefaultRole::StockValuation {
+                let company = env.records("res.company")?.browse([self.company])?;
+                tx.invalidate_records(&company, Some(&[crate::company::valuation::FIELD]))
+                    .await?;
+            }
             Ok(true)
         })
         .await
     }
 
-    async fn authorize(self, tx: &mut Transaction, operation: Operation) -> Result<()> {
-        let env = tx.env();
+    async fn business_date(self, tx: &mut Transaction, env: &Env) -> Result<Date> {
+        business_days(tx, env, &[self.company])
+            .await?
+            .get(&self.company)
+            .map(|day| day.date)
+            .ok_or_else(|| Error::access(COMPANY_ACCESS))
+    }
+
+    async fn authorize(self, tx: &mut Transaction, env: &Env, operation: Operation) -> Result<()> {
         if env.principal().kind() != PrincipalKind::System {
-            let companies = tx.companies(&env).await.map_err(company_error)?;
+            let companies = tx.companies(env).await.map_err(company_error)?;
             if !companies
                 .iter()
                 .any(|company| company.get() == self.company)
@@ -229,7 +264,7 @@ impl CompanyDefault {
         }
         if operation == Operation::Write
             && !env.su()
-            && !tx.has_group(&env, "account.group_account_manager").await?
+            && !tx.has_group(env, "account.group_account_manager").await?
         {
             return Err(Error::access(
                 "Only accounting administrators can change company default accounts",
@@ -238,8 +273,8 @@ impl CompanyDefault {
         Ok(())
     }
 
-    async fn company_name(self, tx: &mut Transaction) -> Result<Arc<str>> {
-        let company = tx.env().records("res.company")?.browse([self.company])?;
+    async fn company_name(self, tx: &mut Transaction, env: &Env) -> Result<Arc<str>> {
+        let company = env.records("res.company")?.browse([self.company])?;
         let Cell::Str(name) = company.cell(tx, "name").await? else {
             return Err(Error::invariant("An accounting company has no name"));
         };
@@ -262,14 +297,25 @@ impl CompanyDefault {
     async fn validate_account(
         self,
         tx: &mut Transaction,
+        env: &Env,
         account_id: i64,
         lock: bool,
     ) -> Result<()> {
-        let account = tx.env().records("account.account")?.browse([account_id])?;
+        let account = env.records("account.account")?.browse([account_id])?;
         account
             .check_access(tx, Operation::Read)
             .await
             .map_err(target_error)?;
+        let fields = ["active", "account_type", "company_ids"].map(|field| {
+            account
+                .spec()
+                .field(field)
+                .map(|field| field.id)
+                .ok_or_else(|| Error::programming(format!("Missing account field {field}")))
+        });
+        let [active, account_type, companies] = fields;
+        tx.flush_fields(account.model_id(), &[active?, account_type?, companies?])
+            .await?;
         // Taking an account row share lock during a configuration write also stabilizes its type
         // and active state. Membership and company-tree mutation fences belong to ACCMAP-020.
         let lock_clause = if lock { " FOR SHARE OF account" } else { "" };
@@ -286,7 +332,7 @@ impl CompanyDefault {
         let account_type: &str = row.try_get(1).map_err(decode)?;
         let applicable: bool = row.try_get(2).map_err(decode)?;
         if !applicable {
-            let name = self.company_name(tx).await?;
+            let name = self.company_name(tx, env).await?;
             return Err(Error::user(format!(
                 "Account is not applicable to company {name}"
             )));

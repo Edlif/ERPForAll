@@ -1136,6 +1136,14 @@ fn spec_ormx_040_transition_trigger_variants_are_checked() {
         SqlTriggerShape::BeforeInsertRow
     );
     assert_eq!(
+        shape(trigger(base(
+            SqlTiming::Before,
+            &[SqlEvent::Delete],
+            SqlLevel::Row
+        ))),
+        SqlTriggerShape::BeforeDeleteRow
+    );
+    assert_eq!(
         shape(trigger(
             base(SqlTiming::After, &[SqlEvent::Insert], SqlLevel::Row)
                 .constraint(SqlDeferral::InitiallyDeferred)
@@ -1191,7 +1199,7 @@ fn spec_ormx_040_transition_trigger_variants_are_checked() {
         after_statement(&[SqlEvent::Update]).new_table("new_rows"),
         "AFTER UPDATE FOR EACH STATEMENT needs both OLD TABLE and NEW TABLE",
     );
-    // shapes outside the four variants
+    // Shapes outside the supported variants
     rule(
         base(SqlTiming::After, &[SqlEvent::Insert], SqlLevel::Row),
         "AFTER FOR EACH ROW triggers must be constraint triggers with an explicit deferral",
@@ -1202,10 +1210,20 @@ fn spec_ormx_040_transition_trigger_variants_are_checked() {
         "constraint triggers are supported only as AFTER INSERT FOR EACH ROW",
     );
     rule(
-        base(SqlTiming::Before, &[SqlEvent::Update], SqlLevel::Row),
-        "BEFORE triggers are supported only as BEFORE INSERT FOR EACH ROW or BEFORE TRUNCATE FOR \
-         EACH STATEMENT",
+        base(SqlTiming::Before, &[SqlEvent::Delete], SqlLevel::Row).old_table("old_rows"),
+        "BEFORE triggers cannot have transition tables",
     );
+    for invalid in [
+        base(SqlTiming::Before, &[SqlEvent::Update], SqlLevel::Row),
+        base(SqlTiming::Before, &[SqlEvent::Delete], SqlLevel::Statement),
+        base(SqlTiming::Before, &[SqlEvent::Delete], SqlLevel::Row)
+            .constraint(SqlDeferral::InitiallyDeferred),
+    ] {
+        rule(
+            invalid,
+            "BEFORE triggers are supported only as BEFORE INSERT/DELETE FOR EACH ROW or BEFORE TRUNCATE FOR EACH STATEMENT",
+        );
+    }
     rule(
         after_statement(&[SqlEvent::Insert]).new_table("9bad"),
         "transition alias '9bad' is not a valid identifier",

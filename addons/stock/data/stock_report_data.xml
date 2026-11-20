@@ -2,11 +2,10 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <!--
 The two dynamic reports of Inventory > Reporting, declared as data for the `reporting` addon.
-     stock_account adds its Value column to the first report from its own data file. 
+     The original position definition remains the extension point for the valuation report. 
 -->
 <erp noupdate="1">
-    <!-- Stock Report: today's position of every quant in an internal location. Quantities of
-         different products are in different units, so they show only on product and lot rows. -->
+    <!-- Legacy definition. Stock Account adds its manager-only Value column to this report. -->
     <record id="report_stock_position" model="reporting.report">
         <field name="name">Stock Report</field>
         <field name="date_mode">single</field>
@@ -68,6 +67,74 @@ The two dynamic reports of Inventory > Reporting, declared as data for the `repo
     </record>
     <record id="report_stock_position_available" model="reporting.report.expression">
         <field name="line_id" ref="report_stock_position_line"/>
+        <field name="label">available</field>
+        <field name="engine">formula</field>
+        <field name="formula">on_hand - reserved</field>
+    </record>
+
+    <!-- Stock Report: today's position of every quant in an internal location. Quantities of
+         different products are in different units, so they show only on product and lot rows. -->
+    <record id="report_stock_quantity" model="reporting.report">
+        <field name="name">Stock Report</field>
+        <field name="date_mode">single</field>
+        <field name="date_default">today</field>
+        <field name="comparison" eval="False"/>
+        <field name="current_only" eval="True"/>
+        <field name="multi_company" eval="True"/>
+        <field name="hide_zero">optional</field>
+        <field name="search_bar" eval="True"/>
+    </record>
+    <record id="report_stock_quantity_col_on_hand" model="reporting.report.column">
+        <field name="report_id" ref="report_stock_quantity"/>
+        <field name="sequence">10</field>
+        <field name="name">On Hand</field>
+        <field name="label">on_hand</field>
+        <field name="kind">decimal</field>
+        <field name="sortable" eval="True"/>
+        <field name="rollup">none</field>
+        <field name="rollup_field">product_id</field>
+    </record>
+    <record id="report_stock_quantity_col_reserved" model="reporting.report.column">
+        <field name="report_id" ref="report_stock_quantity"/>
+        <field name="sequence">20</field>
+        <field name="name">Reserved</field>
+        <field name="label">reserved</field>
+        <field name="kind">decimal</field>
+        <field name="sortable" eval="True"/>
+        <field name="rollup">none</field>
+        <field name="rollup_field">product_id</field>
+    </record>
+    <record id="report_stock_quantity_col_available" model="reporting.report.column">
+        <field name="report_id" ref="report_stock_quantity"/>
+        <field name="sequence">30</field>
+        <field name="name">Available</field>
+        <field name="label">available</field>
+        <field name="kind">decimal</field>
+        <field name="rollup">none</field>
+        <field name="rollup_field">product_id</field>
+    </record>
+    <record id="report_stock_quantity_line" model="reporting.report.line">
+        <field name="report_id" ref="report_stock_quantity"/>
+        <field name="name">Stock</field>
+        <field name="code">STOCK</field>
+        <field name="groupby">location_id, product_id, lot_id</field>
+    </record>
+    <record id="report_stock_quantity_on_hand" model="reporting.report.expression">
+        <field name="line_id" ref="report_stock_quantity_line"/>
+        <field name="label">on_hand</field>
+        <field name="model">stock.quant</field>
+        <field name="field">quantity</field>
+        <field name="domain">[["location_id.usage", "=", "internal"]]</field>
+    </record>
+    <record id="report_stock_quantity_reserved" model="reporting.report.expression">
+        <field name="line_id" ref="report_stock_quantity_line"/>
+        <field name="label">reserved</field>
+        <field name="model">stock.quant</field>
+        <field name="field">reserved_quantity</field>
+        <field name="domain">[["location_id.usage", "=", "internal"]]</field>
+    </record>
+    <record id="report_stock_quantity_available" model="reporting.report.expression">
+        <field name="line_id" ref="report_stock_quantity_line"/>
         <field name="label">available</field>
         <field name="engine">formula</field>
         <field name="formula">on_hand - reserved</field>

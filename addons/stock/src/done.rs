@@ -57,6 +57,7 @@ use crate::move_counters::{cell_id, lock_move_roots, lock_pickings, notify_picki
 use crate::move_lines::{DeferSettle, LINE_DERIVED_MOVE_FIELDS, reservation_changes, sync_moves};
 use crate::picking::StockPicking;
 use crate::quant_engine::{QuantChange, QuantKey, apply_quant_changes_in_chunks};
+use crate::stock_move_line::StockMoveLine;
 use crate::warehouse_setup::without_defaults;
 
 /// The fields a done move may still change: descriptions, ordering and chain links, nothing that
@@ -98,7 +99,7 @@ const READ_MOVES: &str = "SELECT m.id, m.picking_id, m.picked, m.quantity, m.pro
      ORDER BY m.id";
 
 /// The open, active lines of the moves `$1`.
-const READ_LINES: &str = "SELECT id, move_id, quantity FROM stock_move_line \
+const READ_LINES: &str = "SELECT id, move_id, quantity, done_at IS NULL FROM stock_move_line \
      WHERE move_id = ANY($1) AND membership = 'open' AND active ORDER BY id";
 
 /// What the done lines `$1` of storable products move: source key, destination, result package and
@@ -362,11 +363,11 @@ async fn product_name(tx: &mut Transaction, product: i64) -> Result<String> {
 /// The refusals of [`StockError`] named in the module documentation; the engine's refusals
 /// ([`crate::QuantError::NegativeStockForbidden`]); a retryable `40001` when a transfer changed
 /// since the transaction's snapshot; read and database errors.
-pub(crate) async fn validate(records: &Records, tx: &mut Transaction) -> Result<()> {
+async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
     tx.flush().await?;
     let ids = records.ids();
     if ids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     lock_pickings(tx, &ids).await?;
     let mut todo_pickings = Vec::new();
@@ -453,6 +454,7 @@ pub(crate) async fn validate(records: &Records, tx: &mut Transaction) -> Result<
 
     let mut deleted = Vec::new();
     let mut done_lines = Vec::new();
+    let mut original_lines = Vec::new();
     let cancelled: BTreeSet<i64> = cancel_moves.iter().copied().collect();
     for row in tx.query(READ_LINES, &[&move_ids]).await? {
         let id: i64 = row.try_get(0).map_err(decode)?;
@@ -462,6 +464,9 @@ pub(crate) async fn validate(records: &Records, tx: &mut Transaction) -> Result<
             deleted.push(id);
         } else {
             done_lines.push(id);
+            if row.try_get::<_, bool>(3).map_err(decode)? {
+                original_lines.push(id);
+            }
         }
     }
 
@@ -548,7 +553,8 @@ pub(crate) async fn validate(records: &Records, tx: &mut Transaction) -> Result<
         .browse(todo_pickings)?
         .modified_external(tx, &["date_done", "priority", "write_date"])
         .await?;
-    notify_pickings(records, tx, &roots).await
+    notify_pickings(records, tx, &roots).await?;
+    Ok(original_lines)
 }
 
 #[methods(StockPicking, addon = "stock")]
@@ -561,10 +567,37 @@ impl StockPicking {
         this: &RecordSet<StockPicking>,
         tx: &mut Transaction,
     ) -> Result<()> {
-        let records = this.as_records();
+        let records = this.as_records().clone();
         records.check_access(tx, Operation::Write).await?;
-        let before = crate::state_history::before(tx, records).await?;
-        validate(records, tx).await?;
-        crate::state_history::report(tx, records, before).await
+        tx.savepoint(async move |tx| {
+            let before = crate::state_history::before(tx, &records).await?;
+            let original = validate(&records, tx).await?;
+            crate::state_history::report(tx, &records, before).await?;
+            if !original.is_empty() {
+                records
+                    .env()
+                    .records("stock.move.line")?
+                    .browse(original)?
+                    .call::<(), ()>(tx, "_after_stock_completion", ())
+                    .await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+}
+
+#[methods(StockMoveLine, addon = "stock")]
+impl StockMoveLine {
+    /// Runs under the validating caller in the same savepoint as the physical transfer. Only
+    /// original lines just moved to done are included. A corrected or reopened line has its own
+    /// original date and is outside this hook. Observers must establish any earlier lock class
+    /// before validation and check their own source authority before reading or admitting facts.
+    #[method]
+    async fn _after_stock_completion(
+        _this: &RecordSet<StockMoveLine>,
+        _tx: &mut Transaction,
+    ) -> Result<()> {
+        Ok(())
     }
 }

@@ -514,6 +514,12 @@ const ENTRY_POINTS: &[(&str, Class)] = &[
         ),
     ),
     ("Transaction::poison", Unchecked(TX_CONTROL)),
+    (
+        "Transaction::require_transaction_retry",
+        Unchecked(
+            "transaction control for the caller's own transaction: keeps the first whole-transaction retry reason after an operation savepoint rolls back, so commit refuses with that reason; no record access or elevation",
+        ),
+    ),
     ("Super::call", Unchecked(DISPATCH)),
     (
         "AsyncComputeSuper::call",
@@ -1075,6 +1081,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "account/invoice/settings.rs::configured_code",
         1,
         "reads, on the invoice's own company, the account code chosen for receivable or payable accounts (one company-scope settings key) when several accounts of that type exist; the framework reads its own configuration, the caller needs no settings group, and only the code is returned to the invoice code",
+    ),
+    (
+        "account/journal/dashboard.rs::_compute_dashboard_card",
+        1,
+        "derives each journal's business date from the time zone of its company. Journal reads and the time-zone field check use the caller's rights; elevation covers only the calendar lookup for those companies so branch readers can see an ancestor journal's card. Move and line figures use the caller's rights",
     ),
     (
         "account/journal/dashboard.rs::journals",
