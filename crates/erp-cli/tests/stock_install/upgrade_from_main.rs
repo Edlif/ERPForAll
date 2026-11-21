@@ -38,6 +38,17 @@ fn constraint_message(policy: &str) -> String {
     format!("{prefix}{policy}")
 }
 
+fn stock_manifest_version() -> String {
+    let manifest: toml::Table = toml::from_str(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../addons/stock/manifest.toml"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    manifest["version"].as_str().unwrap().to_owned()
+}
+
 async fn image(client: &Client, sql: &str) -> Vec<String> {
     client
         .query(sql, &[])
@@ -464,14 +475,7 @@ fn stock_upgrade_from_main_1_0_preserves_rows_and_repeats() {
         assert_eq!(gaps.len(), 2);
         drop(installed);
 
-        let manifest: toml::Table = toml::from_str(
-            &std::fs::read_to_string(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../addons/stock/manifest.toml"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let target = manifest["version"].as_str().unwrap();
+        let target = stock_manifest_version();
         let lower: String = client
             .query_one("SELECT (clock_timestamp() AT TIME ZONE 'UTC')::text", &[])
             .await
@@ -879,6 +883,7 @@ fn stock_upgrade_from_1_12_fills_missing_direct_delivery_routes_once() {
         assert_eq!(original_action.get::<_, String>(0), quantity_report);
         let sys = system(&db);
         let modules = [ModuleName::new("stock").unwrap()];
+        let target = stock_manifest_version();
         let mut captured = None;
         for _ in 0..2 {
             client
@@ -905,7 +910,7 @@ fn stock_upgrade_from_1_12_fills_missing_direct_delivery_routes_once() {
                 .await
                 .unwrap()
                 .get::<_, String>(0);
-            assert_eq!(installed_version, "1.13.0");
+            assert_eq!(installed_version, target);
             let retained_action = client.query_one(quantity_action, &[]).await.unwrap();
             assert_eq!(retained_action.get::<_, String>(0), quantity_report);
             let row = client

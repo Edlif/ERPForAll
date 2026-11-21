@@ -406,7 +406,10 @@ test("settings Discard reads the stored values again and the scope switch is a r
     return new Response(JSON.stringify(response), { headers: { "Content-Type": "application/json" } });
   }, () => {});
   const host = document.createElement("div"); document.body.append(host);
-  await settingsView(host, rpc, [{ id: 7, name: "Company A" }], job => { void job(); }, () => {}, {}, ["global", "company"]);
+  const companies = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, name: `Branch ${i + 1}` }));
+  await settingsView(host, rpc, companies, job => { void job(); }, () => {}, { allowed_company_ids: [7, 2] },
+    ["global", "company"], undefined, undefined, undefined, null,
+    { navigation: { currentCompanyId: 7, scopePreferenceKey: "fixture.settings.scope", roots: [], openTarget: async () => {} } });
   const input = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
   input.checked = true; input.dispatchEvent(new Event("change"));
   const before = calls.length;
@@ -414,10 +417,18 @@ test("settings Discard reads the stored values again and the scope switch is a r
   await vi.waitFor(() => expect(calls.length).toBeGreaterThan(before));
   await vi.waitFor(() => expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false));
   const radios = [...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
-  expect(radios.map(radio => radio.textContent)).toEqual(["Global settings", "Company A"]);
+  expect(radios.map(radio => radio.textContent)).toEqual(["Global settings", "Current company"]);
+  expect(radios[1]!.title).toBe("Branch 7");
   radios[1]!.click();
   await vi.waitFor(() => expect(calls.at(-1)).toContain('"company_id":7'));
   await vi.waitFor(() => expect(document.querySelectorAll<HTMLButtonElement>('[role="radio"]')[1]!.getAttribute("aria-checked")).toBe("true"));
+  const nextHost = document.createElement("div");
+  await settingsView(nextHost, rpc, companies, job => { void job(); }, () => {}, { allowed_company_ids: [2, 7] },
+    ["global", "company"], undefined, undefined, undefined, null,
+    { navigation: { currentCompanyId: 2, scopePreferenceKey: "fixture.settings.scope", roots: [], openTarget: async () => {} } });
+  expect(nextHost.querySelector('[aria-checked="true"]')?.getAttribute("data-scope")).toBe("2");
+  expect(calls.filter(call => call.startsWith("erp_read_values:")).at(-1)).toContain('"company_id":2');
+  window.sessionStorage.removeItem("fixture.settings.scope");
 });
 
 test.each([true, false])("selection Settings preserves edit/CAS, pending guards and teardown (writable=%s)", async writable => {

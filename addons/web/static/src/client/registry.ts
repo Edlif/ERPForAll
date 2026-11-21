@@ -84,11 +84,15 @@ export interface ClientActionDescriptor { readonly id: number | null; readonly n
 export interface ClientActionEnvironment {
   host: HTMLElement; panel: HTMLElement; controls: HTMLElement; rpc: RpcClient; companies: readonly Company[];
   run: (job: () => Promise<void>) => void; notice: (message: string) => void; messages: MessageServices; editorLocale: EditorLocale;
+  /** Active interactive identity for first-party, session-bound client actions. */
+  readonly userId?: number; readonly currentCompanyId?: number; readonly csrfToken?: string;
   action: ClientActionDescriptor;
   /** What `captureState` returned when the user left this action, or `null` on a first opening. */
   restored: unknown;
   /** Run an action result (an existing record form, a related list or another client action) through the normal navigation; the screen stays in the breadcrumb. */
   open(result: unknown): Promise<void>;
+  /** Open an unsaved form through its installed window action, after shell navigation guards. */
+  openDraft?(xmlId: string, defaults: Readonly<Record<string, string>>): Promise<void>;
 }
 /** `dispose` is synchronous and idempotent and the screen ignores late rendering after it; `captureState` returns JSON of at most 16 KiB. */
 export interface ClientActionHandle { dispose(): void; captureState?(): unknown }

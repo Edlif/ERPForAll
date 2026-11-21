@@ -308,6 +308,12 @@ impl PurchaseOrder {
             let protected: Vec<String> =
                 this.as_records().call(tx, "_protected_fields", ()).await?;
             refuse_frozen(tx, &this.ids(), &written, &protected).await?;
+            if ["partner_id", "currency_id", "company_id"]
+                .iter()
+                .any(|f| vals.contains(f))
+            {
+                protect_billed_identity(tx, this.as_records(), &vals).await?;
+            }
             if let Some(company) = vals.get("company_id") {
                 refuse_company_change(tx, &this.ids(), id_cell(Some(company), "company_id")?)
                     .await?;
@@ -832,6 +838,44 @@ async fn refuse_frozen(
         "These fields of confirmed, cancelled or locked purchase orders cannot change: {}.",
         refusals.join("; ")
     )))
+}
+
+/// Preserve source attribution across cancellation and redrafting of a directly billed order.
+async fn protect_billed_identity(
+    tx: &mut Transaction,
+    orders: &Records,
+    vals: &RawVals,
+) -> Result<()> {
+    for field in ["partner_id", "currency_id", "company_id"] {
+        if vals.contains(field)
+            && !tx
+                .has_field_access(
+                    orders.env(),
+                    "purchase.order",
+                    field,
+                    erp_sdk::FieldOp::Write,
+                )
+                .await?
+        {
+            return Err(Error::access("You cannot edit this purchase order field."));
+        }
+    }
+    let partner = id_cell(vals.get("partner_id"), "partner_id")?;
+    let currency = id_cell(vals.get("currency_id"), "currency_id")?;
+    let company = id_cell(vals.get("company_id"), "company_id")?;
+    let found = tx.query(
+        "SELECT 1 FROM purchase_direct_bill_line s JOIN account_move m ON m.id=s.bill_id
+         WHERE s.order_id=ANY($1) AND (($2 AND m.partner_id IS DISTINCT FROM $3)
+             OR ($4 AND m.currency_id IS DISTINCT FROM $5) OR ($6 AND m.company_id IS DISTINCT FROM $7)) LIMIT 1",
+        &[&orders.ids(), &vals.contains("partner_id"), &partner,
+            &vals.contains("currency_id"), &currency, &vals.contains("company_id"), &company],
+    ).await?;
+    if !found.is_empty() {
+        return Err(Error::validation(
+            "A purchase order linked to a vendor bill must keep its supplier, currency and company.",
+        ));
+    }
+    Ok(())
 }
 
 /// Refuses a move to another company while the order has lines: their taxes and prices belong to

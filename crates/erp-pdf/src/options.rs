@@ -76,3 +76,25 @@ pub enum AnnotationPolicy {
     /// Carry self-contained annotations and leave the others out; the summary counts both.
     KeepOrDrop,
 }
+/// What a reading copy (merge, extract, split) does with an interactive form.
+///
+/// A reading copy has no catalog form, so a field cannot stay a field. Flattening paints each
+/// field's current appearance into its page, the way a reader shows it: the filled-in values
+/// stay visible and nothing can be typed any more. Whole-document operations (rotate, stamp)
+/// take no form policy: they keep an unsigned form as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum FormPolicy {
+    /// Refuse a document whose catalog has a form. The default: no value is lost unseen.
+    #[default]
+    Refuse,
+    /// Paint every form field of the copied pages into its page and carry no form.
+    ///
+    /// A field a reader does not show (hidden, an empty rectangle, a state without an
+    /// appearance) paints nothing. A field that cannot be painted from the file alone (no
+    /// appearance stream, appearances the reader must build, optional-content membership, a
+    /// field that stays upright on a turned page) follows the [`AnnotationPolicy`] like any
+    /// annotation that is not self-contained; other annotations follow that policy as before.
+    /// Field actions and scripts are not carried. An XFA form is refused.
+    Flatten,
+}

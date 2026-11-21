@@ -56,8 +56,18 @@ pub(crate) struct Entry<'d> {
     pub id: Option<ObjectId>,
     pub dict: &'d Dictionary,
     popup: bool,
+    /// A form field annotation.
+    pub widget: bool,
     /// Why it cannot be carried; `None` when it stands on its own.
     pub why: Option<Why>,
+    /// Set when the reading copy flattens this form field: it is painted, not carried.
+    pub flat: Option<crate::forms::Flat>,
+}
+impl Entry<'_> {
+    /// Carried into the copy as an annotation.
+    pub fn carried(&self) -> bool {
+        self.why.is_none() && self.flat.is_none()
+    }
 }
 
 /// Read one `Annots` entry and decide whether it stands on its own.
@@ -74,7 +84,9 @@ pub(crate) fn entry<'d>(
         id: item.as_reference().ok(),
         dict,
         popup: subtype == b"Popup",
+        widget: subtype == b"Widget",
         why: dependency(doc, dict, subtype, l, copied)?,
+        flat: None,
     })
 }
 
@@ -99,7 +111,8 @@ fn dependency(
     copied: &dyn Fn(ObjectId) -> bool,
 ) -> Result<Option<Why>> {
     if subtype == b"Widget" {
-        return Ok(until(owner::FORMS, "a form field"));
+        // Painted into the page under `FormPolicy::Flatten`; never an annotation of a copy.
+        return Ok(never("a form field"));
     }
     if !CARRIED.contains(&subtype) {
         return Ok(never("a type outside the reading-copy profile"));
@@ -169,7 +182,7 @@ fn destination(
 pub(crate) fn carried(entries: &[Entry<'_>]) -> BTreeSet<ObjectId> {
     entries
         .iter()
-        .filter(|e| e.why.is_none())
+        .filter(|e| e.carried())
         .filter_map(|e| e.id)
         .collect()
 }
@@ -182,7 +195,7 @@ pub(crate) fn settle(entries: &mut [Entry<'_>], l: &Context<'_>) -> Result<()> {
         let mut changed = false;
         for e in entries.iter_mut() {
             l.step()?;
-            if e.why.is_some() {
+            if !e.carried() {
                 continue;
             }
             let orphan = [

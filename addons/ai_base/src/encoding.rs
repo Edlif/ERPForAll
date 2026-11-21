@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use erp_sdk::ai::{ContentPart, ProviderError, ToolTurnRequest, ToolTurnResponse, TurnRole};
 use serde_json::{Map, Value, json};
 
+pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
 mod admission;
 mod arguments;
 mod response;

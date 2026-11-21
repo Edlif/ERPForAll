@@ -62,6 +62,31 @@ The public sample has title `Notepad`, creator `Bill`, and no invoice/account or
 contact details. It includes Alt/Seq standard properties, unrelated structured
 history, and three populated PDF/A extension-schema entries.
 
+## Apache PDFBox original documents with native XMP writers
+
+`pdfbox-generated/empty.pdf` is an original one-page document produced by
+Apache PDFBox 3.0.4 with an unchanged XMP packet emitted by Apache XmpBox
+3.0.4 from empty metadata. Its RDF element uses the self-closing form.
+
+`pdfbox-generated/qualified-and-nested.pdf` is an original one-page document
+written by the same PDF library. Adobe XMP Core 6.1.11 serializes the qualifying
+edition of the document producer as an `rdf:value` resource and the source
+document's independent producer as a nested attribute. The application passes
+ordinary property, qualifier and structure values to the SDK. All XML and PDF
+serialization is performed by the producer libraries.
+
+The original application, metadata values and generated PDFs are distributed
+under MIT OR Apache-2.0. The generator uses Maven Central release jars only on
+the build host. No jar is vendored or linked into ERPForAll. See the original
+`Generate.java`, SHA-256-pinned `generate.sh` and unedited `generation.log` in
+`pdfbox-generated/`. From a temporary output directory, run
+`bash /path/to/pdfbox-generated/generate.sh` on a permitted build host with
+Java 17. The generator saves each document, reopens it and requires the
+extracted catalog metadata-stream bytes to equal the serializer's bytes. It
+logs both SHA-256 hashes. Regeneration may give distinct PDF IDs and PDF
+hashes. The regression reads the actual PDFs. No external PDF/A or Factur-X
+validator was run on these documents.
+
 ## Synthetic mutations and remaining evidence gaps
 
 `xmp_producers.rs` explicitly labels generated mutations:
@@ -73,14 +98,12 @@ history, and three populated PDF/A extension-schema entries.
   into the LibreOffice packet.
 - Prepend DTD declarations for security refusal coverage.
 
-No real producer evidence was acquired here for **multiple RDF roots, qualified
-standard properties, nested standard names, or empty RDF roots**. The inspected
-LibreOffice export has one populated RDF root; the selected upstream packet also
-has one. Other inspected Apache fixtures (`ghost2.xmp`, `isartorStyleXMPOK.xml`,
-`empty_list.xml`, at the same pin) contain existing bags, custom structured
-resources or empty array items, but do not establish those four requested
-producer shapes. They are not included and are not counted as coverage.
+There is still no real producer example of multiple sibling RDF roots. The
+Apache PDFBox repository at the pin above includes a
+`xmpbox/src/test/resources/invalidxmp/tworoot.xml` invalid-input example.
+It does not establish a document producer or generation process. It is excluded.
+Multi-root behavior is covered with explicitly synthetic inputs in
+`xmp_profile.rs`.
 
-The tests exercise public APIs and independently inspect emitted XML/raw byte
-spans and PDF page-stream bytes. This fixture work did not run Rust builds or
-tests; the coordinating session owns RED/GREEN and CI evidence.
+The tests exercise public APIs and independently inspect emitted XML, raw packet
+spans and PDF page-stream bytes.

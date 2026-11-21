@@ -8,3 +8,4 @@ erp_sdk::addon!(
 
 mod receipt;
 mod receipt_access;
+mod received_quantity;

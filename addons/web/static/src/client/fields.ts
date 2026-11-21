@@ -203,6 +203,12 @@ function many2oneControl({ field, value, rpc, context, change: changed, run, ope
         const id = currentId;
         const open = button(currentName, () => run(() => openRecord(field.relation!, id)), "many2one-open-btn link-button");
         open.setAttribute("aria-label", `Open ${field.label}: ${currentName}`);
+        if (viewContext === "form") {
+          const arrow = icon("arrow-left");
+          arrow.classList.add("related-record-arrow");
+          open.classList.add("related-record-link");
+          open.append(arrow);
+        }
         area.append(open);
       } else area.append(el("span", currentName, "many2one-value"));
     } else {

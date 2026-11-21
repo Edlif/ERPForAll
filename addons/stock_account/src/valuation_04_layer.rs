@@ -15,6 +15,8 @@ use erp_sdk::prelude::*;
     log_access = false,
     row_version = true,
     constraints = [
+        ("_shortage_source_company_product", "FOREIGN KEY (shortage_source_id, company_id, product_id) REFERENCES stk_value_source (id, company_id, product_id) ON DELETE RESTRICT", "The shortage source must have the same company and product."),
+        ("_generation_nonneg", "CHECK (generation >= 0)", "A FIFO layer generation cannot be negative."),
         ("_valid_original_value", r#"CHECK (CASE WHEN "original_value" IS NOT NULL AND "original_value" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("original_value") <= 18 AND abs("original_value") < power(2::numeric, 256) THEN abs("original_value" * power(10::numeric, 18)) < power(2::numeric, 256) ELSE FALSE END)"#, "original_value must fit the 18-place valuation grid."),
         ("_valid_consumed_value", r#"CHECK (CASE WHEN "consumed_value" IS NOT NULL AND "consumed_value" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("consumed_value") <= 18 AND abs("consumed_value") < power(2::numeric, 256) THEN abs("consumed_value" * power(10::numeric, 18)) < power(2::numeric, 256) ELSE FALSE END)"#, "consumed_value must fit the 18-place valuation grid."),
         ("_valid_fraction", r#"CHECK (CASE WHEN "residual_num" IS NOT NULL AND "residual_num" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND "residual_den" IS NOT NULL AND "residual_den" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("residual_num") = 0 AND min_scale("residual_den") = 0 AND "residual_den" > 0 AND abs("residual_num") < power(2::numeric, 4096) AND "residual_den" < power(2::numeric, 4096) THEN gcd("residual_num", "residual_den") = 1 AND ("residual_num" <> 0 OR "residual_den" = 1) ELSE FALSE END)"#, "The valuation fraction must be reduced, within its bit limit and have a positive denominator."),
@@ -114,6 +116,8 @@ pub struct ValuationLayer {
     company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
     log_access = false,
     constraints = [
+        ("_generation_nonneg", "CHECK (generation >= 0)", "A FIFO consumption generation cannot be negative."),
+        ("_seq_nonneg", "CHECK (seq >= 0)", "A FIFO consumption sequence cannot be negative."),
         ("_valid_grid_value", r#"CHECK (CASE WHEN "grid_value" IS NOT NULL AND "grid_value" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("grid_value") <= 18 AND abs("grid_value") < power(2::numeric, 256) THEN abs("grid_value" * power(10::numeric, 18)) < power(2::numeric, 256) ELSE FALSE END)"#, "grid_value must fit the 18-place valuation grid."),
         ("_layer_company_product", "FOREIGN KEY (layer_id, company_id, product_id) REFERENCES stk_cost_layer (id, company_id, product_id) ON DELETE RESTRICT", "A consumption link must have its layer company and product."),
         ("_source_company_product", "FOREIGN KEY (out_source_id, company_id, product_id) REFERENCES stk_value_source (id, company_id, product_id) ON DELETE RESTRICT", "A consumption link must have its outgoing source company and product."),

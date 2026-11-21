@@ -53,7 +53,65 @@
     <field name="view_mode">list,form</field><field name="view_id" ref="route_list"/>
     <field name="group_ids" eval="[(4, ref('base.group_system'), 0)]"/>
   </record>
-  <menuitem id="configuration_menu" name="AI" parent="base.settings_menu" groups="base.group_system" sequence="65"/>
+  <record id="budget_list" model="ir.ui.view">
+    <field name="name">ai.budget.list</field><field name="model">ai.budget</field>
+    <field name="arch" type="xml"><list>
+      <field name="name"/><field name="company_id"/><field name="user_id"/>
+      <field name="provider_id"/><field name="model"/><field name="period"/>
+      <field name="token_limit"/><field name="cost_limit" string="Cost limit (micro-units)"/>
+    </list></field>
+  </record>
+  <record id="budget_form" model="ir.ui.view">
+    <field name="name">ai.budget.form</field><field name="model">ai.budget</field>
+    <field name="arch" type="xml"><form record_mode="record"><sheet>
+      <group string="Budget scope">
+        <field name="name"/><field name="company_id"/><field name="user_id" string="User (optional)"/>
+        <field name="provider_id"/><field name="model"/>
+      </group>
+      <group string="Allowance">
+        <field name="period"/><field name="token_limit" string="Token limit"/>
+        <field name="cost_limit" string="Cost limit (micro-units)"/>
+      </group>
+      <group string="Company pricing">
+        <field name="input_rate" invisible="user_id" string="Input price per 1,000 tokens (micro-units)"/>
+        <field name="output_rate" invisible="user_id" string="Output price per 1,000 tokens (micro-units)"/>
+        <field name="confirmed_free" invisible="user_id" string="Confirm this model is free"/>
+      </group>
+    </sheet></form></field>
+  </record>
+  <record id="budget_action" model="ir.actions.act_window">
+    <field name="name">Assistant Budgets</field><field name="res_model">ai.budget</field>
+    <field name="view_mode">list,form</field><field name="view_id" ref="budget_list"/>
+    <field name="group_ids" eval="[(4, ref('base.group_system'), 0)]"/>
+  </record>
+  <record id="usage_list" model="ir.ui.view">
+    <field name="name">ai.usage.list</field><field name="model">ai.usage</field>
+    <field name="arch" type="xml"><list create="false" edit="false" delete="false">
+      <field name="started_at"/><field name="company_id"/><field name="user_id"/>
+      <field name="model"/><field name="state"/><field name="tokens"/><field name="cost" string="Cost (micro-units)"/>
+    </list></field>
+  </record>
+  <record id="usage_form" model="ir.ui.view">
+    <field name="name">ai.usage.form</field><field name="model">ai.usage</field>
+    <field name="arch" type="xml"><form record_mode="record" create="false" edit="false" delete="false"><sheet>
+      <group string="Request"><field name="started_at"/><field name="state"/><field name="company_id"/>
+        <field name="user_id"/><field name="provider"/><field name="model"/></group>
+      <group string="Metering"><field name="input_tokens"/><field name="output_tokens"/>
+        <field name="tokens" string="Charged tokens"/><field name="cost" string="Cost (micro-units)"/>
+        <field name="elapsed_ms" string="Elapsed time (ms)"/></group>
+    </sheet></form></field>
+  </record>
+  <record id="usage_action" model="ir.actions.act_window">
+    <field name="name">Assistant Usage</field><field name="res_model">ai.usage</field>
+    <field name="view_mode">list,form</field><field name="view_id" ref="usage_list"/>
+    <field name="group_ids" eval="[(4, ref('base.group_system'), 0)]"/>
+  </record>
+  <menuitem id="configuration_menu" name="AI" parent="base.technical_menu" groups="base.group_system" sequence="65"/>
+  <record id="configuration_menu" model="ir.ui.menu"><field name="web_icon">lucide:cpu</field></record>
   <menuitem id="provider_menu" name="Providers" parent="configuration_menu" action="provider_action" groups="base.group_system" sequence="10"/>
   <menuitem id="route_menu" name="Company Routes" parent="configuration_menu" action="route_action" groups="base.group_system" sequence="20"/>
+  <menuitem id="budget_menu" name="Budgets" parent="configuration_menu" action="budget_action" groups="base.group_system" sequence="30"/>
+  <menuitem id="usage_menu" name="Usage" parent="configuration_menu" action="usage_action" groups="base.group_system" sequence="40"/>
+  <record id="budget_menu" model="ir.ui.menu"><field name="web_icon">lucide:calculator</field></record>
+  <record id="usage_menu" model="ir.ui.menu"><field name="web_icon">lucide:clock</field></record>
 </erp>

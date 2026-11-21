@@ -240,12 +240,15 @@ async fn spec_uom_017_ui_views_action_and_settings_menu_installed() {
              JOIN ir_model_data dm ON dm.model = 'ir.ui.menu' AND dm.res_id = m.id \
              JOIN ir_ui_menu parent ON parent.id = m.parent_id \
              JOIN ir_model_data dp ON dp.model = 'ir.ui.menu' AND dp.res_id = parent.id \
+             JOIN ir_model_data root ON root.model = 'ir.ui.menu' AND root.res_id = parent.parent_id \
              JOIN ir_ui_menu_group_rel r ON r.menu_id = m.id \
              JOIN ir_model_data dg ON dg.model = 'res.groups' AND dg.res_id = r.gid \
              JOIN ir_model_data da ON da.model = 'ir.actions.act_window' AND m.action = 'ir.actions.act_window,' || da.res_id \
              JOIN ir_act_window a ON a.id = da.res_id \
              WHERE dm.module = 'uom' AND dm.name = 'menu_uom_form_action' \
-               AND dp.module = 'base' AND dp.name = 'settings_menu' \
+               AND dp.module = 'base' AND dp.name = 'settings_reference_menu' \
+               AND root.module = 'base' AND root.name = 'settings_menu' \
+               AND da.module = 'uom' AND da.name = 'uom_uom_action_list' \
                AND dg.module = 'base' AND dg.name = 'group_system'",
             &[],
         )
@@ -254,7 +257,7 @@ async fn spec_uom_017_ui_views_action_and_settings_menu_installed() {
     assert_eq!(
         menu_rows.len(),
         1,
-        "menu sits under settings for system group"
+        "the Units action sits under Settings / Reference Data for the system group"
     );
     assert_eq!(menu_rows[0].get::<_, String>(0), "Units of Measure");
     assert_eq!(menu_rows[0].get::<_, String>(3), "uom.uom");

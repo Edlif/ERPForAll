@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Chronological source items; aggregate-only prefixes and committed-generation stale fences.
+use erp_addon_account::fiscal::settings::FiscalCalendar;
 use erp_addon_reporting::{
     definition::ReportDef,
     line::{
@@ -11,13 +12,22 @@ use erp_addon_reporting::{
 };
 use erp_sdk::prelude::*;
 use erp_sdk::serde_json::{Value as Json, json};
-use erp_sdk::{BoxFuture, Load, SearchOptions};
+use erp_sdk::{BoxFuture, ErrorKind, Load, SearchOptions};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub(crate) struct GeneralLedger;
 const SPEC: ProviderSpec = ProviderSpec::new("account_reporting.general_ledger", 1);
 const LABELS: [&str; 5] = ["date", "entry", "debit", "credit", "balance"];
+const LINE_CODES: [&str; 7] = [
+    "GL",
+    "OPENING",
+    "CLOSING",
+    "GL_FISCAL",
+    "OPENING_FISCAL",
+    "CLOSING_FISCAL",
+    "UNALLOCATED",
+];
 const EPOCH_KEYS: [&str; 4] = [
     "registry",
     "policy",
@@ -120,6 +130,84 @@ fn period(options: &Options) -> Result<Domain> {
         .ok_or_else(|| invalid("General Ledger requires a date range."))?;
     Ok(base(options)? & condition(json!([["date", ">=", day(from)]]))?)
 }
+
+fn fiscal_start(options: &Options) -> Result<Option<Date>> {
+    match options.provider.get("fiscal_year_start") {
+        None => Ok(None),
+        Some(value) => value
+            .as_str()
+            .and_then(Date::parse_odoo)
+            .map(Some)
+            .ok_or_else(|| invalid("General Ledger provider.fiscal_year_start must be a date.")),
+    }
+}
+
+async fn resolve_fiscal_start(cx: &mut ReportCx<'_>, options: &Options) -> Result<Option<Date>> {
+    match options.provider.get("fiscal_opening") {
+        None | Some(Json::Bool(false)) => return Ok(None),
+        Some(Json::Bool(true)) => (),
+        Some(_) => {
+            return Err(invalid(
+                "General Ledger provider.fiscal_opening must be a boolean.",
+            ));
+        }
+    }
+    let from = options
+        .period
+        .from
+        .ok_or_else(|| invalid("General Ledger requires a date range."))?;
+    // Options resolution has admitted the company. Consult its inherited calendar settings
+    // without switching or elevating the environment used to query journal items.
+    let company = cx
+        .env()
+        .records("res.company")?
+        .browse([options.companies[0]])?;
+    let Cell::Id(root) = company.cell(cx.tx(), "root_id").await? else {
+        return Err(invalid(
+            "The selected General Ledger company has no fiscal calendar root.",
+        ));
+    };
+    let calendar = FiscalCalendar::read(cx.tx(), root).await.map_err(|error| {
+        if root != options.companies[0] && error.kind() == ErrorKind::Access {
+            Error::access("General Ledger fiscal opening requires access to the branch's root company calendar.")
+        } else {
+            error
+        }
+    })?;
+    let year = calendar.year_end().fiscal_year_of(from)?;
+    if options.period.to > year.date_to() {
+        return Err(invalid(
+            "General Ledger fiscal opening requires a range within one company fiscal year.",
+        ));
+    }
+    Ok(Some(year.date_from()))
+}
+
+fn history(options: &Options) -> Result<Domain> {
+    let all = base(options)?;
+    match fiscal_start(options)? {
+        Some(start) => Ok(all
+            & condition(json!([
+                "|",
+                ["account_id.include_initial_balance", "=", true],
+                ["date", ">=", day(start)]
+            ]))?),
+        None => Ok(all),
+    }
+}
+
+fn unallocated(options: &Options) -> Result<Option<Domain>> {
+    fiscal_start(options)?
+        .map(|start| {
+            Ok(base(options)?
+                & condition(json!([
+                    ["account_id.include_initial_balance", "=", false],
+                    ["date", "<", day(start)]
+                ]))?)
+        })
+        .transpose()
+}
+
 fn account(domain: Domain, id: i64) -> Result<Domain> {
     Ok(domain & condition(json!([["account_id", "=", id]]))?)
 }
@@ -151,7 +239,7 @@ async fn epoch(cx: &mut ReportCx<'_>, options: &Options) -> Result<Json> {
     }
     // A freshness token, never an authorization grant. Hide raw global activity counters,
     // and bind it to the principal, context and complete company/date/report scope.
-    let source = format!(
+    let mut source = format!(
         "{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{:?}|{:?}|{:?}",
         values,
         cx.env().principal().actor(),
@@ -164,6 +252,10 @@ async fn epoch(cx: &mut ReportCx<'_>, options: &Options) -> Result<Json> {
         (options.period, cx.env().context()),
         cx.env().context_today()?
     );
+    if let Some(start) = fiscal_start(options)? {
+        source.push('|');
+        source.push_str(&day(start));
+    }
     let digest = Sha256::digest(source.as_bytes());
     let mut encoded = String::with_capacity(digest.len() * 2);
     use std::fmt::Write;
@@ -183,6 +275,7 @@ async fn fresh(cx: &mut ReportCx<'_>, options: &Options) -> Result<()> {
 #[derive(Clone, Copy)]
 enum Located {
     Root,
+    Unallocated,
     Account(i64),
     Opening(i64),
     Closing(i64),
@@ -205,6 +298,13 @@ fn locate(report: &ReportDef, id: &LineId) -> Result<Located> {
         return Ok(Located::Root);
     }
     let group = &segments[2];
+    if segments.len() == 3
+        && matches!(group.kind(), SegmentKind::Line(code) if code == "UNALLOCATED")
+        && group.model().is_empty()
+        && group.value().is_empty()
+    {
+        return Ok(Located::Unallocated);
+    }
     if !matches!(group.kind(),SegmentKind::Group(field) if field=="account_id")
         || group.model() != "account.account"
     {
@@ -238,6 +338,7 @@ fn locate(report: &ReportDef, id: &LineId) -> Result<Located> {
 struct Layout {
     scale: u32,
     currency: i64,
+    fiscal: bool,
     names: BTreeMap<String, String>,
 }
 impl Layout {
@@ -288,7 +389,7 @@ impl Layout {
             .search_with(
                 cx.tx(),
                 &condition(json!([["report_id", "=", report.id]]))?,
-                &SearchOptions::new().limit(4),
+                &SearchOptions::new().limit(LINE_CODES.len() as u64 + 1),
             )
             .await?;
         let mut names = BTreeMap::new();
@@ -299,26 +400,46 @@ impl Layout {
             .map(Value::Row)
         {
             let code = text(&row, "code")?;
-            if !["GL", "OPENING", "CLOSING"].contains(&code.as_str())
+            if !LINE_CODES.contains(&code.as_str())
                 || names.insert(code, text(&row, "name")?).is_some()
             {
                 return Err(invalid(
-                    "General Ledger lines must have the unique codes GL, OPENING and CLOSING; their names are editable.",
+                    "General Ledger lines must have unique provider codes; their names are editable.",
                 ));
             }
         }
-        if names.len() != 3 {
+        if LINE_CODES[..3]
+            .iter()
+            .any(|code| !names.contains_key(*code))
+        {
             return Err(invalid(
                 "General Ledger needs the GL, OPENING and CLOSING line definitions.",
+            ));
+        }
+        let fiscal = fiscal_start(options)?.is_some();
+        if fiscal
+            && LINE_CODES[3..]
+                .iter()
+                .any(|code| !names.contains_key(*code))
+        {
+            return Err(invalid(
+                "General Ledger fiscal opening needs the GL_FISCAL, OPENING_FISCAL, CLOSING_FISCAL and UNALLOCATED line definitions.",
             ));
         }
         Ok(Self {
             scale,
             currency,
+            fiscal,
             names,
         })
     }
     fn name(&self, code: &str) -> Result<&str> {
+        let code = match (self.fiscal, code) {
+            (true, "GL") => "GL_FISCAL",
+            (true, "OPENING") => "OPENING_FISCAL",
+            (true, "CLOSING") => "CLOSING_FISCAL",
+            _ => code,
+        };
         self.names
             .get(code)
             .map(String::as_str)
@@ -362,7 +483,7 @@ fn money(values: [Decimal; 3]) -> [Option<Decimal>; 3] {
 async fn ensure_account(cx: &mut ReportCx<'_>, options: &Options, id: i64) -> Result<()> {
     let records = cx.env().records("account.move.line")?;
     if records
-        .search_count(cx.tx(), &account(base(options)?, id)?, Some(1))
+        .search_count(cx.tx(), &account(history(options)?, id)?, Some(1))
         .await?
         == 0
     {
@@ -380,7 +501,7 @@ fn before_key(
     inclusive: bool,
 ) -> Result<Domain> {
     let comparison = if inclusive { "<=" } else { "<" };
-    Ok(account(base(options)?, account_id)?
+    Ok(account(history(options)?, account_id)?
         & condition(json!([
             "|",
             ["date", "<", day(date)],
@@ -428,10 +549,25 @@ async fn expand(
     let mut lines = Vec::new();
     match location {
         Located::Root => {
+            // This synthetic row does not consume an account page slot. It appears once,
+            // before the first account page, and participates in the unpartitioned root total.
+            if page.offset == 0
+                && let Some(domain) = unallocated(options)?
+            {
+                let balance = sums(cx, domain).await?[2];
+                if balance != Decimal::ZERO {
+                    lines.push(Line::new(
+                        id.child(Segment::line("UNALLOCATED")),
+                        layout.name("UNALLOCATED")?,
+                        LineKind::Detail,
+                        layout.cells(report, None, "", [None, None, Some(balance)])?,
+                    ));
+                }
+            }
             let groups = records
                 ._read_group(
                     cx.tx(),
-                    ReadGroup::new(base(options)?)
+                    ReadGroup::new(history(options)?)
                         .groupby(["account_id"])
                         .aggregates(["balance:sum"])
                         .limit(end)
@@ -509,7 +645,7 @@ async fn expand(
                 let seen: Vec<i64> = loaded.iter().map(|(key, _)| *key).collect();
                 let omitted = condition(json!([["account_id", "not in", seen]]))?;
                 let mut remaining = sums(cx, period(options)? & omitted.clone()).await?;
-                remaining[2] = sums(cx, base(options)? & omitted).await?[2];
+                remaining[2] = sums(cx, history(options)? & omitted).await?[2];
                 let mut more = Line::new(
                     id.child(Segment::more()),
                     "",
@@ -529,7 +665,7 @@ async fn expand(
                 .ok_or_else(|| invalid("General Ledger needs a start date."))?;
             let opening = sums(
                 cx,
-                account(base(options)?, account_id)?
+                account(history(options)?, account_id)?
                     & condition(json!([["date", "<", day(from)]]))?,
             )
             .await?[2];
@@ -626,7 +762,7 @@ async fn expand(
                 lines.push(more);
             } else {
                 let mut closing = sums(cx, domain).await?;
-                closing[2] = sums(cx, account(base(options)?, account_id)?).await?[2];
+                closing[2] = sums(cx, account(history(options)?, account_id)?).await?[2];
                 lines.push(Line::new(
                     id.child(Segment::line("CLOSING")),
                     layout.name("CLOSING")?,
@@ -651,7 +787,6 @@ async fn drill(
     let location = locate(report, id)?;
     fresh(cx, options).await?;
     let env = cx.env().clone();
-    let base = base(options)?;
     let mut model = "account.move.line";
     let mut form = None;
     let domain = match (location, target) {
@@ -698,6 +833,7 @@ async fn drill(
             }
         }
         (Located::Root, DrillTarget::Cell(index))
+        | (Located::Unallocated, DrillTarget::Cell(index))
         | (Located::Account(_), DrillTarget::Cell(index))
         | (Located::Opening(_), DrillTarget::Cell(index))
         | (Located::Closing(_), DrillTarget::Cell(index)) => {
@@ -709,16 +845,28 @@ async fn drill(
                 .as_str();
             let d = match (location, label) {
                 (Located::Opening(_), "balance") => {
-                    base & condition(json!([[
-                        "date",
-                        "<",
-                        day(options
-                            .period
-                            .from
-                            .ok_or_else(|| invalid("General Ledger needs a start date."))?)
-                    ]]))?
+                    history(options)?
+                        & condition(json!([[
+                            "date",
+                            "<",
+                            day(options
+                                .period
+                                .from
+                                .ok_or_else(|| invalid("General Ledger needs a start date."))?)
+                        ]]))?
                 }
-                (Located::Root | Located::Account(_) | Located::Closing(_), "balance") => base,
+                (Located::Root, "balance") => base(options)?,
+                (Located::Account(_) | Located::Closing(_), "balance") => history(options)?,
+                (Located::Unallocated, "balance") => {
+                    let missing = || {
+                        invalid("General Ledger has no unallocated earnings line in this scope.")
+                    };
+                    let domain = unallocated(options)?.ok_or_else(missing)?;
+                    if sums(cx, domain.clone()).await?[2] == Decimal::ZERO {
+                        return Err(missing());
+                    }
+                    domain
+                }
                 (Located::Root | Located::Account(_) | Located::Closing(_), "debit" | "credit") => {
                     period(options)?
                 }
@@ -774,9 +922,14 @@ impl ReportProvider for GeneralLedger {
                     "General Ledger transaction search is not supported until a later release.",
                 ));
             }
-            if options.provider.keys().any(|key| key != "epoch") {
+            if options.provider.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "epoch" | "fiscal_opening" | "fiscal_year_start"
+                )
+            }) {
                 return Err(invalid(
-                    "General Ledger provider options only support epoch.",
+                    "General Ledger provider options only support fiscal_opening, fiscal_year_start and epoch.",
                 ));
             }
             for line in &options.unfolded {
@@ -801,6 +954,22 @@ impl ReportProvider for GeneralLedger {
             records
                 ._read_group(cx.tx(), ReadGroup::new(source).aggregates(["__count"]))
                 .await?;
+            let supplied_start = fiscal_start(options)?;
+            let resolved_start = resolve_fiscal_start(cx, options).await?;
+            options
+                .provider
+                .entry("fiscal_opening".to_owned())
+                .or_insert(Json::Bool(false));
+            if strict && supplied_start != resolved_start {
+                return Err(invalid(STALE));
+            }
+            if let Some(start) = resolved_start {
+                options
+                    .provider
+                    .insert("fiscal_year_start".into(), json!(day(start)));
+            } else {
+                options.provider.remove("fiscal_year_start");
+            }
             Layout::load(cx, report, options).await?;
             let current = epoch(cx, options).await?;
             if strict {

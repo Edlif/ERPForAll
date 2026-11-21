@@ -379,8 +379,10 @@ impl Cell {
         }
         self
     }
-    /// Record whether this provider supports drilling this cell into its source records.
-    pub(crate) fn with_drillable(mut self, supported: bool) -> Self {
+    /// Record whether this provider supports drilling this numeric cell into its source records.
+    /// Empty and text cells never advertise a numeric drill.
+    #[must_use]
+    pub fn with_drillable(mut self, supported: bool) -> Self {
         self.drillable = Some(supported && self.number.is_some());
         self
     }

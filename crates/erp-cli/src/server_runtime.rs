@@ -817,6 +817,7 @@ async fn maintenance(
     let options = erp_orm::signal::ListenerOptions::default();
     // the runner subscribes to its wake-up channel when it is built: before the listener starts
     let mut runners = spawn_job_runners(auth.orm(), config, membership).await?;
+    app.prepare_thread_notifications(&auth).await?;
     let mut listener = auth
         .orm()
         .spawn_signal_listener(config.runtime_connection(), tokio_postgres::NoTls, options)
@@ -846,6 +847,7 @@ async fn maintenance(
                     runners.shutdown().await;
                     auth = current;
                     runners = spawn_job_runners(auth.orm(), config, membership).await?;
+                    app.prepare_thread_notifications(&auth).await?;
                     listener = auth.orm().spawn_signal_listener(config.runtime_connection(), tokio_postgres::NoTls, options)
                         .map_err(|error| std::io::Error::other(format!("could not restart registry signal listener: {}", sanitized_cause(&error))))?;
                 } else if listener.is_finished() {

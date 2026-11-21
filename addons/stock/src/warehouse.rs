@@ -403,14 +403,13 @@ pub struct StockPickingType {
         string = "Create Backorder"
     )]
     pub create_backorder: Option<Arc<str>>,
-    /// Shipping policy; company defaults belong to.
+    /// Shipping policy; new types use their company's declared delivery policy.
     #[field(
         selection,
         selection = [
             ("direct", "Ship what is ready, back order the rest"),
             ("one", "Ship once everything is ready")
         ],
-        default = "direct",
         required = true,
         string = "Shipping Policy"
     )]

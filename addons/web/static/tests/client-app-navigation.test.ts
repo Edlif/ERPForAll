@@ -411,3 +411,97 @@ test("a form breadcrumb draws no menu path, in any theme", () => {
   expect(container.querySelector(".breadcrumb-ancestor-label, .list-menu-path")).toBeNull();
   expect(container.querySelector(".form-breadcrumb-path")?.textContent).not.toContain("Sales");
 });
+
+
+/** Fixture names deliberately resemble built-in commands: labels never select icons or behavior. */
+function mockIconNavigation() {
+  const fallback = mockNoteFetch();
+  const node = (id: number, parent_id: number | null, label: string, children: number[], action_id: number | null, icon: string | null) =>
+    ({ id, parent_id, label, children, action_id, icon, module: null });
+  return vi.fn(async (path: string, init?: RequestInit) => {
+    if (path.endsWith("erp_load_web_menus")) return new Response(JSON.stringify({
+      wire_major: 1, registry_version: "r1", roots: [10], nodes: [
+        node(10, null, "Notes", [11, 12, 13], null, "lucide:notebook-pen"),
+        node(11, 10, "Delete", [], 20, "lucide:book"),
+        node(12, 10, "Actions", [14, 15], null, "lucide:settings"),
+        node(13, 10, "Empty category", [], null, null),
+        node(14, 12, "Unknown glyph", [], 20, "https://invalid.example/icon.svg"),
+        node(15, 12, "Nested", [16], null, null),
+        node(16, 15, "Laporan panjang — 日本語", [], 20, null),
+      ],
+    }), { headers: { "Content-Type": "application/json" } });
+    return fallback(path, init);
+  });
+}
+
+/// (partial: declared/default menu icons and unchanged labels in mounted application navigation)
+/// (partial: mobile application and section icon labels)
+test("application navigation carries local icons without treating data labels as commands", async () => {
+  history.replaceState(null, "", "/erp/action-20?menu=14");
+  vi.stubGlobal("fetch", mockIconNavigation());
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const root = host();
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  const sections = root.querySelector(".app-sections")!;
+  expect(sections.querySelector(".app-brand-btn")?.textContent).toBe("Notes");
+  expect(sections.querySelector('.nav-item[data-menu-id="11"] > .erp-icon')?.getAttribute("data-icon")).toBe("book");
+  expect(sections.querySelector('.nav-item[data-menu-id="11"]')?.classList.contains("danger")).toBe(false);
+  const toggle = sections.querySelector('.nav-dropdown[data-nav-entry="12"] > button')!;
+  expect(toggle.textContent).toBe("Actions");
+  expect(toggle.querySelector(".menu-entry-icon")?.getAttribute("data-icon")).toBe("settings");
+  expect(toggle.querySelector(".nav-menu-chevron")?.getAttribute("data-icon")).toBe("chevron-down");
+  const unknown = sections.querySelector('[data-menu-id="14"]')!;
+  expect(unknown.querySelector(".erp-icon")?.getAttribute("data-icon")).toBe("layout-grid");
+  expect(unknown.getAttribute("aria-current")).toBe("page");
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining("is not a shipped icon; showing the default icon"));
+  expect(sections.querySelector('[data-menu-id="13"]')).toBeNull();
+  expect(sections.querySelector(".dropdown-header")?.querySelector("svg")).toBeNull();
+  const desktop = [...sections.querySelectorAll<HTMLButtonElement>("button[data-menu-id]")];
+  for (const entry of desktop) {
+    const mobile = root.querySelector(`.mobile-drawer button[data-menu-id="${entry.dataset["menuId"]}"]`)!;
+    expect(mobile.textContent).toBe(entry.textContent);
+    expect(mobile.querySelector(".erp-icon")?.getAttribute("data-icon")).toBe(entry.querySelector(".erp-icon")?.getAttribute("data-icon"));
+  }
+  for (const svg of root.querySelectorAll(".app-sections svg, .mobile-drawer svg")) {
+    expect(svg.getAttribute("aria-hidden")).toBe("true");
+    expect(svg.getAttribute("focusable")).toBe("false");
+  }
+  expect(root.querySelector('img[src*="invalid.example"], script[src*="invalid.example"]')).toBeNull();
+});
+
+/// (partial: mounted overflow icon identity, selected destination and focus after width changes)
+test("More keeps destination icons and focus when sections overflow and return", async () => {
+  history.replaceState(null, "", "/erp/action-20?menu=14");
+  vi.stubGlobal("fetch", mockIconNavigation());
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  let available = 1000;
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function(this: HTMLElement) {
+    return this.classList.contains("app-sections") ? available : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function(this: HTMLElement) {
+    return new DOMRect(0, 0, this.hasAttribute("data-nav-entry") ? 100 : 40, 32);
+  });
+  const root = host();
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  const sections = root.querySelector(".app-sections")!;
+  const original = sections.querySelector<HTMLButtonElement>('[data-nav-entry="12"] > button')!;
+  original.focus();
+  available = 180;
+  window.dispatchEvent(new Event("resize"));
+  const more = sections.querySelector<HTMLButtonElement>(".nav-more > button")!;
+  expect(more).not.toBeNull();
+  expect(document.activeElement).toBe(more);
+  const entries = [...sections.querySelectorAll<HTMLButtonElement>(".nav-more [data-menu-id]")];
+  expect(entries.map(entry => entry.dataset["menuId"])).toEqual(["14", "16"]);
+  expect(entries.map(entry => entry.querySelector(".erp-icon")?.getAttribute("data-icon"))).toEqual(["layout-grid", "file-text"]);
+  expect(entries[0]!.getAttribute("aria-current")).toBe("page");
+  more.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  expect(document.activeElement).toBe(entries[0]);
+  available = 1000;
+  window.dispatchEvent(new Event("resize"));
+  expect(sections.querySelector(".nav-more")).toBeNull();
+  expect(document.activeElement).toBe(original);
+  expect(original.closest<HTMLElement>("[data-nav-entry]")!.hidden).toBe(false);
+});

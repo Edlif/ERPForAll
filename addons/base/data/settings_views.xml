@@ -22,6 +22,11 @@ Each
        (`<widget name="web.settings" app="<addon>"/>`).
   -->
 
+  <menuitem id="settings_people_menu" name="Users &amp; Companies" parent="settings_menu" groups="base.group_system" sequence="10"/>
+  <record id="settings_people_menu" model="ir.ui.menu"><field name="web_icon">lucide:users</field></record>
+  <menuitem id="settings_reference_menu" name="Reference Data" parent="settings_menu" groups="base.group_system" sequence="20"/>
+  <record id="settings_reference_menu" model="ir.ui.menu"><field name="web_icon">lucide:library</field></record>
+
   <record id="settings_users_list" model="ir.ui.view">
     <field name="name">res.users.settings.list</field>
     <field name="model">res.users</field>
@@ -77,7 +82,8 @@ Each
     <field name="view_mode">form</field>
     <field name="sequence" eval="20"/>
   </record>
-  <menuitem id="settings_users_menu" name="Users" parent="settings_menu" action="settings_users_action" groups="base.group_system" sequence="30"/>
+  <menuitem id="settings_users_menu" name="Users" parent="settings_people_menu" action="settings_users_action" groups="base.group_system" sequence="10"/>
+  <record id="settings_users_menu" model="ir.ui.menu"><field name="web_icon">lucide:user-round</field></record>
   <record id="settings_companies_list" model="ir.ui.view">
     <field name="name">res.company.settings.list</field>
     <field name="model">res.company</field>
@@ -148,7 +154,8 @@ Each
     <field name="view_mode">form</field>
     <field name="sequence" eval="20"/>
   </record>
-  <menuitem id="settings_companies_menu" name="Companies" parent="settings_menu" action="settings_companies_action" groups="base.group_system" sequence="30"/>
+  <menuitem id="settings_companies_menu" name="Companies" parent="settings_people_menu" action="settings_companies_action" groups="base.group_system" sequence="20"/>
+  <record id="settings_companies_menu" model="ir.ui.menu"><field name="web_icon">lucide:building</field></record>
   <record id="settings_languages_list" model="ir.ui.view">
     <field name="name">res.lang.settings.list</field>
     <field name="model">res.lang</field>
@@ -177,7 +184,8 @@ Each
     <field name="view_mode">form</field>
     <field name="sequence" eval="20"/>
   </record>
-  <menuitem id="settings_languages_menu" name="Languages" parent="settings_menu" action="settings_languages_action" groups="base.group_system" sequence="30"/>
+  <menuitem id="settings_languages_menu" name="Languages" parent="settings_reference_menu" action="settings_languages_action" groups="base.group_system" sequence="10"/>
+  <record id="settings_languages_menu" model="ir.ui.menu"><field name="web_icon">lucide:globe</field></record>
   <record id="settings_groups_list" model="ir.ui.view">
     <field name="name">res.groups.settings.list</field>
     <field name="model">res.groups</field>
@@ -206,7 +214,8 @@ Each
     <field name="view_mode">form</field>
     <field name="sequence" eval="20"/>
   </record>
-  <menuitem id="settings_groups_menu" name="Groups" parent="settings_menu" action="settings_groups_action" groups="base.group_system" sequence="30"/>
+  <menuitem id="settings_groups_menu" name="Groups" parent="settings_people_menu" action="settings_groups_action" groups="base.group_system" sequence="30"/>
+  <record id="settings_groups_menu" model="ir.ui.menu"><field name="web_icon">lucide:users</field></record>
   <record id="settings_access_list" model="ir.ui.view">
     <field name="name">ir.access.settings.list</field>
     <field name="model">ir.access</field>
@@ -235,5 +244,4 @@ Each
     <field name="view_mode">form</field>
     <field name="sequence" eval="20"/>
   </record>
-  <menuitem id="settings_access_menu" name="Access Rules" parent="settings_menu" action="settings_access_action" groups="base.group_system" sequence="30"/>
 </erp>

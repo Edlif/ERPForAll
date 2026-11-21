@@ -11,7 +11,12 @@ import tomllib
 root = Path(__file__).resolve().parents[5]
 out = Path(__file__).resolve().parent
 sources = []
-for revision in ["339d5ee2d4", "d2716b3b972a64fd577c418ecbb2a6ddde21c9c9", "fe3f0d0de78e1c1659c192abcbeabb1ace786af8"]:
+for revision in [
+    "33eb050f195351aeac7f8030e2d73ff5bfc499ee",
+    "339d5ee2d4",
+    "d2716b3b972a64fd577c418ecbb2a6ddde21c9c9",
+    "fe3f0d0de78e1c1659c192abcbeabb1ace786af8",
+]:
     pin = subprocess.check_output(["git", "rev-parse", revision], cwd=root, text=True).strip()
     def source(name):
         return subprocess.check_output(["git", "show", f"{pin}:addons/account_reporting/{name}"], cwd=root)

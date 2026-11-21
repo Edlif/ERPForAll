@@ -470,7 +470,7 @@ async fn verify_cost_policy() {
          AND key IN ('cost_variant_update','cost_category_delete','fn_cost_variant','fn_cost_category_delete'))
          FROM ir_module_module WHERE name='stock_account'", &[],
     ).await.unwrap();
-    assert_eq!(catalog[0].get::<_, String>(0), "1.7.0");
+    assert_eq!(catalog[0].get::<_, String>(0), "1.8.0");
     assert_eq!(catalog[0].get::<_, i64>(1), 4);
     let env = tx.env().with_company(company).unwrap();
     let categories = env.records("product.category").unwrap();

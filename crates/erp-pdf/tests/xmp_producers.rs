@@ -244,3 +244,49 @@ fn synthetic_doctype_mutations_are_refused_before_any_output() {
         assert_eq!(emitted, 0);
     }
 }
+
+#[test]
+fn pdfbox_adobe_packet_updates_only_the_document_producer() {
+    let input = include_bytes!("fixtures/xmp/pdfbox-generated/qualified-and-nested.pdf");
+    let limits = PdfLimits::default();
+    let before = metadata(input, &limits).unwrap();
+    assert_eq!(before.xmp[&F::Producer], "Document tool");
+    let packet = before.packet.unwrap();
+    assert!(packet.contains("<rdf:value>Document tool</rdf:value>"));
+    assert!(packet.contains("pdf:Producer=\"Source tool\""));
+    let change = MetadataUpdate::new()
+        .text(F::Producer, "Revised & reviewed", &limits)
+        .unwrap();
+    let out = collect(|emit| update_metadata(input, &change, &limits, emit)).unwrap();
+    assert_unchanged_page(input, &out);
+    let after = metadata(&out, &limits).unwrap();
+    assert_eq!(after.info[&F::Producer], "Revised & reviewed");
+    assert_eq!(after.xmp[&F::Producer], "Revised & reviewed");
+    assert_eq!(
+        after.packet.unwrap(),
+        packet.replace("Document tool", "Revised &amp; reviewed")
+    );
+}
+
+#[test]
+fn pdfbox_empty_xmpbox_packet_accepts_its_first_field() {
+    let input = include_bytes!("fixtures/xmp/pdfbox-generated/empty.pdf");
+    let limits = PdfLimits::default();
+    let before = metadata(input, &limits).unwrap();
+    assert!(before.xmp.is_empty());
+    let packet = before.packet.unwrap();
+    assert!(raw_element(&packet, RDF, "RDF").ends_with("/>"));
+    let change = MetadataUpdate::new()
+        .text(F::Title, "Incoming receipt", &limits)
+        .unwrap();
+    let out = collect(|emit| update_metadata(input, &change, &limits, emit)).unwrap();
+    assert_unchanged_page(input, &out);
+    let after = metadata(&out, &limits).unwrap();
+    assert_eq!(after.info[&F::Title], "Incoming receipt");
+    assert_eq!(after.xmp[&F::Title], "Incoming receipt");
+    let output = after.packet.unwrap();
+    let root = raw_element(&packet, RDF, "RDF");
+    let edited = raw_element(&output, RDF, "RDF");
+    assert_eq!(output.replacen(edited, root, 1), packet);
+    assert!(edited.ends_with("</rdf:RDF>"));
+}

@@ -162,7 +162,7 @@ impl StockCompany {
                 // A new company gets its warehouse whatever Inventory rights its creator holds;
                 // only the new companies' own topology is created and nothing is returned.
                 let env = records.env().sudo(true);
-                crate::warehouse_setup::provision(tx, &env, &created.ids()).await?;
+                crate::warehouse_setup::provision_new(tx, &env, &created.ids()).await?;
             }
             Ok(created)
         })

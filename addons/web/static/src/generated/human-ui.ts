@@ -38,7 +38,9 @@ renderers: Array<Renderer>,
 /** Wire member `attachment_limits`. */
 attachment_limits: AttachmentUploadLimits | null,
 /** Wire member `rpc_body_bytes`. */
-rpc_body_bytes: number | null, };
+rpc_body_bytes: number | null,
+/** Wire member `thread_reconnect_ms`. */
+thread_reconnect_ms: [number, number] | null, };
 export type AttachmentUploadLimits = {
 /** Wire member `max_file_bytes`. */
 max_file_bytes: number,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Fresh install and configuration boundaries. No provider transport or real credential is used.
+//! Fresh installs, access boundaries, and synthetic loopback provider exchanges.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 use erp_modules::{
     AddonIndex, ModuleName,
@@ -20,7 +20,40 @@ fn addons() -> PathBuf {
         .canonicalize()
         .unwrap()
 }
+#[path = "ai_config_install/find_models.rs"]
+mod find_models;
+#[allow(
+    clippy::panic,
+    reason = "the shared test HTTP harness asserts native process failures"
+)]
+#[path = "support/native_http.rs"]
+mod native_http;
+#[path = "ai_config_install/retail.rs"]
+mod retail;
+#[path = "ai_config_install/search_records.rs"]
+mod search_records;
+#[path = "ai_config_install/text_turn.rs"]
+mod text_turn;
+
 async fn install(db: &TestDb) -> Orm {
+    install_modules(
+        db,
+        &["ai_base"],
+        &[
+            &erp_addon_base::ADDON,
+            &erp_addon_uom::ADDON,
+            &erp_addon_web::ADDON,
+            &erp_addon_ai_base::ADDON,
+        ],
+    )
+    .await
+}
+
+async fn install_modules(
+    db: &TestDb,
+    modules: &[&str],
+    code: &[&'static erp_registry::AddonDescriptor],
+) -> Orm {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(addons());
     let identities = index
@@ -39,12 +72,8 @@ async fn install(db: &TestDb) -> Orm {
     let system = ModuleSystem::builder(db.pool().clone(), index)
         .native_artifact_identities(identities)
         .view_types(erp_addon_web::view_type_contributions())
-        .code([
-            &erp_addon_base::ADDON,
-            &erp_addon_uom::ADDON,
-            &erp_addon_web::ADDON,
-            &erp_addon_ai_base::ADDON,
-        ])
+        .code(code.iter().copied())
+        .require_sql_objects(erp_cli::native_addons::SQL_MANIFESTS.iter().copied())
         .require_core_tables(erp_security::auth::core_tables())
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
         .build()
@@ -58,7 +87,10 @@ async fn install(db: &TestDb) -> Orm {
     let installed = system
         .button_immediate_install(
             &system.system_env(Context::new()),
-            &[ModuleName::new("ai_base").unwrap()],
+            &modules
+                .iter()
+                .map(|name| ModuleName::new(*name).unwrap())
+                .collect::<Vec<_>>(),
         )
         .await
         .unwrap();
@@ -112,6 +144,14 @@ fn fresh_install_seeds_disabled_provider_and_company_route() {
             "route_form",
             "route_action",
             "route_menu",
+            "budget_list",
+            "budget_form",
+            "budget_action",
+            "budget_menu",
+            "usage_list",
+            "usage_form",
+            "usage_action",
+            "usage_menu",
         ] {
             assert!(xid(&orm, name).await > 0);
         }
@@ -191,6 +231,15 @@ fn fresh_install_seeds_disabled_provider_and_company_route() {
         assert_eq!(resolved.model(), "local-model");
         assert_eq!(resolved.family(), "openai_compatible");
         assert_eq!(resolved.base_url(), "http://127.0.0.1:11434/v1");
+        let denied = resolved.transport(&credentials).err().unwrap();
+        assert!(matches!(
+            denied,
+            erp_sdk::ai::ProviderError::InvalidRequest { .. }
+        ));
+        assert_eq!(
+            denied.to_string(),
+            "provider 'local' invalid request: provider transport requires an unprivileged interactive user"
+        );
         // An operator can change provider policy; an old route must then fail at resolution.
         provider_row
             .write(
@@ -968,5 +1017,41 @@ fn route_links_are_required_and_routed_providers_cannot_be_deleted() {
         tx.rollback().await.unwrap();
         drop(tx);
         db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn workspace_loads_the_current_company_and_permitted_retail_sources() {
+    big(async {
+        let db = TestDb::create().await.unwrap();
+        let retail = retail::install(&db).await;
+        let action = xid(&retail.installed, "workspace_action").await;
+        let mut tx = retail.orm.begin(retail.users[0]).await.unwrap();
+        let answer = erp_addon_web::metadata_test_support::test_load_client_action(
+            &tx.env(),
+            &mut tx,
+            action,
+        )
+        .await
+        .unwrap();
+        let wire = serde_json::to_value(answer).unwrap();
+        assert_eq!(wire["result"]["tag"], "ai_base.workspace");
+        let params = &wire["result"]["params"];
+        assert_eq!(params["company_id"], retail.company);
+        assert_eq!(
+            params["history"],
+            erp_addon_ai_base::ledger::tab_history(&mut tx)
+                .await
+                .unwrap()
+        );
+        let sources = params["sources"].as_array().unwrap();
+        assert!(sources.iter().any(|item| item == "purchase.order"));
+        assert!(sources.iter().all(|item| item != "sale.order"));
+        let limit =
+            erp_sdk::params::get_int(&mut tx, &erp_addon_ai_base::ADDON, "ai_base.search_rows")
+                .await
+                .unwrap();
+        assert_eq!(params["limit"], limit);
+        tx.rollback().await.unwrap();
     });
 }

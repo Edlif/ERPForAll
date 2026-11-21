@@ -30,6 +30,7 @@ erp-addon-stock.workspace = true
 # message thread and chatter on entries, purchase orders and transfers (bridges, auto-installed with mail)
 erp-addon-account-mail.workspace = true
 erp-addon-purchase-mail.workspace = true
+erp-addon-purchase-three-way-match.workspace = true
 erp-addon-stock-mail.workspace = true
 # sales: the teams and the Sales groups every sales addon builds on
 erp-addon-sales_team.workspace = true
@@ -78,6 +79,9 @@ sha2.workspace = true
 rustix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
+tungstenite = { version = "=0.29.0", default-features = false, features = ["handshake"] }
+# Evaluate admitted stored-action expressions in the native AI configuration acceptance test.
+erp-expr.workspace = true
 erp-addon-web = { workspace = true, features = ["test-support"] }
 erp-addon-uom = { workspace = true }
 erp-addon-sample_library_wasm = { path = "../../examples/wasm/sample_library_wasm", default-features = false }

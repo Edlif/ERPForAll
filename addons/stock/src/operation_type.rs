@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Configuration lifecycle of operation types. Dependent writes share a savepoint and caller rights.
 use crate::warehouse::StockPickingType;
+use erp_addon_base::ir_config_setting::{company_field_default, fence_company_field_defaults};
 use erp_sdk::prelude::*;
 use erp_sdk::{Operation, ValueMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 async fn authorize(
     records: &Records,
@@ -286,22 +288,37 @@ async fn create_sequence(
 }
 #[methods(StockPickingType, addon = "stock")]
 impl StockPickingType {
-    /// The company defaults to the environment's, as in the reference, so a type created without
-    /// naming its company belongs to the active one.
+    /// Use the owner's delivery policy when no more specific field default was supplied.
     #[method(override)]
     async fn default_get(
         this: &RecordSet<StockPickingType>,
         tx: &mut Transaction,
-        names: Vec<String>,
+        mut names: Vec<String>,
         sup: Super,
     ) -> Result<ValueMap> {
-        let requested = names.iter().any(|name| name == "company_id");
+        let company_requested = names.iter().any(|name| name == "company_id");
+        let policy_requested = names.iter().any(|name| name == "move_type");
+        if policy_requested && !company_requested {
+            names.push("company_id".into());
+        }
         let mut result: ValueMap = sup.call(tx, this.as_records(), (names,)).await?;
-        if requested
+        if (company_requested || policy_requested)
             && !result.contains_key("company_id")
             && let Some(company) = this.env().company_id()?
         {
             result.insert("company_id".into(), Value::Int(company));
+        }
+        if policy_requested
+            && !result.contains_key("move_type")
+            && let Some(Value::Int(company)) = result.get("company_id")
+        {
+            let env = this.env().with_company(*company)?;
+            let declaration = crate::settings::picking_policy()?;
+            let policy = company_field_default(&env, tx, *company, &declaration).await?;
+            result.insert("move_type".into(), policy);
+        }
+        if !company_requested {
+            result.shift_remove("company_id");
         }
         Ok(result)
     }
@@ -309,7 +326,7 @@ impl StockPickingType {
     async fn create(
         this: &RecordSet<StockPickingType>,
         tx: &mut Transaction,
-        vals_list: Vec<RawVals>,
+        mut vals_list: Vec<RawVals>,
         sup: Super,
     ) -> Result<Records> {
         let records = this.as_records().clone();
@@ -318,16 +335,26 @@ impl StockPickingType {
                 authorize(&records, tx, vals, Operation::Create).await?;
                 crate::operation_type_reservation::validate(vals)?;
             }
+            fill_operation_companies(&records, tx, &mut vals_list).await?;
             prefetch_warehouses(records.env(), tx, &vals_list).await?;
-            let mut cache = LocationCache::default();
-            let mut prepared = Vec::with_capacity(vals_list.len());
-            let mut own = Vec::new();
-            for mut vals in vals_list {
-                locations(records.env(), tx, &mut vals, &mut cache).await?;
-                own.extend(create_sequence(records.env(), tx, &mut vals).await?);
-                prepared.push(vals);
+            let mut locations_cache = LocationCache::default();
+            // A location prerequisite must fail before the policy fence writes its SQL tuple,
+            // so the caller can still repair the prerequisite in the same transaction.
+            for vals in &mut vals_list {
+                locations(records.env(), tx, vals, &mut locations_cache).await?;
             }
-            let created = sup.call(tx, &records, (prepared,)).await?;
+            let defaults = operation_policies(&records, tx, &vals_list).await?;
+            let mut own = Vec::new();
+            for vals in &mut vals_list {
+                if !vals.contains("move_type")
+                    && let Some(company) = id(vals, "company_id")?
+                    && let Some(policy) = defaults.get(&company)
+                {
+                    vals.insert("move_type".into(), policy.clone());
+                }
+                own.extend(create_sequence(records.env(), tx, vals).await?);
+            }
+            let created = sup.call(tx, &records, (vals_list,)).await?;
             // after the base create, so a sequence from a context default is checked too
             admit_links(records.env(), tx, &created.ids(), &own).await?;
             Ok(created)
@@ -499,6 +526,62 @@ impl StockPickingType {
             (false, true) => Ok(!member),
         }
     }
+}
+
+async fn fill_operation_companies(
+    types: &Records,
+    tx: &mut Transaction,
+    values: &mut [RawVals],
+) -> Result<()> {
+    if values.iter().any(|vals| !vals.contains("company_id"))
+        && let Some(Value::Int(company)) = types
+            .default_get(tx, &["company_id"])
+            .await?
+            .shift_remove("company_id")
+    {
+        for vals in values
+            .iter_mut()
+            .filter(|vals| !vals.contains("company_id"))
+        {
+            vals.insert("company_id".into(), Cell::Id(company));
+        }
+    }
+    Ok(())
+}
+
+/// Lock and resolve each owner's defaults once for the whole create, including generated types.
+async fn operation_policies(
+    types: &Records,
+    tx: &mut Transaction,
+    values: &[RawVals],
+) -> Result<BTreeMap<i64, Cell>> {
+    let mut companies = BTreeSet::new();
+    for vals in values {
+        if !vals.contains("move_type")
+            && let Some(company) = id(vals, "company_id")?
+        {
+            companies.insert(company);
+        }
+    }
+    let mut defaults = BTreeMap::new();
+    if !companies.is_empty() {
+        fence_company_field_defaults(tx).await?;
+    }
+    for company in companies {
+        let env = types.env().with_company(company)?;
+        let actual_owner = env.with_context([("default_company_id", Value::Int(company))]);
+        let policy = actual_owner
+            .records("stock.picking.type")?
+            .default_get(tx, &["move_type"])
+            .await?;
+        let Some(Value::Str(policy)) = policy.get("move_type") else {
+            return Err(Error::validation(
+                "An operation type requires a valid Shipping Policy.",
+            ));
+        };
+        defaults.insert(company, Cell::Str(policy.clone()));
+    }
+    Ok(defaults)
 }
 pub(crate) async fn write(
     records: &Records,

@@ -216,6 +216,35 @@ fn direct_delivery_confirms_saved_order_as_salesperson() {
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         let picking: i64 = row.get(0);
+        // The salesperson can confirm without Inventory access. Navigation follows
+        // the reader's transfer permissions, even on the same order and transaction.
+        assert_eq!(
+            orders.cells(&mut tx, "direct_delivery_id").await.unwrap(),
+            [Cell::Null]
+        );
+        assert_eq!(
+            orders
+                .sudo(true)
+                .cells(&mut tx, "direct_delivery_id")
+                .await
+                .unwrap(),
+            [Cell::Id(picking)]
+        );
+        assert_eq!(
+            orders.cells(&mut tx, "direct_delivery_id").await.unwrap(),
+            [Cell::Null]
+        );
+        let delivery = tx
+            .env()
+            .records("stock.picking")
+            .unwrap()
+            .sudo(true)
+            .browse([picking])
+            .unwrap();
+        assert_eq!(
+            delivery.cells(&mut tx, "sale_order_id").await.unwrap(),
+            [Cell::Id(quotation)]
+        );
         assert_eq!(row.get::<_, i64>(1), shipping);
         assert_eq!(row.get::<_, i64>(2), world.company);
         assert_eq!(row.get::<_, i64>(3), operation);
@@ -902,5 +931,435 @@ fn generated_shipments_ignore_saved_inventory_defaults() {
         tx.rollback().await.unwrap();
         drop(tx);
         db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn delivered_policy_invoices_only_the_completed_direct_shipment() {
+    short_sales_delivery(false, false);
+}
+
+#[test]
+fn completed_backorder_reopens_only_the_remaining_sales_quantity() {
+    short_sales_delivery(true, false);
+}
+
+#[test]
+fn ask_shows_the_transfer_before_keeping_its_backorder() {
+    short_sales_delivery(true, true);
+}
+
+#[test]
+fn ask_can_close_the_remainder_without_a_backorder() {
+    short_sales_delivery(false, true);
+}
+
+fn short_sales_delivery(always: bool, ask: bool) {
+    run(async move {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install_sales(&db, true).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        admin(&mut tx).await;
+        let world = world(&mut tx).await;
+        let env = tx.env().with_company(world.company).unwrap();
+        let (income, journal) = super::lines::invoice_chart(&mut tx, &env, world.company).await;
+        let salesperson = user(&mut tx, "delivery-invoicing", "group_sale_salesman").await;
+        let goods = product(&mut tx, "Delivered goods", "consu").await;
+        let sku = env
+            .records("product.product")
+            .unwrap()
+            .browse([goods])
+            .unwrap();
+        sku.write(
+            &mut tx,
+            RawVals::new().set_cell("invoice_policy", Cell::Str("delivery".into())),
+        )
+        .await
+        .unwrap();
+        let (order_id, line_id, _) =
+            order_with_product(&mut tx, &world, salesperson, goods, RawVals::new()).await;
+        let order = env
+            .records("sale.order")
+            .unwrap()
+            .browse([order_id])
+            .unwrap();
+        let line = env
+            .records("sale.order.line")
+            .unwrap()
+            .browse([line_id])
+            .unwrap();
+        let row = &tx
+            .query(
+                "SELECT lot_stock_id,out_type_id FROM stock_warehouse WHERE company_id=$1",
+                &[&world.company],
+            )
+            .await
+            .unwrap()[0];
+        let (location, operation): (i64, i64) = (row.get(0), row.get(1));
+        env.records("stock.picking.type")
+            .unwrap()
+            .browse([operation])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_cell(
+                    "create_backorder",
+                    Cell::Str(
+                        if ask {
+                            "ask"
+                        } else if always {
+                            "always"
+                        } else {
+                            "never"
+                        }
+                        .into(),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        tx.execute("INSERT INTO stock_quant (company_id,product_id,location_id,quantity,reserved_quantity,in_date) VALUES ($1,$2,$3,2,0,now())", &[&world.company,&goods,&location]).await.unwrap();
+        order
+            .call::<(), ()>(&mut tx, "action_confirm", ())
+            .await
+            .unwrap();
+        let picking_id: i64 = tx
+            .query(
+                "SELECT picking_id FROM sale_stock_delivery_link WHERE order_id=$1",
+                &[&order_id],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let picking = env
+            .records("stock.picking")
+            .unwrap()
+            .browse([picking_id])
+            .unwrap();
+        picking
+            .call::<(), ()>(&mut tx, "action_assign", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            line.cell(&mut tx, "qty_delivered").await.unwrap(),
+            Cell::Decimal(Decimal::ZERO)
+        );
+        if always && !ask {
+            admission::archived_route_prevents_split(&mut tx, &picking).await;
+        }
+        let before = order
+            .call::<(), Value>(&mut tx, "action_create_draft_invoice", ())
+            .await
+            .unwrap_err();
+        assert_eq!(before.kind(), ErrorKind::UserError);
+        if ask {
+            for _ in 0..2 {
+                let dialog: Value = picking
+                    .call(&mut tx, "action_validate_transfer", ())
+                    .await
+                    .unwrap();
+                let result: Value = picking
+                    .call(&mut tx, "erp_normalize_action_result", (1_u64, dialog))
+                    .await
+                    .unwrap();
+                let Value::Json(result) = result else {
+                    panic!("backorder action");
+                };
+                assert_eq!(result["result"]["kind"], "window");
+                assert_eq!(result["result"]["res_id"], picking_id);
+                assert_eq!(
+                    line.cell(&mut tx, "qty_delivered").await.unwrap(),
+                    Cell::Decimal(Decimal::ZERO)
+                );
+                let count: i64 = tx
+                    .query(
+                        "SELECT COUNT(*) FROM stock_picking WHERE backorder_id=$1",
+                        &[&picking_id],
+                    )
+                    .await
+                    .unwrap()[0]
+                    .get(0);
+                assert_eq!(count, 0);
+            }
+            let kind = env
+                .records("stock.picking.type")
+                .unwrap()
+                .browse([operation])
+                .unwrap();
+            kind.write(
+                &mut tx,
+                RawVals::new().set_cell("create_backorder", Cell::Str("never".into())),
+            )
+            .await
+            .unwrap();
+            let stale = picking
+                .call::<(), Value>(&mut tx, "action_keep_backorder", ())
+                .await
+                .unwrap_err();
+            assert!(stale.message().contains("no longer needs"), "{stale}");
+            assert_eq!(
+                line.cell(&mut tx, "qty_delivered").await.unwrap(),
+                Cell::Decimal(Decimal::ZERO)
+            );
+            kind.write(
+                &mut tx,
+                RawVals::new().set_cell("create_backorder", Cell::Str("ask".into())),
+            )
+            .await
+            .unwrap();
+            let choice = if always {
+                "action_keep_backorder"
+            } else {
+                "action_close_remainder"
+            };
+            let result: Value = picking.call(&mut tx, choice, ()).await.unwrap();
+            let result: Value = picking
+                .call(&mut tx, "erp_normalize_action_result", (1_u64, result))
+                .await
+                .unwrap();
+            let Value::Json(result) = result else {
+                panic!("finished transfer");
+            };
+            assert_eq!(result["result"]["kind"], "close");
+            if !always {
+                let count: i64 = tx
+                    .query(
+                        "SELECT COUNT(*) FROM stock_picking WHERE backorder_id=$1",
+                        &[&picking_id],
+                    )
+                    .await
+                    .unwrap()[0]
+                    .get(0);
+                assert_eq!(count, 0);
+            }
+        } else {
+            picking
+                .call::<(), ()>(&mut tx, "button_validate", ())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            line.cell(&mut tx, "qty_delivered").await.unwrap(),
+            Cell::Decimal(Decimal::from(2))
+        );
+        assert_eq!(
+            line.cell(&mut tx, "qty_to_invoice").await.unwrap(),
+            Cell::Decimal(Decimal::from(2))
+        );
+        let forged = write(
+            &mut tx,
+            &line,
+            RawVals::new().set_cell("qty_delivered", Cell::Decimal(Decimal::from(3))),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(forged.kind(), ErrorKind::Validation);
+        let action: Value = order
+            .call(&mut tx, "action_create_draft_invoice", ())
+            .await
+            .unwrap();
+        let normalized: Value = order
+            .call(&mut tx, "erp_normalize_action_result", (1_u64, action))
+            .await
+            .unwrap();
+        let Value::Json(envelope) = normalized else {
+            panic!("invoice action envelope");
+        };
+        assert_eq!(envelope["result"]["kind"], "window");
+        let billed = line.cell(&mut tx, "qty_invoiced").await.unwrap();
+        assert_eq!(billed, Cell::Decimal(Decimal::from(2)));
+        let retry = order
+            .call::<(), Value>(&mut tx, "action_create_draft_invoice", ())
+            .await
+            .unwrap_err();
+        assert_eq!(retry.kind(), ErrorKind::UserError);
+        if always {
+            let rows = tx.query("SELECT p.id,m.product_uom_qty,m.quantity FROM stock_picking p JOIN stock_move m ON m.picking_id=p.id WHERE p.backorder_id=$1",&[&picking_id]).await.unwrap();
+            assert_eq!(rows.len(), 1);
+            let child_id: i64 = rows[0].get(0);
+            assert_eq!(rows[0].get::<_, Decimal>(1), Decimal::ONE);
+            assert_eq!(rows[0].get::<_, Decimal>(2), Decimal::ZERO);
+            let replay = picking
+                .call::<(), ()>(&mut tx, "button_validate", ())
+                .await
+                .unwrap_err();
+            assert!(replay.message().contains("validated earlier"), "{replay}");
+            let child = env
+                .records("stock.picking")
+                .unwrap()
+                .browse([child_id])
+                .unwrap();
+            assert_eq!(
+                child.cell(&mut tx, "sale_order_id").await.unwrap(),
+                Cell::Id(order_id)
+            );
+            let backorder_move = child.related(&mut tx, "move_ids").await.unwrap();
+            let forged = write(
+                &mut tx,
+                &backorder_move,
+                RawVals::new().set_cell("backorder_root_move_id", Cell::Id(line_id)),
+            )
+            .await
+            .unwrap_err();
+            assert!(forged.message().contains("Original Demand"), "{forged}");
+            let reassigned = write(
+                &mut tx,
+                &backorder_move,
+                RawVals::new().set_cell("picking_id", Cell::Null),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                reassigned.message().contains("original demand"),
+                "{reassigned}"
+            );
+            let replenished = tx.execute("UPDATE stock_quant SET quantity=quantity+1 WHERE company_id=$1 AND product_id=$2 AND location_id=$3", &[&world.company,&goods,&location]).await.unwrap();
+            if replenished == 0 {
+                tx.execute("INSERT INTO stock_quant (company_id,product_id,location_id,quantity,reserved_quantity,in_date) VALUES ($1,$2,$3,1,0,now())", &[&world.company,&goods,&location]).await.unwrap();
+            }
+
+            for _ in 0..2 {
+                child
+                    .call::<(), ()>(&mut tx, "action_assign", ())
+                    .await
+                    .unwrap();
+            }
+            let reserved=tx.query("SELECT sum(reserved_quantity) FROM stock_quant WHERE company_id=$1 AND product_id=$2 AND location_id=$3",&[&world.company,&goods,&location]).await.unwrap();
+            assert_eq!(reserved[0].get::<_, Decimal>(0), Decimal::ONE);
+            child
+                .call::<(), ()>(&mut tx, "button_validate", ())
+                .await
+                .unwrap();
+            assert_eq!(
+                line.cell(&mut tx, "qty_delivered").await.unwrap(),
+                Cell::Decimal(Decimal::from(3))
+            );
+            assert_eq!(
+                line.cell(&mut tx, "qty_to_invoice").await.unwrap(),
+                Cell::Decimal(Decimal::ONE)
+            );
+            order
+                .call::<(), Value>(&mut tx, "action_create_draft_invoice", ())
+                .await
+                .unwrap();
+            assert_eq!(
+                line.cell(&mut tx, "qty_invoiced").await.unwrap(),
+                Cell::Decimal(Decimal::from(3))
+            );
+            tx.rollback().await.unwrap();
+            return;
+        }
+        let unit = many2one(&mut tx, &line, "product_uom_id").await.unwrap();
+        env.records("account.move")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("move_type", Cell::Str("out_refund".into()))
+                        .set_cell("partner_id", Cell::Id(world.customer))
+                        .set_cell("journal_id", Cell::Id(journal.ids()[0]))
+                        .set_commands(
+                            "invoice_line_ids",
+                            [Command::create(
+                                RawVals::new()
+                                    .set_cell("product_id", Cell::Id(goods))
+                                    .set_cell("sale_line_id", Cell::Id(line_id))
+                                    .set_cell("account_id", Cell::Id(income))
+                                    .set_cell("product_uom_id", Cell::Id(unit))
+                                    .set_cell("quantity", Cell::Decimal(Decimal::ONE))
+                                    .set_cell("price_unit", Cell::Decimal(Decimal::ONE)),
+                            )],
+                        ),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            line.cell(&mut tx, "qty_to_invoice").await.unwrap(),
+            Cell::Decimal(Decimal::ONE)
+        );
+        let action: Value = picking.call(&mut tx, "action_return", ()).await.unwrap();
+        let Value::Map(action) = action else {
+            panic!("return action");
+        };
+        let Value::Int(return_id) = action["res_id"] else {
+            panic!("return ID");
+        };
+        let returned = env
+            .records("stock.picking")
+            .unwrap()
+            .browse([return_id])
+            .unwrap();
+        let return_move = returned.related(&mut tx, "move_ids").await.unwrap();
+        return_move
+            .write(
+                &mut tx,
+                RawVals::new().set_cell("product_uom_qty", Cell::Decimal(Decimal::ONE)),
+            )
+            .await
+            .unwrap();
+        returned
+            .call::<(), ()>(&mut tx, "action_assign", ())
+            .await
+            .unwrap();
+        returned
+            .call::<(), ()>(&mut tx, "button_validate", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            line.cell(&mut tx, "qty_delivered").await.unwrap(),
+            Cell::Decimal(Decimal::ONE)
+        );
+        assert_eq!(
+            line.cell(&mut tx, "qty_to_invoice").await.unwrap(),
+            Cell::Decimal(Decimal::ZERO)
+        );
+        tx.flush().await.unwrap();
+        // A shipped bridge installation before 1.1 has its immutable moves, but its
+        // Sales metrics have never been derived from them. Exercise the real upgrader.
+        tx.execute("UPDATE sale_order_line SET qty_delivered=0, qty_delivered_method='manual',qty_to_invoice=-1 WHERE id=$1", &[&line_id]).await.unwrap();
+        tx.execute(
+            "UPDATE ir_module_module SET latest_version='1.0.2' WHERE name='sale_stock'",
+            &[],
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+        let system = system_with_stock(&db, true);
+        let module = [ModuleName::new("sale_stock").unwrap()];
+        for _ in 0..2 {
+            let upgraded = Box::pin(
+                system.button_immediate_upgrade(&system.system_env(Context::new()), &module),
+            )
+            .await
+            .unwrap();
+            assert!(
+                upgraded.post_commit.is_clean(),
+                "{:?}",
+                upgraded.post_commit
+            );
+            let mut tx = upgraded.orm.begin(SUPERUSER_ID).await.unwrap();
+            let line = tx
+                .env()
+                .records("sale.order.line")
+                .unwrap()
+                .browse([line_id])
+                .unwrap();
+            assert_eq!(
+                line.cell(&mut tx, "qty_delivered_method").await.unwrap(),
+                Cell::Str("stock_move".into())
+            );
+            assert_eq!(
+                line.cell(&mut tx, "qty_delivered").await.unwrap(),
+                Cell::Decimal(Decimal::ONE)
+            );
+            assert_eq!(
+                line.cell(&mut tx, "qty_to_invoice").await.unwrap(),
+                Cell::Decimal(Decimal::ZERO)
+            );
+            tx.rollback().await.unwrap();
+        }
     });
 }

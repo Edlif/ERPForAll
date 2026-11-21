@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Explicit caller-company routing; no elevation, transport or provider fallback.
+//! Explicit caller-company routing; ordinary model access and no provider fallback.
 use crate::{
     config::Credentials,
     encoding::RequestEncoder,
@@ -16,6 +16,7 @@ pub struct ConfiguredRoute {
     family: String,
     base_url: String,
     request_bytes: usize,
+    pub(crate) interactive: bool,
 }
 impl ConfiguredRoute {
     /// Stable configured provider name.
@@ -48,7 +49,7 @@ impl ConfiguredRoute {
         )
     }
 
-    /// Administrator-selected endpoint, never visited by this slice.
+    /// Administrator-selected API base. Transport also requires a matching node credential binding.
     #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url
@@ -101,6 +102,7 @@ pub async fn resolve(
         family: text(provider.cell(tx, "family").await?, "ai.provider.family")?,
         base_url: text(provider.cell(tx, "base_url").await?, "ai.provider.base_url")?,
         request_bytes: credentials.request_bytes(),
+        interactive: crate::ordinary_user(env),
     })
 }
 

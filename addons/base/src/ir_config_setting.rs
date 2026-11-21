@@ -972,6 +972,71 @@ struct StoredSnapshot {
     values: BTreeMap<String, Value>,
     sources: BTreeMap<String, wire::ValueSource>,
 }
+
+/// Read one company setting used as a native business-field default.
+///
+/// The declaration is provided by trusted addon code. The caller of this function owns
+/// the business-model access check. The setting's company must belong to the caller's
+/// active scope. This is a read-only lookup, including when the scope has no saved values.
+///
+/// # Errors
+///
+/// The caller may not use this company, the declaration is not company-scoped, or a
+/// stored value is corrupt or outside the declaration's domain.
+pub async fn company_field_default(
+    env: &Env,
+    tx: &mut Transaction,
+    company: i64,
+    declaration: &SettingDecl,
+) -> Result<Value> {
+    let identity = authorized_company_identity(env, tx, company).await?;
+    if declaration.scope() != ScopeKind::Company {
+        return Err(Error::programming(
+            "A company field default requires a company setting.",
+        ));
+    }
+    let key = declaration.key();
+    let rows = tx.query(
+        &format!(
+            "SELECT CASE WHEN octet_length(v.value_text)<={MAX_STORED_VALUE_BYTES} THEN v.value_text END \
+             FROM ir_config_setting_value v JOIN ir_config_setting_scope s ON s.id=v.scope_id \
+             WHERE s.identity=$1 AND v.setting_key=$2"
+        ),
+        &[&identity, &key],
+    ).await?;
+    let Some(row) = rows.first() else {
+        return Ok(declaration.default_value().clone());
+    };
+    let text: String = row.try_get(0).map_err(|_| stored_error(key))?;
+    stored(declaration, &text).map_err(|_| stored_error(key))
+}
+
+async fn authorized_company_identity(
+    env: &Env,
+    tx: &mut Transaction,
+    company: i64,
+) -> Result<String> {
+    let id = u64::try_from(company).map_err(|_| invalid())?;
+    let scope = SettingsScope::Company {
+        company_id: wire::WireId::try_from(id).map_err(|_| invalid())?,
+    };
+    authorize_scope(env, tx, &scope).await?;
+    Ok(identity(&scope)?.0)
+}
+
+/// Order a company field creation and changes to the setting that supplies its default.
+///
+/// Both code paths touch the existing company lifecycle fence before reading records that
+/// depend on each other. A concurrent transaction with an older repeatable-read snapshot
+/// must retry. This admission does not create an empty Settings scope or modify a company.
+///
+/// # Errors
+///
+/// The fence is unavailable, or the caller's transaction must retry a concurrent change.
+pub async fn fence_company_field_defaults(tx: &mut Transaction) -> Result<()> {
+    crate::company_lifecycle::fence(tx).await
+}
+
 async fn load_values(
     registry: &SettingsRegistry,
     tx: &mut Transaction,
@@ -1089,10 +1154,14 @@ pub async fn write_values(
         let subject = env.uid().to_string();
         let actor = audit_actor(env)?;
         let mut result = Vec::new();
+        let mut effective_changes = erp_sdk::ValueMap::new();
         for (key,value) in &changes {
             let old_value = previous.get(key).ok_or_else(corrupt)?;
             let old_text = serde_json::to_string(old_value).map_err(|_| corrupt())?;
             let text = serde_json::to_string(&scalar(value)?).map_err(|_| invalid())?;
+            if old_text != text {
+                effective_changes.insert(key.clone(), value.clone());
+            }
             if key == crate::attachments::settings::MAX_FILE_KEY {
                 let params = env.records("ir.config_parameter")?;
                 tx.extension::<ParameterBridge>().0 = true;
@@ -1107,6 +1176,11 @@ pub async fn write_values(
         }
         tx.execute("UPDATE ir_config_setting_scope SET revision=$2 WHERE id=$1", &[&scope_id,&next]).await?;
         tx.invalidate_ormcache("declared_settings");
+        if !effective_changes.is_empty() {
+            env.records("ir.config.setting")?
+                .call::<_, ()>(tx, "_apply_value_changes", (company, effective_changes))
+                .await?;
+        }
         if changes.iter().any(|(key, _)| key.starts_with("base.jobs.")) {
             let (_, values) = read_job_policy(tx).await?;
             let settings = crate::jobs_settings::settings(&values)?;
@@ -1127,6 +1201,19 @@ impl IrConfigSetting {
     ) -> Result<()> {
         validate_declarations(this.env(), tx).await?;
         sup.call(tx, this.as_records(), ()).await
+    }
+
+    /// Native-only hook for effective changes after an authorized scoped save.
+    /// `company` is the exact saved scope, or `None` for global settings. The scope lock
+    /// and savepoint still cover the staged values, audit and consumer writes.
+    #[method]
+    async fn _apply_value_changes(
+        _this: &RecordSet<IrConfigSetting>,
+        _tx: &mut Transaction,
+        _company: Option<i64>,
+        _changes: erp_sdk::ValueMap,
+    ) -> Result<()> {
+        Ok(())
     }
 
     /// Authorized declaration metadata for the exact scope.

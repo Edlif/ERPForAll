@@ -50,7 +50,7 @@ use crate::reference::StockReference;
 use crate::stock_move::StockMove;
 use crate::stock_move_line::StockMoveLine;
 
-const MOVE_FIELDS: [&str; 2] = ["done_at", "open_line_version"];
+const MOVE_FIELDS: [&str; 3] = ["done_at", "open_line_version", "backorder_root_move_id"];
 /// Move columns the line, confirmation and reservation statements write. The product-unit
 /// quantity follows the quantity through the unit snapshot check ([`crate::move_units`]).
 const LINE_DERIVED: [&str; 2] = ["state", "quantity"];
@@ -136,7 +136,7 @@ fn initial(field: &str) -> Result<Cell> {
         "membership" => Ok(Cell::Str("open".into())),
         "correction_seq" | "open_line_version" => Ok(Cell::Int(0)),
         "quantity" => Ok(Cell::Decimal(Decimal::ZERO)),
-        "done_at" => Ok(Cell::Null),
+        "done_at" | "backorder_root_move_id" => Ok(Cell::Null),
         other => Err(Error::internal(format!(
             "no initial value for the engine-owned field '{other}'"
         ))),
@@ -293,6 +293,7 @@ impl StockMove {
         )
         .await?;
         check_move_write(records, tx, &vals).await?;
+        crate::backorder::guard_identity(tx, records, &vals).await?;
         let units = UNIT_INPUTS.iter().any(|f| vals.contains(f))
             || SNAPSHOT_FIELDS.iter().any(|f| vals.contains(f));
         let counted = COUNTED_MOVE_FIELDS.iter().any(|f| vals.contains(f));

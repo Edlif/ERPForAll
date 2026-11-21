@@ -261,7 +261,7 @@ fn dependent_annotations_are_named_or_dropped_never_carried() {
         (
             annotation("Widget", dictionary! {"FT"=>"Tx","T"=>text("name")}),
             "a form field",
-            Some("a later release"),
+            None,
         ),
         (
             annotation("FileAttachment", dictionary! {}),
@@ -624,7 +624,7 @@ fn rotation_and_stamping_keep_annotations_as_they_are() {
         vec![annotation("Widget", dictionary! {"FT"=>"Tx"}).into()],
     );
     let widget = bytes(d);
-    let fields = "PDF feature form field annotations is unsupported (a later release)";
+    let fields = "PDF feature form field annotations without a catalog form is refused by design";
     let e = collect(|emit| rotate(&widget, &first, Rotation::new(90).unwrap(), &limits, emit))
         .unwrap_err();
     error(e, PdfErrorKind::Unsupported, fields);

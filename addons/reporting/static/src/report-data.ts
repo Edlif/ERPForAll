@@ -13,13 +13,15 @@ export interface Column { readonly group: number; readonly name: string; readonl
 export interface Period { readonly from: string | null; readonly to: string }
 export interface Filters {
   readonly partnerLedger: boolean;
+  readonly generalLedger: boolean;
+  readonly serverSearch: boolean;
   readonly dateMode: "range" | "single"; readonly currentOnly: boolean; readonly comparison: boolean; readonly multiCompany: boolean; readonly unfoldAll: boolean;
   readonly hideZero: "never" | "optional" | "by_default"; readonly searchBar: boolean; readonly maxSearchChars: number; readonly totalsBelow: boolean;
 }
 /** Apply report filters to the loaded tree. Unknown folded or paged amounts stay reachable. */
-export function visibleLines(lines: Line[], options: Options): Line[] {
+export function visibleLines(lines: Line[], options: Options, serverSearch = false): Line[] {
   const hideZero = options["hide_zero"] === true;
-  const search = typeof options["search"] === "string" ? options["search"].toLowerCase() : "";
+  const search = !serverSearch && typeof options["search"] === "string" ? options["search"].toLowerCase() : "";
   if (!hideZero && !search) return lines;
 
   const matched = new Set<string>(), nonzero = new Set<string>();
@@ -98,12 +100,16 @@ export function filters(raw: unknown): Filters {
   // Older reporting servers use the original wire bound of 256 Unicode characters.
   const maxSearchChars = f["max_search_chars"] === undefined ? 256 : num(f["max_search_chars"], "the search limit");
   if (!Number.isSafeInteger(maxSearchChars) || maxSearchChars < 1) throw new Error("The report search limit is invalid.");
-  const partnerLedger = f["provider"] !== undefined && str(f["provider"], "the report provider") === "account_reporting.partner_ledger";
-  return { dateMode: mode, partnerLedger, currentOnly, maxSearchChars, hideZero: hide, comparison: bool(f["comparison"], "the filters"), multiCompany: bool(f["multi_company"], "the filters"),
+  const provider = f["provider"] === undefined ? undefined : str(f["provider"], "the report provider");
+  return { dateMode: mode, partnerLedger: provider === "account_reporting.partner_ledger", generalLedger: provider === "account_reporting.general_ledger", serverSearch: f["server_search"] === undefined ? false : bool(f["server_search"], "the provider search option"), currentOnly, maxSearchChars, hideZero: hide, comparison: bool(f["comparison"], "the filters"), multiCompany: bool(f["multi_company"], "the filters"),
     unfoldAll: bool(f["unfold_all"], "the filters"), searchBar: bool(f["search_bar"], "the filters"), totalsBelow: bool(f["totals_below"], "the filters") };
 }
 /** Only the accounting Partner Ledger owns the reconciliation control. */
 export function validateProviderOptions(options: Options, filters: Filters): void {
+  if (filters.generalLedger) {
+    const provider = obj(options["provider"], "the General Ledger options");
+    if ("fiscal_opening" in provider) bool(provider["fiscal_opening"], "the fiscal opening option");
+  }
   if (filters.partnerLedger) {
     bool(obj(options["provider"], "the Partner Ledger options")["unreconciled"], "the unreconciled filter");
   }

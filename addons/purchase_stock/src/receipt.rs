@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use erp_addon_purchase::order::PurchaseOrder;
+use erp_addon_stock::StockPicking;
 use erp_sdk::prelude::*;
 use erp_sdk::{Env, ErrorKind, FieldOp, Operation};
 
@@ -459,12 +460,28 @@ impl ReceiptPlan {
              SELECT $1, move_id, line_id FROM unnest($2::int8[], $3::int8[]) AS link(move_id, line_id)",
             &[&company, &move_ids, &lines],
         ).await?;
-        Ok(())
+        tx.invalidate_records(&picking, Some(&["purchase_order_id"]))
+            .await?;
+        crate::received_quantity::refresh(tx, &env.records("purchase.order.line")?.browse(lines)?)
+            .await?;
+        let order = env.records("purchase.order")?.browse([self.order.order])?;
+        tx.invalidate_records(&order, Some(&["direct_receipt_id"]))
+            .await
     }
 }
 
 #[extend(PurchaseOrder, addon = "purchase_stock")]
 struct PurchaseOrderReceipt {
+    /// The original direct transfer visible to the order reader.
+    #[field(
+        many2one,
+        comodel = "stock.picking",
+        compute = "_compute_direct_receipt_id",
+        readonly = true,
+        copy = false,
+        string = "Receipt"
+    )]
+    pub direct_receipt_id: Option<RecId>,
     /// The immutable origin of a direct incoming transfer.
     #[field(
         one2many,
@@ -478,6 +495,19 @@ struct PurchaseOrderReceipt {
 
 #[methods(PurchaseOrder, addon = "purchase_stock")]
 impl PurchaseOrderReceipt {
+    #[compute(depends = ["state", "company_id"], depends_context = ["uid", "allowed_company_ids"])]
+    async fn _compute_direct_receipt_id(
+        this: &RecordSet<PurchaseOrder>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, PurchaseOrder>,
+    ) -> Result<()> {
+        let links = readable_direct_documents(tx, this.as_records(), DirectLink::FromOrder).await?;
+        for (index, link) in links.into_iter().enumerate() {
+            out.set(index, PurchaseOrderReceipt::DIRECT_RECEIPT_ID, link)?;
+        }
+        Ok(())
+    }
+
     /// Authorize the entire order before the base confirmation validates its lines.
     #[method(override)]
     async fn button_confirm(
@@ -564,4 +594,99 @@ impl PurchaseOrderReceipt {
         })
         .await
     }
+}
+
+/// The source order of the original transfer, subject to the reader's order access.
+#[extend(StockPicking, addon = "purchase_stock")]
+struct PurchasePickingOrigin {
+    #[field(
+        many2one,
+        comodel = "purchase.order",
+        compute = "_compute_purchase_order_id",
+        readonly = true,
+        copy = false,
+        string = "Purchase Order"
+    )]
+    pub purchase_order_id: Option<RecId>,
+}
+
+#[methods(StockPicking, addon = "purchase_stock")]
+impl PurchasePickingOrigin {
+    #[compute(depends = ["company_id"], depends_context = ["uid", "allowed_company_ids"])]
+    async fn _compute_purchase_order_id(
+        this: &RecordSet<StockPicking>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, StockPicking>,
+    ) -> Result<()> {
+        let links =
+            readable_direct_documents(tx, this.as_records(), DirectLink::FromPicking).await?;
+        for (index, link) in links.into_iter().enumerate() {
+            out.set(index, PurchasePickingOrigin::PURCHASE_ORDER_ID, link)?;
+        }
+        Ok(())
+    }
+}
+
+enum DirectLink {
+    FromOrder,
+    FromPicking,
+}
+
+/// Resolve one immutable document link per input while preserving caller access on both ends.
+async fn readable_direct_documents(
+    tx: &mut Transaction,
+    records: &Records,
+    direction: DirectLink,
+) -> Result<Vec<Option<RecId>>> {
+    let sources = records.origin();
+    sources.check_access(tx, Operation::Read).await?;
+    let ids = sources.ids();
+    let empty = Vec::<i64>::new();
+    let (order_ids, picking_ids, target) = match direction {
+        DirectLink::FromOrder => (&ids, &empty, "stock.picking"),
+        DirectLink::FromPicking => (&empty, &ids, "purchase.order"),
+    };
+    let mut links = BTreeMap::new();
+    if !ids.is_empty() {
+        let rows = tx
+            .query(
+                "SELECT l.order_id, l.picking_id FROM purchase_stock_receipt_link l \
+             JOIN purchase_order o ON o.id=l.order_id AND o.company_id=l.company_id \
+             JOIN stock_picking p ON p.id=l.picking_id AND p.company_id=l.company_id \
+             WHERE l.order_id=ANY($1) OR l.picking_id=ANY($2)
+             UNION
+             SELECT l.order_id, m.picking_id FROM stock_move m
+             JOIN stock_move root ON root.id=m.backorder_root_move_id AND root.company_id=m.company_id
+             JOIN purchase_stock_receipt_link l ON l.picking_id=root.picking_id AND l.company_id=m.company_id
+             WHERE m.picking_id=ANY($2)",
+                &[order_ids, picking_ids],
+            )
+            .await?;
+        for row in rows {
+            let order: i64 = row.try_get(0).map_err(decode)?;
+            let picking: i64 = row.try_get(1).map_err(decode)?;
+            match direction {
+                DirectLink::FromOrder => links.insert(order, picking),
+                DirectLink::FromPicking => links.insert(picking, order),
+            };
+        }
+    }
+    let allowed = records
+        .env()
+        .records(target)?
+        .browse(links.values().copied())?
+        .filtered_access(tx, Operation::Read)
+        .await?;
+    let visible: std::collections::BTreeSet<_> = allowed.ids().into_iter().collect();
+    Ok(records
+        .rec_ids()
+        .iter()
+        .map(|id| {
+            id.as_real()
+                .or(id.origin())
+                .and_then(|id| links.get(&id.get()))
+                .filter(|id| visible.contains(*id))
+                .and_then(|id| RecId::from_real(*id))
+        })
+        .collect())
 }

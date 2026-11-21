@@ -18,6 +18,12 @@ pub(crate) struct Prepared {
     provider: &'static dyn ReportProvider,
 }
 
+impl Prepared {
+    pub(crate) fn searches_on_server(&self) -> bool {
+        self.provider.spec().searches_on_server()
+    }
+}
+
 pub(crate) async fn prepare(
     env: &Env,
     tx: &mut Transaction,
@@ -59,9 +65,11 @@ pub async fn report_options(
     previous: &Json,
 ) -> Result<Json> {
     let p = prepare(env, tx, report, previous, false).await?;
-    Ok(
-        json!({"name": p.def.name, "options": p.options.to_json(&p.def), "filters": p.def.filters()}),
-    )
+    let mut filters = p.def.filters();
+    if p.searches_on_server() {
+        filters["server_search"] = Json::Bool(true);
+    }
+    Ok(json!({"name": p.def.name, "options": p.options.to_json(&p.def), "filters": filters}))
 }
 
 /// Unfold, in place, every line of `lines` the options ask for, then add the totals.

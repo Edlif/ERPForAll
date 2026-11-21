@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use crate::error::{Result, malformed, owner, unsupported};
+use crate::error::{Result, malformed, owner, refused, unsupported};
 use crate::limits::{Budget, Context};
-use crate::{AnnotationPolicy, Limit, PdfError, PdfErrorKind};
+use crate::{AnnotationPolicy, FormPolicy, Limit, PdfError, PdfErrorKind, forms};
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::BTreeSet;
 
@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 pub(crate) enum PageProfile {
     /// Overlay source: it becomes a Form XObject, which has no annotations.
     Overlay,
-    /// Reading copy: fresh catalog, annotations treated by the caller's policy.
-    ReadingCopy(AnnotationPolicy),
+    /// Reading copy: fresh catalog, annotations and form fields treated by the caller's policies.
+    ReadingCopy(AnnotationPolicy, FormPolicy),
     /// Whole-document rewrite: every object and the catalog are written again as they are.
     WholeDocument,
 }
@@ -194,18 +194,20 @@ pub(crate) fn annotation_type<'a>(
         .as_name()
         .map_err(|e| malformed(message).source(e))
 }
+/// Whether an `Annots` entry is a form field annotation.
+fn widget(doc: &Document, o: &Object, l: &Context<'_>) -> Result<bool> {
+    let d = annotation(doc, o, l)?;
+    Ok(annotation_type(doc, d, l)? == b"Widget")
+}
 pub(crate) fn pages(
     doc: &Document,
     l: &Context<'_>,
     profile: PageProfile,
 ) -> Result<Vec<(ObjectId, Dictionary)>> {
     let root = catalog(doc, l)?;
-    if root.has(b"AcroForm") {
-        return Err(unsupported("AcroForm", owner::FORMS));
-    }
-    if root.has(b"Perms") {
-        return Err(unsupported("signed document", owner::SIGNED));
-    }
+    forms::admit(doc, root, l, profile)?;
+    // A form field without its catalog form is half a form, also when everything is written again.
+    let fields_owned = root.has(b"AcroForm");
     let first = root
         .get(b"Pages")
         .map_err(|e| malformed("PDF missing page tree").source(e))?
@@ -326,21 +328,27 @@ pub(crate) fn pages(
                         PageProfile::Overlay => {
                             return Err(unsupported("overlay annotations", owner::OVERLAY));
                         }
-                        PageProfile::ReadingCopy(AnnotationPolicy::Refuse) => {
+                        PageProfile::ReadingCopy(AnnotationPolicy::Refuse, FormPolicy::Refuse) => {
                             return Err(annotations_refused());
                         }
+                        // Form fields are painted into their page; anything else is refused,
+                        // also on a page that is not copied.
+                        PageProfile::ReadingCopy(AnnotationPolicy::Refuse, FormPolicy::Flatten) => {
+                            for item in a {
+                                budget.step()?;
+                                if !widget(doc, item, l)? {
+                                    return Err(annotations_refused());
+                                }
+                            }
+                        }
                         // The importer decides each annotation of the pages it copies.
-                        PageProfile::ReadingCopy(_) => {}
-                        // A form field without its catalog form is half a form; forms are
-                        // refused above, so a widget here has lost its owner.
+                        PageProfile::ReadingCopy(_, _) => {}
                         PageProfile::WholeDocument => {
                             for item in a {
                                 budget.step()?;
-                                let d = annotation(doc, item, l)?;
-                                if annotation_type(doc, d, l)? == b"Widget" {
-                                    return Err(unsupported(
-                                        "form field annotations",
-                                        owner::FORMS,
+                                if widget(doc, item, l)? && !fields_owned {
+                                    return Err(refused(
+                                        "form field annotations without a catalog form",
                                     ));
                                 }
                             }

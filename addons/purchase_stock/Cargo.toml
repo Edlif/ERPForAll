@@ -13,6 +13,7 @@ erp-sdk = { workspace = true }
 erp-addon-stock = { workspace = true }
 erp-addon-stock_account = { workspace = true }
 erp-addon-purchase = { workspace = true }
+erp-addon-uom = { workspace = true }
 
 [lints]
 workspace = true

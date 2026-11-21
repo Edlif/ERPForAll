@@ -177,6 +177,15 @@ function optionsChip(ctx: FilterContext, provider: Options): Chip {
       });
       panel.append(row);
     }
+    if (filters.generalLedger && typeof provider["fiscal_opening"] === "boolean") {
+      const row = checkbox("fiscal_opening", "Use fiscal-year opening", provider["fiscal_opening"]);
+      const input = row.querySelector("input")!;
+      input.addEventListener("change", () => {
+        close();
+        ctx.apply({ provider: { ...provider, fiscal_opening: input.checked }, unfolded: [], loaded_pages: {} });
+      });
+      panel.append(row);
+    }
     if (filters.unfoldAll) {
       const row = checkbox("unfold_all", "Unfold all lines", options["unfold_all"] === true);
       row.querySelector("input")?.addEventListener("change", event => { close(); ctx.apply({ unfold_all: (event.currentTarget as HTMLInputElement).checked }); });
@@ -206,8 +215,8 @@ export function buildFilters(ctx: FilterContext): { node: HTMLElement; dispose()
   const chips: Chip[] = ctx.filters.currentOnly ? [] : [dateChip(ctx)];
   if (ctx.filters.comparison) chips.push(comparisonChip(ctx));
   if (ctx.filters.multiCompany && ctx.env.companies.length > 1) chips.push(companiesChip(ctx));
-  const provider = ctx.filters.partnerLedger ? obj(ctx.options["provider"], "the Partner Ledger options") : {};
-  if (ctx.filters.unfoldAll || ctx.filters.hideZero !== "never" || ctx.filters.partnerLedger) {
+  const provider = ctx.filters.partnerLedger || ctx.filters.generalLedger ? obj(ctx.options["provider"], "the report provider options") : {};
+  if (ctx.filters.unfoldAll || ctx.filters.hideZero !== "never" || ctx.filters.partnerLedger || (ctx.filters.generalLedger && "fiscal_opening" in provider)) {
     chips.push(optionsChip(ctx, provider));
   }
   node.append(...chips.map(c => c.node));

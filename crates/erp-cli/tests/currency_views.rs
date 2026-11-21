@@ -1,4 +1,4 @@
-//! Currency screens of the installed base addon: Settings > Currencies and the views a currency or a
+//! Currency screens of the installed base addon: Settings > Reference Data > Currencies and the views a currency or a
 //! currency rate opens with from a related field.
 #![allow(
     clippy::unwrap_used,
@@ -148,7 +148,7 @@ async fn currency_and_rate_open_with_their_default_views() {
 }
 
 #[tokio::test]
-async fn currencies_menu_sits_under_settings_for_administrators() {
+async fn settings_groups_currencies_and_keeps_access_rules_in_technical_security() {
     let db = TestDb::create().await.unwrap();
     let orm = installed(&db).await;
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
@@ -162,12 +162,33 @@ async fn currencies_menu_sits_under_settings_for_administrators() {
                JOIN ir_ui_menu_group_rel r ON r.menu_id = m.id \
                JOIN ir_model_data dg ON dg.model = 'res.groups' AND dg.res_id = r.gid \
               WHERE dm.module = 'base' AND dm.name = 'settings_currencies_menu' \
-                AND dp.module = 'base' AND dp.name = 'settings_menu' \
+                AND dp.module = 'base' AND dp.name = 'settings_reference_menu' \
                 AND dg.module = 'base' AND dg.name = 'group_system'",
             &[],
         )
         .await
         .unwrap();
     assert_eq!(rows.len(), 1, "menu, parent and group link");
+    let sections = tx
+        .query(
+            "SELECT m.name FROM ir_ui_menu m JOIN ir_model_data root \
+             ON root.res_id = m.parent_id AND root.model = 'ir.ui.menu' \
+             WHERE root.module = 'base' AND root.name = 'settings_menu' AND m.active \
+             ORDER BY m.sequence, m.id",
+            &[],
+        )
+        .await
+        .unwrap();
+    let names: Vec<String> = sections.iter().map(|row| row.get(0)).collect();
+    assert_eq!(names, ["Users & Companies", "Reference Data", "Technical"]);
+    let access_rules = tx
+        .query(
+            "SELECT m.id FROM ir_ui_menu m JOIN ir_ui_menu parent ON parent.id = m.parent_id \
+             WHERE m.name = 'Access Rules' AND m.active AND parent.name = 'Security'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(access_rules.len(), 1);
     tx.rollback().await.unwrap();
 }

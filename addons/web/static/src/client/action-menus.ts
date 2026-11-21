@@ -23,7 +23,7 @@ export interface ActionMenuItem {
   sequence?: number;
   disabled?: boolean;
   class?: string;
-  /** A shipped icon name; a menu where any entry names one shows an icon on every entry. */
+  /** A shipped icon name; each standard entry shows its declared icon or the shared fallback. */
   icon?: string;
 }
 

@@ -989,6 +989,7 @@ async fn number(
 }
 
 async fn invalidate(tx: &mut Transaction, moves: &Records) -> Result<()> {
+    moves.modified_external(tx, &["state"]).await?;
     // the display name is computed from the state and the number, which change here by SQL
     tx.invalidate_records(moves, Some(&["state", "date", "name", "display_name"]))
         .await?;

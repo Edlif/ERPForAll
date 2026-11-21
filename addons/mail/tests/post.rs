@@ -26,7 +26,7 @@ const CHAT: &str = "test_mail.chat";
 /// The engine's refusal of the write-denying test policy (text of the access engine).
 const WRITE_DENIED: &str =
     "Your access rights do not let you write 'Mail Test Ticket' (test_mail.ticket) records.";
-/// Statement ceiling of the post scenario of `post_statements_do_not_grow_with_followers`, a
+/// Statement ceiling of the post work, apart from the one saved-thread signal per transaction. A
 /// RATCHET (DEFERRED_PERFORMANCE): may only go down.
 const POST_CEILING: u64 = 5;
 /// Statement ceiling of a replayed post (same `client_uid`), a RATCHET as above: 1, measured with
@@ -930,7 +930,8 @@ async fn recipients_are_the_subtype_followers_and_the_explicit_partners() {
 }
 
 /// The post's statement count is the same for 5, 50 and 500 followers (only row counts change),
-/// and a replay of the same `client_uid` is cheaper; both ceilings are ratchets
+/// both before and after this transaction has signalled a change. A replay of the same
+/// `client_uid` is cheaper. The post-work and replay ceilings are ratchets
 /// (DEFERRED_PERFORMANCE), the exact §5.1 count is a milestone-end target. With
 /// `MAIL_POST_STATEMENT_LOG` set, the 50-follower post is logged by the server
 /// (`log_statement`), between marker statements, for the evidence script.
@@ -938,8 +939,12 @@ async fn recipients_are_the_subtype_followers_and_the_explicit_partners() {
 async fn post_statements_do_not_grow_with_followers() {
     let h = harness().await;
     let log = std::env::var_os("MAIL_POST_STATEMENT_LOG").is_some();
-    let mut counts = Vec::new();
-    for n in [5_u64, 50, 500] {
+    let channel = erp_sdk::NotifyChannel::new("erp_thread_changed").unwrap();
+    let mut counts = BTreeMap::new();
+    for (n, already_signalled) in [5_u64, 50, 500]
+        .into_iter()
+        .flat_map(|n| [(n, false), (n, true)])
+    {
         let mut tx = h.begin().await.unwrap();
         let s = seed(&mut tx).await;
         let own = user(&mut tx, 42, "pat", false).await;
@@ -982,7 +987,11 @@ async fn post_statements_do_not_grow_with_followers() {
         let record = record_of(&tx.env().with_user(42), TICKET, t);
         let mut request = comment("Hello");
         request.client_uid = Some(uuid(n));
-        let marked = log && n == 50;
+        // Keep the post fixtures equally cold. Only the transaction’s notification state differs.
+        if already_signalled {
+            assert!(tx.notify_once(&channel).await.unwrap());
+        }
+        let marked = log && n == 50 && !already_signalled;
         if marked {
             tx.execute("SET LOCAL log_statement = 'all'", &[])
                 .await
@@ -995,6 +1004,10 @@ async fn post_statements_do_not_grow_with_followers() {
         let posted = post(&mut tx, &record, request.clone()).await.unwrap();
         tx.flush().await.unwrap();
         let count = tx.query_count() - before;
+        assert!(
+            !tx.notify_once(&channel).await.unwrap(),
+            "a successful post must queue the saved-thread wake in its own transaction"
+        );
         if marked {
             tx.execute("SELECT 'erpforall-evidence: replay begin'", &[])
                 .await
@@ -1013,24 +1026,31 @@ async fn post_statements_do_not_grow_with_followers() {
         assert_eq!(replay.message_id, posted.message_id);
         assert_eq!(replay.notified_partner_ids, posted.notified_partner_ids);
         // read with `--nocapture`: the counts the ceilings were set from
-        eprintln!("post statements: followers={n} post={count} replay={replay_count}");
-        counts.push((count, replay_count));
+        eprintln!(
+            "post statements: followers={n} post={count} replay={replay_count} already_signalled={already_signalled}"
+        );
+        counts.insert((n, already_signalled), (count, replay_count));
         tx.rollback().await.unwrap();
         drop(tx);
     }
+    let baseline = counts[&(5, true)];
+    let first = counts[&(5, false)];
+    for n in [5, 50, 500] {
+        assert_eq!(counts[&(n, true)], baseline);
+        assert_eq!(counts[&(n, false)], first);
+    }
     assert!(
-        counts.windows(2).all(|pair| pair[0] == pair[1]),
-        "the statement count changed with the follower count: {counts:?}"
-    );
-    let (post_count, replay_count) = counts[0];
-    assert!(
-        (1..=POST_CEILING).contains(&post_count),
-        "post: {post_count}"
+        (1..=POST_CEILING).contains(&baseline.0),
+        "post work: {}",
+        baseline.0
     );
     assert!(
-        (1..=REPLAY_CEILING).contains(&replay_count),
-        "replay: {replay_count}"
+        (1..=REPLAY_CEILING).contains(&baseline.1),
+        "replay: {}",
+        baseline.1
     );
+    // One payload-free NOTIFY when the first fresh post queues a wake, none on replay.
+    assert_eq!(first, (baseline.0 + 1, baseline.1));
     h.cleanup().await.unwrap();
 }
 

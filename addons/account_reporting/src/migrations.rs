@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Upgrade only the builtin provider binding; protected editable report content stays intact.
+//! Upgrade built-in provider bindings and menu defaults without replacing edited report definitions.
 use erp_sdk::migrations::SemverVersion;
 use erp_sdk::prelude::*;
 
@@ -22,5 +22,18 @@ async fn guard_builtin_partner_ledger(tx: &mut Transaction, _from: &SemverVersio
            AND d.model = 'reporting.report' AND d.res_id = r.id AND r.provider = 'reporting.definition'",
         &[],
     ).await?;
+    Ok(())
+}
+
+#[erp_sdk::migration(addon = "account_reporting", version = "1.9", stage = post)]
+async fn general_ledger_menu_glyph(tx: &mut Transaction, _from: &SemverVersion) -> Result<()> {
+    // The GL definition file is protected on upgrade. Preserve any icon selected by an administrator.
+    tx.execute(
+        "UPDATE ir_ui_menu m SET web_icon = 'lucide:book-open' FROM ir_model_data d \
+         WHERE d.module = 'account_reporting' AND d.name = 'menu_general_ledger' \
+         AND d.model = 'ir.ui.menu' AND d.res_id = m.id AND COALESCE(m.web_icon, '') = ''",
+        &[],
+    )
+    .await?;
     Ok(())
 }

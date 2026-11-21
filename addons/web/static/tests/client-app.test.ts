@@ -2294,6 +2294,32 @@ test("mobile drawer desktop resize restores scroll and focuses the visible navig
   expect(document.activeElement).toBe(root.querySelector("[data-app-switcher]"));
 });
 
+test("Office Blue can hide and restore the sidebar without navigating or changing the active record", async () => {
+  document.documentElement.dataset["officeTheme"] = "office-blue";
+  try {
+    const root = await mobileNavigationFixture();
+    const toggle = root.querySelector<HTMLButtonElement>(".office-sidebar-toggle")!;
+    const nav = root.querySelector<HTMLElement>("[data-client-navigation]")!;
+    const url = location.href;
+    expect(toggle.getAttribute("aria-controls")).toBe(nav.id);
+    expect(toggle.getAttribute("aria-label")).toBe("Hide sidebar");
+    toggle.click();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-label")).toBe("Show sidebar");
+    expect(nav.parentElement?.classList.contains("office-sidebar-hidden")).toBe(true);
+    expect(location.href).toBe(url);
+    app!.dispose();
+    const again = await mobileNavigationFixture();
+    const restore = again.querySelector<HTMLButtonElement>(".office-sidebar-toggle")!;
+    expect(restore.getAttribute("aria-expanded")).toBe("false");
+    restore.click();
+    expect(restore.getAttribute("aria-label")).toBe("Hide sidebar");
+    expect(restore.getAttribute("aria-expanded")).toBe("true");
+  } finally {
+    document.documentElement.removeAttribute("data-office-theme");
+  }
+});
+
 test("Office Blue desktop resize restores focus to visible sidebar navigation", async () => {
   const root = await mobileNavigationFixture();
   document.documentElement.dataset["officeTheme"] = "office-blue";

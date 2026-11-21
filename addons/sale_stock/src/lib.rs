@@ -3,12 +3,13 @@
 
 erp_sdk::addon!(
     name = "sale_stock",
-    depends = ["base", "sale", "stock_account"]
+    depends = ["base", "sale", "stock", "stock_account"]
 );
 
 use erp_sdk::Result;
 use erp_sdk::settings::ParameterDecl;
 
+mod delivered;
 mod delivery;
 mod route;
 

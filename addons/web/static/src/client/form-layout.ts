@@ -270,7 +270,10 @@ export function renderFormLayout(
       }
       const grid = el("div", undefined, "form-group-grid");
       grid.style.setProperty("--form-columns", String(node.columns / 2)); group.append(grid); parent.append(group);
-      node.children.forEach(child => render(child, grid, node.columns / 2)); return;
+      node.children.forEach(child => render(child, grid, node.columns / 2));
+      // Preserve explicit empty columns used for spacing. Omit sections whose fields are all hidden.
+      if (node.children.length && !grid.childElementCount) group.remove();
+      return;
     }
     if (node.kind === "notebook") {
       const notebook = el("div", undefined, "form-notebook"), tabs = el("div", undefined, "form-tabs");

@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use erp_fields::{Cell, ErrorKind};
+use erp_fields::{Cell, ErrorKind, Value};
 use erp_modules::{AddonIndex, InitOptions, ModuleName, ModuleSystem};
 use erp_orm::{Context, Orm, RawVals, SUPERUSER_ID};
 use erp_testkit::TestDb;
@@ -371,7 +371,23 @@ fn stock_partner_fallbacks_keep_contact_and_company_creates_working() {
         )
         .await
         .ids()[0];
+        // A saved company-specific field default on the creator's company must not
+        // be inherited by the first warehouse of a different company.
+        let system_env = tx.env().clone();
+        erp_orm::ir_default::set(
+            &mut tx,
+            &system_env,
+            "stock.picking.type",
+            "move_type",
+            &Value::str("one"),
+            None,
+            Some(erp_fields::RecId::from_real(main).unwrap()),
+            None,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
+        drop(tx);
         let secured = secured(&orm, &db).await;
         let mut tx = secured
             .begin(erp_orm::UserId::new(administrator).unwrap())
@@ -393,8 +409,77 @@ fn stock_partner_fallbacks_keep_contact_and_company_creates_working() {
             .await
             .unwrap()
             .ids()[0];
+        let membership = tx.companies(&tx.env().clone()).await.unwrap();
+        assert_eq!(
+            membership.iter().map(|id| id.get()).collect::<Vec<_>>(),
+            [main]
+        );
         tx.commit().await.unwrap();
+        drop(tx);
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let types = tx
+            .query(
+                "SELECT move_type FROM stock_picking_type WHERE company_id=$1",
+                &[&ordinary],
+            )
+            .await
+            .unwrap();
+        assert!(!types.is_empty());
+        assert!(types.iter().all(|row| row.get::<_, String>(0) == "direct"));
+        // With global and per-user overrides, a new company uses its creator's policy.
+        // System creates the two shared defaults so this exercise never changes the admin's rights.
+        let system_env = tx.env().clone();
+        for (user, policy) in [
+            (None, "direct"),
+            (
+                Some(erp_fields::RecId::from_real(administrator).unwrap()),
+                "one",
+            ),
+        ] {
+            erp_orm::ir_default::set(
+                &mut tx,
+                &system_env,
+                "stock.picking.type",
+                "move_type",
+                &Value::str(policy),
+                user,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
+        let mut tx = secured
+            .begin(erp_orm::UserId::new(administrator).unwrap())
+            .await
+            .unwrap();
+        let admin_env = tx.env().clone();
+        let other = admin_env
+            .records("res.company")
+            .unwrap()
+            .create(&mut tx, vec![company_vals("Second company")])
+            .await
+            .unwrap()
+            .ids()[0];
+        let unauthorized = admin_env.with_company(other).unwrap();
+        assert_eq!(
+            tx.companies(&unauthorized).await.unwrap_err().kind(),
+            ErrorKind::Access
+        );
+        tx.commit().await.unwrap();
+        drop(tx);
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let policies = tx
+            .query(
+                "SELECT DISTINCT move_type FROM stock_picking_type WHERE company_id=$1",
+                &[&other],
+            )
+            .await
+            .unwrap();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0].get::<_, String>(0), "one");
         let mut partners = vec![demo, system_partner, admin_partner];
         for company in [provisioned, ordinary] {
             partners.push(

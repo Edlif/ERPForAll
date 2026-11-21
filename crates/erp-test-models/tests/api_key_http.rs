@@ -240,6 +240,12 @@ async fn native_bearer_is_stateless_and_revocation_applies_to_the_next_http_requ
             serde_json::json!(f.user_count)
         );
         assert!(!response.headers().contains_key("set-cookie"));
+        // Finish the first use before sending the next request. Its deferred update and
+        // the fixture's direct SQL revocation would otherwise compete for the same row.
+        f.until_stats("the first key use has committed", |s| {
+            s.last_use_writes >= 1
+        })
+        .await;
     }
     assert_eq!(f.sessions().await, before);
     let mut tx = f.h.begin().await.unwrap();

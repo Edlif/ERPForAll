@@ -20,6 +20,8 @@ pub enum RouteMatch {
     Segment(&'static str),
 }
 
+/// Authenticated record-thread change notifications over RFC 6455.
+pub const THREAD_SOCKET: &str = "/erp/bus/websocket";
 /// Site root, redirected to [`ERP`].
 pub const ROOT: &str = "/";
 /// Web client shell.
@@ -64,6 +66,10 @@ pub const REPORT_PREFIX: &str = "/erp/report/";
 pub const PIVOT_EXPORT: &str = "/erp/pivot/export";
 /// A dynamic report's PDF or spreadsheet export (`POST`).
 pub const REPORTING_EXPORT: &str = "/erp/reporting/export";
+/// Interactive assistant availability for this user.
+pub const ASSISTANT_STATUS: &str = "/erp/ai/assistant/status";
+/// A single authenticated assistant text turn.
+pub const ASSISTANT_TURN: &str = "/erp/ai/assistant/turn";
 /// Text that selects the addon static asset branch.
 pub const STATIC_SEGMENT: &str = "/static/";
 
@@ -79,6 +85,9 @@ pub const ROUTES: &[RouteMatch] = &[
     RouteMatch::Exact("/erp/client-error"),
     RouteMatch::Exact("/erp/pivot/export"),
     RouteMatch::Exact("/erp/reporting/export"),
+    RouteMatch::Exact("/erp/bus/websocket"),
+    RouteMatch::Exact("/erp/ai/assistant/status"),
+    RouteMatch::Exact("/erp/ai/assistant/turn"),
     RouteMatch::Exact("/erp/module/install"),
     RouteMatch::Exact("/erp/module/upgrade"),
     RouteMatch::Exact("/erp/module/uninstall"),
@@ -141,6 +150,8 @@ mod tests {
         CLIENT_ERROR,
         PIVOT_EXPORT,
         REPORTING_EXPORT,
+        ASSISTANT_STATUS,
+        ASSISTANT_TURN,
         MODULE_INSTALL,
         MODULE_UPGRADE,
         MODULE_UNINSTALL,

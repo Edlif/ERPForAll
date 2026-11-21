@@ -361,6 +361,44 @@ fn taxes_line_amounts_and_order_totals() {
     });
 }
 
+pub(super) async fn foreign_pricelist(tx: &mut Transaction, world: &World) -> (i64, i64, i64) {
+    let companies = tx.env().records("res.company").unwrap();
+    let company = companies.browse([world.company]).unwrap();
+    let home = many2one(tx, &company, "currency_id").await.unwrap();
+    let eur = xmlid(tx, "base", "EUR").await;
+    let usd = xmlid(tx, "base", "USD").await;
+    let foreign = if home == eur { usd } else { eur };
+    tx.env()
+        .records("res.currency")
+        .unwrap()
+        .browse([foreign])
+        .unwrap()
+        .write(tx, RawVals::new().set_cell("active", Cell::Bool(true)))
+        .await
+        .unwrap();
+    for (currency, rate) in [(home, "1"), (foreign, "0.9")] {
+        create(
+            tx,
+            "res.currency.rate",
+            RawVals::new()
+                .set_cell("name", Cell::Date(Date::from_ymd(2026, 1, 1).unwrap()))
+                .set_cell("rate", Cell::Decimal(dec(rate)))
+                .set_cell("currency_id", Cell::Id(currency))
+                .set_cell("company_id", Cell::Id(world.company)),
+        )
+        .await;
+    }
+    let pricelist = create(
+        tx,
+        "product.pricelist",
+        RawVals::new()
+            .set_cell("name", Cell::Str("Abroad".into()))
+            .set_cell("currency_id", Cell::Id(foreign)),
+    )
+    .await;
+    (home, foreign, pricelist)
+}
+
 #[test]
 fn currency_follows_the_pricelist_and_a_confirmed_pricelist_is_kept() {
     run(async {
@@ -368,40 +406,7 @@ fn currency_follows_the_pricelist_and_a_confirmed_pricelist_is_kept() {
         let orm = install(&db).await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
-        let companies = tx.env().records("res.company").unwrap();
-        let company = companies.browse([world.company]).unwrap();
-        let home = many2one(&mut tx, &company, "currency_id").await.unwrap();
-        let eur = xmlid(&mut tx, "base", "EUR").await;
-        let usd = xmlid(&mut tx, "base", "USD").await;
-        let foreign = if home == eur { usd } else { eur };
-        tx.env()
-            .records("res.currency")
-            .unwrap()
-            .browse([foreign])
-            .unwrap()
-            .write(&mut tx, RawVals::new().set_cell("active", Cell::Bool(true)))
-            .await
-            .unwrap();
-        for (currency, rate) in [(home, "1"), (foreign, "0.9")] {
-            create(
-                &mut tx,
-                "res.currency.rate",
-                RawVals::new()
-                    .set_cell("name", Cell::Date(Date::from_ymd(2026, 1, 1).unwrap()))
-                    .set_cell("rate", Cell::Decimal(dec(rate)))
-                    .set_cell("currency_id", Cell::Id(currency))
-                    .set_cell("company_id", Cell::Id(world.company)),
-            )
-            .await;
-        }
-        let pricelist = create(
-            &mut tx,
-            "product.pricelist",
-            RawVals::new()
-                .set_cell("name", Cell::Str("Abroad".into()))
-                .set_cell("currency_id", Cell::Id(foreign)),
-        )
-        .await;
+        let (home, foreign, pricelist) = foreign_pricelist(&mut tx, &world).await;
         let abroad = order(
             &mut tx,
             &world,
@@ -681,7 +686,7 @@ fn a_line_from_the_form_is_priced_and_a_given_price_wins() {
 }
 
 /// Gives the company a country, which its taxes need.
-async fn company_country(tx: &mut Transaction, company: i64) {
+pub(super) async fn company_country(tx: &mut Transaction, company: i64) {
     let us = xmlid(tx, "base", "us").await;
     let company_partner = xmlid(tx, "base", "main_partner").await;
     tx.env()

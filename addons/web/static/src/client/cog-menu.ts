@@ -29,7 +29,7 @@ export interface CogMenuItem {
   name?: string;
   groupNumber?: number;
   sequence?: number;
-  /** A shipped icon name (for example `settings`); a menu where any entry names one shows an icon on every entry. */
+  /** A shipped icon name (for example `settings`); each standard entry shows its declared icon or the shared fallback. */
   icon?: string;
   href?: string;
   isDisplayed?(env: CogMenuItemEnvironment): boolean | Promise<boolean>;

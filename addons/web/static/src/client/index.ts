@@ -1,4 +1,5 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+import { clearProtectedTabState } from "./session-boundary.js";
 import { Component, mount, onMounted, onWillDestroy } from "@erpforall/elang";
 import { templates } from "@erpforall/human-templates";
 import { parseBoundedJson } from "../../../../../web/packages/expr/src/index.js";
@@ -46,6 +47,7 @@ export async function boot(documentRoot: Document = document): Promise<void> {
     if (login && bootstrap || !login && !bootstrap) throw new Error("Invalid application page data.");
     const value = parseBoundedJson((login ?? bootstrap)!.textContent ?? "");
     if (login) {
+      clearProtectedTabState();
       const data = object(value, "login page"), redirect = text(data["redirect"], "redirect");
       if (!redirect.startsWith("/") || redirect.startsWith("//")) throw new Error("Invalid sign-in redirect.");
       const target = new URL(redirect, window.location.origin);

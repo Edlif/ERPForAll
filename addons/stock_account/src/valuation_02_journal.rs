@@ -14,6 +14,10 @@ use erp_sdk::prelude::*;
     company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
     log_access = false,
     constraints = [
+        ("_id_company_product", "UNIQUE (id, company_id, product_id)", "A journal contribution is unique with its company and product."),
+        ("_cause_journal_company_product", "FOREIGN KEY (cause_journal_id, company_id, product_id) REFERENCES stk_value_journal (id, company_id, product_id) ON DELETE RESTRICT", "The original journal contribution must have the same company and product."),
+        ("_cause_source_company_product", "FOREIGN KEY (cause_source_id, company_id, product_id) REFERENCES stk_value_source (id, company_id, product_id) ON DELETE RESTRICT", "The cause of a valuation contribution must have the same company and product."),
+        ("_generation_nonneg", "CHECK (generation >= 0)", "A valuation journal generation cannot be negative."),
         ("_valid_grid_delta", r#"CHECK (CASE WHEN "grid_delta" IS NOT NULL AND "grid_delta" NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric) AND min_scale("grid_delta") <= 18 AND abs("grid_delta") < power(2::numeric, 256) THEN abs("grid_delta" * power(10::numeric, 18)) < power(2::numeric, 256) ELSE FALSE END)"#, "grid_delta must fit the 18-place valuation grid."),
         ("_id_company", "UNIQUE (id, company_id)", "A journal contribution is unique with its company."),
         ("_source_company_product", "FOREIGN KEY (source_id, company_id, product_id) REFERENCES stk_value_source (id, company_id, product_id) ON DELETE RESTRICT", "A valuation row must have its source company and product."),

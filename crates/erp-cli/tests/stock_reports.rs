@@ -20,6 +20,9 @@ use erp_sdk::prelude::*;
 use erp_sdk::{Context, ErrorKind, Orm, SUPERUSER_ID};
 use erp_testkit::TestDb;
 
+#[path = "stock_reports/current_position.rs"]
+mod current_position;
+
 #[path = "support/report_access.rs"]
 mod report_access;
 #[path = "support/report_frame.rs"]
@@ -1195,6 +1198,7 @@ async fn dynamic_report_body() {
         .await
         .unwrap();
     assert_eq!(reopened["filters"]["current_only"], true);
+    assert!(reopened["filters"].get("server_search").is_none());
     assert_eq!(reopened["options"]["date"], options["date"]);
     let top = report_lines(&env, &mut tx, &options).await.unwrap();
     let section = &top["lines"][0];

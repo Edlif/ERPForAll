@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp noupdate="1">
+    <record id="report_current_product_position" model="reporting.report">
+        <field name="name">Product Stock Position</field>
+        <field name="provider">stock.current_product_position</field>
+        <field name="date_mode">single</field>
+        <field name="date_default">today</field>
+        <field name="current_only" eval="True"/>
+        <field name="multi_company" eval="True"/>
+        <field name="comparison" eval="False"/>
+        <field name="hide_zero">optional</field>
+        <field name="search_bar" eval="True"/>
+    </record>
+    <record id="report_current_product_position_category" model="reporting.report.column">
+        <field name="report_id" ref="report_current_product_position"/>
+        <field name="sequence">10</field>
+        <field name="name">Category</field>
+        <field name="label">category</field>
+        <field name="kind">text</field>
+    </record>
+    <record id="report_current_product_position_on_hand" model="reporting.report.column">
+        <field name="report_id" ref="report_current_product_position"/>
+        <field name="sequence">20</field>
+        <field name="name">On Hand</field>
+        <field name="label">on_hand</field>
+        <field name="kind">decimal</field>
+    </record>
+    <record id="report_current_product_position_free_to_use" model="reporting.report.column">
+        <field name="report_id" ref="report_current_product_position"/>
+        <field name="sequence">30</field>
+        <field name="name">Free to Use</field>
+        <field name="label">free_to_use</field>
+        <field name="kind">decimal</field>
+    </record>
+    <record id="report_current_product_position_incoming" model="reporting.report.column">
+        <field name="report_id" ref="report_current_product_position"/>
+        <field name="sequence">40</field>
+        <field name="name">Incoming</field>
+        <field name="label">incoming</field>
+        <field name="kind">decimal</field>
+    </record>
+    <record id="report_current_product_position_outgoing" model="reporting.report.column">
+        <field name="report_id" ref="report_current_product_position"/>
+        <field name="sequence">50</field>
+        <field name="name">Outgoing</field>
+        <field name="label">outgoing</field>
+        <field name="kind">decimal</field>
+    </record>
+    <record id="report_current_product_position_forecasted" model="reporting.report.column">
+        <field name="report_id" ref="report_current_product_position"/>
+        <field name="sequence">60</field>
+        <field name="name">Forecasted</field>
+        <field name="label">forecasted</field>
+        <field name="kind">decimal</field>
+    </record>
+    <record id="action_current_product_position" model="ir.actions.client">
+        <field name="name">Product Stock Position</field>
+        <field name="tag">reporting.report</field>
+        <field name="params" eval="{'report': ref('report_current_product_position')}"/>
+    </record>
+    <menuitem id="menu_current_product_position" name="Product Stock Position" parent="menu_stock_reporting"
+              action="action_current_product_position" groups="stock.group_stock_user" sequence="25"/>
+</erp>

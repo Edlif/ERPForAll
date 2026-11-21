@@ -12,6 +12,8 @@ fn items() -> Result<Vec<PanelItemDecl>> {
             10,
         ),
         ("ai_base.routes", "Company routes", "ai_base.route_menu", 20),
+        ("ai_base.budgets", "Budgets", "ai_base.budget_menu", 30),
+        ("ai_base.usage", "Usage", "ai_base.usage_menu", 40),
     ]
     .into_iter()
     .map(|(key, label, menu, order)| {

@@ -2,6 +2,7 @@
 <erp>
   <!-- Technical Parent Menu -->
   <menuitem id="technical_menu" name="Technical" parent="settings_menu" groups="base.group_system" sequence="100"/>
+  <record id="technical_menu" model="ir.ui.menu"><field name="web_icon">lucide:wrench</field></record>
 
   <!-- Database Structure Category -->
   <menuitem id="technical_db_menu" name="Database Structure" parent="technical_menu" sequence="10"/>
@@ -668,6 +669,8 @@
   <menuitem id="technical_privilege_menu" name="User Privileges" parent="technical_security_menu" action="technical_privilege_action" groups="base.group_system" sequence="10"/>
 
   <!-- ir.access (pointing to existing settings_access_action) -->
+  <!-- Keep the earlier external ID and action for upgrades. Only the canonical Security entry is listed. -->
+  <menuitem id="settings_access_menu" name="Access Rules" parent="technical_security_menu" active="False" action="settings_access_action" groups="base.group_system" sequence="30"/>
   <menuitem id="technical_access_menu" name="Access Rules" parent="technical_security_menu" action="settings_access_action" groups="base.group_system" sequence="20"/>
 
   <!-- Modules Category & Menu -->

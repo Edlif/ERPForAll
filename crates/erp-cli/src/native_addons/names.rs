@@ -20,6 +20,7 @@ pub const LINKED: &[&str] = &[
     "account_mail",
     "purchase",
     "purchase_mail",
+    "purchase_three_way_match",
     "barcodes_gs1_nomenclature",
     "reporting",
     "account_reporting",

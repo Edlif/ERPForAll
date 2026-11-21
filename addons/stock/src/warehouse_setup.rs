@@ -9,6 +9,10 @@ use erp_sdk::ValueMap;
 use erp_sdk::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Explicit policy for the first warehouse of a company currently being created.
+#[derive(Default)]
+struct FirstWarehousePolicies(BTreeMap<i64, Arc<str>>);
+
 /// System parameter: how many characters of the company name a derived short name keeps.
 pub(crate) const CODE_LENGTH_KEY: &str = "stock.warehouse_code_length";
 
@@ -518,6 +522,10 @@ pub(crate) async fn create_operation_types(
     let mut vals_list = Vec::new();
     let mut tags: (Vec<i64>, Vec<String>) = (Vec::new(), Vec::new());
     for (warehouse, g) in &warehouses {
+        let first_policy = tx
+            .extension::<FirstWarehousePolicies>()
+            .0
+            .remove(&g.company);
         let color = colors.next().unwrap_or(0);
         let prefix = barcode_prefix(&g.code);
         for (role, name, kind, offset, source, dest, active, short) in
@@ -542,6 +550,9 @@ pub(crate) async fn create_operation_types(
                 .set_cell("use_create_lots", Cell::Bool(role == "in_type_id"))
                 .set_cell("use_existing_lots", Cell::Bool(role != "in_type_id"))
                 .set_cell("print_label", Cell::Bool(role == "out_type_id"));
+            if let Some(policy) = &first_policy {
+                vals.insert("move_type".into(), Cell::Str(policy.clone()));
+            }
             if let Some(source) = source {
                 vals.insert("default_location_src_id".into(), Cell::Id(source));
             }
@@ -810,6 +821,58 @@ pub(crate) async fn provision(tx: &mut Transaction, env: &Env, companies: &[i64]
         .create(tx, vals)
         .await?;
     Ok(())
+}
+
+/// Bootstrap only the owners returned by the current company create. The creator may not
+/// select them. A new owner has no company settings yet; its initial types honor the user's
+/// unscoped field default, then the shared field default, then the declared shipping policy.
+pub(crate) async fn provision_new(
+    tx: &mut Transaction,
+    env: &Env,
+    companies: &[i64],
+) -> Result<()> {
+    if companies.is_empty() {
+        return Ok(());
+    }
+    erp_addon_base::ir_config_setting::fence_company_field_defaults(tx).await?;
+    tx.flush().await?;
+    let rows = tx
+        .query(
+            "SELECT d.json_value FROM ir_default d JOIN ir_model_fields f ON f.id = d.field_id \
+             WHERE f.model = 'stock.picking.type' AND f.name = 'move_type' \
+             AND d.company_id IS NULL AND d.condition IS NULL \
+             AND (d.user_id = $1 OR d.user_id IS NULL) ORDER BY d.user_id NULLS LAST, d.id LIMIT 1",
+            &[&env.uid()],
+        )
+        .await?;
+    let declaration = crate::settings::picking_policy()?;
+    let policy = if let Some(row) = rows.first() {
+        let encoded: String = row.try_get(0).map_err(|e| Error::db(e.to_string()))?;
+        let value: String = erp_sdk::serde_json::from_str(&encoded).map_err(|e| {
+            Error::validation(format!(
+                "Invalid saved stock.picking.type.move_type default: {e}"
+            ))
+        })?;
+        let policy = Value::str(&value);
+        declaration.validate(&policy)?;
+        policy
+    } else {
+        declaration.default_value().clone()
+    };
+    let Value::Str(policy) = policy else {
+        return Err(Error::internal(
+            "The declared Shipping Policy must be a selection.",
+        ));
+    };
+    tx.extension::<FirstWarehousePolicies>()
+        .0
+        .extend(companies.iter().map(|id| (*id, policy.clone())));
+    let result = provision(tx, env, companies).await;
+    // Clean up unused entries as well if a lower warehouse override fails or supplies topology.
+    for id in companies {
+        tx.extension::<FirstWarehousePolicies>().0.remove(id);
+    }
+    result
 }
 
 /// Every company that has no warehouse, archived ones included, gets one; a company that has

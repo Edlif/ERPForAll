@@ -1,1 +1,1 @@
-{"schema":1,"entry":"src/client.ts","templates":[],"styles":[]}
+{"schema":1,"entry":"src/client.ts","templates":[],"styles":["src/assistant-chat.css","src/workspace.css","src/presentation.css"]}

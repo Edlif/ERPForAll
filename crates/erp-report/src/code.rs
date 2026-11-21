@@ -22,6 +22,8 @@ pub enum Symbology {
     Ean8,
     UpcA,
     Code39,
+    /// Full 7-bit ASCII encoded using Code 39 character pairs.
+    Extended39,
     /// Interleaved 2 of 5 of 14 digits with the GS1 check digit.
     Itf14,
     /// Interleaved 2 of 5 of any even number of digits, without a check digit.
@@ -31,12 +33,13 @@ pub enum Symbology {
     DataMatrix,
 }
 impl Symbology {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Code128,
         Self::Ean13,
         Self::Ean8,
         Self::UpcA,
         Self::Code39,
+        Self::Extended39,
         Self::Itf14,
         Self::Interleaved2of5,
         Self::Qr,
@@ -50,6 +53,7 @@ impl Symbology {
             Self::Ean8 => "EAN8",
             Self::UpcA => "UPCA",
             Self::Code39 => "Code39",
+            Self::Extended39 => "Extended39",
             Self::Itf14 => "ITF14",
             Self::Interleaved2of5 => "I2of5",
             Self::Qr => "QR",
@@ -70,6 +74,7 @@ impl Symbology {
             "ean8" => Self::Ean8,
             "upca" => Self::UpcA,
             "code39" | "standard39" => Self::Code39,
+            "extended39" => Self::Extended39,
             "itf14" => Self::Itf14,
             "i2of5" | "interleaved2of5" => Self::Interleaved2of5,
             "qr" | "qrcode" => Self::Qr,
@@ -205,6 +210,8 @@ pub struct Code {
     /// Quiet zone in modules: before and after a linear symbol, on every side of a matrix one.
     quiet: [usize; 2],
     text: String,
+    /// Present only for ITF14; validated thickness in narrow modules.
+    bearer: Option<u8>,
 }
 impl Code {
     /// Encode `value`. A value the symbology cannot carry is refused by name: nothing is dropped,
@@ -235,6 +242,7 @@ impl Code {
                 (ean(&d[..6], 0, &d[6..]), [9, 9], digit_text(&d))
             }
             Symbology::Code39 => (code39(value)?, [10, 10], value.to_owned()),
+            Symbology::Extended39 => (extended39(value)?, [10, 10], value.to_owned()),
             Symbology::Itf14 => {
                 let d = checked_digits(symbology, value, 14)?;
                 (interleaved(&d), [10, 10], digit_text(&d))
@@ -261,6 +269,7 @@ impl Code {
                     columns: side,
                     quiet: [QR_QUIET; 2],
                     text: value.to_owned(),
+                    bearer: None,
                 });
             }
         };
@@ -270,8 +279,94 @@ impl Code {
             modules,
             quiet,
             text,
+            bearer: (symbology == Symbology::Itf14).then_some(Self::DEFAULT_BEARER_MODULES),
         })
     }
+    /// Default ITF14 bearer thickness for the non-plate printing profile, in modules.
+    pub const DEFAULT_BEARER_MODULES: u8 = 2;
+    /// Minimum bearer thickness in the non-plate printing profile.
+    pub const MIN_BEARER_MODULES: u8 = 2;
+    /// Hard admission bound for the per-code bearer thickness.
+    pub const MAX_BEARER_MODULES: u8 = 10;
+
+    /// Set ITF14 top/bottom bearer thickness in narrow modules; the complete graphic stays
+    /// inside the fitted box. Other symbologies and values outside 2..=10 are refused.
+    ///
+    /// # Errors
+    /// Returns a named code error for an incompatible symbology or invalid thickness.
+    ///
+    /// ```
+    /// use erp_report::{Code, Limits, QrLevel, Symbology};
+    /// let code = Code::encode(Symbology::Itf14, "1540014128876", QrLevel::Low, &Limits::default())?
+    ///     .with_bearer_modules(3)?;
+    /// # Ok::<(), erp_report::ReportError>(())
+    /// ```
+    pub fn with_bearer_modules(mut self, modules: u8) -> Result<Self, ReportError> {
+        if self.symbology != Symbology::Itf14 {
+            return Err(refuse(
+                self.symbology,
+                "bearer_modules is available only for ITF14",
+            ));
+        }
+        if !(Self::MIN_BEARER_MODULES..=Self::MAX_BEARER_MODULES).contains(&modules) {
+            return Err(refuse(
+                self.symbology,
+                format!("bearer_modules must be in 2..=10; got {modules}"),
+            ));
+        }
+        self.bearer = Some(modules);
+        Ok(self)
+    }
+
+    /// Encode a caller-validated GS1 element string as Code128. FNC1 follows the start;
+    /// supplied ASCII GS separators become FNC1. Printable ASCII is accepted, other controls
+    /// and non-ASCII are refused. No AI, check digit or separator placement is inferred.
+    /// [`Self::text`] retains the original input; ordinary Code128 encoding is unchanged.
+    ///
+    /// # Errors
+    /// Returns a document limit error for excessive input or a named code error for empty
+    /// or unrepresentable input.
+    ///
+    /// ```
+    /// use erp_report::{Code, Limits};
+    /// let code = Code::encode_gs1_code128("010950110102091710LOT-1", &Limits::default())?;
+    /// assert_eq!(code.text(), "010950110102091710LOT-1");
+    /// # Ok::<(), erp_report::ReportError>(())
+    /// ```
+    pub fn encode_gs1_code128(value: &str, limits: &Limits) -> Result<Self, ReportError> {
+        if value.is_empty() {
+            return Err(refuse(Symbology::Code128, "there is no value to encode"));
+        }
+        limits.check(LimitKind::CodeBytes, value.len())?;
+        if !value
+            .bytes()
+            .all(|b| (0x20..=0x7e).contains(&b) || b == 0x1d)
+        {
+            return Err(refuse(
+                Symbology::Code128,
+                "GS1 data must contain printable ASCII or the ASCII GS separator (0x1D)",
+            ));
+        }
+        let tokens: Vec<_> = std::iter::once(Code128Token::Fnc1)
+            .chain(value.bytes().map(|b| {
+                if b == 0x1d {
+                    Code128Token::Fnc1
+                } else {
+                    Code128Token::Data(b)
+                }
+            }))
+            .collect();
+        let modules = code128_modules(code128_token_values(&tokens)?);
+        Ok(Self {
+            symbology: Symbology::Code128,
+            columns: modules.len(),
+            modules,
+            quiet: [10, 10],
+            text: value.to_owned(),
+            bearer: None,
+        })
+    }
+
     /// Encode a GS1 element string as a square ECC200 Data Matrix, with leading FNC1.
     ///
     /// The caller constructs and validates application identifiers. Printable ASCII and ASCII
@@ -358,6 +453,7 @@ impl Code {
             // ECC200 requires a one-module quiet zone on every side.
             quiet: [1; 2],
             text: value.to_owned(),
+            bearer: None,
         })
     }
     pub fn symbology(&self) -> Symbology {
@@ -410,7 +506,23 @@ impl Code {
         let room = if matrix { width.min(height) } else { width };
         let dot = grid.dot();
         // The small term forgives the rounding of a box that is an exact number of dots.
-        let dots = (room / (across as f64 * dot) + 1e-9).floor();
+        let mut dots = (room / (across as f64 * dot) + 1e-9).floor();
+        // Reserve both bearer strips and at least one positive module of data-bar height.
+        let bearer = self.bearer.map_or(0.0, f64::from);
+        if self.bearer.is_some() {
+            let minimum_height = (2.0 * bearer + 1.0) * f64::from(grid.smallest()) * dot;
+            if height + 1e-9 < minimum_height {
+                return Err(refuse(
+                    self.symbology,
+                    format!(
+                        "bearer_modules {} needs at least {minimum_height:.2} points of height at {} dpi; got {height:.2}",
+                        bearer,
+                        grid.dpi()
+                    ),
+                ));
+            }
+            dots = dots.min((height / ((2.0 * bearer + 1.0) * dot) + 1e-9).floor());
+        }
         let least = f64::from(grid.smallest());
         if dots < least {
             return Err(refuse(
@@ -440,7 +552,7 @@ impl Code {
             let top = if matrix {
                 (self.quiet[0] + y) as f64
             } else {
-                0.0
+                bearer
             };
             let mut x = 0;
             while x < row.len() {
@@ -456,11 +568,17 @@ impl Code {
                     (self.quiet[0] + start) as f64,
                     top,
                     (x - start) as f64,
-                    tall,
+                    tall - 2.0 * bearer,
                 ]);
             }
         }
         let high = if matrix { across as f64 } else { tall };
+        if self.bearer.is_some() {
+            let left = self.quiet[0] as f64;
+            let span = self.columns as f64;
+            rectangles.push([left, 0.0, span, bearer]);
+            rectangles.push([left, high - bearer, span, bearer]);
+        }
         let vector = Vector::rectangles(across as f64, high, &rectangles, BLACK)?;
         Ok(CodeGraphic {
             vector,
@@ -499,10 +617,9 @@ impl CodeGraphic {
 }
 
 /// Names the reference accepts for codes this library does not print.
-const NOT_PRINTED: [&str; 9] = [
+const NOT_PRINTED: [&str; 8] = [
     "codabar",
     "code11",
-    "extended39",
     "extended93",
     "fim",
     "msi",
@@ -522,6 +639,7 @@ pub(crate) struct CodeAsk<'a> {
     pub(crate) quiet: bool,
     pub(crate) level: QrLevel,
     pub(crate) gs1: bool,
+    pub(crate) bearer_modules: Option<u8>,
     pub(crate) grid: ModuleGrid,
 }
 /// A code as a document prints it.
@@ -559,17 +677,26 @@ pub(crate) fn print(ask: &CodeAsk<'_>, limits: &Limits) -> Result<PrintedCode, R
             });
         }
     };
-    if ask.gs1 && symbology != Symbology::DataMatrix {
+    if ask.gs1
+        && (key == "auto" || !matches!(symbology, Symbology::Code128 | Symbology::DataMatrix))
+    {
         return Err(ReportError::Code {
             symbology: "barcode",
-            reason: "option `gs1` is available only for DataMatrix".into(),
+            reason: "option `gs1` requires explicit Code128 or DataMatrix".into(),
         });
     }
     let mut code = if ask.gs1 {
-        Code::encode_gs1_datamatrix(ask.value, limits)?
+        if symbology == Symbology::Code128 {
+            Code::encode_gs1_code128(ask.value, limits)?
+        } else {
+            Code::encode_gs1_datamatrix(ask.value, limits)?
+        }
     } else {
         Code::encode(symbology, ask.value, ask.level, limits)?
     };
+    if let Some(modules) = ask.bearer_modules {
+        code = code.with_bearer_modules(modules)?;
+    }
     if !ask.quiet {
         code = code.without_quiet_zone();
     }
@@ -592,14 +719,39 @@ pub(crate) fn print(ask: &CodeAsk<'_>, limits: &Limits) -> Result<PrintedCode, R
     }
     let graphic = code.fit(ask.width, ask.height - room, ask.grid)?;
     // The alternative text of the reference: the word and the value.
-    let alt = format!("Barcode {}", ask.value);
+    let escaped =
+        symbology == Symbology::Extended39 || (ask.gs1 && symbology == Symbology::Code128);
+    let display = |value: &str| {
+        if escaped {
+            control_text(value)
+        } else {
+            value.to_owned()
+        }
+    };
+    let alt = format!("Barcode {}", display(ask.value));
     Ok(PrintedCode {
         width: graphic.width(),
         height: graphic.height(),
         vector: graphic.into_vector(),
         alt,
-        caption: captioned.then(|| code.text().to_owned()),
+        caption: captioned.then(|| display(code.text())),
     })
+}
+
+fn control_text(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut text = String::new();
+    for c in value.chars() {
+        if c.is_ascii_control() {
+            let b = c as u8;
+            text.push_str("\\x");
+            text.push(char::from(HEX[usize::from(b >> 4)]));
+            text.push(char::from(HEX[usize::from(b & 15)]));
+        } else {
+            text.push(c);
+        }
+    }
+    text
 }
 
 fn run(out: &mut Vec<bool>, dark: bool, width: usize) {
@@ -786,6 +938,46 @@ fn code39(value: &str) -> Result<Vec<bool>, ReportError> {
     Ok(out)
 }
 
+/// Full ASCII pairs; the encoded alphabet is passed through our ordinary Code39 bars.
+fn extended39(value: &str) -> Result<Vec<bool>, ReportError> {
+    if let Some(c) = value.chars().find(|c| !c.is_ascii()) {
+        return Err(refuse(
+            Symbology::Extended39,
+            format!("it prints ASCII characters; `{value}` has `{c}`"),
+        ));
+    }
+    let capacity = value
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| refuse(Symbology::Extended39, "ASCII expansion length overflow"))?;
+    let mut expanded = String::with_capacity(capacity);
+    for b in value.bytes() {
+        let pair = match b {
+            0 => Some((b'%', b'U')),
+            1..=26 => Some((b'$', b'A' + b - 1)),
+            27..=31 => Some((b'%', b'A' + b - 27)),
+            b'!'..=b',' => Some((b'/', b'A' + b - b'!')),
+            b'/' => Some((b'/', b'O')),
+            b':' => Some((b'/', b'Z')),
+            b';'..=b'?' => Some((b'%', b'F' + b - b';')),
+            b'@' => Some((b'%', b'V')),
+            b'['..=b'_' => Some((b'%', b'K' + b - b'[')),
+            b'`' => Some((b'%', b'W')),
+            b'a'..=b'z' => Some((b'+', b'A' + b - b'a')),
+            b'{'..=127 => Some((b'%', b'P' + b - b'{')),
+            // Remaining ASCII is space, hyphen, period, digits and uppercase letters.
+            _ => None,
+        };
+        if let Some((prefix, suffix)) = pair {
+            expanded.push(char::from(prefix));
+            expanded.push(char::from(suffix));
+        } else {
+            expanded.push(char::from(b));
+        }
+    }
+    code39(&expanded)
+}
+
 /// Widths of the bars and spaces of each Code 128 symbol value, bar first; 103 to 105 start in
 /// code set A, B and C, 106 is the stop.
 const CODE128: [&str; 107] = [
@@ -805,84 +997,104 @@ const CODE128: [&str; 107] = [
 const CODE128_STOP: u8 = 106;
 /// The symbol that switches to code set A, B and C.
 const CODE128_SWITCH: [u8; 3] = [101, 100, 99];
-/// The symbol values of `data` (ASCII), start and check symbol included, in the fewest symbols:
-/// digit pairs go through code set C where that is shorter, control characters through set A.
-fn code128_values(data: &[u8]) -> Vec<u8> {
+/// A function symbol is distinct from every ASCII data byte, including GS.
+#[derive(Clone, Copy)]
+enum Code128Token {
+    Data(u8),
+    Fnc1,
+}
+
+/// Symbol and consumed tokens for a code set (A, B, C). FNC1 is one symbol in every set.
+fn code128_step(data: &[Code128Token], i: usize, set: usize) -> Option<(u8, usize)> {
+    match data.get(i)? {
+        Code128Token::Fnc1 => Some((102, 1)),
+        Code128Token::Data(byte) => match set {
+            0 if *byte < 96 => Some((if *byte < 32 { *byte + 64 } else { *byte - 32 }, 1)),
+            1 if (32..128).contains(byte) => Some((*byte - 32, 1)),
+            2 if byte.is_ascii_digit() => match data.get(i + 1) {
+                Some(Code128Token::Data(second)) if second.is_ascii_digit() => {
+                    Some(((*byte - b'0') * 10 + (*second - b'0'), 2))
+                }
+                // A function character or non-digit cannot complete a numeric pair.
+                _ => None,
+            },
+            // This token is not representable in the requested set.
+            _ => None,
+        },
+    }
+}
+
+/// Fewest symbols across sets A/B/C, including real function characters and weighted checksum.
+fn code128_token_values(data: &[Code128Token]) -> Result<Vec<u8>, ReportError> {
     const NEVER: u32 = u32::MAX / 4;
     let n = data.len();
-    // Bytes one symbol of `set` (0 A, 1 B, 2 C) takes at `i`.
-    let step = |i: usize, set: usize| match set {
-        0 => (data[i] < 96).then_some(1),
-        1 => (32..128).contains(&data[i]).then_some(1),
-        _ => (i + 1 < n && data[i].is_ascii_digit() && data[i + 1].is_ascii_digit()).then_some(2),
-    };
-    // cost[i][set]: fewest symbols for data[i..] while `set` is current.
+    // CodeBytes admission bounds n before this private function is called.
     let mut cost = vec![[NEVER; 3]; n + 1];
     cost[n] = [0; 3];
     let direct = |cost: &[[u32; 3]], i: usize, set: usize| {
-        step(i, set).map_or(NEVER, |taken| 1 + cost[i + taken][set])
+        code128_step(data, i, set).map_or(NEVER, |(_, taken)| 1 + cost[i + taken][set])
     };
     for i in (0..n).rev() {
         let stay: [u32; 3] = std::array::from_fn(|set| direct(&cost, i, set));
         cost[i] = std::array::from_fn(|set| {
-            let switched = (0..3)
-                .filter(|other| *other != set)
-                .map(|other| 1 + stay[other])
-                .min()
-                .unwrap_or(NEVER);
-            stay[set].min(switched)
+            let mut best = stay[set];
+            for (other, value) in stay.iter().enumerate() {
+                if other != set {
+                    best = best.min(1 + value);
+                }
+            }
+            best
         });
     }
-    // Set B first when the sets tie: it is what most readers expect of plain text.
-    let mut set = [1, 2, 0]
-        .into_iter()
-        .min_by_key(|set| cost[0][*set])
-        .unwrap_or(1);
+    // Prefer B then C then A on ties, preserving ordinary Code128 output.
+    let mut set = 1;
+    for candidate in [2, 0] {
+        if cost[0][candidate] < cost[0][set] {
+            set = candidate;
+        }
+    }
     let mut values = vec![103 + set as u8];
     let mut i = 0;
     while i < n {
         if direct(&cost, i, set) != cost[i][set] {
-            let next = [1, 2, 0]
-                .into_iter()
-                .filter(|other| *other != set)
-                .min_by_key(|other| direct(&cost, i, *other))
-                .unwrap_or(1);
-            values.push(CODE128_SWITCH[next]);
-            set = next;
+            let mut next = None;
+            let mut best = NEVER;
+            for candidate in [1, 2, 0] {
+                let price = direct(&cost, i, candidate);
+                if candidate != set && price < best {
+                    next = Some(candidate);
+                    best = price;
+                }
+            }
+            let selected = next.ok_or_else(|| {
+                refuse(Symbology::Code128, "no code set can encode the next token")
+            })?;
+            values.push(CODE128_SWITCH[selected]);
+            set = selected;
         }
-        let byte = data[i];
-        match set {
-            2 => {
-                values.push((byte - b'0') * 10 + (data[i + 1] - b'0'));
-                i += 2;
-            }
-            0 if byte < 32 => {
-                values.push(byte + 64);
-                i += 1;
-            }
-            _ => {
-                values.push(byte - 32);
-                i += 1;
-            }
-        }
+        let (symbol, taken) = code128_step(data, i, set)
+            .ok_or_else(|| refuse(Symbology::Code128, "no code set can encode the next token"))?;
+        values.push(symbol);
+        i += taken;
     }
-    let sum: usize = values
+    // Reduce each contribution modulo 103; input admission also bounds all positions.
+    let sum = values
         .iter()
         .enumerate()
-        .map(|(position, value)| position.max(1) * usize::from(*value))
-        .sum();
-    values.push((sum % 103) as u8);
-    values
+        .fold(0usize, |sum, (position, value)| {
+            (sum + (position.max(1) % 103) * usize::from(*value)) % 103
+        });
+    values.push(sum as u8);
+    Ok(values)
 }
-fn code128(value: &str) -> Result<Vec<bool>, ReportError> {
-    if let Some(c) = value.chars().find(|c| !c.is_ascii()) {
-        return Err(refuse(
-            Symbology::Code128,
-            format!("it prints ASCII characters; `{value}` has `{c}`"),
-        ));
-    }
-    let values = code128_values(value.as_bytes());
-    let mut out = Vec::with_capacity(values.len() * 11 + 13);
+
+fn code128_values(data: &[u8]) -> Result<Vec<u8>, ReportError> {
+    let tokens: Vec<_> = data.iter().copied().map(Code128Token::Data).collect();
+    code128_token_values(&tokens)
+}
+
+fn code128_modules(values: Vec<u8>) -> Vec<bool> {
+    let mut out = Vec::new();
     for value in values.into_iter().chain([CODE128_STOP]) {
         let mut dark = true;
         for width in CODE128[usize::from(value)].bytes() {
@@ -890,7 +1102,17 @@ fn code128(value: &str) -> Result<Vec<bool>, ReportError> {
             dark = !dark;
         }
     }
-    Ok(out)
+    out
+}
+
+fn code128(value: &str) -> Result<Vec<bool>, ReportError> {
+    if let Some(c) = value.chars().find(|c| !c.is_ascii()) {
+        return Err(refuse(
+            Symbology::Code128,
+            format!("it prints ASCII characters; `{value}` has `{c}`"),
+        ));
+    }
+    Ok(code128_modules(code128_values(value.as_bytes())?))
 }
 
 /// The modules of a QR code of `value` in byte mode at exactly `level`, and its side.
@@ -951,12 +1173,18 @@ mod tests {
     #[test]
     fn code128_values_use_the_shortest_code_sets() {
         assert_eq!(
-            code128_values(b"PJJ123C"),
+            code128_values(b"PJJ123C").unwrap(),
             [104, 48, 42, 42, 17, 18, 19, 35, 55]
         );
-        assert_eq!(code128_values(b"0123456789"), [105, 1, 23, 45, 67, 89, 73]);
-        assert_eq!(code128_values(b"AB1234"), [104, 33, 34, 99, 12, 34, 102]);
-        assert_eq!(code128_values(b"A\tB"), [103, 33, 73, 34, 75]);
+        assert_eq!(
+            code128_values(b"0123456789").unwrap(),
+            [105, 1, 23, 45, 67, 89, 73]
+        );
+        assert_eq!(
+            code128_values(b"AB1234").unwrap(),
+            [104, 33, 34, 99, 12, 34, 102]
+        );
+        assert_eq!(code128_values(b"A\tB").unwrap(), [103, 33, 73, 34, 75]);
     }
     /// Every Code 39 character is 15 modules with three wide elements of nine, and no two are
     /// alike.

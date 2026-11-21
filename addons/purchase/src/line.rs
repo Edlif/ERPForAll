@@ -290,40 +290,14 @@ impl PurchaseOrderLine {
         if lines.is_empty() {
             return sup.call(tx, &lines, (vals,)).await;
         }
-        let env = this.env().clone();
-        let orders = line_orders(tx, &lines).await?;
-        let order_ids: BTreeSet<i64> = orders.values().copied().collect();
-        let heads = order_heads(tx, &env, &order_ids).await?;
-        refuse_closed(&heads, &order_ids, "change lines of", false)?;
-        let written: BTreeSet<String> = vals
-            .iter()
-            .map(|(name, _)| name)
-            .chain(vals.iter_commands().map(|(name, _)| name))
-            .map(str::to_owned)
-            .collect();
-        let reprice =
-            !written.contains("price_unit") && REPRICE.iter().any(|f| written.contains(*f));
-        let manual = if reprice {
-            manual_prices(tx, &lines).await?
-        } else {
-            BTreeSet::new()
-        };
-        let before = approved_totals(tx, &env, &heads).await?;
-        sup.call(tx, &lines, (vals,)).await?;
-        if written.contains("product_id") {
-            for id in lines.ids() {
-                refill_for_product(tx, &env, &heads[&orders[&id]], id, &written).await?;
-            }
+        if !vals.contains("product_id") && !vals.contains("uom_id") {
+            return write_lines(tx, &lines, vals, sup).await;
         }
-        if reprice {
-            for id in lines.ids() {
-                if !manual.contains(&id) {
-                    reprice_line(tx, &env, &heads[&orders[&id]], id).await?;
-                }
-            }
-        }
-        sync_lines(tx, &env, &lines).await?;
-        refuse_unapproved_raise(tx, &env, &heads, &before).await
+        tx.savepoint(async move |tx| {
+            write_lines(tx, &lines, vals, sup).await?;
+            crate::direct_bill_integrity::check_purchase_items(tx, &lines).await
+        })
+        .await
     }
 
     /// Lines of confirmed, cancelled or locked orders stay; the order totals follow.
@@ -420,6 +394,87 @@ async fn refuse_unapproved_raise(
          approve; ask a purchase administrator to make it: {}.",
         refused.join(", ")
     )))
+}
+
+/// Apply the ordinary purchase-line changes, including the product's dependent defaults.
+async fn write_lines(
+    tx: &mut Transaction,
+    lines: &Records,
+    vals: RawVals,
+    sup: Super<(RawVals,), ()>,
+) -> Result<()> {
+    let env = lines.env().clone();
+    let orders = line_orders(tx, lines).await?;
+    let order_ids: BTreeSet<i64> = orders.values().copied().collect();
+    let heads = order_heads(tx, &env, &order_ids).await?;
+    refuse_closed(&heads, &order_ids, "change lines of", false)?;
+    let written: BTreeSet<String> = vals
+        .iter()
+        .map(|(name, _)| name)
+        .chain(vals.iter_commands().map(|(name, _)| name))
+        .map(str::to_owned)
+        .collect();
+    let reprice = !written.contains("price_unit") && REPRICE.iter().any(|f| written.contains(*f));
+    let manual = if reprice {
+        manual_prices(tx, lines).await?
+    } else {
+        BTreeSet::new()
+    };
+    let before = approved_totals(tx, &env, &heads).await?;
+    sup.call(tx, lines, (vals,)).await?;
+    if written.contains("product_id") {
+        for id in lines.ids() {
+            refill_for_product(tx, &env, &heads[&orders[&id]], id, &written).await?;
+        }
+    }
+    if reprice {
+        for id in lines.ids() {
+            if !manual.contains(&id) {
+                reprice_line(tx, &env, &heads[&orders[&id]], id).await?;
+            }
+        }
+    }
+    sync_lines(tx, &env, lines).await?;
+    refuse_unapproved_raise(tx, &env, &heads, &before).await?;
+    if reprice
+        || [
+            "product_id",
+            "uom_id",
+            "product_qty",
+            "price_unit",
+            "discount",
+        ]
+        .iter()
+        .any(|field| written.contains(*field))
+    {
+        invalidate_bill_comparisons(tx).await?;
+    }
+    Ok(())
+}
+
+/// Refresh transaction-local bill review fields after changing their purchase or receipt source.
+///
+/// # Errors
+///
+/// Propagates ORM cache invalidation errors.
+pub async fn invalidate_bill_comparisons(tx: &mut Transaction) -> Result<()> {
+    let lines = tx.env().records("purchase.order.line")?;
+    lines
+        .call::<(), ()>(tx, "_invalidate_purchase_bill_review", ())
+        .await
+}
+
+#[methods(PurchaseOrderLine, addon = "purchase")]
+impl PurchaseOrderLine {
+    /// Notify installed purchase review extensions when their relational source changes.
+    #[method]
+    async fn _invalidate_purchase_bill_review(
+        _this: &RecordSet<PurchaseOrderLine>,
+        tx: &mut Transaction,
+    ) -> Result<()> {
+        tx.invalidate_model("account.move.line", Some(crate::bill_source_review::FIELDS))
+            .await
+    }
 }
 
 /// After a new product on an existing line: unit, vendor taxes and description of the new product,

@@ -1,0 +1,17 @@
+/*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+.ai-answer-view { min-width: 0; white-space: normal; }
+.ai-answer-view h3, .ai-answer-deck h4 { margin: 0 0 .75rem; }
+.ai-answer-table { max-width: 100%; overflow-x: auto; }
+.ai-answer-table table { width: 100%; border-collapse: collapse; }
+.ai-answer-table :is(th,td) { text-align: start; padding: .4rem .6rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.ai-answer-table th { background: var(--surface-subtle); }
+.ai-answer-chart { list-style: none; padding: 0; display: grid; gap: .5rem; }
+.ai-answer-chart li { display: grid; grid-template-columns: minmax(4rem, 1fr) minmax(4rem, 2fr) auto; align-items: center; gap: .5rem; font-variant-numeric: tabular-nums; }
+.ai-answer-track { position: relative; height: .65rem; background: var(--surface-subtle); }
+.ai-answer-chart.signed .ai-answer-track::after { content: ""; position: absolute; inset: -.15rem auto -.15rem 50%; border-left: 1px solid var(--muted); }
+.ai-answer-bar { position: absolute; height: 100%; background: var(--accent); }
+.ai-answer-deck { border: 1px solid var(--line); border-radius: var(--radius-panel); padding: 1rem; }
+.ai-answer-deck li { margin: .35rem 0; }
+.ai-answer-slide-controls { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; border-top: 1px solid var(--line); padding-top: .65rem; gap: .5rem; }
+.ai-answer-draft dl { display: grid; grid-template-columns: minmax(6rem, 1fr) 2fr; gap: .5rem; }
+.ai-answer-draft dd { margin: 0; }

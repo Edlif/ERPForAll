@@ -312,7 +312,7 @@ fn field<'a, 's>(spec: &'s ModelSpec, node: impl Node<'a>) -> ViewResult<&'s Fie
 fn field_type_name(field: &FieldSpec) -> ViewResult<&'static str> {
     match &field.ty {
         FieldType::Id => Ok("integer"),
-        FieldType::Uuid => Ok("char"),
+        FieldType::Uuid | FieldType::BigInt => Ok("char"),
         FieldType::Json => Ok("text"),
         FieldType::Char { .. }
         | FieldType::Text

@@ -1,0 +1,32 @@
+/*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+.ai-chat-trigger[hidden], .ai-chat-dock[hidden], .ai-chat-dock [hidden] { display: none; }
+.ai-chat-dock {
+  position: fixed; z-index: 45; inset-inline-end: 16px; bottom: 0;
+  width: min(390px, calc(100vw - 32px)); max-height: calc(100dvh - var(--app-bar-height) - 12px);
+  display: flex; flex-direction: column; background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-bottom: 0; border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  box-shadow: var(--shadow-dialog); overflow: hidden;
+}
+.ai-chat-dock > header { display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 14px; background: var(--surface-subtle); border-bottom: 1px solid var(--line); }
+.ai-chat-dock > header > svg { color: var(--accent); }
+.ai-chat-dock h2 { margin: 0; flex: 1; font-size: 15px; font-weight: 600; }
+.ai-chat-dock button[aria-expanded="false"] svg { transform: rotate(180deg); }
+.ai-chat-thread { overflow: auto; overscroll-behavior: contain; min-height: 0; max-height: min(44dvh, 380px); }
+.ai-chat-thread:not(:empty) { padding: 6px 14px; }
+.ai-chat-message { margin: 8px 0 14px; overflow-wrap: anywhere; }
+.ai-chat-message strong { font-size: 12px; color: var(--muted); }
+.ai-chat-content { margin: 3px 0 0; white-space: pre-wrap; }
+.ai-chat-question { border-inline-start: 2px solid var(--selected-line); padding-inline-start: 10px; }
+.ai-chat-error { color: var(--danger); }
+.ai-chat-dock form { padding: 10px 12px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+.ai-chat-hint { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+.ai-chat-compose { display: flex; align-items: flex-end; gap: 8px; }
+.ai-chat-compose textarea { flex: 1; min-width: 0; max-height: 20dvh; resize: vertical; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--input-line); border-radius: var(--radius-control); padding: 7px 9px; }
+@media (max-width: 600px) {
+  .ai-chat-dock { width: 100%; inset-inline: 0; box-sizing: border-box; }
+  .ai-chat-dock button { min-width: 44px; min-height: 44px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ai-chat-dock:not([hidden]) { animation: ai-chat-open var(--motion-fast) ease-out; }
+  @keyframes ai-chat-open { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+}

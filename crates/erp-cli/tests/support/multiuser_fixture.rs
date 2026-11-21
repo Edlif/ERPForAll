@@ -40,6 +40,26 @@ pub struct UserSpec<'a> {
 }
 
 impl User {
+    /// Establish a fixture-owned websocket without exposing this subject's cookie to test logs.
+    pub fn thread_socket(&self, port: u16) -> tungstenite::WebSocket<std::net::TcpStream> {
+        use tungstenite::client::IntoClientRequest as _;
+        let url = format!("ws://127.0.0.1:{port}/erp/bus/websocket");
+        let mut request = url.into_client_request().unwrap();
+        request.headers_mut().insert(
+            "origin",
+            format!("http://127.0.0.1:{port}").parse().unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert("cookie", self.cookies.parse().unwrap());
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+            .unwrap();
+        tungstenite::client(request, stream)
+            .unwrap_or_else(|_| panic!("Websocket upgrade failed (headers redacted)"))
+            .0
+    }
     /// Dispatch with this real session to a fixture-owned primary or peer. No cookie getter.
     pub fn rpc_on(&self, port: u16, model: &str, method: &str, body: Value) -> Reply {
         native_http::json_post(

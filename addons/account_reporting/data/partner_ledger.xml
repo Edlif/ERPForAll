@@ -128,4 +128,5 @@
         <field name="params" eval="{'report': ref('report_partner_ledger')}"/>
     </record>
     <menuitem id="menu_partner_ledger" name="Partner Ledger" parent="menu_account_reporting" action="action_partner_ledger" groups="account.group_account_readonly" sequence="40"/>
+    <record id="menu_partner_ledger" model="ir.ui.menu"><field name="web_icon">lucide:contact</field></record>
 </erp>

@@ -1,0 +1,8 @@
+name = "Purchase Bill Matching"
+summary = "Compare vendor bills with purchase orders and receipts"
+category = "Supply Chain/Purchase"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "purchase"]
+data = ["views/bill_match.xml"]

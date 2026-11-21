@@ -47,13 +47,20 @@ use crate::picking::StockPicking;
 use crate::warehouse_setup::without_defaults;
 
 /// The moves of `$1` that may reserve, in the order they reserve:
-/// unpicked, confirmed, waiting or partially available.
+/// unpicked, confirmed, waiting or partially available. A receipt-linked return may reserve
+/// from the completed source's destination. Other origin edges require chained reservation.
 const READ_CANDIDATES: &str = "SELECT m.id, m.company_id, m.product_id, m.location_id, \
        m.location_dest_id, m.uom_id, m.product_uom_qty - m.quantity, \
        m.product_qty - m.quantity_product_uom, m.procure_method = 'make_to_order', \
-       EXISTS (SELECT 1 FROM stock_move_move_rel r WHERE r.move_dest_id = m.id), \
+       EXISTS (SELECT 1 FROM stock_move_move_rel r WHERE r.move_dest_id = m.id \
+               AND (source.id IS NULL OR r.move_orig_id <> source.id)), \
        l.usage IN ('supplier', 'customer', 'inventory', 'production') OR NOT pt.is_storable \
      FROM stock_move m \
+     LEFT JOIN stock_picking ret ON ret.id=m.picking_id AND ret.company_id=m.company_id \
+     LEFT JOIN stock_move source ON source.id=m.origin_returned_move_id AND source.state='done' \
+       AND source.picking_id=ret.return_id AND source.company_id=m.company_id \
+       AND source.product_id=m.product_id AND source.uom_id=m.uom_id \
+       AND source.location_dest_id=m.location_id AND source.is_scrap IS NOT TRUE \
      JOIN stock_location l ON l.id = m.location_id \
      JOIN product_product pp ON pp.id = m.product_id \
      JOIN product_template pt ON pt.id = pp.product_tmpl_id \

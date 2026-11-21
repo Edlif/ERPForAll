@@ -214,3 +214,73 @@ fn the_rectangles_of_a_graphic_are_bounded_in_a_frame_too() {
         "report limit vector_rectangles exceeded: 43 > 10"
     );
 }
+
+#[test]
+fn linear_extras_preserve_geometry_and_display_text_through_worker_frame() {
+    use erp_expr::EvalContext;
+    use erp_report::{
+        EvalOptions, Language, RecordStore, ReportLimits, ReportProgram, TemplateSource,
+    };
+    let arch = "<div><img src='/report/barcode/Extended39/a%00%7F%26?humanreadable=1&amp;width=500'/><img src='/report/barcode/Code128/10LOT%1D2110?gs1=1&amp;humanreadable=1&amp;width=500'/><img src='/report/barcode/ITF14/1540014128876?bearer_modules=5&amp;humanreadable=1&amp;width=500&amp;height=100'/></div>";
+    let language = Language::new("en_US").unwrap();
+    let program = ReportProgram::compile(
+        "test.linear",
+        &[TemplateSource::new("test.linear", arch)],
+        &language,
+        ReportLimits::default(),
+    )
+    .unwrap();
+    let tree = program
+        .evaluate(
+            &EvalContext::standard(),
+            &RecordStore::new(),
+            &EvalOptions::default(),
+            DocumentOptions::new(
+                "linear",
+                "Linear",
+                PageSetup::new(595.0, 842.0, 40.0).unwrap(),
+            ),
+        )
+        .unwrap();
+    let bytes = encoded(&tree);
+    let frame: WireDocument<'static> = ciborium::from_reader(bytes.as_slice()).unwrap();
+    let back = frame.into_tree(Limits::default()).unwrap();
+    let (sent, received) = (vectors(&tree), vectors(&back));
+    assert_eq!(sent.len(), 3);
+    for (a, b) in sent.iter().zip(&received) {
+        let (
+            Node::Vector {
+                vector: va,
+                width: wa,
+                height: ha,
+                alt: aa,
+                caption: ca,
+            },
+            Node::Vector {
+                vector: vb,
+                width: wb,
+                height: hb,
+                alt: ab,
+                caption: cb,
+            },
+        ) = (a, b)
+        else {
+            panic!("both are vectors")
+        };
+        assert_eq!(va, vb);
+        assert_eq!((wa, ha, aa, ca), (wb, hb, ab, cb));
+    }
+    let Node::Vector { alt, caption, .. } = received[0] else {
+        panic!("vector")
+    };
+    assert_eq!(caption.as_deref(), Some("a\\x00\\x7F&"));
+    assert!(alt.contains("a\\x00\\x7F&"));
+    let Node::Vector { alt, caption, .. } = received[1] else {
+        panic!("vector")
+    };
+    assert_eq!(caption.as_deref(), Some("10LOT\\x1D2110"));
+    assert!(alt.contains("10LOT\\x1D2110"));
+    let html = render_html(&back, &[]).unwrap();
+    assert!(html.contains("a\\x00\\x7F&amp;"));
+    assert_eq!(html, render_html(&tree, &[]).unwrap());
+}

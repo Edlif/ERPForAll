@@ -71,8 +71,9 @@
 
   <menuitem id="menu_uom_form_action"
             name="Units of Measure"
-            parent="base.settings_menu"
+            parent="base.settings_reference_menu"
             action="uom_uom_action_list"
             groups="base.group_system"
             sequence="35"/>
+  <record id="menu_uom_form_action" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
 </erp>

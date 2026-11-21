@@ -116,7 +116,7 @@ fn malformed_config_is_sanitized_and_bounded() {
         assert!(matches!(error, CredentialError::Configuration));
         assert_eq!(
             error.to_string(),
-            "invalid [ai] configuration: expected max_providers, max_key_bytes, max_request_bytes and provider.<name>.key_file only"
+            "invalid [ai] configuration: expected known [ai] limits and provider key_file/base_url fields only"
         );
     }
     for (text, setting) in [
@@ -256,5 +256,37 @@ fn failed_candidate_preserves_old_registry_and_success_removes_omitted_keys() {
     assert_eq!(
         error.to_string(),
         "erp.ai.provider_unconfigured: provider 'fixture'"
+    );
+}
+
+#[test]
+fn transport_limits_are_bounded_and_remote_plaintext_endpoints_are_refused_at_startup() {
+    let dir = fixture();
+    for (config, name, range) in [
+        ("timeout_ms=99", "ai.timeout_ms", "100..=120000"),
+        ("timeout_ms=120001", "ai.timeout_ms", "100..=120000"),
+        (
+            "max_response_bytes=1023",
+            "ai.max_response_bytes",
+            "1024..=1048576",
+        ),
+        (
+            "max_response_bytes=1048577",
+            "ai.max_response_bytes",
+            "1024..=1048576",
+        ),
+    ] {
+        let error = Credentials::load(Some(&value(config)), dir.path()).unwrap_err();
+        assert!(matches!(error, CredentialError::Limit { .. }));
+        assert_eq!(error.to_string(), format!("{name} must be in {range}"));
+    }
+    let config = value(
+        "[provider.fixture]\nkey_file='fixture.key'\nbase_url='http://models.example.invalid/v1'",
+    );
+    let error = Credentials::load(Some(&config), dir.path()).unwrap_err();
+    assert!(matches!(error, CredentialError::Endpoint { .. }));
+    assert_eq!(
+        error.to_string(),
+        "ai.provider.fixture.base_url must be an absolute HTTPS base URL (HTTP is allowed only on a loopback IP literal), without credentials, query or fragment"
     );
 }

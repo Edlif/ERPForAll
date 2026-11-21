@@ -273,8 +273,9 @@ button.company-menu-button svg { width: 14px; height: 14px; color: var(--muted);
 .nav-more .dropdown-item[aria-current=page] { background: var(--selected); color: var(--selected-text); }
 /* Top-bar menus: one size, weight and colour; the open or current menu is a soft pill of the control height (32px). */
 .app-brand-btn, .nav-item, .nav-dropdown-toggle { display: inline-flex; align-items: center; gap: 4px; height: 32px; min-height: 0; padding: 0 12px; font-size: 14px; line-height: 1; color: var(--text); background: transparent; border: 0; border-radius: var(--radius-panel); white-space: nowrap; cursor: pointer; }
+.app-brand-btn > .erp-icon, .nav-item > .erp-icon, .nav-dropdown-toggle > .menu-entry-icon { width: 16px; height: 16px; flex: 0 0 auto; }
 .app-brand-btn { font-weight: 600; padding-inline: 8px; }
-.nav-dropdown-toggle svg { width: 14px; height: 14px; color: var(--muted); flex: 0 0 auto; }
+.nav-dropdown-toggle > .nav-menu-chevron { width: 14px; height: 14px; color: var(--muted); flex: 0 0 auto; }
 .app-brand-btn:hover, .nav-item:hover, .nav-dropdown-toggle:hover { background: var(--hover); color: var(--text); }
 .app-brand-btn[aria-current=page], .nav-item[aria-current=page], .nav-dropdown-toggle[aria-expanded=true] { background: var(--selected); color: var(--selected-text); }
 .nav-dropdown-toggle[aria-expanded=true] { box-shadow: inset 0 0 0 1px var(--selected-line); }
@@ -308,7 +309,8 @@ button.company-menu-button svg { width: 14px; height: 14px; color: var(--muted);
 .mobile-drawer-apps:not(:first-child) { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .drawer-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .9px; color: var(--muted); margin: 8px 12px; }
 .drawer-section-subtitle { font-size: 11px; font-weight: 600; color: var(--muted); padding: 12px 12px 4px; overflow-wrap: anywhere; }
-.drawer-item { display: block; background: transparent; border: 0; text-align: left; min-height: 44px; padding: 10px 12px; border-radius: var(--radius-panel); font-size: 14px; line-height: 1.4; width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.drawer-item { display: flex; align-items: center; justify-content: flex-start; gap: 8px; background: transparent; border: 0; text-align: left; min-height: 44px; padding: 10px 12px; border-radius: var(--radius-panel); font-size: 14px; line-height: 1.4; width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.drawer-item > svg { flex: 0 0 auto; }
 .drawer-item:hover { background: var(--selected); color: var(--accent); }
 .drawer-item[aria-current=page] { background: var(--selected); color: var(--accent-hover); font-weight: 600; box-shadow: inset 0 0 0 2px var(--accent); }
 .mobile-drawer :focus-visible { outline-offset: -3px; }
@@ -1359,6 +1361,9 @@ dialog .client-notifications { position: sticky; inset: auto; width: auto; margi
 
 /* Reusable calendar/time surfaces use the application message overlay owner. */
 .datetime-editor > label, .time-editor > label { min-width: 0; font-size: 12px; font-weight: 600; color: var(--muted); }
+/* The text and arrow are one tab stop, including at touch widths. */
+.record-form:not(.settings-form) .many2one-readonly > .related-record-link { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; color: var(--accent); }
+.related-record-link .related-record-arrow { width: 14px; height: 14px; flex: none; transform: rotate(135deg); }
 .record-form:not(.settings-form) .datetime-editor > label, .record-form:not(.settings-form) .time-editor > label { font-size: 13px; text-align: left; }
 .datetime-input-area { display: flex; align-items: stretch; min-width: 0; }
 .datetime-input-area > input { width: 100%; min-width: 0; border-start-end-radius: 0; border-end-end-radius: 0; }
@@ -1918,6 +1923,8 @@ span.field-color-toggler {
   /* Phone: menu and app switcher first, then the brand, then the user menu. */
   .app-bar > .app-navigation { order: -1; flex: 0 0 auto; padding: 0; }
   .app-bar:has(> .app-navigation) { padding-inline: 8px 12px; }
+  .app-bar > button.brand { min-width: 0; }
+  .app-bar > .brand img { min-width: 0; max-width: 100%; object-fit: contain; }
 }
 /* First draw of a list: columns take their content width before columns.ts freezes them (finding 6). */
 .list-table.list-auto-layout { table-layout: auto; }
@@ -3849,9 +3856,12 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .column-choices input { accent-color: var(--accent); }
 
 @media (max-width: 768px), (pointer: coarse) {
+  :is(.list-table, .x2many-table):has(> thead > tr > .column-choices-anchor) {
+    --column-touch-size: 44px;
+    --list-row-height: calc(var(--column-touch-size) + 4px);
+  }
   .list-table th.column-choices-anchor, .x2many-table th.column-choices-anchor {
-    --chooser-size: 44px;
-    height: calc(var(--chooser-size) + 4px);
+    --chooser-size: var(--column-touch-size);
   }
   .column-choices label { min-height: 44px; }
 }

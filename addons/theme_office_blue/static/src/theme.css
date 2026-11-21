@@ -77,6 +77,8 @@
 :root[data-office-theme="office-blue"] .office-menu-option[aria-selected="true"] { background: var(--selected); color: var(--selected-text); }
 :root[data-office-theme="office-blue"] .office-menu-empty { padding: var(--office-menu-padding); margin: 0; color: var(--muted); }
 
+:root[data-office-theme="office-blue"] .office-sidebar-toggle { display: none; }
+
 @media (min-width: 769px) {
   :root[data-office-theme="office-blue"] .erp-client { display: grid; grid-template-columns: var(--office-sidebar-size) minmax(0,1fr); grid-template-rows: auto auto minmax(0,1fr); min-height: 100dvh; }
   :root[data-office-theme="office-blue"] .app-bar { grid-column: 2; grid-row: 1; position: sticky; top: 0; z-index: 30; min-height: var(--app-bar-height); padding-block: 0; }
@@ -85,6 +87,20 @@
   :root[data-office-theme="office-blue"] .app-bar .brand-logo-light { display: none; }
   :root[data-office-theme="office-blue"] .app-bar .brand-logo-dark { display: block; }
   :root[data-office-theme="office-blue"] .app-bar .brand:hover { background: var(--office-nav-hover); }
+  :root[data-office-theme="office-blue"] .office-sidebar-toggle {
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+    width: 34px; height: 34px; padding: 0; border: 1px solid var(--line);
+    border-radius: var(--radius-control); background: var(--surface); color: var(--text); cursor: pointer;
+  }
+  :root[data-office-theme="office-blue"] .office-sidebar-toggle:hover { background: var(--hover); }
+  :root[data-office-theme="office-blue"] .office-sidebar-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  :root[data-office-theme="office-blue"] .erp-client.office-sidebar-hidden { grid-template-columns: 0 minmax(0,1fr); }
+  :root[data-office-theme="office-blue"] .office-sidebar-hidden .app-navigation { display: none; }
+  :root[data-office-theme="office-blue"] .office-sidebar-hidden .app-bar .brand { position: static; }
+  :root[data-office-theme="office-blue"] .office-sidebar-hidden .app-bar .brand:hover { background: var(--hover); }
+  :root[data-office-theme="office-blue"] .office-sidebar-hidden .app-bar .brand-logo-dark { display: none; }
+  :root[data-office-theme="office-blue"] .office-sidebar-hidden .app-bar .brand-logo-light { display: block; }
+  :root[data-office-theme="office-blue"] .office-sidebar-hidden .app-bar .brand:focus-visible { outline-color: var(--focus); }
   :root[data-office-theme="office-blue"] .app-navigation > :not(.office-navigation) { display: none; }
   :root[data-office-theme="office-blue"] .office-navigation { display: flex; flex-direction: column; gap: 4px; height: calc(100% - var(--app-bar-height)); margin-block-start: var(--app-bar-height); padding: 12px 8px 24px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; border-block-start: 1px solid var(--office-nav-line); }
   :root[data-office-theme="office-blue"] .client-notice { grid-column: 2; grid-row: 2; }

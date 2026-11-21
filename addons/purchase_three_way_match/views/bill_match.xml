@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="bill_form_match" model="ir.ui.view">
+    <field name="name">account.move.form.purchase.match</field>
+    <field name="model">account.move</field>
+    <field name="inherit_id" ref="account.view_invoice_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='ref']" position="after">
+        <field name="purchase_match_status" groups="purchase.group_purchase_user" invisible="move_type != 'in_invoice'"/>
+      </xpath>
+    </field>
+  </record>
+  <record id="bill_item_match" model="ir.ui.view">
+    <field name="name">account.move.line.form.purchase.match</field>
+    <field name="model">account.move.line</field>
+    <field name="inherit_id" ref="purchase.vendor_bill_line_purchase_review"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='purchase_source_order_id']" position="before">
+        <field name="purchase_match_status" groups="purchase.group_purchase_user" invisible="not purchase_match_status"/>
+      </xpath>
+    </field>
+  </record>
+</erp>

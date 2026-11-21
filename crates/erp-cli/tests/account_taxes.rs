@@ -739,41 +739,21 @@ fn tax_repartition_setting_is_bounded() {
     big_stack(setting);
 }
 async fn setting() {
-    use erp_addon_base::ir_config_setting::{read_values, write_values};
-    use erp_sdk::views::wire::SettingsScope;
     let (db, orm) = install().await;
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
-    let env = tx.env();
     let key = "account.tax_repartition_lines_max";
-    let values = read_values(
-        &env,
-        &mut tx,
-        SettingsScope::Global {},
-        vec![key.to_owned()],
-    )
-    .await
-    .unwrap();
-    let values = erp_sdk::serde_json::to_value(values).unwrap();
-    assert_eq!(values["values"][0]["value"], 16);
+    let value = erp_sdk::params::get_int(&mut tx, &erp_addon_account::ADDON, key)
+        .await
+        .unwrap();
+    assert_eq!(value, 16);
     for invalid in [0, 1, 65] {
-        let revision = values["revision"].as_str().unwrap().to_owned();
-        let env = env.clone();
-        let e = tx
-            .savepoint(async move |tx| {
-                write_values(
-                    &env,
-                    tx,
-                    SettingsScope::Global {},
-                    revision,
-                    vec![(key.to_owned(), Value::Int(invalid))],
-                )
-                .await
-            })
+        let error = tx
+            .savepoint(async |tx| set_limit(tx, invalid).await)
             .await
             .unwrap_err();
-        assert_eq!(e.kind(), ErrorKind::Validation);
+        assert_eq!(error.kind(), ErrorKind::Validation);
         assert_eq!(
-            e.message(),
+            error.message(),
             "account.tax_repartition_lines_max takes a whole number from 2 to 64."
         );
     }
@@ -1428,33 +1408,24 @@ async fn translations() {
 fn repartition_count_uses_the_current_database_setting() {
     big_stack(count_bound);
 }
-async fn set_limit(tx: &mut Transaction, n: i64) {
-    use erp_addon_base::ir_config_setting::{read_values, write_values};
-    use erp_sdk::views::wire::SettingsScope;
-    let env = tx.env();
-    let key = "account.tax_repartition_lines_max";
-    let value = read_values(&env, tx, SettingsScope::Global {}, vec![key.to_owned()])
+async fn set_limit(tx: &mut Transaction, n: i64) -> Result<i64> {
+    tx.env()
+        .records("ir.config_parameter")?
+        .call(
+            tx,
+            "set_int",
+            ("account.tax_repartition_lines_max".to_owned(), Some(n)),
+        )
         .await
-        .unwrap();
-    let value = erp_sdk::serde_json::to_value(value).unwrap();
-    write_values(
-        &env,
-        tx,
-        SettingsScope::Global {},
-        value["revision"].as_str().unwrap().to_owned(),
-        vec![(key.to_owned(), Value::Int(n))],
-    )
-    .await
-    .unwrap();
 }
 async fn count_bound() {
     let (db, orm) = install().await;
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
     let (taxes, _) = fixture(&mut tx).await;
-    set_limit(&mut tx, 2).await;
+    set_limit(&mut tx, 2).await.unwrap();
     let tax = make(&taxes, &mut tx, "Bounded VAT").await;
     refused_write(&mut tx,&tax,distribution(&[("base","100"),("tax","50"),("tax","50")]),"Tax distribution exceeds 2 lines per document kind (setting account.tax_repartition_lines_max).").await;
-    set_limit(&mut tx, 64).await;
+    set_limit(&mut tx, 64).await.unwrap();
     let mut parts = vec![("base", "100"), ("tax", "100")];
     parts.extend(std::iter::repeat_n(("tax", "0"), 62));
     tax.write(&mut tx, distribution(&parts)).await.unwrap();

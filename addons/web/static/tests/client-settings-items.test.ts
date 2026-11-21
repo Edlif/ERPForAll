@@ -104,10 +104,13 @@ test.each([
 });
 
 test("scope changes and Discard reload information and record targets together", async () => {
-  let revision = 0; const targets: unknown[] = [], jobs: Promise<void>[] = [];
+  const revisions = new Map<number, number>(); const targets: unknown[] = [], jobs: Promise<void>[] = [];
   const rpc = new RpcClient(async (path, init) => {
     const args = JSON.parse(String(init?.body)), company = args.scope.kind === "company" ? args.scope.company_id : 1;
-    const payload = String(path).endsWith("erp_describe") ? { wire_major: 1, registry_version: "r1", scope: args.scope, declarations: [], items: [{ ...info, value: `Company ${company} revision ${++revision}` }, { ...link, target: { kind: "action", id: 7, res_id: company } }] }
+    const describe = String(path).endsWith("erp_describe");
+    const revision = (revisions.get(company) ?? 0) + Number(describe);
+    revisions.set(company, revision);
+    const payload = describe ? { wire_major: 1, registry_version: "r1", scope: args.scope, declarations: [], items: [{ ...info, value: `Company ${company} revision ${revision}` }, { ...link, target: { kind: "action", id: 7, res_id: company } }] }
       : { wire_major: 1, scope: args.scope, revision: String(revision), values: [] };
     return new Response(JSON.stringify(payload), { headers: { "Content-Type": "application/json" } });
   }, () => {});
@@ -171,7 +174,7 @@ test("Inventory keeps deferred features visible and outside scalar saves", async
 test("an addon settings menu opens its active company while the general menu opens shared settings", async () => {
   const scoped = await mount([], [setting], "notes", 1);
   expect(scoped.calls.find(call => call.method === "erp_describe")?.args["scope"]).toEqual({ kind: "company", company_id: 1 });
-  expect(scoped.host.querySelector('[aria-checked=true]')?.textContent).toBe("One");
+  expect(scoped.host.querySelector('[aria-checked=true]')?.textContent).toBe("Current company");
   const shared = await mount([], [setting], null, 1);
   expect(shared.host.querySelector('[aria-checked=true]')?.getAttribute("data-scope")).toBe("global");
 });

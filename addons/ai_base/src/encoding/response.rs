@@ -9,14 +9,14 @@ use serde_json::{Value, value::RawValue};
 use super::{Family, arguments::parse_arguments};
 
 // Hard decoder admission bound. A transport must enforce its own body limit while reading.
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+use super::MAX_RESPONSE_BYTES;
 
 pub(super) fn decode(
     family: Family,
     bytes: &[u8],
     provider: &str,
 ) -> Result<ToolTurnResponse, &'static str> {
-    if bytes.len() > MAX_BODY_BYTES {
+    if bytes.len() > MAX_RESPONSE_BYTES {
         return Err("response exceeds the decoder's maximum body size");
     }
     match family {

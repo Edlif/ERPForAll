@@ -114,6 +114,11 @@ async fn installed_sales_warehouse_keyboard_save_and_confirm() {
         company,
         json!({"name": "Browser Shipping Cartons", "type": "consu", "is_storable": true, "invoice_policy": "order"}),
     );
+    fixture.client.execute(
+        "INSERT INTO stock_quant(company_id,product_id,location_id,quantity,reserved_quantity,in_date)
+         SELECT company_id,$1,lot_stock_id,2,0,now() FROM stock_warehouse WHERE id=$2",
+        &[&product,&warehouse],
+    ).await.unwrap();
     let order = create(
         &fixture,
         "sale.order",
@@ -148,11 +153,22 @@ async fn installed_sales_warehouse_keyboard_save_and_confirm() {
     let delivered = fixture.client.query_one(
         "SELECT o.state, o.warehouse_id, (SELECT count(*) FROM sale_stock_delivery_link l WHERE l.order_id = o.id) FROM sale_order o WHERE o.id = $1",
         &[&order]).await.unwrap();
+    let shipped = fixture.client.query_one(
+        "SELECT m.quantity, (SELECT count(*) FROM stock_picking child WHERE child.backorder_id=m.picking_id)
+         FROM stock_move m JOIN sale_stock_delivery_move_link l ON l.move_id=m.id
+         JOIN sale_order_line line ON line.id=l.sale_line_id WHERE line.order_id=$1",
+        &[&order],
+    ).await.unwrap();
     fixture.cleanup().await;
     assert!(
         status.success(),
         "installed Sales browser acceptance failed"
     );
+    assert_eq!(
+        shipped.get::<_, erp_fields::Decimal>(0),
+        erp_fields::Decimal::from(2)
+    );
+    assert_eq!(shipped.get::<_, i64>(1), 1);
     assert_eq!(delivered.get::<_, String>(0), "sale");
     assert_eq!(delivered.get::<_, Option<i64>>(1), Some(warehouse));
     assert_eq!(

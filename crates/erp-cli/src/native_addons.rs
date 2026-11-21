@@ -23,6 +23,7 @@ pub static DESCRIPTORS: &[&AddonDescriptor] = &[
     &erp_addon_account_mail::ADDON,
     &erp_addon_purchase::ADDON,
     &erp_addon_purchase_mail::ADDON,
+    &erp_addon_purchase_three_way_match::ADDON,
     &erp_addon_barcodes_gs1_nomenclature::ADDON,
     &erp_addon_reporting::ADDON,
     &erp_addon_account_reporting::ADDON,

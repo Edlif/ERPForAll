@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="invoice_line_sales_source_form" model="ir.ui.view">
+    <field name="name">account.move.line.invoice.form.sales.source</field>
+    <field name="model">account.move.line</field>
+    <field name="inherit_id" ref="account.view_invoice_line_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='product_id']" position="after">
+        <field name="sale_line_id" groups="sales_team.group_sale_salesman" domain="[('state', '=', 'sale'), ('product_id', '=', product_id)]"/>
+      </xpath>
+    </field>
+  </record>
+</erp>

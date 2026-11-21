@@ -296,7 +296,12 @@ pub async fn prepare(tx: &mut Transaction, body: &[u8]) -> Result<Prepared> {
         .check_access(tx, Operation::Read)
         .await?;
     let (p, lines, hidden) = runtime::export_lines(&env, tx, &request.options).await?;
-    let shown = visible(&lines, p.options.hide_zero, &p.options.search);
+    let search = if p.searches_on_server() {
+        ""
+    } else {
+        &p.options.search
+    };
+    let shown = visible(&lines, p.options.hide_zero, search);
     let lines: Vec<Line> = lines
         .into_iter()
         .zip(shown)

@@ -491,6 +491,19 @@ fn barcode(env: &Env<'_>, value: &ExprValue, options: Option<&Map>, at: &At) -> 
         Some(ExprValue::Int(1)) => true,
         Some(_) => return Err(at.evaluate("widget option `gs1` must be a boolean or 0 or 1")),
     };
+    let bearer_modules = match options.and_then(|options| options.get_str("bearer_modules")) {
+        None => None,
+        Some(ExprValue::Int(n))
+            if (i64::from(crate::Code::MIN_BEARER_MODULES)
+                ..=i64::from(crate::Code::MAX_BEARER_MODULES))
+                .contains(n) =>
+        {
+            Some(*n as u8)
+        }
+        Some(_) => {
+            return Err(at.evaluate("widget option `bearer_modules` must be an integer in 2..=10"));
+        }
+    };
     let ask = CodeAsk {
         symbology: string("symbology")?.unwrap_or("Code128"),
         value: &text,
@@ -499,6 +512,7 @@ fn barcode(env: &Env<'_>, value: &ExprValue, options: Option<&Map>, at: &At) -> 
         human_readable: flag("humanreadable", false)?,
         quiet: flag("quiet", true)?,
         gs1,
+        bearer_modules,
         level,
         grid,
     };

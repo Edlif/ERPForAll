@@ -19,13 +19,18 @@ pub(crate) fn failed(message: impl Into<String>) -> CliError {
 }
 pub(crate) fn config(path: &Path) -> Result<Arc<ServerConfig>> {
     let config = ServerConfig::load(path).map_err(|e| failed(e.to_string()))?;
+    read_ai_credentials(&config, path)?;
+    Ok(Arc::new(config))
+}
+fn read_ai_credentials(
+    config: &ServerConfig,
+    path: &Path,
+) -> Result<erp_addon_ai_base::config::Credentials> {
     let directory = path
         .parent()
         .ok_or_else(|| failed("server configuration path has no parent"))?;
-    // Startup admission only. The assistant runtime will retain a registry when that slice lands.
     erp_addon_ai_base::config::Credentials::load(config.ai(), directory)
-        .map_err(|e| failed(e.to_string()))?;
-    Ok(Arc::new(config))
+        .map_err(|e| failed(e.to_string()))
 }
 pub(crate) fn runtime() -> Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
@@ -1374,7 +1379,10 @@ pub(crate) fn serve(args: &ServerArgs) -> Result<()> {
     let runtime = runtime()?;
     let mut shutdown_deadline = None;
     let result = runtime.block_on(async {
-        let config = config(&args.config)?;
+        let config = Arc::new(ServerConfig::load(&args.config).map_err(|e| failed(e.to_string()))?);
+        let assistant = Arc::new(crate::assistant_turn::TextAssistant::new(
+            read_ai_credentials(&config, &args.config)?,
+        ));
         let publication_pool = pool_with_size(config.runtime_connection(), 1)?;
         let startup = publication_pool
             .get()
@@ -1434,6 +1442,8 @@ pub(crate) fn serve(args: &ServerArgs) -> Result<()> {
             let app = WebApp::new_with_store(Arc::clone(&config), auth, asset_store)
                 .map_err(|e| failed(e.to_string()))?
                 .with_rpc(rpc)
+                .with_assistant(assistant.clone())
+                .with_thread_feed(Arc::new(NativeThreadFeed))
                 .with_assets(crate::ui_assets::RUNTIME_ABI, assets)
                 .map_err(|error| failed(error.to_string()))?
                 .with_asset_authority(lifecycle.clone())
@@ -2668,6 +2678,18 @@ impl AssetRefusalGate {
     fn clear(&self) -> erp_fields::Result<()> {
         *self.lock()? = None;
         Ok(())
+    }
+}
+
+struct NativeThreadFeed;
+impl erp_server::web::WebThreadFeed for NativeThreadFeed {
+    fn visible_window<'a>(
+        &'a self,
+        tx: &'a mut erp_orm::Transaction,
+        model: &'a str,
+        id: i64,
+    ) -> erp_orm::BoxFuture<'a, erp_fields::Result<Vec<i64>>> {
+        Box::pin(erp_addon_mail::thread_change_window(tx, model, id))
     }
 }
 

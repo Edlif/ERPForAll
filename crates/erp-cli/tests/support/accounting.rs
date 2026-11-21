@@ -68,6 +68,14 @@ pub fn system(
     db: &TestDb,
     previous: Option<std::collections::BTreeMap<ModuleName, String>>,
 ) -> ModuleSystem {
+    system_with_signal(db, previous, None)
+}
+
+pub fn system_with_signal(
+    db: &TestDb,
+    previous: Option<std::collections::BTreeMap<ModuleName, String>>,
+    signal: Option<erp_orm::Signal>,
+) -> ModuleSystem {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(addons_dir());
     let mut builder = ModuleSystem::builder(db.pool().clone(), index)
@@ -92,6 +100,9 @@ pub fn system(
         .require_core_tables(erp_security::auth::core_tables());
     if let Some(previous) = previous {
         builder = builder.identity_previous(previous);
+    }
+    if let Some(signal) = signal {
+        builder = builder.signal(signal);
     }
     builder.build().unwrap()
 }

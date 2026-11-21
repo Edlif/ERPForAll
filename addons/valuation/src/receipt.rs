@@ -28,7 +28,8 @@ JOIN public.product_product v ON v.id=c.product_id JOIN public.product_template 
 JOIN public.stock_location src ON src.id=c.location_id JOIN public.stock_location dst ON dst.id=c.location_dest_id
 JOIN public.res_company co ON co.id=c.company_id
 WHERE t.is_storable AND src.usage='supplier' AND dst.usage IN ('internal','transit')
-  AND dst.company_id=c.company_id AND (c.owner_id IS NULL OR c.owner_id=co.partner_id)";
+  AND dst.company_id=c.company_id AND (c.owner_id IS NULL OR c.owner_id=co.partner_id)
+LIMIT $2";
 
 const COMPLETED: &str = "
 SELECT DISTINCT l.company_id,l.product_id FROM public.stock_move_line l
@@ -74,6 +75,25 @@ async fn first_picking_plan(
 }
 
 async fn authorize_plan(tx: &mut Transaction, records: &Records) -> Result<BTreeSet<Key>> {
+    let source_limit = erp_sdk::params::get_int(tx, &crate::ADDON, crate::SOURCE_LIMIT).await?;
+    let probe_limit = source_limit
+        .checked_add(1)
+        .ok_or_else(|| Error::invariant("Invalid valuation source-row admission limit."))?;
+    let limit = usize::try_from(source_limit)
+        .map_err(|_| Error::invariant("Invalid valuation source-row admission limit."))?;
+    // Limit the returned rows before allocating the per-model ACL witness sets. Repeated
+    // lines for the same product do not consume another distinct key, but still use memory.
+    let rows = tx.query(PLAN, &[&records.ids(), &probe_limit]).await?;
+    if rows.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let env = records.env();
+    if !tx.has_group(env, "stock.group_stock_manager").await? {
+        return Err(Error::access(
+            "Only stock managers may admit a valued stock receipt.",
+        ));
+    }
+    let over_limit = rows.len() > limit;
     let mut keys = BTreeSet::new();
     let mut moves = BTreeSet::new();
     let mut lines = BTreeSet::new();
@@ -81,7 +101,7 @@ async fn authorize_plan(tx: &mut Transaction, records: &Records) -> Result<BTree
     let mut products = BTreeSet::new();
     let mut locations = BTreeSet::new();
     let decode = |e| Error::db("Invalid receipt admission source.").with_source(e);
-    for row in tx.query(PLAN, &[&records.ids()]).await? {
+    for row in rows {
         let company: i64 = row.try_get(2).map_err(decode)?;
         let product: i64 = row.try_get(3).map_err(decode)?;
         moves.insert(row.try_get::<_, i64>(0).map_err(decode)?);
@@ -91,15 +111,6 @@ async fn authorize_plan(tx: &mut Transaction, records: &Records) -> Result<BTree
         locations.insert(row.try_get::<_, i64>(4).map_err(decode)?);
         locations.insert(row.try_get::<_, i64>(5).map_err(decode)?);
         keys.insert((company, product));
-    }
-    if keys.is_empty() {
-        return Ok(keys);
-    }
-    let env = records.env();
-    if !tx.has_group(env, "stock.group_stock_manager").await? {
-        return Err(Error::access(
-            "Only stock managers may admit a valued stock receipt.",
-        ));
     }
     let active: BTreeSet<i64> = env.companies()?.iter().map(|id| id.get()).collect();
     if !companies.is_subset(&active) {
@@ -118,6 +129,12 @@ async fn authorize_plan(tx: &mut Transaction, records: &Records) -> Result<BTree
             .browse(ids)?
             .check_access(tx, Operation::Read)
             .await?;
+    }
+    if over_limit {
+        return Err(Error::validation(format!(
+            "Valuation receipt sources exceed {} ({source_limit}). Split the operation.",
+            crate::SOURCE_LIMIT
+        )));
     }
     Ok(keys)
 }

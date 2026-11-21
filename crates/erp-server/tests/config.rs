@@ -225,6 +225,10 @@ fn startup_limits_refuse_inflight_and_websocket_conflicts() {
             "server startup limits require admission.ws_inflight_bytes >= ws.max_message_bytes",
         ),
         (
+            "\"ws.read_buffer_bytes\"=131072\n\"ws.max_message_bytes\"=4096\n\"admission.ws_inflight_bytes\"=131072",
+            "server startup limits require admission.ws_inflight_bytes to hold ws.read_buffer_bytes and three ws.max_message_bytes buffers",
+        ),
+        (
             "\"process.memory_soft_bytes\"=268435456",
             "server startup limits require admission.inflight_bytes <= process.memory_soft_bytes",
         ),

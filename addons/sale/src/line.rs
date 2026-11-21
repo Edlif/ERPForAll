@@ -15,12 +15,13 @@ pub const DISPLAY_TYPES: [&str; 3] = ["line_section", "line_subsection", "line_n
 /// the down-payment flag the guards read, and the invoicing method, quantities and status. Refused
 /// on create and write for every caller, also with sudo, through the order's line commands and as
 /// `default_<field>` context keys.
-const DERIVED_FIELDS: [&str; 9] = [
+const DERIVED_FIELDS: [&str; 10] = [
     "state",
     "company_id",
     "order_partner_id",
     "salesman_id",
     "is_downpayment",
+    "invoice_item_link_ids",
     "qty_delivered_method",
     "qty_invoiced",
     "qty_to_invoice",
@@ -300,6 +301,7 @@ pub struct SaleOrderLine {
     #[field(
         selection,
         selection = [("manual", "Manual")],
+        default = "manual",
         compute = "_compute_qty_delivered_method",
         store = true,
         string = "Delivered Quantity Source"
@@ -324,7 +326,17 @@ pub struct SaleOrderLine {
         string = "Invoicing Policy"
     )]
     pub invoice_policy: Option<Arc<str>>,
-    /// The invoiced quantity, from `_prepare_qty_invoiced` (zero until invoices exist).
+    /// Private lineage rows for linked customer invoices and credit notes.
+    #[field(
+        one2many,
+        comodel = "sale.invoice.item",
+        inverse_name = "sale_line_id",
+        readonly = true,
+        copy = false,
+        string = "Invoice Items"
+    )]
+    pub invoice_item_link_ids: Vec<RecId>,
+    /// The invoiced quantity, from linked customer invoices less credit notes.
     #[field(
         float,
         digits = "Product Unit",
@@ -723,7 +735,7 @@ impl SaleOrderLine {
     }
 
     /// The invoiced quantity from `_prepare_qty_invoiced`.
-    #[compute(depends = ["product_uom_qty"])]
+    #[compute(depends = ["invoice_item_link_ids", "invoice_item_link_ids.invoice_item_id.quantity", "invoice_item_link_ids.invoice_item_id.move_id.state", "invoice_item_link_ids.invoice_item_id.move_id.move_type"])]
     async fn _compute_qty_invoiced(
         this: &RecordSet<SaleOrderLine>,
         tx: &mut Transaction,
@@ -841,13 +853,13 @@ impl SaleOrderLine {
     }
 
     /// The invoiced quantity of each line, keyed by line: invoices less credit notes once orders
-    /// link to invoices; none in this part of `sale`.
+    /// link to invoice items. Cancelled documents contribute nothing.
     #[method]
     async fn _prepare_qty_invoiced(
-        _this: &RecordSet<SaleOrderLine>,
-        _tx: &mut Transaction,
+        this: &RecordSet<SaleOrderLine>,
+        tx: &mut Transaction,
     ) -> Result<BTreeMap<RecId, Decimal>> {
-        Ok(BTreeMap::new())
+        crate::invoice_lineage::quantities(this, tx).await
     }
 
     /// The lines that may be invoiced without the others: all of

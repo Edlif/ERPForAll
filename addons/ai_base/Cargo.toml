@@ -10,6 +10,8 @@ publish = false
 erp-sdk.workspace = true
 erp-addon-base.workspace = true
 getrandom.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+tokio = { workspace = true, features = ["time"] }
 url = "=2.5.8"
 serde = { workspace = true, features = ["derive"] }
 toml.workspace = true
@@ -20,6 +22,7 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile.workspace = true
 
 [lints]

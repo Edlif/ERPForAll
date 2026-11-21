@@ -155,13 +155,22 @@ pub async fn index(tx: &mut Transaction, name: &str, pieces: &[&str]) {
     }
 }
 
-/// Complete FK mapper contract, including the scalar-field label or composite-key identifier.
+/// Assert the safe diagnostic identity for a rejected child write or parent deletion.
 pub fn foreign_error(tx: &Transaction, error: &Error, table: &str, sqlstate: &str) {
     assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
     assert_eq!(error.sqlstate(), Some(sqlstate), "{error:?}");
     let constraint = error.constraint().expect("foreign key identity");
     let registry = tx.env().registry().clone();
     let model = registry.model_by_table(table).unwrap();
+    let blocking_model = Value::Map(Arc::new(erp_sdk::ValueMap::from([(
+        "blocking_model".to_owned(),
+        Value::str(model.name),
+    )])));
+    assert_eq!(error.context(), Some(&blocking_model));
+    if sqlstate == "23503" {
+        assert!(model.table_object(constraint).is_some(), "{error:?}");
+        return;
+    }
     let culprit = match model
         .fields
         .iter()

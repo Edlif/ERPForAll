@@ -16,6 +16,7 @@ use erp_sdk::prelude::*;
     constraints = [
         ("_identity", "UNIQUE (company_id, origin_model, origin_id, component, source_revision, kind, cost_partition)", "A valuation source revision component must be unique."),
         ("_id_company_product", "UNIQUE (id, company_id, product_id)", "A valuation source is unique with its company and product."),
+        ("_affected_from_source_company_product", "FOREIGN KEY (affected_from_source_id, company_id, product_id) REFERENCES stk_value_source (id, company_id, product_id) ON DELETE RESTRICT", "The affected valuation source must have the same company and product."),
         ("_revision_nonneg", "CHECK (source_revision >= 0)", "A valuation source revision cannot be negative."),
         ("_affected_not_after", "CHECK (affected_from_time <= effective_time)", "The affected position cannot follow its source effective time."),
         ("_versions_positive", "CHECK (schema_version > 0 AND semantic_version > 0)", "Valuation source versions must be positive."),
@@ -232,9 +233,9 @@ pub struct ValuationReceipt {
     /// Applied mode.
     #[field(selection, selection = [("inline", "Inline"), ("replay", "Replay")])]
     pub applied_mode: Option<Arc<str>>,
-    /// Applied generation.
+    /// Publication generation, absent until the receipt is applied.
     #[field(integer)]
-    pub applied_generation: i32,
+    pub applied_generation: Option<i32>,
     /// Applied at (naive UTC).
     #[field(datetime)]
     pub applied_at: Option<DateTime>,

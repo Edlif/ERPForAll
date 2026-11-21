@@ -15,6 +15,7 @@ pub mod lifecycle;
 mod receipt;
 
 pub(crate) const KEY_LIMIT: &str = "valuation.max_admission_keys_per_unit";
+pub(crate) const SOURCE_LIMIT: &str = "valuation.max_admission_source_rows";
 pub(crate) const UNIT_LIMIT: &str = "valuation.unit_transaction_timeout_ms";
 pub(crate) const LOCK_WAIT: &str = "valuation.admission_lock_timeout_ms";
 
@@ -26,6 +27,12 @@ fn parameters() -> erp_sdk::Result<Vec<erp_sdk::settings::ParameterDecl>> {
             "Valued products per stock operation",
             1000,
             (1, 10000),
+        )?,
+        ParameterDecl::integer(
+            SOURCE_LIMIT,
+            "Receipt source rows per valuation admission",
+            10000,
+            (1, 100000),
         )?,
         ParameterDecl::integer(
             UNIT_LIMIT,

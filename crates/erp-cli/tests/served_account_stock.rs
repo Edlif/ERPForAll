@@ -126,6 +126,17 @@ fn every_addon_crate_is_linked_or_excluded_with_a_reason() {
     }
 }
 
+/// A healthy listener belonging to a different fixture must never receive the admin login.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn foreign_fixture_listener_is_refused_before_login() {
+    let neighbor = NativeFixture::start().await;
+    let accepted = fixture_login_page(neighbor.port, "different_fixture_database").is_ok();
+    let still_ready = request(neighbor.port, "GET", "/erp/health/ready", &[], "").status;
+    neighbor.cleanup().await;
+    assert!(!accepted, "foreign fixture login page was accepted");
+    assert_eq!(still_ready, 200);
+}
+
 /// The served node offers the linked accounting and inventory addons, refuses the declared-only
 /// bridges with that reason, and installs `account` then `stock` with their dependencies.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -740,3 +740,409 @@ fn lines_of_cancelled_and_locked_orders_do_not_change() {
         tx.rollback().await.unwrap();
     });
 }
+
+#[test]
+fn customer_invoice_and_credit_line_quantities_follow_the_document() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let world = world(&mut tx).await;
+        admin(&mut tx).await;
+        let clerk = user(&mut tx, "billing-source-clerk", "group_sale_salesman").await;
+        let accounting_group = xmlid(&mut tx, "account", "group_account_user").await;
+        tx.env()
+            .records("res.users")
+            .unwrap()
+            .browse([clerk])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands("group_ids", [Command::set([id(accounting_group)])]),
+            )
+            .await
+            .unwrap();
+        let sku = product(&mut tx, "Retail lamp", "consu", "order").await;
+        let order = new_order(&mut tx, &world).await;
+        let sale_line = product_line(&mut tx, &order, sku, 6).await;
+        let other_sku = product(&mut tx, "Another lamp", "consu", "order").await;
+        let other_line = product_line(&mut tx, &order, other_sku, 2).await;
+        act(&mut tx, &order, "action_confirm").await.unwrap();
+        let env = tx.env().with_company(world.company).unwrap();
+        let (income, journal) = invoice_chart(&mut tx, &env, world.company).await;
+        let sale_id = sale_line.ids()[0];
+        let other_id = other_line.ids()[0];
+        let journal_id = journal.ids()[0];
+        tx.commit().await.unwrap();
+        let secured = policy_orm(&db, &orm).await;
+        let mut tx = secured.begin(SUPERUSER_ID).await.unwrap();
+        let env = tx.env().with_company(world.company).unwrap();
+        let sale_line = env
+            .records("sale.order.line")
+            .unwrap()
+            .browse([sale_id])
+            .unwrap();
+        let other_line = env
+            .records("sale.order.line")
+            .unwrap()
+            .browse([other_id])
+            .unwrap();
+        let journal = env
+            .records("account.journal")
+            .unwrap()
+            .browse([journal_id])
+            .unwrap();
+        let unit = many2one(&mut tx, &sale_line, "product_uom_id")
+            .await
+            .unwrap();
+        let model = env.records("account.move").unwrap();
+        let mut documents = Vec::new();
+        for (kind, quantity, total) in [("out_invoice", 4, 4), ("out_refund", 1, 3)] {
+            let line = RawVals::new()
+                .set_cell("product_id", Cell::Id(sku))
+                .set_cell("name", Cell::Str("Retail lamp".into()))
+                .set_cell("product_uom_id", Cell::Id(unit))
+                .set_cell("account_id", Cell::Id(income))
+                .set_cell("sale_line_id", Cell::Id(sale_line.ids()[0]))
+                .set_cell("quantity", Cell::Decimal(Decimal::from(quantity)))
+                .set_cell("price_unit", Cell::Decimal(Decimal::from(10)));
+            let doc = model
+                .create(
+                    &mut tx,
+                    vec![
+                        RawVals::new()
+                            .set_cell("move_type", Cell::Str(kind.into()))
+                            .set_cell("journal_id", Cell::Id(journal.ids()[0]))
+                            .set_cell("partner_id", Cell::Id(world.customer))
+                            .set_commands("invoice_line_ids", [Command::create(line)]),
+                    ],
+                )
+                .await
+                .unwrap();
+            tx.flush().await.unwrap();
+            let links = tx.query(
+                "SELECT l.id::int8, l.quantity::text, l.display_type, m.state, link.sale_line_id::int8
+                 FROM account_move_line l JOIN account_move m ON m.id=l.move_id
+                 LEFT JOIN sale_invoice_item link ON link.invoice_item_id=l.id
+                 WHERE m.id=$1 AND l.product_id=$2", &[&doc.ids()[0], &sku]
+            ).await.unwrap();
+            assert_eq!(links.len(), 1, "customer document retains its product line");
+            let actual_source: Option<i64> = links[0].get(4);
+            assert_eq!(
+                actual_source,
+                Some(sale_line.ids()[0]),
+                "persisted invoice item source, qty {:?}, kind {:?}, state {:?}",
+                links[0].get::<_, Option<String>>(1),
+                links[0].get::<_, Option<String>>(2),
+                links[0].get::<_, Option<String>>(3)
+            );
+            assert_eq!(
+                number(&mut tx, &sale_line, "qty_invoiced").await,
+                Decimal::from(total)
+            );
+            assert_eq!(
+                number(&mut tx, &sale_line, "qty_to_invoice").await,
+                Decimal::from(6 - total)
+            );
+            let item = env
+                .records("account.move.line")
+                .unwrap()
+                .browse([links[0].get::<_, i64>(0)])
+                .unwrap();
+            assert_eq!(
+                many2one(&mut tx, &item, "sale_line_id").await,
+                Some(sale_line.ids()[0])
+            );
+            let clerk_env = env.with_user(clerk).with_company(world.company).unwrap();
+            let clerk_item = item.with_env(clerk_env.clone());
+            clerk_item
+                .check_access(&mut tx, erp_sdk::Operation::Write)
+                .await
+                .unwrap();
+            let private = clerk_env.records("sale.invoice.item").unwrap();
+            let private_denied = tx
+                .savepoint(async |tx| {
+                    private
+                        .create(
+                            tx,
+                            vec![
+                                RawVals::new()
+                                    .set_cell("sale_line_id", Cell::Id(sale_line.ids()[0]))
+                                    .set_cell("invoice_item_id", Cell::Id(item.ids()[0])),
+                            ],
+                        )
+                        .await
+                        .map(|_| ())
+                })
+                .await
+                .expect_err("accounting cannot directly create sales associations");
+            assert_eq!(private_denied.kind(), ErrorKind::Access);
+            let source_denied = write(
+                &mut tx,
+                &clerk_item,
+                RawVals::new().set_cell("sale_line_id", Cell::Null),
+            )
+            .await
+            .expect_err("accounting without Sales cannot detach the source");
+            assert_eq!(source_denied.kind(), ErrorKind::Access);
+            refused(
+                write(
+                    &mut tx,
+                    &item,
+                    RawVals::new().set_cell("sale_line_id", Cell::Id(other_line.ids()[0])),
+                )
+                .await,
+                ErrorKind::Validation,
+                "must match",
+            );
+            assert_eq!(
+                many2one(&mut tx, &item, "sale_line_id").await,
+                Some(sale_line.ids()[0])
+            );
+            assert_eq!(
+                number(&mut tx, &other_line, "qty_invoiced").await,
+                Decimal::ZERO
+            );
+            documents.push(doc);
+        }
+        act(&mut tx, &documents[0], "button_cancel").await.unwrap();
+        tx.flush().await.unwrap();
+        assert_eq!(
+            number(&mut tx, &sale_line, "qty_invoiced").await,
+            Decimal::NEGATIVE_ONE
+        );
+        act(&mut tx, &documents[0], "button_draft").await.unwrap();
+        tx.flush().await.unwrap();
+        assert_eq!(
+            number(&mut tx, &sale_line, "qty_invoiced").await,
+            Decimal::from(3)
+        );
+        documents[1].unlink(&mut tx).await.unwrap();
+        tx.flush().await.unwrap();
+        assert_eq!(
+            number(&mut tx, &sale_line, "qty_invoiced").await,
+            Decimal::from(4)
+        );
+        act(&mut tx, &documents[0], "action_post").await.unwrap();
+        tx.flush().await.unwrap();
+        assert_eq!(
+            number(&mut tx, &sale_line, "qty_invoiced").await,
+            Decimal::from(4)
+        );
+        tx.rollback().await.unwrap();
+    });
+}
+
+pub(super) async fn invoice_chart(
+    tx: &mut Transaction,
+    env: &erp_sdk::Env,
+    company: i64,
+) -> (i64, Records) {
+    let accounts = env.records("account.account").unwrap();
+    let mut income = 0;
+    for (code, kind) in [("SIB400", "income"), ("SIB121", "asset_receivable")] {
+        let account = accounts
+            .create(
+                tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("code", Cell::Str(code.into()))
+                        .set_cell("name", Cell::Str(code.into()))
+                        .set_cell("account_type", Cell::Str(kind.into())),
+                ],
+            )
+            .await
+            .unwrap();
+        if kind == "income" {
+            income = account.ids()[0];
+        }
+    }
+    let journal = env
+        .records("account.journal")
+        .unwrap()
+        .create(
+            tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", Cell::Str("Retail invoices".into()))
+                    .set_cell("code", Cell::Str("SIB".into()))
+                    .set_cell("type", Cell::Str("sale".into()))
+                    .set_cell("company_id", Cell::Id(company))
+                    .set_cell("default_account_id", Cell::Id(income)),
+            ],
+        )
+        .await
+        .unwrap();
+    (income, journal)
+}
+
+#[test]
+fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let world = world(&mut tx).await;
+        let env = tx.env().with_company(world.company).unwrap();
+        let (_income, _journal) = invoice_chart(&mut tx, &env, world.company).await;
+        admin(&mut tx).await;
+        let clerk = user(
+            &mut tx,
+            "ordinary-billing-clerk",
+            "group_sale_salesman_all_leads",
+        )
+        .await;
+        let seller = user(
+            &mut tx,
+            "sales-only-invoice-clerk",
+            "group_sale_salesman_all_leads",
+        )
+        .await;
+        let accounting = xmlid(&mut tx, "account", "group_account_user").await;
+        env.records("res.users")
+            .unwrap()
+            .browse([clerk])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands("group_ids", [Command::link(id(accounting))]),
+            )
+            .await
+            .unwrap();
+        super::prices::company_country(&mut tx, world.company).await;
+        let tax = super::prices::tax(&mut tx, world.company, "Invoice sales tax", "10").await;
+        let sku = product(&mut tx, "Reading lamp", "consu", "order").await;
+        let (_, foreign, pricelist) = super::prices::foreign_pricelist(&mut tx, &world).await;
+        let order = order(
+            &mut tx,
+            &world,
+            RawVals::new().set_cell("pricelist_id", Cell::Id(pricelist)),
+        )
+        .await
+        .with_env(env.clone());
+        let sale_line = line(
+            &mut tx,
+            &order,
+            RawVals::new()
+                .set_cell("product_id", Cell::Id(sku))
+                .set_cell("price_unit", Cell::Decimal(Decimal::from(20)))
+                .set_cell("product_uom_qty", Cell::Decimal(Decimal::from(3))),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            many2one(&mut tx, &order, "currency_id").await,
+            Some(foreign)
+        );
+        write(
+            &mut tx,
+            &sale_line,
+            RawVals::new()
+                .set_cell("product_uom_qty", Cell::Decimal(Decimal::new(301, 2)))
+                .set_cell("price_unit", Cell::Decimal(Decimal::from(20)))
+                .set_cell("discount", Cell::Decimal(Decimal::from(10))),
+        )
+        .await
+        .unwrap();
+        write(
+            &mut tx,
+            &sale_line,
+            RawVals::new().set_commands("tax_ids", [Command::set([id(tax)])]),
+        )
+        .await
+        .unwrap();
+        act(&mut tx, &order, "action_confirm").await.unwrap();
+        let order_id = order.ids()[0];
+        let line_id = sale_line.ids()[0];
+        tx.commit().await.unwrap();
+        let secured = policy_orm(&db, &orm).await;
+        let mut tx = secured.begin(SUPERUSER_ID).await.unwrap();
+        let env = tx.env().with_company(world.company).unwrap();
+        let order = env
+            .records("sale.order")
+            .unwrap()
+            .browse([order_id])
+            .unwrap();
+        let sale_line = env
+            .records("sale.order.line")
+            .unwrap()
+            .browse([line_id])
+            .unwrap();
+        let seller_order =
+            order.with_env(env.with_user(seller).with_company(world.company).unwrap());
+        let denied = tx
+            .savepoint(async |tx| {
+                let result: Value = seller_order
+                    .call(tx, "action_create_draft_invoice", ())
+                    .await?;
+                Ok(result)
+            })
+            .await
+            .expect_err("sales-only cannot create accounting documents");
+        assert_eq!(denied.kind(), ErrorKind::Access, "{denied}");
+        let order = order.with_env(env.with_user(clerk).with_company(world.company).unwrap());
+        let action: Value = order
+            .call(&mut tx, "action_create_draft_invoice", ())
+            .await
+            .unwrap();
+        let normalized: Value = order
+            .call(&mut tx, "erp_normalize_action_result", (1_u64, action))
+            .await
+            .expect("the same web action normalizer used by the form button accepts the result");
+        let Value::Json(envelope) = normalized else {
+            panic!("a web action envelope opens the draft")
+        };
+        let action = &envelope["result"];
+        assert_eq!(action["kind"], "window");
+        assert_eq!(action["model"], "account.move");
+        assert_eq!(action["views"][0]["type"], "form");
+        assert_eq!(
+            action["views"][0]["id"],
+            xmlid(&mut tx, "account", "view_invoice_form").await
+        );
+        let invoice = action["res_id"].as_i64().expect("a persisted invoice");
+        let doc = env
+            .records("account.move")
+            .unwrap()
+            .browse([invoice])
+            .unwrap();
+        assert_eq!(
+            doc.cell(&mut tx, "state").await.unwrap(),
+            Cell::Str("draft".into())
+        );
+        assert_eq!(
+            many2one(&mut tx, &doc, "partner_id").await,
+            Some(world.customer)
+        );
+        assert_eq!(
+            many2one(&mut tx, &doc, "currency_id").await,
+            many2one(&mut tx, &order, "currency_id").await
+        );
+        assert_eq!(
+            number(&mut tx, &doc, "amount_total").await,
+            Decimal::new(5960, 2)
+        );
+        assert_eq!(
+            number(&mut tx, &sale_line, "qty_invoiced").await,
+            Decimal::new(301, 2)
+        );
+        let retry = tx
+            .savepoint(async |tx| {
+                let value: Value = order.call(tx, "action_create_draft_invoice", ()).await?;
+                Ok(value)
+            })
+            .await
+            .unwrap_err();
+        assert!(retry.message().contains("remaining quantities"), "{retry}");
+        let count: i64 = tx
+            .query(
+                "SELECT COUNT(*) FROM account_move WHERE move_type='out_invoice'",
+                &[],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        assert_eq!(count, 1);
+        tx.rollback().await.unwrap();
+    });
+}

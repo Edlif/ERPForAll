@@ -20,7 +20,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::{Context, Poll},
     time::Duration,
@@ -92,6 +92,7 @@ impl ConnectionLimits {
 /// connection waits for a head while every started request has finished.
 #[derive(Default)]
 struct Phase {
+    upgraded: AtomicBool,
     started: AtomicU64,
     finished: AtomicU64,
 }
@@ -99,7 +100,8 @@ impl Phase {
     /// `Some(n)` while waiting for the head of request `n`; `None` while a request is handled.
     fn awaiting(&self) -> Option<u64> {
         let started = self.started.load(Ordering::Acquire);
-        (self.finished.load(Ordering::Acquire) == started).then_some(started)
+        (!self.upgraded.load(Ordering::Acquire) && self.finished.load(Ordering::Acquire) == started)
+            .then_some(started)
     }
 }
 
@@ -187,9 +189,9 @@ impl Drop for Finished {
         self.0.finished.fetch_add(1, Ordering::AcqRel);
     }
 }
-impl<S, R> Service<R> for Tracked<S>
+impl<S, R, B> Service<R> for Tracked<S>
 where
-    S: Service<R>,
+    S: Service<R, Response = hyper::Response<B>>,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
@@ -200,8 +202,13 @@ where
         let finished = Finished(Arc::clone(&self.phase));
         let response = self.inner.call(request);
         Box::pin(async move {
-            let _finished = finished;
-            response.await
+            let response = response.await?;
+            // After a successful upgrade this IO belongs to the framed protocol.
+            // Its first payload byte must never start another HTTP header deadline.
+            if response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
+                finished.0.upgraded.store(true, Ordering::Release);
+            }
+            Ok(response)
         })
     }
 }
@@ -246,7 +253,9 @@ pub(crate) async fn serve_draining(
         .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(limits.idle)
         .max_headers(64);
-    let connection = builder.serve_connection(hyper_util::rt::TokioIo::new(io), service);
+    let connection = builder
+        .serve_connection(hyper_util::rt::TokioIo::new(io), service)
+        .with_upgrades();
     tokio::pin!(connection);
     let opened = Instant::now();
     let age = tokio::time::sleep_until(opened + limits.max_age);

@@ -504,6 +504,11 @@ async fn upgrade(version: &str) {
         .unwrap();
     let orm = &installed.orm;
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let existing_gl_menu = if version == "1.6.0" {
+        Some(xml_id(&mut tx, "account_reporting", "menu_general_ledger").await)
+    } else {
+        None
+    };
     let company = main_company(&mut tx).await;
     tx.commit().await.unwrap();
     periods(orm, company).await;
@@ -579,6 +584,20 @@ async fn upgrade(version: &str) {
         .unwrap();
     assert_eq!(ledger["lines"].as_array().unwrap().len(), 2);
 
+    if let Some(menu_id) = existing_gl_menu {
+        assert_eq!(
+            xml_id(&mut tx, "account_reporting", "menu_general_ledger").await,
+            menu_id
+        );
+        let menu = tx
+            .query("SELECT web_icon FROM ir_ui_menu WHERE id = $1", &[&menu_id])
+            .await
+            .unwrap();
+        assert_eq!(
+            menu[0].get::<_, Option<String>>(0).as_deref(),
+            Some("lucide:book-open")
+        );
+    }
     let after = runtime::report_lines(&tx.env(), &mut tx, &options)
         .await
         .unwrap();
@@ -614,5 +633,220 @@ async fn upgrade(version: &str) {
     assert_eq!(
         xml_id(&mut tx, "account_reporting", "position_column").await,
         column
+    );
+}
+
+#[test]
+fn installed_reporting_1_0_upgrades_to_movements_idempotently() {
+    big_stack(upgrade_account_movements);
+}
+
+async fn upgrade_account_movements() {
+    let db = TestDb::builder().pool_size(8).create().await.unwrap();
+    let (_sources, old_system, previous) = predecessor(&db, "1.0.0");
+    let module = ModuleName::new("account_reporting").unwrap();
+    let modules = std::slice::from_ref(&module);
+    let initial = Box::pin(old_system.initialize(InitOptions::new().with_skip_auto_install(true)))
+        .await
+        .unwrap();
+    let installed = Box::pin(
+        old_system
+            .button_immediate_install(&initial.orm.env(SUPERUSER_ID, Context::new()), modules),
+    )
+    .await
+    .unwrap();
+    assert!(
+        installed.post_commit.is_clean(),
+        "{:?}",
+        installed.post_commit
+    );
+    let previous_ids = reporting_ids(&installed.orm).await;
+    assert!(!previous_ids.contains_key("report_account_movements"));
+    assert!(!previous_ids.contains_key("action_account_movements"));
+    assert!(!previous_ids.contains_key("menu_account_movements"));
+    let old_report = previous_ids["report_posted_journal_activity"].1;
+    let old_receipt = reporting_receipt(&installed.orm).await;
+    assert_eq!(old_receipt, ("1.0.0".to_owned(), previous[&module].clone()));
+    let mut tx = installed.orm.begin(SUPERUSER_ID).await.unwrap();
+    tx.env()
+        .records("reporting.report")
+        .unwrap()
+        .browse([old_report])
+        .unwrap()
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("name", text("Configured journal activity")),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let current = system(&db, Some(previous.clone()));
+    let upgraded =
+        Box::pin(current.button_immediate_upgrade(&current.system_env(Context::new()), modules))
+            .await
+            .unwrap();
+    assert!(
+        upgraded.post_commit.is_clean(),
+        "{:?}",
+        upgraded.post_commit
+    );
+    let upgraded_ids = reporting_ids(&upgraded.orm).await;
+    for (name, identity) in &previous_ids {
+        assert_eq!(
+            upgraded_ids.get(name),
+            Some(identity),
+            "previous identity {name}"
+        );
+    }
+    assert_movement_definition(&upgraded.orm, &upgraded_ids).await;
+
+    // The old release receipt remains until the explicit activation step.
+    let manifest = erp_modules::Manifest::from_toml(
+        module.as_str(),
+        include_str!("../../../addons/account_reporting/manifest.toml"),
+    )
+    .unwrap();
+    let target_version = manifest.version().raw();
+    assert_eq!(
+        reporting_receipt(&upgraded.orm).await,
+        (target_version.to_owned(), previous[&module].clone())
+    );
+    current
+        .identity_activate(
+            &previous,
+            "upgrade-test",
+            "Activate the Account Movements data upgrade",
+        )
+        .await
+        .unwrap();
+    let current_identity = identities()[&module].clone();
+    assert_eq!(
+        reporting_receipt(&upgraded.orm).await,
+        (target_version.to_owned(), current_identity.clone())
+    );
+
+    let current = system(&db, None);
+    let repeated =
+        Box::pin(current.button_immediate_upgrade(&current.system_env(Context::new()), modules))
+            .await
+            .unwrap();
+    assert!(
+        repeated.post_commit.is_clean(),
+        "{:?}",
+        repeated.post_commit
+    );
+    assert_eq!(reporting_ids(&repeated.orm).await, upgraded_ids);
+    assert_eq!(
+        reporting_receipt(&repeated.orm).await,
+        (target_version.to_owned(), current_identity)
+    );
+    assert_movement_definition(&repeated.orm, &upgraded_ids).await;
+}
+
+type ReportingIds = std::collections::BTreeMap<String, (String, i64)>;
+
+async fn reporting_ids(orm: &erp_sdk::Orm) -> ReportingIds {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    tx.query(
+        "SELECT name, model, res_id::int8 FROM ir_model_data WHERE module='account_reporting'",
+        &[],
+    )
+    .await
+    .unwrap()
+    .iter()
+    .map(|row| (row.get(0), (row.get(1), row.get(2))))
+    .collect()
+}
+
+async fn reporting_receipt(orm: &erp_sdk::Orm) -> (String, String) {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let rows = tx
+        .query(
+            "SELECT m.latest_version, i.content_hash FROM ir_module_module m
+         JOIN installed_addon_identity i ON i.name = m.name WHERE m.name = 'account_reporting'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    (rows[0].get(0), rows[0].get(1))
+}
+
+async fn assert_movement_definition(orm: &erp_sdk::Orm, ids: &ReportingIds) {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let env = tx.env();
+    let report = ids["report_account_movements"].1;
+    let action_id = ids["action_account_movements"].1;
+    let action = env
+        .records("ir.actions.client")
+        .unwrap()
+        .browse([action_id])
+        .unwrap();
+    assert_eq!(
+        action.cell(&mut tx, "tag").await.unwrap(),
+        text("reporting.report")
+    );
+    assert_eq!(
+        action.cell(&mut tx, "params").await.unwrap(),
+        Cell::Json(std::sync::Arc::new(json!({"report": report})))
+    );
+    let menu = env
+        .records("ir.ui.menu")
+        .unwrap()
+        .browse([ids["menu_account_movements"].1])
+        .unwrap();
+    let readonly = xml_id(&mut tx, "account", "group_account_readonly").await;
+    assert_eq!(
+        menu.cell(&mut tx, "parent_id").await.unwrap(),
+        Cell::Id(ids["menu_account_reporting"].1)
+    );
+    assert_eq!(
+        menu.cell(&mut tx, "action").await.unwrap(),
+        text(&format!("ir.actions.client,{action_id}"))
+    );
+    assert_eq!(
+        menu.related(&mut tx, "group_ids").await.unwrap().ids(),
+        [readonly]
+    );
+
+    let opened = runtime::report_options(&env, &mut tx, report, &Json::Null)
+        .await
+        .unwrap();
+    assert_eq!(opened["name"], "Account Movements");
+    let columns = opened["options"]["columns"].as_array().unwrap();
+    assert_eq!(
+        columns
+            .iter()
+            .map(|column| column["label"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["debit", "credit", "net"]
+    );
+    let report = env
+        .records("reporting.report")
+        .unwrap()
+        .browse([report])
+        .unwrap();
+    let line = report.related(&mut tx, "line_ids").await.unwrap();
+    assert_eq!(line.ids(), [ids["movements_by_account"].1]);
+    assert_eq!(
+        line.cell(&mut tx, "groupby").await.unwrap(),
+        text("account_id,move_id")
+    );
+    let mut expressions = line.related(&mut tx, "expression_ids").await.unwrap().ids();
+    expressions.sort_unstable();
+    let mut expected =
+        ["debit", "credit", "net"].map(|label| ids[&format!("movements_expression_{label}")].1);
+    expected.sort_unstable();
+    assert_eq!(expressions, expected);
+
+    let previous = env
+        .records("reporting.report")
+        .unwrap()
+        .browse([ids["report_posted_journal_activity"].1])
+        .unwrap();
+    assert_eq!(
+        previous.cell(&mut tx, "name").await.unwrap(),
+        text("Configured journal activity")
     );
 }

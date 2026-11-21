@@ -1,4 +1,5 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+import { clearProtectedTabState } from "./session-boundary.js";
 import { PanelCompatibilityError, PanelRecoverySafety, attemptPanelRecovery } from "./panel-recovery.js";
 import { unavailablePanelMessage } from "./panel-metadata.js";
 import { loginReturnUrl } from "./login-return.js";
@@ -166,6 +167,7 @@ export class HumanApp {
   private readonly registry: string;
   private readonly companies: Company[];
   private readonly currentCompanyId: number;
+  private readonly threadReconnect?: { company: number; csrf: string; retry: readonly [number, number] };
   private readonly activeCompanyIds: number[];
   private readonly allowedCompanyIds: number[];
   private readonly context: Record<string, unknown>;
@@ -182,6 +184,7 @@ export class HumanApp {
   private pendingInvocation: { caller: RecordState; generation: number } | undefined;
   private rootMenuIds: number[] = [];
   private settingsRootMenuIds: number[] = [];
+  private officeSidebarHidden?: boolean;
   private headerMenuSearchReady: (() => void) | undefined;
   private current: Route = {};
   private currentUrl = window.location.pathname + window.location.search;
@@ -311,6 +314,13 @@ export class HumanApp {
     this.listenForMenuIntent();
     initializeAttachmentPolicy(this.rpc, bootstrap["attachment_limits"], bootstrap["rpc_body_bytes"]);
 
+    const retry = bootstrap["thread_reconnect_ms"];
+    if (retry !== undefined && retry !== null) {
+      if (!Array.isArray(retry) || retry.length !== 2 || !retry.every(n => Number.isSafeInteger(n) && n > 0) || retry[1] < retry[0]) {
+        throw new Error("Invalid thread reconnect policy.");
+      }
+      this.threadReconnect = { company: this.currentCompanyId, csrf: text(object(bootstrap["csrf"])["logout"], "session token"), retry: [retry[0], retry[1]] };
+    }
     this.renderHeader(bootstrap);
 
     const pop = (event: PopStateEvent): void => {
@@ -489,6 +499,33 @@ export class HumanApp {
     });
   }
 
+  private renderSidebarToggle(): void {
+    const key = `erp.office-sidebar.hidden.${this.userId}`;
+    if (this.officeSidebarHidden === undefined) {
+      this.officeSidebarHidden = false;
+      try { this.officeSidebarHidden = window.localStorage.getItem(key) === "true"; }
+      catch (error) { console.warn("Could not read the sidebar preference.", error); }
+    }
+    const toggle = button("", () => {
+      this.officeSidebarHidden = !this.officeSidebarHidden;
+      render();
+      try { window.localStorage.setItem(key, String(this.officeSidebarHidden)); }
+      catch (error) { console.warn("Could not save the sidebar preference.", error); }
+    }, "office-sidebar-toggle");
+    this.navigation.id ||= "erp-app-navigation";
+    toggle.setAttribute("aria-controls", this.navigation.id);
+    const render = (): void => {
+      const hidden = this.officeSidebarHidden === true;
+      this.header.parentElement?.classList.toggle("office-sidebar-hidden", hidden);
+      toggle.setAttribute("aria-expanded", String(!hidden));
+      toggle.title = hidden ? "Show sidebar" : "Hide sidebar";
+      toggle.setAttribute("aria-label", toggle.title);
+      toggle.replaceChildren(icon(hidden ? "chevron-right" : "chevron-left"));
+    };
+    render();
+    this.header.append(toggle);
+  }
+
   private renderHeader(bootstrap: Record<string, unknown>): void {
     for (const stop of this.disposeHeader) stop();
     this.disposeHeader = []; this.headerMenuSearchReady = undefined; this.userDropdownOpen = false;
@@ -505,6 +542,7 @@ export class HumanApp {
     this.header.append(brand);
     const office = document.documentElement.dataset["officeTheme"] === "office-blue";
     if (office) {
+      this.renderSidebarToggle();
       const search = headerMenuSearch({
         entries: () => [...this.menus.values()].flatMap(menu => {
           const target = this.defaultActionForMenu(menu.id);
@@ -524,6 +562,8 @@ export class HumanApp {
     const systray = el("div", undefined, "systray");
     const customSystrayContainer = el("div", undefined, "systray-custom-items");
     const systrayEnv: SystrayEnvironment = {
+      userId: this.userId,
+      csrfToken: text(object(bootstrap["csrf"])["logout"], "session token"),
       rpc: this.rpc,
       context: this.context,
       run: job => this.run(job),
@@ -846,7 +886,7 @@ export class HumanApp {
     logoutForm.addEventListener("submit", event => {
       event.preventDefault();
       this.run(async () => {
-        if (await this.canLeave()) logoutForm.submit();
+        if (await this.canLeave()) { clearProtectedTabState(); logoutForm.submit(); }
       });
     });
 
@@ -969,6 +1009,7 @@ export class HumanApp {
    */
   private expire(): void {
     if (!this.expiry) {
+      clearProtectedTabState();
       let lostEdits: boolean;
       // A failing dirty check is reported but must not stop the teardown; assume edits were lost.
       try { lostEdits = this.isDirty(); } catch (error) { lostEdits = true; reportHotkeyError(error); }
@@ -1623,24 +1664,42 @@ export class HumanApp {
    * dropdown (a nested menu is listed flat under its label). Re-runnable: it starts from the full row every time.
    */
   private fitNavSections(sections: HTMLElement): void {
+    const focused = document.activeElement;
+    const previousMore = sections.querySelector(":scope > .nav-more");
+    const focusWasInMore = focused !== null && previousMore?.contains(focused) === true;
+    const focusedMenuId = (focused instanceof HTMLElement ? focused.dataset["menuId"] : undefined)
+      ?? previousMore?.querySelector<HTMLElement>("[data-menu-id]")?.dataset["menuId"];
     this.disposeNavMore?.(); this.disposeNavMore = undefined;
-    sections.querySelector(":scope > .nav-more")?.remove();
+    previousMore?.remove();
     const entries = [...sections.querySelectorAll<HTMLElement>(":scope > [data-nav-entry]")];
     for (const entry of entries) entry.hidden = false;
+    // A refit may hide the focused section or remove the focused More row. Keep focus on a visible opener.
+    const restoreFocus = (overflow?: HTMLButtonElement): void => {
+      if (focusWasInMore) {
+        const original = entries.find(entry => entry.dataset["menuId"] === focusedMenuId
+          || [...entry.querySelectorAll<HTMLElement>("[data-menu-id]")].some(item => item.dataset["menuId"] === focusedMenuId));
+        const target = original && !original.hidden
+          ? (original instanceof HTMLButtonElement ? original : original.querySelector<HTMLButtonElement>(":scope > button"))
+          : overflow;
+        target?.focus();
+      } else if (focused && entries.some(entry => entry.hidden && entry.contains(focused))) overflow?.focus();
+    };
     const available = sections.clientWidth;
     this.navFitWidth = available;
     if (available === 0 || entries.length === 0) return; // not laid out (hidden bar, tests without layout)
     const more = el("div", undefined, "nav-dropdown nav-more");
     const list = el("div", undefined, "nav-dropdown-menu");
     const toggle = button("More", () => {}, "nav-dropdown-toggle");
-    toggle.append(icon("chevron-down"));
+    const moreChevron = icon("chevron-down");
+    moreChevron.classList.add("nav-menu-chevron");
+    toggle.append(moreChevron);
     more.append(toggle, list);
     sections.append(more);
     const width = (element: Element): number => element.getBoundingClientRect().width;
     const lead = [...sections.children].filter(child => child !== more && !entries.includes(child as HTMLElement)).reduce((sum, child) => sum + width(child), 0);
     const gap = Number.parseFloat(getComputedStyle(sections).columnGap) || 0;
     const count = navOverflowCount(lead, entries.map(width), available, width(more), gap);
-    if (count === 0) { more.remove(); return; }
+    if (count === 0) { more.remove(); restoreFocus(); return; }
     const moved = entries.slice(entries.length - count);
     for (const entry of moved) {
       entry.hidden = true;
@@ -1652,6 +1711,7 @@ export class HumanApp {
         list.classList.remove("open");
         this.run(() => this.navigate({ action: String(menu.action), menu: String(menu.id) }));
       }, "dropdown-item");
+      entry.prepend(menuIcon(menu.icon ?? "lucide:file-text"));
       entry.dataset["menuId"] = String(menu.id);
       if (sections.querySelector(`[data-menu-id="${menu.id}"][aria-current=page]`)) entry.setAttribute("aria-current", "page");
       list.append(entry);
@@ -1691,6 +1751,7 @@ export class HumanApp {
       window.setTimeout(() => { if (!more.contains(document.activeElement)) list.classList.remove("open"); }, 0);
     });
     this.disposeNavMore = () => dropdown.dispose();
+    restoreFocus(toggle);
   }
 
   private renderNavigation(route: Route): void {
@@ -1723,6 +1784,7 @@ export class HumanApp {
           if (target) await this.navigate({ action: String(target.action), menu: String(target.menu) });
           else if (activeRoot.action !== null) await this.navigate({ action: String(activeRoot.action), menu: String(activeRoot.id) });
         }), "app-brand-btn");
+        appBrand.prepend(menuIcon(activeRoot.icon));
         appBrand.dataset["menuId"] = String(activeRoot.id);
         sections.append(appBrand);
 
@@ -1732,6 +1794,7 @@ export class HumanApp {
           if (child.children.length === 0) {
             if (child.action !== null) {
               const entry = button(child.label, () => this.run(() => this.navigate({ action: String(child.action), menu: String(child.id) })), "nav-item");
+              entry.prepend(menuIcon(child.icon ?? "lucide:file-text"));
               entry.dataset["menuId"] = String(child.id);
               entry.dataset["navEntry"] = String(child.id);
               sections.append(entry);
@@ -1741,7 +1804,12 @@ export class HumanApp {
             dropdown.dataset["navEntry"] = String(child.id);
             const menuList = el("div", undefined, "nav-dropdown-menu");
             const toggle = button(child.label, () => {}, "nav-dropdown-toggle");
-            toggle.append(icon("chevron-down"));
+            const entryIcon = menuIcon(child.icon ?? "lucide:folder-open");
+            entryIcon.classList.add("menu-entry-icon");
+            const chevron = icon("chevron-down");
+            chevron.classList.add("nav-menu-chevron");
+            toggle.prepend(entryIcon);
+            toggle.append(chevron);
             const navMenu = attachMenuDropdown({
               trigger: toggle,
               menu: menuList,
@@ -1778,6 +1846,7 @@ export class HumanApp {
                     menuList.classList.remove("open");
                     this.run(() => this.navigate({ action: String(member.action), menu: String(member.id) }));
                   }, "dropdown-item");
+                  item.prepend(menuIcon(member.icon ?? "lucide:file-text"));
                   item.dataset["menuId"] = String(member.id);
                   menuList.append(item);
                 } else if (this.hasLeafAction(member.id)) {
@@ -1836,6 +1905,7 @@ export class HumanApp {
                 this.closeMobileDrawer();
                 this.run(() => this.navigate({ action: String(member.action), menu: String(member.id) }));
               }, "drawer-item");
+              item.prepend(menuIcon(member.icon ?? "lucide:file-text"));
               item.dataset["menuId"] = String(member.id);
               if (level > 0) {
                 item.style.paddingLeft = `${12 + level * 12}px`;
@@ -1866,6 +1936,7 @@ export class HumanApp {
           const target = this.defaultActionForMenu(rootMenu.id);
           if (target) this.run(() => this.navigate({ action: String(target.action), menu: String(target.menu) }));
         }, "drawer-item");
+        item.prepend(menuIcon(rootMenu.icon));
         item.dataset["menuId"] = String(rootMenu.id);
         drawerApps.append(item);
       }
@@ -1885,6 +1956,10 @@ export class HumanApp {
       this.disposeNavMenus.push(() => { window.removeEventListener("resize", refit); observer?.disconnect(); this.disposeNavMore?.(); this.disposeNavMore = undefined; });
       this.mobileDrawer = new MobileDrawer(mobileDrawer, backdrop, burgerBtn, () => {
         if (document.documentElement.dataset["officeTheme"] === "office-blue" && window.innerWidth > 768) {
+          if (this.officeSidebarHidden) {
+            this.header.querySelector<HTMLButtonElement>(".office-sidebar-toggle")?.focus();
+            return;
+          }
           const target = this.navigation.querySelector<HTMLElement>(".office-navigation [aria-current=page]")
             ?? this.header.querySelector<HTMLButtonElement>("button.brand");
           // A user may have collapsed the selected branch before opening the narrow drawer.
@@ -1995,6 +2070,7 @@ export class HumanApp {
           view.nodes.forEach(visit);
           if (widgets.length !== 1) throw new ClientError("unsupported", "A service form must contain exactly one registered widget.");
           const widget = widgets[0]!;
+          if (widget.widget === "web.settings") mountedPanel.update({ title: "Settings", model });
           nextService = await serviceControllers.get(widget.widget).create({
             host: staging,
             panel,
@@ -2007,6 +2083,7 @@ export class HumanApp {
             registry: this.registry,
             options: widget.options,
             settingsNavigation: {
+              scopePreferenceKey: `erp.settings.scope.${this.userId}.${actionId}`,
               currentCompanyId: this.currentCompanyId,
               roots: this.settingsRootMenuIds.map(id => {
                 const menu = this.menus.get(id);
@@ -3564,9 +3641,21 @@ export class HumanApp {
     const handle = await factory.create({
       host: staging, panel: mounted.panel, controls: mounted.actions, rpc: this.rpc, companies: this.companies, run: this.run,
       notice: this.notice, messages: this.messages, editorLocale: this.editorLocale,
+      // ORM company context and the assistant dock both use the first selected company.
+      userId: this.userId, currentCompanyId: this.activeCompanyIds[0]!,
+      csrfToken: text(object(this.headerBootstrap["csrf"])["logout"], "session token"),
       action: { id: result.id, name: result.name, tag: result.tag, params: result.params },
       restored: this.clientStates.get(key) ?? null,
-      open: input => this.openFromClientAction(input, generation, result.name)
+      open: input => this.openFromClientAction(input, generation, result.name),
+      openDraft: async (xmlId, defaults) => {
+        if (generation !== this.generation || this.expired) throw new ClientError("validation", "Reopen this screen before creating a draft.");
+        const context: Record<string, unknown> = {};
+        for (const [field, value] of Object.entries(defaults)) {
+          if (!/^[a-z][a-z0-9_]*$/.test(field) || typeof value !== "string") throw new ClientError("validation", "Invalid draft default.");
+          context[`default_${field}`] = value;
+        }
+        await this.openActionRequest({ xmlId, viewMode: "form", domain: [], context }, route, result.name);
+      }
     });
     let disposed = false;
     const dispose = (): void => { if (disposed) return; disposed = true; handle.dispose(); };
@@ -3636,6 +3725,18 @@ export class HumanApp {
       const actionModel = text(action["model"], "action model");
       const hasForm = array(action["views"], "action views").some(raw => object(raw)["type"] === "form");
       if (actionModel === model && hasForm) {
+        if (action["domain"]) {
+          const context = { ...this.context, ...this.actionContext(action) };
+          const domain = this.actionDomain(action, context);
+          if (domain.length) {
+            const matches = integer(await this.rpc.call(model, "search_count", {
+              domain: [["id", "=", id], ...domain], context
+            }), "related record count");
+            if (generation !== this.generation || this.expired) return;
+            if (matches === 0) continue;
+            if (matches > 1) throw new ClientError("server", "Multiple records matched a single related record ID.");
+          }
+        }
         await this.navigate({action:String(menu.action),menu:String(menu.id),model,id:String(id),view_type:"form"});
         return;
       }
@@ -4395,6 +4496,7 @@ export class HumanApp {
 
     surface = new RecordForm({ numericLocale: this.numericLocale, signal: this.lifetime.signal, form, state, view, headerHost, smartHost, asideHost, chatterHost, rpc: this.rpc, context: context,
       canEdit,
+      ...(this.threadReconnect && { threadSocket: this.threadReconnect }),
       messagingStore: this.getMessagingStore(), uid: this.userId, userName: this.userName,
       run: this.run, report: error => this.reportError(error), messages: this.messages, editorLocale: this.editorLocale,
       notify: message => this.messages.notifications.add(message, { level: "warning" }),

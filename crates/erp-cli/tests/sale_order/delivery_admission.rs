@@ -366,3 +366,55 @@ fn source_row_limit_counts_descriptive_lines_and_admits_the_exact_boundary() {
         db.cleanup().await.unwrap();
     });
 }
+
+/// An archived constraint still belongs to the movement, even when a normal read omits it.
+pub(super) async fn archived_route_prevents_split(tx: &mut Transaction, picking: &Records) {
+    let route = picking
+        .env()
+        .records("stock.route")
+        .unwrap()
+        .create(
+            tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", Cell::Str("Archived special handling".into()))
+                    .set_cell("active", Cell::Bool(false)),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    let movement = picking.related(tx, "move_ids").await.unwrap();
+    let move_id = movement.ensure_one().unwrap().int().unwrap();
+    tx.execute(
+        "INSERT INTO stock_route_move(move_id,route_id) VALUES($1,$2)",
+        &[&move_id, &route],
+    )
+    .await
+    .unwrap();
+    tx.invalidate_model("stock.move", Some(&["route_ids"]))
+        .await
+        .unwrap();
+    assert!(movement.related(tx, "route_ids").await.unwrap().is_empty());
+    let before = movement.cell(tx, "product_uom_qty").await.unwrap();
+    let error = picking
+        .call::<(), ()>(tx, "button_validate", ())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError, "{error}");
+    let after = tx
+        .query(
+            "SELECT COUNT(*) FROM stock_picking WHERE backorder_id=$1",
+            &[&picking.ids()[0]],
+        )
+        .await
+        .unwrap();
+    assert_eq!(after[0].get::<_, i64>(0), 0);
+    assert_eq!(movement.cell(tx, "product_uom_qty").await.unwrap(), before);
+    tx.execute(
+        "DELETE FROM stock_route_move WHERE move_id=$1 AND route_id=$2",
+        &[&move_id, &route],
+    )
+    .await
+    .unwrap();
+}

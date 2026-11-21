@@ -10,6 +10,8 @@ erp_sdk::addon!(
 );
 
 mod amounts;
+mod create_invoice;
+mod invoice_lineage;
 pub mod line;
 mod numbering;
 pub mod order;

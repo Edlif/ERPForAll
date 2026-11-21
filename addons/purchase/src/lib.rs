@@ -7,6 +7,10 @@ erp_sdk::addon!(
     exact_only = true
 );
 
+mod bill_history;
+mod bill_source_review;
+mod direct_bill;
+mod direct_bill_integrity;
 pub mod line;
 pub mod order;
 pub mod settings;

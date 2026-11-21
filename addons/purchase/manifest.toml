@@ -3,7 +3,7 @@ summary = "Requests for quotation and purchase orders"
 category = "Supply Chain/Purchase"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.0.0"
+version = "1.2.2"
 depends = ["base", "account"]
 application = true
 exact_only = true
@@ -14,5 +14,6 @@ data = [
     "data/purchase_data.xml",
     "views/purchase_views.xml",
     "views/purchase_reports.xml",
+    "views/bill_source_review.xml",
     "security/ir.access.csv",
 ]

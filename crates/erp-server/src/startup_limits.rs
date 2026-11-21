@@ -86,6 +86,14 @@ pub enum StartupLimitError {
     /// The websocket share cannot hold a maximum websocket message.
     #[error("server startup limits require admission.ws_inflight_bytes >= ws.max_message_bytes")]
     WebsocketMinimum,
+    /// Parser input, fragmented message assembly and pending writes must fit one admitted socket.
+    #[error(
+        "server startup limits require admission.ws_inflight_bytes to hold ws.read_buffer_bytes and three ws.max_message_bytes buffers"
+    )]
+    WebsocketBuffers,
+    /// Initial and maximum browser reconnect delays must be ordered.
+    #[error("server startup limits require ws.retry_initial_ms <= ws.retry_max_ms")]
+    WebsocketRetry,
     /// The inflight budget exceeds the process's memory cap.
     #[error("server startup limits require admission.inflight_bytes <= process.memory_soft_bytes")]
     ProcessMemory,
@@ -133,6 +141,8 @@ macro_rules! limits {
         impl StartupLimits {
             $( #[doc = concat!("Validated `", $name, "` startup setting.")]
             pub fn $field(&self) -> u64 { self.values.$field } )+
+            /// Reservation for input, a maximum frame, fragmented message assembly and buffered writes.
+            pub fn ws_socket_bytes(&self) -> u64 { self.values.ws_socket_bytes() }
             /// Checked configured reservation sum used for startup admission, including hashing.
             /// This is the ADR's policy model, not measured actual heap usage or process RSS.
             pub fn configured_reservation_bytes(&self) -> u64 { self.reservation_bytes }
@@ -140,6 +150,9 @@ macro_rules! limits {
             pub fn hash_reserved_bytes(&self) -> u64 { self.native.hash.reserved_bytes() }
         }
         impl RawStartupLimits {
+            fn ws_socket_bytes(&self) -> u64 {
+                self.ws_read_buffer_bytes.saturating_add(self.ws_max_message_bytes.saturating_mul(3))
+            }
             pub(crate) fn validate(self, host_ram: u64, native: NativeAccounting) -> Result<StartupLimits, StartupLimitError> {
                 $( if !($floor..=$ceiling).contains(&self.$field) {
                     return Err(StartupLimitError::OutsideBounds { setting: $name });
@@ -155,6 +168,12 @@ macro_rules! limits {
                 }
                 if self.ws_inflight_bytes < self.ws_max_message_bytes {
                     return Err(StartupLimitError::WebsocketMinimum);
+                }
+                if self.ws_inflight_bytes < self.ws_socket_bytes() {
+                    return Err(StartupLimitError::WebsocketBuffers);
+                }
+                if self.ws_retry_initial_ms > self.ws_retry_max_ms {
+                    return Err(StartupLimitError::WebsocketRetry);
                 }
                 let minimum = minimum_inflight(self.rpc_body_bytes, self.rpc_result_bytes, self.ws_inflight_bytes)?;
                 if self.inflight_bytes < minimum {
@@ -218,6 +237,8 @@ limits! {
     spec_cache_bytes => ("rpc.spec_cache_bytes", 16 * MIB, MIB, GIB),
     rate_table_entries => ("limits.rate_table_entries", 65_536, 1024, 16_777_216),
     touch_queue_entries => ("session.touch_queue_entries", 65_536, 1024, 16_777_216),
+    ws_retry_initial_ms => ("ws.retry_initial_ms", 500, 100, 60000),
+    ws_retry_max_ms => ("ws.retry_max_ms", 30000, 1000, 300000),
     ws_read_buffer_bytes => ("ws.read_buffer_bytes", 4 * KIB, KIB, 128 * KIB),
     ws_inflight_bytes => ("admission.ws_inflight_bytes", 64 * MIB, 1, u64::MAX),
     ws_message_read_secs => ("ws.message_read_secs", 30, 1, 600),

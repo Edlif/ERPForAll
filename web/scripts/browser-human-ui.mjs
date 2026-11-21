@@ -22,8 +22,8 @@ const shellMeasurements = [];
 // Settings gets a "Users" menu and a "Technical" dropdown with two groups and enough rows to need a scroll (shell checks).
 const shellFixtureMenus = () => {
   const rows = [];
-  rows.push({ module: null, id: 15, parent_id: 11, children: [], label: "Users", icon: null, action_id: 21 });
-  rows.push({ module: null, id: 16, parent_id: 11, children: [17, 30], label: "Technical", icon: null, action_id: null });
+  rows.push({ module: null, id: 15, parent_id: 11, children: [], label: "Users", icon: "lucide:users", action_id: 21 });
+  rows.push({ module: null, id: 16, parent_id: 11, children: [17, 30], label: "Technical", icon: "lucide:settings", action_id: null });
   rows.push({ module: null, id: 17, parent_id: 16, children: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27], label: "Database structure", icon: null, action_id: null });
   rows.push({ module: null, id: 30, parent_id: 16, children: [31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45], label: "Automation and jobs", icon: null, action_id: null });
   for (let id = 18; id <= 27; id++) rows.push({ module: null, id, parent_id: 17, children: [], label: ["Models", "Fields", "Model relations", "Decimal accuracy", "Sequences", "Sequence date ranges", "External identifiers", "Views", "Menu items", "Actions"][id - 18], icon: null, action_id: 21 });
@@ -37,13 +37,13 @@ const visualFindings = [];
 const themeCheck = (condition, message) => assert.ok(condition, message);
 // One dialog anatomy and one overlay scale, checked on the open `.choice-dialog` in either theme.
 const assertDialogAnatomy = async evaluate => {
-  const anatomy = await evaluate(`(()=>{const d=document.querySelector('.choice-dialog'),cs=getComputedStyle(d),body=getComputedStyle(d.querySelector('.message-dialog-body')),last=[...d.querySelectorAll('.message-dialog-footer button')].at(-1),probe=document.createElement('div');probe.style.boxShadow='var(--shadow-dialog)';document.body.append(probe);const shadow=getComputedStyle(probe).boxShadow;probe.remove();return {width:d.getBoundingClientRect().width,radius:cs.borderTopLeftRadius,shadow:cs.boxShadow,expectedShadow:shadow,padding:body.padding,close:d.querySelector('.message-dialog-header .message-dialog-close')?.getAttribute('aria-label'),lastClass:last.className,lastText:last.textContent.trim(),lastBackground:getComputedStyle(last).backgroundColor,accent:(()=>{const p=document.createElement('button');p.className='primary';document.body.append(p);const c=getComputedStyle(p).backgroundColor;p.remove();return c})(),footerAlign:getComputedStyle(d.querySelector('.message-dialog-footer')).justifyContent,buttonHeight:last.getBoundingClientRect().height}})()`);
+  const anatomy = await evaluate(`(()=>{const d=document.querySelector('.choice-dialog'),cs=getComputedStyle(d),body=getComputedStyle(d.querySelector('.message-dialog-body')),last=[...d.querySelectorAll('.message-dialog-footer button')].at(-1),probe=document.createElement('div');probe.style.boxShadow='var(--shadow-dialog)';document.body.append(probe);const shadow=getComputedStyle(probe).boxShadow;probe.remove();return {width:d.getBoundingClientRect().width,radius:cs.borderTopLeftRadius,shadow:cs.boxShadow,expectedShadow:shadow,padding:body.padding,close:d.querySelector('.message-dialog-header .message-dialog-close')?.getAttribute('aria-label'),lastClass:last.className,lastText:last.textContent.trim(),lastBackground:getComputedStyle(last).backgroundColor,accent:(()=>{const p=document.createElement('button');p.className='primary';document.body.append(p);const c=getComputedStyle(p).backgroundColor;p.remove();return c})(),footerAlign:getComputedStyle(d.querySelector('.message-dialog-footer')).justifyContent,footerEndGap:(()=>{const footer=d.querySelector('.message-dialog-footer'),style=getComputedStyle(footer);return footer.getBoundingClientRect().right-last.getBoundingClientRect().right-parseFloat(style.paddingRight)-parseFloat(style.borderRightWidth)})(),buttonHeight:last.getBoundingClientRect().height}})()`);
   themeCheck(anatomy.width === 420, `confirm dialog is 420px wide: ${JSON.stringify(anatomy)}`);
   themeCheck(anatomy.radius === "10px", "dialog uses --radius-overlay");
   assert.equal(anatomy.shadow, anatomy.expectedShadow, "dialog uses --shadow-dialog");
   themeCheck(anatomy.padding === "20px", "dialog body uses --overlay-dialog-padding");
   assert.equal(anatomy.close, "Close", "dialog has a close button");
-  themeCheck(anatomy.footerAlign === "flex-end", "footer actions are right-aligned");
+  themeCheck(Math.abs(anatomy.footerEndGap) < 1, `footer actions are right-aligned: ${JSON.stringify(anatomy)}`);
   themeCheck(anatomy.buttonHeight === 32, `dialog buttons are 32px (${anatomy.buttonHeight})`);
   assert.ok(/danger/.test(anatomy.lastClass) && !/primary/.test(anatomy.lastClass) && anatomy.lastBackground !== anatomy.accent, `destructive confirm is the last action in the danger style: ${JSON.stringify(anatomy)}`);
 };
@@ -1172,6 +1172,41 @@ try {
   await wait('document.querySelector(".settings-toggle input") !== null');
   await evaluate('document.querySelector(".settings-app-tab[data-app=acceptance_notes]").click()');
   if (officeBlue) await wait('document.documentElement.dataset.officeTheme === "office-blue"');
+  // Menu icons remain decorative, labels remain readable, and refitting More must not strand focus.
+  if (!officeBlue) {
+    await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    const icons = await evaluate(`(() => {
+      const sections = document.querySelector('.app-sections');
+      const trigger = sections.querySelector('[data-nav-entry="16"] > button');
+      const leading = trigger.querySelector('.menu-entry-icon'), trailing = trigger.querySelector('.nav-menu-chevron');
+      const label = document.createRange(); label.selectNodeContents(trigger); label.setStartAfter(leading); label.setEndBefore(trailing);
+      const measured = { leading: leading.getBoundingClientRect().width, trailing: trailing.getBoundingClientRect().width,
+        labelWidth: label.getBoundingClientRect().width, label: trigger.textContent, labelLeft: label.getBoundingClientRect().left,
+        iconRight: leading.getBoundingClientRect().right };
+      const savedWidth = sections.style.maxWidth;
+      trigger.focus(); sections.style.maxWidth = '140px'; window.dispatchEvent(new Event('resize'));
+      const more = sections.querySelector('.nav-more > button');
+      if (!more) throw new Error('Menu fixture did not force overflow');
+      measured.focusAfterShrink = document.activeElement === more;
+      more.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      const focusedId = document.activeElement.dataset.menuId;
+      measured.overflow = [...sections.querySelectorAll('.nav-more [data-menu-id]')].map(row => ({
+        id: row.dataset.menuId, label: row.textContent, icon: row.querySelector('.erp-icon')?.dataset.icon,
+        decorative: row.querySelector('.erp-icon')?.getAttribute('aria-hidden') === 'true'
+      }));
+      sections.style.maxWidth = savedWidth; window.dispatchEvent(new Event('resize'));
+      const restored = [...sections.querySelectorAll('[data-nav-entry]')].find(entry =>
+        entry.dataset.menuId === focusedId || entry.querySelector('[data-menu-id="' + focusedId + '"]'));
+      measured.focusAfterGrow = document.activeElement === (restored?.matches('button') ? restored : restored?.querySelector(':scope > button'));
+      return measured;
+    })()`);
+    assert.equal(icons.leading, 16); assert.equal(icons.trailing, 14);
+    assert.equal(icons.label, 'Technical'); assert.ok(icons.labelWidth > 0 && icons.labelLeft >= icons.iconRight);
+    assert.equal(icons.focusAfterShrink, true); assert.equal(icons.focusAfterGrow, true);
+    assert.ok(icons.overflow.length > 0 && icons.overflow.every(row => row.label && row.icon && row.decorative));
+    shellMeasurements.push({ menuIcons: icons });
+  }
   // Shell measurements (UI-SHELL-SETTINGS): top bar spacing and centres, Technical dropdown panel, user menu and the Settings
   // page, per width. Everything is measured in the page (getBoundingClientRect); nothing is typed in.
   for (const [width, height] of [[1440, 900], [1280, 800], [1024, 768], [800, 900], [390, 844]]) {
@@ -1349,7 +1384,22 @@ try {
       }
       if (width === 1440) {
         assert.equal(await evaluate('getComputedStyle(document.querySelector(".office-navigation")).display'), "flex");
-        assert.equal(await evaluate('getComputedStyle(document.querySelector(".app-navigation")).backgroundColor'), "rgb(14, 30, 50)");
+        assert.equal(await evaluate(`(() => {
+          const entries = [...document.querySelectorAll('.office-navigation .office-nav-item')];
+          return entries.length > 0 && entries.every(entry => {
+            const glyph = entry.querySelector('.erp-icon');
+            return glyph && glyph.getBoundingClientRect().width > 0 && glyph.getAttribute('aria-hidden') === 'true';
+          });
+        })()`), true, "Office navigation displays decorative icons for nested destinations too");
+        assert.equal(await evaluate(`(() => {
+          const nav = document.querySelector('.app-navigation');
+          const swatch = document.createElement('span');
+          swatch.style.backgroundColor = 'var(--office-nav-bg)';
+          nav.append(swatch);
+          const token = getComputedStyle(swatch).backgroundColor;
+          swatch.remove();
+          return token.startsWith('rgb(') && getComputedStyle(nav).backgroundColor === token;
+        })()`), true, "Office navigation uses its opaque navy surface token");
       } else if (width <= 768) {
         await evaluate('document.querySelector("[data-burger-menu]").click()');
         await wait('document.querySelector(".mobile-drawer")?.classList.contains("hidden") === false');
@@ -1521,7 +1571,12 @@ try {
         assert.ok(geometry.actionsBottom <= geometry.headingTop, "header commands remain above the sheet title");
         assert.ok(geometry.controlHeight >= 28 && geometry.controlHeight <= 36, `compact desktop controls: ${JSON.stringify(geometry)}`);
       } else if (width <= 640) visualCheck(geometry.controlHeight >= 40, `phone controls preserve touch target height at ${width}: ${JSON.stringify(geometry)}`);
-      assert.equal(await evaluate(`getComputedStyle(document.querySelector('[role="tab"][aria-selected="true"]')).borderTopWidth`), "2px", "notebook inherits the base active edge");
+      assert.equal(await evaluate(`(() => {
+        const tab = document.querySelector('[role="tab"][aria-selected="true"]');
+        const edge = getComputedStyle(tab, '::before');
+        return edge.content !== 'none' && edge.height === '2px' && edge.top === '0px'
+          && edge.backgroundColor !== getComputedStyle(tab).backgroundColor;
+      })()`), true, "the active notebook tab has a visible two-pixel top edge");
       await evaluate(`(() => { const title=document.querySelector('input[name="name"]'); title.value += ' edited'; title.dispatchEvent(new Event('change')); })()`);
       await wait('document.querySelector(".status-actions").style.display !== "none"');
       await shot(`office-blue-form-dirty-${width}`, width, height);
@@ -1707,6 +1762,11 @@ try {
   await wait('document.querySelector(".mobile-drawer")?.classList.contains("hidden") === false');
   assert.equal(await evaluate('document.activeElement.classList.contains("drawer-close-btn")'), true);
   await shot("fixture-navigation-drawer-mobile",390,844);
+  assert.equal(await evaluate(`([...document.querySelectorAll('.mobile-drawer .drawer-item')].every(row => {
+    const glyph = row.querySelector('.erp-icon');
+    return glyph && Math.abs(glyph.getBoundingClientRect().left - row.getBoundingClientRect().left
+      - Number.parseFloat(getComputedStyle(row).paddingLeft)) < 1;
+  }))`), true, "mobile menu icons share the start edge instead of inheriting centered button alignment");
   await evaluate('document.querySelector(".drawer-close-btn").click()');
   assert.equal(await evaluate('document.activeElement.hasAttribute("data-burger-menu")'), true);
   await evaluate('document.querySelector(".user-button").click()');
@@ -2128,9 +2188,26 @@ try {
     // flexible column, so a number or a date never takes the spare room) has none.
     const dataCols = firstFrame.cols.slice(1);
     assert.ok(dataCols.length > 0 && dataCols.filter(w => w === "").length === 1 && dataCols.every(w => w === "" || /^[0-9]+px$/.test(w)), `columns must have settled inline pixel widths on first frame: ${JSON.stringify(firstFrame)}`);
-    const longCell = await evaluate('(()=>{const cell=document.querySelector("table tbody td:not(.list-record-selector)"),link=cell.querySelector("button"),table=document.querySelector("table");return {page:document.documentElement.scrollWidth,viewport:innerWidth,table:table.getBoundingClientRect().width,cell:cell.getBoundingClientRect().width,link:link.getBoundingClientRect().width,full:cell.title===link.textContent,clipped:link.scrollWidth>link.clientWidth,layout:getComputedStyle(table).tableLayout};})()');
-    assert.ok(longCell.page <= width && longCell.table <= width && longCell.link <= longCell.cell && longCell.clipped && longCell.full, JSON.stringify(longCell));
-    assert.equal(longCell.layout, "fixed");
+    const longCell = await evaluate(`(() => {
+      const table = document.querySelector('table[aria-label=Records]');
+      const frame = table.closest('.list-results');
+      const cell = table.tBodies[0].rows[0].cells[1], link = cell.querySelector('button');
+      const start = frame.scrollLeft;
+      frame.scrollLeft = frame.scrollWidth;
+      const end = frame.scrollLeft;
+      const lastRight = table.tHead.rows[0].lastElementChild.getBoundingClientRect().right;
+      const reachable = lastRight <= frame.getBoundingClientRect().left + frame.clientLeft + frame.clientWidth + 1;
+      frame.scrollLeft = start;
+      return { page: document.documentElement.scrollWidth, table: table.offsetWidth, frame: frame.clientWidth,
+        cell: cell.offsetWidth, link: link.offsetWidth, clipped: link.scrollWidth > link.clientWidth,
+        full: cell.title === link.textContent, overflow: getComputedStyle(frame).overflowX, end, reachable };
+    })()`);
+    assert.ok(longCell.page <= width && longCell.link <= longCell.cell && longCell.clipped && longCell.full, JSON.stringify(longCell));
+    // At the name column's minimum the fixed numeric column may require scrolling inside the list.
+    if (longCell.table > longCell.frame + firstFrame.cols.length) {
+      assert.equal(longCell.cell, 160, "a long title yields to the fixed columns before the list scrolls");
+      assert.ok(longCell.overflow === 'auto' && longCell.end > 0 && longCell.reachable, JSON.stringify(longCell));
+    }
     await shot(`fixture-list-long-${width}`, width, height);
   }
   note = shortNote;

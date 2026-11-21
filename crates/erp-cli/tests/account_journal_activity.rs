@@ -92,6 +92,7 @@ struct Fixture {
     period_items: Vec<i64>,
     books: Books,
     statutory_journal: i64,
+    other_books: Books,
 }
 
 async fn fixture() -> Fixture {
@@ -185,6 +186,7 @@ async fn fixture() -> Fixture {
         period_items,
         books: b,
         statutory_journal: journal_id,
+        other_books: b2,
     }
 }
 
@@ -339,18 +341,19 @@ async fn movements() {
         .await
         .unwrap_err();
     assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
-    assert!(
-        error
-            .message()
-            .contains("not one of the companies you may use"),
-        "{error:?}"
+    assert_eq!(
+        error.message(),
+        format!(
+            "options.companies: company {} is not one of the companies you may use.",
+            f.other
+        )
     );
     drop(tx);
     let mut tx = f.orm.begin(f.outsider).await.unwrap();
     let error = runtime::report_lines(&tx.env(), &mut tx, &options)
         .await
         .unwrap_err();
-    assert_eq!(error.kind(), erp_sdk::ErrorKind::Access, "{error:?}");
+    assert_source_denial(&mut tx, &error).await;
 }
 
 #[test]
@@ -1182,4 +1185,308 @@ fn partner_ledger_refuses_dates_before_existing_ledger_capture() {
             .unwrap_err();
         assert!(earlier.message().contains("history is available from"));
     });
+}
+
+// The report must propagate the complete source-model refusal, including permitted groups.
+// Compare with an ordinary ORM read under the same principal, not a duplicated policy formatter.
+async fn assert_source_denial(tx: &mut Transaction, error: &Error) {
+    let direct = tx
+        .env()
+        .records("account.move.line")
+        .unwrap()
+        .search(tx, &Domain::TRUE)
+        .await
+        .unwrap_err();
+    assert_eq!(direct.kind(), erp_sdk::ErrorKind::Access);
+    assert_eq!(error.kind(), direct.kind());
+    assert_eq!(error.message(), direct.message());
+}
+
+async fn drill_values(env: &Env, tx: &mut Transaction, options: &Json, line: &Json) -> Vec<i64> {
+    let mut ids = Vec::new();
+    for (column, field) in ["debit", "credit", "balance"].iter().enumerate() {
+        let action = runtime::report_drill(
+            env,
+            tx,
+            options,
+            line["id"].as_str().unwrap(),
+            &json!({"cell":column}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(action["res_model"], "account.move.line");
+        let items = env
+            .records("account.move.line")
+            .unwrap()
+            .search(tx, &Domain::from_json(&action["domain"]).unwrap())
+            .await
+            .unwrap();
+        let mut current = items.ids();
+        current.sort_unstable();
+        if column == 0 {
+            ids = current;
+        } else {
+            assert_eq!(current, ids);
+        }
+        let source = items
+            .read_with(tx, &[*field], erp_sdk::Load::Raw)
+            .await
+            .unwrap();
+        assert_eq!(source.len(), ids.len());
+        let total: Decimal = source.iter().map(|row| booked_amount(&row[*field])).sum();
+        assert_eq!(numbers(line)[column], total);
+    }
+    ids
+}
+
+// Explicit journal membership is part of this fixture: the default journal can be the
+// alternate ledger after fixture() creates it (journals order by sequence, type and code).
+async fn posted_items(
+    tx: &mut Transaction,
+    company: i64,
+    journal: i64,
+    date: Date,
+    amounts: &[(i64, &str)],
+) -> Records {
+    let entry = moves(tx, company)
+        .create(
+            tx,
+            vec![
+                RawVals::new()
+                    .set_cell("date", Cell::Date(date))
+                    .set_cell("journal_id", Cell::Id(journal))
+                    .set_commands(
+                        "line_ids",
+                        amounts
+                            .iter()
+                            .map(|(account, amount)| {
+                                Command::create(
+                                    RawVals::new()
+                                        .set_cell("account_id", Cell::Id(*account))
+                                        .set_cell("balance", Cell::Decimal(num(amount))),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+            ],
+        )
+        .await
+        .unwrap();
+    entry.call::<(), ()>(tx, "action_post", ()).await.unwrap();
+    assert_eq!(entry.cell(tx, "date").await.unwrap(), Cell::Date(date));
+    assert_eq!(
+        entry.related(tx, "journal_id").await.unwrap().ids(),
+        [journal]
+    );
+    entry
+}
+
+#[test]
+fn account_movements_boundaries_and_all_cells_reconcile() {
+    big_stack(boundaries);
+}
+
+async fn boundaries() {
+    let f = fixture().await;
+    let mut setup = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    let b = &f.books;
+    let j = journal(&mut setup, f.company, "BOUND", "general", None).await;
+    let entry = posted_items(
+        &mut setup,
+        f.company,
+        j,
+        d(2024, 3, 31),
+        &[(b.bank, "3"), (b.bank, "4.75"), (b.income, "-7.75")],
+    )
+    .await;
+    let mut expected = entry.related(&mut setup, "line_ids").await.unwrap().ids();
+    for (debit, credit) in [(b.expense, b.income), (b.income, b.expense)] {
+        let e = posted_items(
+            &mut setup,
+            f.company,
+            j,
+            d(2024, 3, 31),
+            &[(debit, "5"), (credit, "-5")],
+        )
+        .await;
+        expected.extend(e.related(&mut setup, "line_ids").await.unwrap().ids());
+    }
+    for date in [d(2024, 3, 30), d(2024, 4, 1)] {
+        posted_items(
+            &mut setup,
+            f.company,
+            j,
+            date,
+            &[(b.bank, "900"), (b.income, "-900")],
+        )
+        .await;
+    }
+    setup.commit().await.unwrap();
+    expected.sort_unstable();
+    let mut tx = f.orm.begin(f.reader).await.unwrap();
+    let report = xml_id(&mut tx, "account_reporting", "report_account_movements").await;
+    let options = json!({"report":report,"companies":[f.company],
+        "date":{"preset":"custom","from":"2024-03-31","to":"2024-03-31"}});
+    let env = tx.env();
+    let shown = runtime::report_lines(&env, &mut tx, &options)
+        .await
+        .unwrap();
+    assert_eq!(shown["lines"].as_array().unwrap().len(), 1);
+    let root = &shown["lines"][0];
+    assert_eq!(numbers(root), [num("17.75"), num("17.75"), num("0")]);
+    assert_eq!(drill_values(&env, &mut tx, &options, root).await, expected);
+    let accounts = runtime::report_expand(&env, &mut tx, &options, root["id"].as_str().unwrap(), 0)
+        .await
+        .unwrap();
+    let accounts = accounts["lines"].as_array().unwrap();
+    assert_eq!(accounts.len(), 3);
+    assert!(
+        accounts
+            .iter()
+            .any(|a| numbers(a) == [num("5"), num("5"), num("0")])
+    );
+    let mut all = Vec::new();
+    let mut saw_multi_item_entry = false;
+    for account in accounts {
+        let account_ids = drill_values(&env, &mut tx, &options, account).await;
+        let entries =
+            runtime::report_expand(&env, &mut tx, &options, account["id"].as_str().unwrap(), 0)
+                .await
+                .unwrap();
+        let mut entry_ids = Vec::new();
+        for entry in entries["lines"].as_array().unwrap() {
+            let ids = drill_values(&env, &mut tx, &options, entry).await;
+            saw_multi_item_entry |= ids.len() == 2;
+            entry_ids.extend(ids);
+        }
+        entry_ids.sort_unstable();
+        assert_eq!(entry_ids, account_ids);
+        all.extend(entry_ids);
+    }
+    all.sort_unstable();
+    assert_eq!(all, expected);
+    assert!(saw_multi_item_entry);
+    let mut empty = options.clone();
+    empty["date"] = json!({"preset":"custom","from":"2024-04-02","to":"2024-04-02"});
+    let shown = runtime::report_lines(&env, &mut tx, &empty).await.unwrap();
+    let root = &shown["lines"][0];
+    assert_eq!(numbers(root), [Decimal::ZERO; 3]);
+    assert!(drill_values(&env, &mut tx, &empty, root).await.is_empty());
+    let children = runtime::report_expand(&env, &mut tx, &empty, root["id"].as_str().unwrap(), 0)
+        .await
+        .unwrap();
+    assert!(children["lines"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn account_movements_preserve_source_rules_and_company_selection() {
+    big_stack(source_rules);
+}
+
+async fn source_rules() {
+    let f = fixture().await;
+    let mut setup = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    let env = setup.env();
+    env.records("res.users")
+        .unwrap()
+        .browse([f.reader.get()])
+        .unwrap()
+        .write(
+            &mut setup,
+            RawVals::new().set_commands(
+                "company_ids",
+                vec![Command::set(
+                    [f.company, f.other].map(|id| RecId::from_real(id).unwrap()),
+                )],
+            ),
+        )
+        .await
+        .unwrap();
+    let peer_entry = posted_entry(
+        &mut setup,
+        &f.other_books,
+        f.other_books.bank,
+        f.other_books.income,
+        None,
+        "91",
+        d(2024, 3, 6),
+    )
+    .await;
+    let mut peer_ids = peer_entry
+        .related(&mut setup, "line_ids")
+        .await
+        .unwrap()
+        .ids();
+    peer_ids.sort_unstable();
+    // Hide the original February entry while leaving the March reversal visible.
+    let model: i64 = setup
+        .query(
+            "SELECT id FROM ir_model WHERE model='account.move.line'",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    env.records("ir.access")
+        .unwrap()
+        .create(
+            &mut setup,
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("Only later report items"))
+                    .set_cell("model_id", Cell::Id(model))
+                    .set_cell("operation", text("r"))
+                    .set_cell("domain", text("[('date','>=','2024-03-01')]")),
+            ],
+        )
+        .await
+        .unwrap();
+    setup.commit().await.unwrap();
+    let secured = policy_orm(&f._db, &f.orm).await;
+    let mut tx = secured.begin(f.reader).await.unwrap();
+    let env = tx.env().with_context([(
+        "allowed_company_ids",
+        Value::list([Value::Int(f.company), Value::Int(f.other)]),
+    )]);
+    let report = xml_id(&mut tx, "account_reporting", "report_account_movements").await;
+    let options = json!({"report":report,"companies":[f.company],
+        "date":{"preset":"custom","from":"2024-02-01","to":"2024-03-31"}});
+    let shown = runtime::report_lines(&env, &mut tx, &options)
+        .await
+        .unwrap();
+    let root = &shown["lines"][0];
+    assert_eq!(numbers(root), [num("11.05"), num("11.05"), num("0")]);
+    let mut expected: Vec<i64> = f
+        .period_items
+        .iter()
+        .copied()
+        .filter(|id| !f.february_items.contains(id))
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(drill_values(&env, &mut tx, &options, root).await, expected);
+    let accounts = runtime::report_expand(&env, &mut tx, &options, root["id"].as_str().unwrap(), 0)
+        .await
+        .unwrap();
+    assert_eq!(accounts["lines"].as_array().unwrap().len(), 2);
+    for account in accounts["lines"].as_array().unwrap() {
+        let ids = drill_values(&env, &mut tx, &options, account).await;
+        assert_eq!(ids.len(), 1);
+        assert!(expected.contains(&ids[0]));
+    }
+    let mut peer = options.clone();
+    peer["companies"] = json!([f.other]);
+    let shown = runtime::report_lines(&env, &mut tx, &peer).await.unwrap();
+    let root = &shown["lines"][0];
+    assert_eq!(numbers(root), [num("91"), num("91"), Decimal::ZERO]);
+    assert_eq!(drill_values(&env, &mut tx, &peer, root).await, peer_ids);
+    let mut both = options.clone();
+    both["companies"] = json!([f.company, f.other]);
+    let error = runtime::report_lines(&env, &mut tx, &both)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "options.companies: this report covers one company."
+    );
 }

@@ -35,6 +35,7 @@ export class ReportScreen implements ClientActionHandle {
   private readonly menu = make("div", "report-menu");
   private readonly buttons = new Map<string, HTMLButtonElement>();
   private shown: Shown | undefined;
+  private initialOptions: ReturnType<typeof data.decodeOptions> | undefined;
   private filtersBar: { dispose(): void } | undefined;
   private caret: { disclosure: Disclosure; trigger: HTMLElement } | undefined;
   private failure: { message: string; retry: () => void } | undefined;
@@ -73,12 +74,13 @@ export class ReportScreen implements ClientActionHandle {
     const gen = ++this.generation;
     const resolved = data.decodeOptions(await this.call("erp_report_options", { report: this.report, previous }));
     if (gen !== this.generation || this.disposed) return;
+    this.initialOptions = resolved;
     const loaded = data.decodeLines(await this.call("erp_report_lines", { options: this.requestOptions(resolved.options, resolved.filters.currentOnly) }));
     if (gen !== this.generation || this.disposed) return;
     this.commit({ name: resolved.name, filters: resolved.filters, ...loaded });
   }
   private async start(): Promise<void> {
-    this.phase = "loading"; this.failure = undefined; this.render();
+    this.phase = "loading"; this.initialOptions = undefined; this.failure = undefined; this.render();
     const restored = this.env.restored;
     const saved = restored && typeof restored === "object" ? (restored as Record<string, unknown>) : null;
     const previous = saved && typeof saved["options"] === "object" && saved["options"] !== null ? saved["options"] as Options : false;
@@ -92,12 +94,14 @@ export class ReportScreen implements ClientActionHandle {
     if (typeof saved?.["scroll"] === "number") this.scroller.scrollTop = saved["scroll"];
   }
   /** The report with `options`; the screen keeps its table (dimmed) until the answer arrives, and keeps it if the answer is an error. */
-  private requestOptions(options: Options, currentOnly = this.shown?.filters.currentOnly): Options {
+  private requestOptions(options: Options, currentOnly = (this.shown ?? this.initialOptions)?.filters.currentOnly): Options {
     // A current-position request delegates Today to the server, including after the user's midnight.
     return currentOnly ? { ...options, date: { mode: "single", preset: "today" } } : options;
   }
 
   private reload(options: Options, renewScope = false): void {
+    const base = this.shown ?? this.initialOptions;
+    if (!base) return;
     const gen = ++this.generation;
     this.phase = this.shown ? "refreshing" : "loading"; this.failure = undefined; this.closeCaret(false); this.renderStatus(); this.syncControls();
     this.scroller.dataset["dim"] = String(this.shown !== undefined);
@@ -112,8 +116,8 @@ export class ReportScreen implements ClientActionHandle {
         requested = this.requestOptions(resolved.options, resolved.filters.currentOnly);
       }
       const raw = await this.call("erp_report_lines", { options: requested });
-      if (gen !== this.generation || this.disposed || !this.shown) return;
-      this.commit({ ...this.shown, ...resolved, ...data.decodeLines(raw) });
+      if (gen !== this.generation || this.disposed) return;
+      this.commit({ ...base, ...resolved, ...data.decodeLines(raw) });
     };
     void load().catch((error: unknown) => {
       if (gen === this.generation && !this.disposed) this.fail(error, () => this.reload(options, renewScope));
@@ -121,20 +125,21 @@ export class ReportScreen implements ClientActionHandle {
   }
   private commit(next: Shown): void {
     data.validateProviderOptions(next.options, next.filters);
-    this.shown = next; this.failure = undefined; this.phase = "ready"; this.busy.clear();
+    this.shown = next; this.initialOptions = undefined; this.failure = undefined; this.phase = "ready"; this.busy.clear();
     this.render();
   }
   private fail(error: unknown, retry: () => void): void {
     this.failure = { message: message(error), retry }; this.phase = "ready"; this.render();
   }
   private patch(patch: Options): void {
-    if (!this.shown) return;
-    const options = { ...this.shown.options, ...patch };
-    if (typeof patch["search"] === "string" && [...patch["search"]].length > this.shown.filters.maxSearchChars) {
-      this.env.notice(`Search is limited to ${this.shown.filters.maxSearchChars} characters.`);
+    const base = this.shown ?? this.initialOptions;
+    if (!base) return;
+    const options = { ...base.options, ...patch };
+    if (typeof patch["search"] === "string" && [...patch["search"]].length > base.filters.maxSearchChars) {
+      this.env.notice(`Search is limited to ${base.filters.maxSearchChars} characters.`);
       return;
     }
-    if (("hide_zero" in patch || "search" in patch) && this.phase === "ready" && !this.failure) {
+    if (this.shown && ("hide_zero" in patch || ("search" in patch && !base.filters.serverSearch)) && this.phase === "ready" && !this.failure) {
       this.shown = { ...this.shown, options };
       this.render();
     } else {
@@ -192,7 +197,7 @@ export class ReportScreen implements ClientActionHandle {
   }
   private renderBar(): void {
     this.filtersBar?.dispose(); this.filtersBar = undefined; this.bar.replaceChildren();
-    const s = this.shown;
+    const s = this.shown ?? this.initialOptions;
     if (!s) return;
     const built = buildFilters({ env: this.env, options: s.options, filters: s.filters, apply: patch => this.patch(patch) });
     this.filtersBar = built; this.bar.append(built.node);
@@ -222,7 +227,7 @@ export class ReportScreen implements ClientActionHandle {
       this.scroller.append(skeleton); return;
     }
     this.scroller.dataset["dim"] = String(this.phase === "refreshing");
-    const visible = data.visibleLines(s.lines, s.options);
+    const visible = data.visibleLines(s.lines, s.options, s.filters.serverSearch);
     if (!visible.length) { this.scroller.append(make("p", "report-empty", "No data for these filters")); return; }
     const cols = data.columns(s.options), groups = data.periods(s.options);
     this.root.dataset["singleColumn"] = String(cols.length === 1);

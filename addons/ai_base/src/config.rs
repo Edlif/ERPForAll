@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 pub enum CredentialError {
     /// Unknown fields or malformed table/value types.
     #[error(
-        "invalid [ai] configuration: expected max_providers, max_key_bytes, max_request_bytes and provider.<name>.key_file only"
+        "invalid [ai] configuration: expected known [ai] limits and provider key_file/base_url fields only"
     )]
     Configuration,
     /// Node admission setting outside its safety bounds.
@@ -45,6 +45,14 @@ pub enum CredentialError {
         /// Sanitized diagnostic.
         reason: String,
     },
+    /// Invalid outbound credential binding. No URI or secret is included in diagnostics.
+    #[error(
+        "ai.provider.{provider}.base_url must be an absolute HTTPS base URL (HTTP is allowed only on a loopback IP literal), without credentials, query or fragment"
+    )]
+    Endpoint {
+        /// Provider whose endpoint is invalid.
+        provider: String,
+    },
     /// No credential is configured for the explicitly selected provider.
     #[error("erp.ai.provider_unconfigured: provider '{provider}'")]
     Unconfigured {
@@ -57,8 +65,11 @@ pub enum CredentialError {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     max_providers: Option<usize>,
+    max_concurrent_turns: Option<usize>,
     max_key_bytes: Option<usize>,
     max_request_bytes: Option<usize>,
+    timeout_ms: Option<u64>,
+    max_response_bytes: Option<usize>,
     #[serde(default)]
     provider: BTreeMap<String, RawProvider>,
 }
@@ -66,13 +77,17 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawProvider {
     key_file: PathBuf,
+    base_url: Option<String>,
 }
 
 /// Validated credentials. Secret buffers are erased on drop and omitted from Debug.
 /// This type deliberately implements neither Clone nor serialization; adapters live in this addon.
 #[non_exhaustive]
 pub struct Credentials {
-    keys: BTreeMap<String, Zeroizing<Vec<u8>>>,
+    keys: BTreeMap<String, (Zeroizing<Vec<u8>>, Option<url::Url>)>,
+    max_concurrent_turns: usize,
+    pub(crate) timeout: std::time::Duration,
+    pub(crate) response_bytes: usize,
     request_bytes: usize,
 }
 pub(crate) const DEFAULT_REQUEST_BYTES: usize = 1024 * 1024;
@@ -83,6 +98,9 @@ impl Default for Credentials {
     fn default() -> Self {
         Self {
             keys: BTreeMap::new(),
+            max_concurrent_turns: 4,
+            timeout: std::time::Duration::from_secs(30),
+            response_bytes: crate::encoding::MAX_RESPONSE_BYTES,
             request_bytes: DEFAULT_REQUEST_BYTES,
         }
     }
@@ -96,6 +114,16 @@ impl fmt::Debug for Credentials {
     }
 }
 impl Credentials {
+    /// Maximum concurrent text exchanges on this node.
+    pub fn max_concurrent_turns(&self) -> usize {
+        self.max_concurrent_turns
+    }
+
+    /// Absolute upstream deadline used to bound the database admission lease.
+    pub fn exchange_timeout(&self) -> std::time::Duration {
+        self.timeout
+    }
+
     /// Validate a complete `[ai]` table and atomically load its protected credential files.
     /// Missing `[ai]` means an empty registry. Reload by constructing a replacement, then swapping
     /// only after success; a partial failed reload never yields a usable registry.
@@ -112,6 +140,15 @@ impl Credentials {
             None => RawConfig::default(),
         };
         // These defaults are operator-adjustable node admission limits, bounded below and above.
+        let max_concurrent_turns = raw
+            .max_concurrent_turns
+            .unwrap_or(Self::default().max_concurrent_turns);
+        if !(1..=64).contains(&max_concurrent_turns) {
+            return Err(CredentialError::Limit {
+                setting: "ai.max_concurrent_turns",
+                range: "1..=64",
+            });
+        }
         let max_providers = raw.max_providers.unwrap_or(32);
         let max_key_bytes = raw.max_key_bytes.unwrap_or(16384);
         if !(1..=128).contains(&max_providers) {
@@ -136,6 +173,24 @@ impl Credentials {
         if raw.provider.len() > max_providers {
             return Err(CredentialError::ProviderCount);
         }
+        let timeout = raw
+            .timeout_ms
+            .map_or(Self::default().timeout, std::time::Duration::from_millis);
+        if !(100..=120_000).contains(&timeout.as_millis()) {
+            return Err(CredentialError::Limit {
+                setting: "ai.timeout_ms",
+                range: "100..=120000",
+            });
+        }
+        let response_bytes = raw
+            .max_response_bytes
+            .unwrap_or(crate::encoding::MAX_RESPONSE_BYTES);
+        if !(1024..=crate::encoding::MAX_RESPONSE_BYTES).contains(&response_bytes) {
+            return Err(CredentialError::Limit {
+                setting: "ai.max_response_bytes",
+                range: "1024..=1048576",
+            });
+        }
         let mut keys = BTreeMap::new();
         for (name, provider) in raw.provider {
             if name.is_empty()
@@ -147,12 +202,32 @@ impl Credentials {
                 return Err(CredentialError::ProviderName);
             }
             let path = directory.join(provider.key_file);
-            keys.insert(name.clone(), read_key(&name, &path, max_key_bytes)?);
+            let endpoint = provider
+                .base_url
+                .map(|base| {
+                    crate::transport::trusted_base(&base).ok_or_else(|| CredentialError::Endpoint {
+                        provider: name.clone(),
+                    })
+                })
+                .transpose()?;
+            keys.insert(
+                name.clone(),
+                (read_key(&name, &path, max_key_bytes)?, endpoint),
+            );
         }
         Ok(Self {
+            max_concurrent_turns,
             keys,
+            timeout,
+            response_bytes,
             request_bytes,
         })
+    }
+
+    // A database route cannot send a node credential to a different origin or API path.
+    pub(crate) fn bound_key(&self, name: &str, endpoint: &url::Url) -> Option<&[u8]> {
+        let (key, configured) = self.keys.get(name)?;
+        (configured.as_ref() == Some(endpoint)).then_some(key.as_slice())
     }
 
     pub(crate) fn request_bytes(&self) -> usize {

@@ -191,6 +191,13 @@ async fn set(tx: &mut Transaction, key: &str, value: Value) {
     .unwrap();
 }
 
+async fn set_code_length(tx: &mut Transaction, value: i64) -> Result<i64> {
+    tx.env()
+        .records("ir.config_parameter")?
+        .call(tx, "set_int", (CODE_MAX_LENGTH.to_owned(), Some(value)))
+        .await
+}
+
 fn assert_refused(result: Result<impl std::fmt::Debug>, message: &str) {
     let error = result.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
@@ -425,19 +432,11 @@ async fn code_length_is_bounded_by_its_setting_body() {
     .await;
     assert_refused(spaced, "starts or ends with a space");
     // a shorter limit refuses a proposed code that does not fit
-    set(&mut tx, CODE_MAX_LENGTH, Value::Int(4)).await;
+    set_code_length(&mut tx, 4).await.unwrap();
     let proposed = create(&journals, &mut tx, vec![journal_vals("Bills", "purchase")]).await;
     assert_refused(proposed, "No free journal code starting with BILL");
     // and the setting refuses a value outside its bounds
-    let env = tx.env().sudo(true);
-    let outside = write_values(
-        &env,
-        &mut tx,
-        SettingsScope::Global {},
-        "1".into(),
-        vec![(CODE_MAX_LENGTH.to_owned(), Value::Int(0))],
-    )
-    .await;
+    let outside = tx.savepoint(async |tx| set_code_length(tx, 0).await).await;
     assert_refused(
         outside,
         &format!("{CODE_MAX_LENGTH} takes a whole number from 1 to 32"),
@@ -1371,7 +1370,7 @@ async fn refusals_name_only_records_the_caller_may_read_body() {
     .unwrap()
     .ids()[0];
     // every code the miscellaneous prefix allows in five characters is taken in the main company
-    set(&mut tx, CODE_MAX_LENGTH, Value::Int(5)).await;
+    set_code_length(&mut tx, 5).await.unwrap();
     let full: Vec<RawVals> = (1..=9)
         .map(|n| {
             journal_vals(&format!("Misc {n}"), "general")

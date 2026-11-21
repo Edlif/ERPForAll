@@ -21,9 +21,9 @@
 //!   ([`DeferSettle`]), so they add no engine call of their own;
 //! - the done marks are three statements (lines, moves, transfers); the transfer counters and state
 //!   follow from the move counter triggers;
-//! - a partial quantity is refused by name ([`StockError::BackorderNotAvailable`]) unless the
-//!   operation type never creates backorders, where the move is done with its quantity as in the
-//!   reference; a cancelled move that feeds open moves is refused ([`StockError::CancelChained`]).
+//! - on a short direct receipt or delivery, Always creates the outstanding demand in a new transfer.
+//!   Never finishes the available work. Ask opens a decision through the transfer form.
+//!   Cancelling a move that feeds open moves remains refused ([`StockError::CancelChained`]).
 //!
 //! **Done work is fixed.** A done move, its lines and a done transfer keep their quantities,
 //! product, locations, state and links for every caller, sudo included: a write naming a field
@@ -40,13 +40,13 @@
 //! the free quantity in the same call and the validation is refused by name with nothing changed
 //! (3); elsewhere they take it, as over-reservation is legal there (O7).
 //!
-//! Not here yet: backorders, lots, the line picked flag (every line of a done move is done), the incoming date carried from the source
+//! Not here yet: multi-transfer backorder choices, manual splitting, lots, the line picked flag (every line of a done move is done), the incoming date carried from the source
 //! balance (the destination keeps its own or takes now), the re-floor of other reservations when a
 //! validation drives free stock negative at an unflagged location, the
 //! assignment of destination moves, packages consistency, the follower message on a cancelled
 //! remainder.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use erp_sdk::Operation;
 use erp_sdk::prelude::*;
@@ -86,7 +86,7 @@ pub(crate) const DONE_PICKING_WRITABLE: [&str; 6] = [
 
 /// The transfers of `$1` with their state, move count and backorder policy, locked first.
 const READ_PICKINGS: &str = "SELECT p.id, p.state, p.move_count, \
-       COALESCE(t.create_backorder, 'ask') = 'never' \
+       t.create_backorder \
      FROM stock_picking p LEFT JOIN stock_picking_type t ON t.id = p.picking_type_id \
      WHERE p.id = ANY($1) ORDER BY p.id";
 
@@ -369,10 +369,13 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    lock_pickings(tx, &ids).await?;
+    let origins = crate::returns::completion_origins(records, tx, &ids).await?;
+    let mut picking_roots = ids.clone();
+    picking_roots.extend_from_slice(&origins);
+    lock_pickings(tx, &picking_roots).await?;
     let mut todo_pickings = Vec::new();
     let mut drafts = Vec::new();
-    let mut never = HashMap::new();
+    let mut policies = HashMap::new();
     for row in tx.query(READ_PICKINGS, &[&ids]).await? {
         let id: i64 = row.try_get(0).map_err(decode)?;
         let state: String = row.try_get(1).map_err(decode)?;
@@ -384,7 +387,7 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
             "draft" => drafts.push(id),
             _ => {}
         }
-        never.insert(id, row.try_get::<_, bool>(3).map_err(decode)?);
+        policies.insert(id, row.try_get::<_, String>(3).map_err(decode)?);
         todo_pickings.push(id);
     }
     if todo_pickings.is_empty() {
@@ -434,9 +437,26 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
     // what is done, what is cancelled, what would need a backorder
     let mut done_moves = Vec::new();
     let mut cancel_moves = Vec::new();
+    let mut shortages = BTreeMap::new();
+    let choice = tx
+        .extension::<crate::backorder_choice::BackorderDecision>()
+        .0;
+    let mut applied_choice = false;
     for m in &moves {
-        let never = never.get(&m.picking).copied().unwrap_or(false);
+        let policy = policies
+            .get(&m.picking)
+            .ok_or_else(|| Error::invariant("Missing transfer backorder policy."))?;
         let todo = m.picked && m.quantity > Decimal::ZERO;
+        let short = if todo {
+            m.quantity < m.demand
+        } else {
+            m.demand > Decimal::ZERO
+        };
+        let explicit = choice
+            .filter(|(id, _)| *id == m.picking && policy == "ask" && short)
+            .map(|(_, keep)| keep);
+        applied_choice |= explicit.is_some();
+        let never = policy == "never" || explicit == Some(false);
         if todo && (m.quantity >= m.demand || never) {
             done_moves.push(m.id);
         } else if !todo && (m.demand.is_zero() || never) {
@@ -444,6 +464,26 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
                 return Err(StockError::CancelChained.into());
             }
             cancel_moves.push(m.id);
+        } else if policy == "always" || explicit == Some(true) {
+            let completed = if todo { m.quantity } else { Decimal::ZERO };
+            let remaining = m.demand.checked_sub(completed).ok_or_else(|| {
+                Error::validation(
+                    "The remaining stock demand is outside the supported quantity range.",
+                )
+            })?;
+            shortages
+                .entry(m.picking)
+                .or_insert_with(Vec::new)
+                .push(crate::backorder::ShortMove {
+                    id: m.id,
+                    completed,
+                    remaining,
+                });
+            if todo {
+                done_moves.push(m.id);
+            } else {
+                cancel_moves.push(m.id);
+            }
         } else {
             return Err(StockError::BackorderNotAvailable {
                 product: product_name(tx, m.product).await?,
@@ -452,6 +492,12 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
         }
     }
 
+    if choice.is_some() && !applied_choice {
+        return Err(Error::user(
+            "This transfer no longer needs an Ask backorder decision. Reopen the transfer to validate its current quantities.",
+        ));
+    }
+    let backorders = crate::backorder::split(tx, records, &shortages).await?;
     let mut deleted = Vec::new();
     let mut done_lines = Vec::new();
     let mut original_lines = Vec::new();
@@ -469,6 +515,8 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
             }
         }
     }
+
+    crate::returns::guard_completion(records, tx, &origins, &done_lines).await?;
 
     // one engine call: the released reservations and the on-hand changes, netted per key
     let mut released = HashMap::new();
@@ -554,6 +602,7 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
         .modified_external(tx, &["date_done", "priority", "write_date"])
         .await?;
     notify_pickings(records, tx, &roots).await?;
+    confirm_moves(records, tx, &backorders, true).await?;
     Ok(original_lines)
 }
 

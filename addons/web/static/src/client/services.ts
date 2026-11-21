@@ -110,6 +110,7 @@ export async function settingsView(
 
   let items: SettingsItem[] = [], linkPending = false;
   const appGroups = new Map<string, AppGroupInfo>();
+  const appsByScope = new Map<string, Set<string>>();
   // An addon's own
   // Configuration > Settings menu opens on its app (`app` widget option); without one the first app opens.
   let selectedApp: string | null = initialApp, firstDraw = true;
@@ -120,11 +121,25 @@ export async function settingsView(
 
   const scopeChoices: { value: string; label: string }[] = [];
   if (scopeKinds.includes("global")) scopeChoices.push({ value: "global", label: "Global settings" });
-  if (scopeKinds.includes("company")) for (const company of companies) scopeChoices.push({ value: String(company.id), label: company.name });
+  // The shell owns company selection. Several checked companies still have one current company.
+  const currentId = options.navigation?.currentCompanyId ?? (companies.length === 1 ? companies[0]?.id : undefined);
+  const currentCompany = companies.find(company => company.id === currentId);
+  if (scopeKinds.includes("company") && companies.length) {
+    if (!currentCompany) throw new ClientError("server", "The current company is unavailable for Settings.");
+    scopeChoices.push({ value: String(currentCompany.id), label: "Current company" });
+  }
   if (!scopeChoices.length) throw new ClientError("server", "No supported settings scope was declared.");
   // Open a business app in the operator's current company. The general Settings menu starts shared.
-  const currentCompany = options.navigation?.currentCompanyId;
-  const companyChoice = initialApp && scopeChoices.find(choice => choice.value === String(currentCompany));
+  // Remember the scope kind for this tab, never a company id. A shell company switch reloads the page.
+  const preferenceKey = options.navigation?.scopePreferenceKey;
+  let preferCompany = Boolean(initialApp);
+  if (preferenceKey) {
+    try {
+      const saved = window.sessionStorage.getItem(preferenceKey);
+      if (saved === "global" || saved === "company") preferCompany = saved === "company";
+    } catch (error) { console.warn("Could not read the Settings scope preference.", error); }
+  }
+  const companyChoice = preferCompany && scopeChoices.find(choice => choice.value === String(currentId));
   const firstScope = companyChoice ? companyChoice.value : scopeChoices[0]!.value;
   scope = firstScope === "global" ? { kind: "global" } : { kind: "company", company_id: Number(firstScope) };
 
@@ -142,6 +157,7 @@ export async function settingsView(
   const scopeButtons = scopeChoices.map(choice => {
     const segment = el("button", choice.label, "settings-scope-option") as HTMLButtonElement;
     segment.type = "button"; segment.setAttribute("role", "radio"); segment.dataset["scope"] = choice.value;
+    if (choice.value !== "global" && currentCompany) segment.title = currentCompany.name;
     return segment;
   });
   const showScope = (value: string): void => {
@@ -299,6 +315,9 @@ export async function settingsView(
     appGroups.clear();
 
     const grouped = new Map<string, Record<string, unknown>[]>();
+    for (const choice of scopeChoices) {
+      for (const app of appsByScope.get(choice.value) ?? []) grouped.set(app, []);
+    }
     const itemByKey = new Map(items.map(item => [item.key, item]));
     for (const declaration of [...declarations, ...items.map(item => ({ ...item }))]) {
       const appKey = text(declaration["app"], "setting app");
@@ -306,6 +325,8 @@ export async function settingsView(
       grouped.get(appKey)!.push(declaration);
     }
 
+    // A tab represents an installed contribution, even when its values use the other scope.
+    const alternate = scopeChoices.find(choice => choice.value !== scopeKey(scope));
     if (selectedApp !== null && !grouped.has(selectedApp)) {
       // The addon's own settings menu names an app with no declared settings: a configuration error, said loudly.
       if (firstDraw) throw new ClientError("validation", `The addon '${selectedApp}' declares no settings for this page.`);
@@ -313,7 +334,8 @@ export async function settingsView(
     }
     selectedApp ??= grouped.has("base") ? "base" : grouped.keys().next().value ?? null;
     firstDraw = false;
-    const orderedApps = [...grouped.entries()].sort(([a], [b]) => a === "base" ? -1 : b === "base" ? 1 : 0);
+    const orderedApps = [...grouped.entries()].sort(([a], [b]) =>
+      a === "base" ? -1 : b === "base" ? 1 : 0);
     for (const [appKey, appDecls] of orderedApps) {
       const rootMenu = options.navigation?.roots.find(root => root.module === appKey);
       const appTitle = rootMenu?.label ?? humanizeAppTitle(appKey);
@@ -543,6 +565,10 @@ export async function settingsView(
         });
       }
 
+      if (!appDecls.length && alternate) {
+        const open = button(alternate.label, () => switchScope(alternate.value, appKey), "settings-link");
+        section.append(el("p", "These settings are available in the other scope.", "settings-empty"), open);
+      }
       content.append(section);
       sidebarList.append(tab);
 
@@ -556,7 +582,10 @@ export async function settingsView(
       };
       appGroups.set(appKey, groupInfo);
 
-      tab.addEventListener("click", () => { selectApp(appKey); content.scrollTop = 0; });
+      tab.addEventListener("click", () => {
+        if (!appDecls.length && alternate) { switchScope(alternate.value, appKey); return; }
+        selectApp(appKey); content.scrollTop = 0;
+      });
     }
 
     if (!declarations.length && !items.length) {
@@ -573,8 +602,7 @@ export async function settingsView(
     }
   };
 
-  const load = async (requested: Record<string, unknown>): Promise<void> => {
-    const request = ++generation, immutableScope = { ...requested };
+  const describe = async (immutableScope: Record<string, unknown>) => {
     const description = object(await rpc.call("ir.config.setting", "erp_describe", { scope: immutableScope, context }));
     if (description["wire_major"] !== 1 || expectedRegistry !== undefined && description["registry_version"] !== expectedRegistry) throw new ClientError("unsupported", "Settings changed. Reload the application.");
     checkScope(description["scope"], immutableScope);
@@ -588,12 +616,29 @@ export async function settingsView(
     if (new Set(keys).size !== keys.length) throw new ClientError("server", "Duplicate settings declaration.");
     const nextItems = readSettingsItems(description, keys);
     if (nextItems.some(item => item.kind === "link") && !options.navigation) throw new ClientError("unsupported", "Settings links require the application's navigation service.");
-    // An addon may declare only shared settings. Inspect the description before reading any values.
-    if (firstDraw && initialApp && immutableScope["kind"] === "company" && scopeKinds.includes("global")
-        && !nextDeclarations.some(value => value["app"] === initialApp) && !nextItems.some(item => item.app === initialApp)) {
-      if (!disposed && request === generation) await load({ kind: "global" });
-      return;
+    const apps = new Set([...nextDeclarations.map(value => text(value["app"], "setting app")), ...nextItems.map(item => item.app)]);
+    return { nextDeclarations, nextItems, keys, apps };
+  };
+
+  const load = async (requested: Record<string, unknown>, entry = false, preferredApp?: string): Promise<void> => {
+    const request = ++generation;
+    let immutableScope = { ...requested }, current = await describe(immutableScope);
+    appsByScope.set(scopeKey(immutableScope), current.apps);
+    const alternate = scopeChoices.find(choice => choice.value !== scopeKey(immutableScope));
+    if (entry && alternate) {
+      const other = alternate.value === "global" ? { kind: "global" } : { kind: "company", company_id: currentId };
+      // Read authorized app names for the rail, keeping values and writes in one explicit scope.
+      try {
+        const otherDescription = await describe(other);
+        appsByScope.set(alternate.value, otherDescription.apps);
+        if (initialApp && !current.apps.has(initialApp) && otherDescription.apps.has(initialApp)) {
+          current = otherDescription; immutableScope = other;
+        }
+      } catch (error) {
+        if (!(error instanceof ClientError && error.kind === "permission")) throw error;
+      }
     }
+    const {nextDeclarations, nextItems, keys} = current;
     const response = object(await rpc.call("ir.config.setting", "erp_read_values", { scope: immutableScope, keys, context }));
     if (response["wire_major"] !== 1) throw new ClientError("unsupported", "Unsupported settings version.");
     checkScope(response["scope"], immutableScope);
@@ -607,6 +652,7 @@ export async function settingsView(
     const apps = [...nextDeclarations, ...nextItems.map(item => ({ ...item }) as Record<string, unknown>)].map(value => text(value["app"], "setting app"));
     if (addonIcons === null && apps.some(app => !options.navigation?.roots.some(root => root.module === app))) addonIcons = await readAddonIcons();
     if (disposed || request !== generation) return;
+    if (preferredApp) selectedApp = preferredApp;
     declarations = nextDeclarations; items = nextItems; baseline = nextValues; revision = nextRevision; scope = immutableScope; showScope(scopeKey(scope)); edits.clear(); ambiguous = false; draw();
   };
 
@@ -648,13 +694,17 @@ export async function settingsView(
     actionButton("Discard", discardAndReload)
   );
 
-  const switchScope = (selected: string): void => {
+  const switchScope = (selected: string, preferredApp?: string): void => {
     if (pending || selected === scopeKey(scope)) return;
     run(() => operation(async () => {
       if (edits.size && await choose("Unsaved changes", "Discard changes before switching scope?", ["Discard", "Cancel"]) !== "Discard") return;
       const requested = selected === "global" ? { kind: "global" } : { kind: "company", company_id: integer(Number(selected), "company") };
-      if (requested["kind"] === "company" && !companies.some(company => company.id === requested["company_id"])) throw new ClientError("validation", "Unsupported company scope.");
-      await load(requested);
+      if (requested["kind"] === "company" && requested["company_id"] !== currentId) throw new ClientError("validation", "Unsupported company scope.");
+      await load(requested, false, preferredApp);
+      if (preferenceKey && !disposed) {
+        try { window.sessionStorage.setItem(preferenceKey, selected === "global" ? "global" : "company"); }
+        catch (error) { console.warn("Could not remember the Settings scope preference.", error); }
+      }
     }));
   };
   scopeGroup.addEventListener("click", event => {
@@ -672,7 +722,7 @@ export async function settingsView(
 
   form.addEventListener("submit", event => { event.preventDefault(); run(save); });
 
-  try { await operation(() => load(scope)); } catch (error) { dispose(); throw error; }
+  try { await operation(() => load(scope, true)); } catch (error) { dispose(); throw error; }
   return { busy: () => pending, dirty: () => edits.size > 0, save, discard, dispose };
 }
 

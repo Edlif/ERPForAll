@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Declared settings of the journals (Accounting settings, block "Journals"): the longest journal
-//! code, the code prefix proposed per journal type and the account types a journal's default
-//! account may have per journal type. The reference keeps these as literals in
+//! Journals' code-length system parameter and Accounting Settings for type-specific prefixes
+//! and allowed default-account types. The reference keeps these as literals in
 //! (default-account domain) and `:898-918`
 //! (code prefixes); here an administrator changes them, each with a default and a bound.
 
@@ -10,7 +9,7 @@ use std::collections::BTreeMap;
 use erp_addon_base::ir_config_setting::read_values;
 use erp_sdk::prelude::*;
 use erp_sdk::serde_json;
-use erp_sdk::settings::{ScopeKind, SettingDecl};
+use erp_sdk::settings::{ParameterDecl, ScopeKind, SettingDecl};
 use erp_sdk::views::wire::SettingsScope;
 
 /// The six journal types, in the reference's order.
@@ -40,7 +39,7 @@ pub const ACCOUNT_TYPES: [&str; 19] = [
     "off_balance",
 ];
 
-/// Declared setting: the longest journal code, in characters.
+/// Declared system parameter: the longest journal code, in characters.
 pub const CODE_MAX_LENGTH: &str = "account.journal_code_max_length";
 /// Default of [`CODE_MAX_LENGTH`]. The reference sets no limit; 16 holds its proposed codes and
 /// the imported names of its tests.
@@ -139,13 +138,7 @@ fn settings() -> Result<Vec<SettingDecl>> {
             &["account.group_account_manager"],
         )
     };
-    let mut decls = vec![admin(SettingDecl::integer(
-        CODE_MAX_LENGTH,
-        "Journals: longest journal code (characters)",
-        ScopeKind::Global,
-        CODE_MAX_LENGTH_DEFAULT,
-        (CODE_MAX_LENGTH_FLOOR, CODE_MAX_LENGTH_HARD),
-    )?)?];
+    let mut decls = Vec::with_capacity(JOURNAL_TYPES.len() * 2);
     for (journal_type, label, prefix, types) in DEFAULTS {
         decls.push(admin(
             SettingDecl::string(
@@ -172,6 +165,20 @@ fn settings() -> Result<Vec<SettingDecl>> {
 }
 erp_sdk::setting_declarations!(settings);
 
+pub(crate) fn code_max_length_parameter() -> Result<ParameterDecl> {
+    ParameterDecl::integer(
+        CODE_MAX_LENGTH,
+        "Journals: longest journal code (characters)",
+        CODE_MAX_LENGTH_DEFAULT,
+        (CODE_MAX_LENGTH_FLOOR, CODE_MAX_LENGTH_HARD),
+    )
+}
+
+fn parameters() -> Result<Vec<ParameterDecl>> {
+    Ok(vec![code_max_length_parameter()?])
+}
+erp_sdk::system_parameters!(parameters);
+
 /// The journal settings as read for one operation.
 #[derive(Debug, Clone)]
 pub struct JournalSettings {
@@ -182,15 +189,18 @@ pub struct JournalSettings {
 }
 
 impl JournalSettings {
-    /// Read every journal setting in one statement. The framework reads its own configuration with
-    /// elevated rights: creating a journal needs no settings group.
+    /// Read the code bound and then the journal Settings batch in the caller's transaction.
+    /// The framework reads its own configuration so creating a journal needs no settings group.
     ///
     /// # Errors
     ///
     /// Settings read failures; a stored value of the wrong shape.
     pub async fn read(tx: &mut Transaction) -> Result<Self> {
+        let length = erp_sdk::params::get_int(tx, &crate::ADDON, CODE_MAX_LENGTH).await?;
+        let code_max_length = usize::try_from(length)
+            .map_err(|error| Error::internal(format!("{CODE_MAX_LENGTH}: {error}")))?;
         let env = tx.env().sudo(true);
-        let mut keys = vec![CODE_MAX_LENGTH.to_owned()];
+        let mut keys = Vec::with_capacity(JOURNAL_TYPES.len() * 2);
         for journal_type in JOURNAL_TYPES {
             keys.push(prefix_key(journal_type));
             keys.push(account_types_key(journal_type));
@@ -211,13 +221,6 @@ impl JournalSettings {
                 .map(str::to_owned)
                 .ok_or_else(|| Error::internal(format!("{key} is not a text value")))
         };
-        let code_max_length = values
-            .get(CODE_MAX_LENGTH)
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())
-            .ok_or_else(|| {
-                Error::internal(format!("{CODE_MAX_LENGTH} is not a positive integer"))
-            })?;
         let mut prefixes = BTreeMap::new();
         let mut account_types = BTreeMap::new();
         for journal_type in JOURNAL_TYPES {

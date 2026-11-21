@@ -110,7 +110,8 @@ object!(/// Authenticated, authorized no-store shell bootstrap.
         allowed_company_ids: Vec<WireId>, active_company_ids: Vec<WireId>, locale: Locale,
         csrf: Csrf, renderers: Vec<Renderer>,
         #[serde(default)] attachment_limits: Option<AttachmentUploadLimits>,
-        #[serde(default)] rpc_body_bytes: Option<u32> });
+        #[serde(default)] rpc_body_bytes: Option<u32>,
+        #[serde(default)] thread_reconnect_ms: Option<[u32; 2]> });
 object!(/// Effective upload policy; absent runtime is represented by a null bootstrap member.
     AttachmentUploadLimits { max_file_bytes: u32, inline_max_bytes: u32 });
 impl AttachmentUploadLimits {

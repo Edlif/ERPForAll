@@ -76,6 +76,7 @@ export class RecordForm {
     canEdit?: boolean;
     form: HTMLFormElement; state: RecordState; view: View; rpc: RpcClient; context: Record<string, unknown>;
     messagingStore?: MessagingStore;
+    threadSocket?: { company: number; csrf: string; retry: readonly [number, number] };
     /** Signed-in user id (chatter followers). */
     uid?: number;
     userName?: string;
@@ -372,6 +373,7 @@ export class RecordForm {
       if (this.chatterMount && this.chatterMount.id === state.id) { slot.remove(); return; }
       this.releaseChatter();
       const chatter = new Chatter({
+        ...(this.env.threadSocket && { threadSocket: this.env.threadSocket }),
         host: slot,
         model: state.model,
         recordId: state.id,

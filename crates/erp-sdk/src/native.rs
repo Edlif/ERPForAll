@@ -100,6 +100,8 @@ pub use erp_macros::{addon, extend, methods, migration, model, model_ref};
 /// The right to mark a transaction as loading `base`'s data; minted only by the ORM builder
 /// (`OrmBuilder::build_with_base_install_grant`). Not in the prelude.
 pub use erp_orm::BaseInstallGrant;
+/// Typed channel for a payload-free notification delivered only if the transaction commits.
+pub use erp_orm::NotifyChannel;
 /// What a transaction is opened for. Addon code that acts for a caller uses
 /// [`PrincipalHint::caller`], [`BeginOptions::caller`], [`Orm::begin_caller`] or
 /// [`Orm::env_caller`], which never produce the `System` principal (A4).

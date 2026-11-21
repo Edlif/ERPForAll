@@ -64,7 +64,8 @@ The total with taxes and
             </group>
             <group>
               <field name="customer_lead" invisible="display_type"/>
-              <field name="qty_delivered" invisible="display_type"/>
+              <field name="qty_delivered_method" invisible="1"/>
+              <field name="qty_delivered" invisible="display_type" readonly="qty_delivered_method != 'manual'"/>
               <field name="qty_invoiced" invisible="display_type"/>
               <field name="invoice_status" invisible="display_type"/>
             </group>
@@ -153,6 +154,8 @@ The total with taxes and
         <header>
           <button name="action_confirm" type="object" string="Confirm" class="btn-primary" invisible="state not in ('draft', 'sent')"/>
           <button name="action_quotation_sent" type="object" string="Mark as Sent" invisible="state != 'draft'"/>
+          <button name="action_create_draft_invoice" type="object" string="Create Draft Invoice" class="btn-primary"
+                  groups="account.group_account_user" invisible="state != 'sale' or invoicing_closed or invoice_status != 'to invoice'"/>
           <button name="action_lock" type="object" string="Lock" invisible="state != 'sale' or locked" groups="sales_team.group_sale_manager"/>
           <button name="action_unlock" type="object" string="Unlock" invisible="state != 'sale' or not locked" groups="sales_team.group_sale_manager"/>
           <button name="action_draft" type="object" string="Set to Quotation" invisible="state != 'cancel'"/>

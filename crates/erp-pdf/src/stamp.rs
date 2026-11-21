@@ -7,6 +7,7 @@ use lopdf::{Dictionary, Object, Stream, dictionary};
 /// Append a one-page PDF overlay as an isolated Form XObject.
 /// Annotations of the target stay as they are and are drawn above the overlay by a reader; an
 /// overlay page that has annotations is refused, a Form XObject cannot hold them.
+/// An unsigned form of the target stays a form; a signed target or overlay is refused.
 ///
 /// Placement uses target default page coordinates. The overlay is placed the way a viewer shows
 /// its page:
@@ -217,7 +218,7 @@ fn placed(placement: &StampPlacement, unit: f64) -> Result<String> {
     }
     Ok(format!("{a} {b} {c} {d} {e} {f}"))
 }
-fn balanced(bytes: &[u8], l: &Context<'_>) -> Result<()> {
+pub(crate) fn balanced(bytes: &[u8], l: &Context<'_>) -> Result<()> {
     let content = lopdf::content::Content::decode(bytes)
         .map_err(|e| malformed("PDF malformed drawing operations").source(e))?;
     let mut depth = 0usize;

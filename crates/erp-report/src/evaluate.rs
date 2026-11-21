@@ -27,7 +27,7 @@ use std::{rc::Rc, sync::Arc, time::Instant};
 mod html_content;
 
 const FRAGMENT: &str = "report.fragment";
-const VECTORS_TASK: &str = "a later release";
+const ICONS_TASK: &str = "a later release";
 /// The helper a template gives an image field to for an `<img>` source, as in the reference.
 const IMAGE_HELPER: &str = "image_data_uri";
 /// Points of one CSS pixel: the natural size of an image is its pixel size at 96 per inch.
@@ -1318,7 +1318,7 @@ impl<'p> Run<'p> {
         if look.icon {
             return Err(ReportError::Unsupported {
                 feature: "icons",
-                task: VECTORS_TASK,
+                task: ICONS_TASK,
             });
         }
         if look.spans {
@@ -1821,6 +1821,7 @@ fn code_by_path(
     }
     let (mut width, mut height) = (600, 100);
     let (mut human_readable, mut quiet, mut gs1) = (false, true, false);
+    let mut bearer_modules = None;
     let mut level = QrLevel::default();
     let mut grid = grid;
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
@@ -1840,6 +1841,13 @@ fn code_by_path(
             "humanreadable" => human_readable = whole(&text, 0, u32::MAX)? != 0,
             "quiet" => quiet = whole(&text, 0, u32::MAX)? != 0,
             "gs1" => gs1 = whole(&text, 0, 1)? == 1,
+            "bearer_modules" => {
+                bearer_modules = Some(whole(
+                    &text,
+                    u32::from(crate::Code::MIN_BEARER_MODULES),
+                    u32::from(crate::Code::MAX_BEARER_MODULES),
+                )? as u8)
+            }
             "barLevel" => {
                 level = QrLevel::from_name(&text).ok_or_else(|| {
                     refuse(format!(
@@ -1878,6 +1886,7 @@ fn code_by_path(
             human_readable,
             quiet,
             gs1,
+            bearer_modules,
             level,
             grid,
         },

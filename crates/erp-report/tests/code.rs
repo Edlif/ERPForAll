@@ -490,7 +490,6 @@ fn widget_options_size_the_code_and_add_its_text() {
     assert!(html.contains(">WH/OUT/00012</span></span>"), "{html}");
 }
 
-/// printed)
 #[test]
 fn symbology_names_of_the_reference_and_auto_are_accepted() {
     for (name, value, modules) in [
@@ -501,6 +500,7 @@ fn symbology_names_of_the_reference_and_auto_are_accepted() {
         ("EAN8", "'96385074'", 81.0),
         ("UPCA", "'036000291452'", 113.0),
         ("Standard39", "'LOT-7'", 7.0 * 15.0 + 6.0 + 20.0),
+        ("Extended39", "'a'", 4.0 * 15.0 + 3.0 + 20.0),
         ("I2of5", "'1234'", 4.0 + 2.0 * 18.0 + 5.0 + 20.0),
         ("ITF14", "'15400141288763'", 155.0),
         ("QR", "doc.name", 29.0),
@@ -522,11 +522,7 @@ fn what_cannot_be_printed_as_asked_is_refused_at_its_template_line() {
     };
     assert_eq!(
         widget("'symbology': 'Aztec'"),
-        "test.report:1: barcode code: symbology `Aztec` is unknown; the symbologies are auto, Code128, EAN13, EAN8, UPCA, Code39, ITF14, I2of5, QR, DataMatrix"
-    );
-    assert_eq!(
-        widget("'symbology': 'Extended39'"),
-        "test.report:1: barcode code: symbology `Extended39` is not printed; the symbologies are auto, Code128, EAN13, EAN8, UPCA, Code39, ITF14, I2of5, QR, DataMatrix"
+        "test.report:1: barcode code: symbology `Aztec` is unknown; the symbologies are auto, Code128, EAN13, EAN8, UPCA, Code39, Extended39, ITF14, I2of5, QR, DataMatrix"
     );
     assert_eq!(
         widget("'symbology': 'EAN13'"),
@@ -834,12 +830,12 @@ fn datamatrix_gs1_is_explicit_and_rejects_invalid_options() {
             "test.report:1: widget option `gs1` must be a boolean or 0 or 1"
         );
     }
-    for kind in ["QR", "Code128", "auto"] {
+    for kind in ["QR", "EAN13", "auto"] {
         assert_eq!(
             message(&format!(
                 "<div><span t-field='doc.name' t-options=\"{{'widget': 'barcode', 'symbology': '{kind}', 'gs1': True}}\"/></div>"
             )),
-            "test.report:1: barcode code: option `gs1` is available only for DataMatrix"
+            "test.report:1: barcode code: option `gs1` requires explicit Code128 or DataMatrix"
         );
     }
     assert_eq!(
@@ -848,7 +844,7 @@ fn datamatrix_gs1_is_explicit_and_rejects_invalid_options() {
     );
     assert_eq!(
         message("<div><img src='/report/barcode/QR/ABC?gs1=1'/></div>"),
-        "test.report:1: barcode code: option `gs1` is available only for DataMatrix"
+        "test.report:1: barcode code: option `gs1` requires explicit Code128 or DataMatrix"
     );
     for flag in ["False", "0", "True", "1"] {
         let doc = print(&format!("<div><span t-field='doc.name' t-options=\"{{'widget': 'barcode', 'symbology': 'DataMatrix', 'gs1': {flag}}}\"/></div>")).unwrap();
@@ -914,6 +910,100 @@ fn datamatrix_keeps_the_document_byte_ceiling() {
         assert_eq!(
             error.to_string(),
             "report limit code_bytes exceeded: 2954 > 2953"
+        );
+    }
+}
+
+#[test]
+fn linear_extra_widget_and_address_options_agree() {
+    for flag in ["True", "1"] {
+        let widget = print(&format!("<div><span t-out=\"'10LOT-7'\" t-options=\"{{'widget': 'barcode', 'symbology': 'Code128', 'gs1': {flag}, 'humanreadable': 1, 'width': 500}}\"/></div>")).unwrap();
+        let address = print("<div><img src='/report/barcode/Code128/10LOT-7?gs1=1&amp;humanreadable=1&amp;width=500'/></div>").unwrap();
+        assert_eq!(
+            render_html(&widget, &[]).unwrap(),
+            render_html(&address, &[]).unwrap()
+        );
+    }
+    for flag in ["False", "0"] {
+        let widget = print(&format!("<div><span t-out=\"'10LOT-7'\" t-options=\"{{'widget': 'barcode', 'symbology': 'Code128', 'gs1': {flag}, 'width': 500}}\"/></div>")).unwrap();
+        let address =
+            print("<div><img src='/report/barcode/Code128/10LOT-7?gs1=0&amp;width=500'/></div>")
+                .unwrap();
+        assert_eq!(
+            render_html(&widget, &[]).unwrap(),
+            render_html(&address, &[]).unwrap()
+        );
+    }
+    for thickness in [2, 5, 10] {
+        let widget = print(&format!("<div><span t-out=\"'1540014128876'\" t-options=\"{{'widget': 'barcode', 'symbology': 'ITF14', 'bearer_modules': {thickness}, 'width': 500, 'height': 100}}\"/></div>")).unwrap();
+        let address = print(&format!("<div><img src='/report/barcode/ITF14/1540014128876?bearer_modules={thickness}&amp;width=500&amp;height=100'/></div>")).unwrap();
+        assert_eq!(
+            render_html(&widget, &[]).unwrap(),
+            render_html(&address, &[]).unwrap()
+        );
+    }
+    for (path, caption) in [
+        (
+            "Extended39/a%00%1D%7F%26?humanreadable=1&amp;width=500",
+            "a\\x00\\x1D\\x7F&",
+        ),
+        (
+            "Code128/10LOT%1D2110?gs1=1&amp;humanreadable=1&amp;width=500",
+            "10LOT\\x1D2110",
+        ),
+    ] {
+        let doc = print(&format!("<div><img src='/report/barcode/{path}'/></div>")).unwrap();
+        let values = codes(&doc);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].3.as_deref(), Some(caption));
+        assert_eq!(values[0].0, format!("Barcode {caption}"));
+        let html = render_html(&doc, &[]).unwrap();
+        assert!(
+            !html
+                .chars()
+                .any(|c| matches!(c, '\0' | '\u{1d}' | '\u{7f}'))
+        );
+        assert!(html.contains(&caption.replace('&', "&amp;")));
+    }
+}
+
+#[test]
+fn linear_extra_template_options_fail_with_context() {
+    for option in ["True", "False", "None", "'2'", "2.0", "0", "1", "11", "-1"] {
+        assert_eq!(
+            message(&format!(
+                "<div><span t-out=\"'1540014128876'\" t-options=\"{{'widget': 'barcode', 'symbology': 'ITF14', 'bearer_modules': {option}}}\"/></div>"
+            )),
+            "test.report:1: widget option `bearer_modules` must be an integer in 2..=10"
+        );
+    }
+    for option in ["'yes'", "2", "-1", "None"] {
+        assert_eq!(
+            message(&format!(
+                "<div><span t-out=\"'10LOT'\" t-options=\"{{'widget': 'barcode', 'symbology': 'Code128', 'gs1': {option}}}\"/></div>"
+            )),
+            "test.report:1: widget option `gs1` must be a boolean or 0 or 1"
+        );
+    }
+    for kind in ["Code128", "I2of5", "auto", "Extended39", "DataMatrix"] {
+        assert_eq!(
+            message(&format!(
+                "<div><span t-out=\"'1234'\" t-options=\"{{'widget': 'barcode', 'symbology': '{kind}', 'bearer_modules': 2}}\"/></div>"
+            )),
+            format!(
+                "test.report:1: {} code: bearer_modules is available only for ITF14",
+                if kind == "auto" { "Code128" } else { kind }
+            )
+        );
+    }
+    for value in ["0", "1", "11", "-1", "true", "2.0"] {
+        assert_eq!(
+            message(&format!(
+                "<div><img src='/report/barcode/ITF14/1540014128876?bearer_modules={value}'/></div>"
+            )),
+            format!(
+                "test.report:1: barcode code: parameter `bearer_modules` must be a whole number in 2..=10; got `{value}`"
+            )
         );
     }
 }

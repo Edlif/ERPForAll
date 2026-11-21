@@ -25,6 +25,8 @@ import { el } from "./dom.js";
 import { ClientError, type RpcClient } from "./transport.js";
 import { attachmentLimitHint, checkAttachmentFile, checkAttachmentRequest } from "./attachment-policy.js";
 
+import { watchChatterThread } from "./chatter-realtime.js";
+
 let nextAttachHint = 0;
 
 /** Configuration options for mounting a chatter component. */
@@ -35,6 +37,7 @@ export interface ChatterOptions {
   readonly model: string;
   /** The record id, or undefined if unsaved. */
   readonly recordId?: number;
+  readonly threadSocket?: { company: number; csrf: string; retry: readonly [number, number] };
   /** The RPC client to fetch store topics and post messages. */
   readonly rpc: RpcClient;
   /** Optional shared tab messaging store. If omitted, a scoped store is created. */
@@ -241,6 +244,7 @@ export class Chatter {
   #ref?: ThreadRef;
   private statusArea?: HTMLElement;
   private disposed = false;
+  private stopRealtime?: () => void;
   private stopWatch?: () => void;
 
   constructor(options: ChatterOptions) {
@@ -790,6 +794,9 @@ export class Chatter {
     this.#ref = ref;
     this.#pager = pager;
     runInit();
+    if (options.threadSocket && typeof WebSocket === "function") {
+      this.stopRealtime = watchChatterThread(ref, options.threadSocket, () => pager.loadLatest(ref), error => showInline(error));
+    }
   }
 
   /** Reload the thread and attachments from the server. */
@@ -844,6 +851,7 @@ export class Chatter {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.stopRealtime?.();
     this.stopWatch?.();
     this.followers?.dispose();
     this.activities?.dispose();

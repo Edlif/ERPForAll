@@ -27,6 +27,10 @@ struct Fixture {
     allowance: std::time::Duration,
 }
 async fn setup() -> Fixture {
+    setup_with_calendar(false).await
+}
+
+async fn setup_with_calendar(june_close: bool) -> Fixture {
     let started = std::time::Instant::now();
     let db = TestDb::builder().pool_size(8).create().await.unwrap();
     let system = system(&db, None);
@@ -44,8 +48,23 @@ async fn setup() -> Fixture {
     let orm = installed.orm;
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
     let company = main_company(&mut tx).await;
+    if june_close {
+        june_year_end(&mut tx, company).await;
+    }
     tx.commit().await.unwrap();
-    periods(&orm, company).await;
+    if june_close {
+        erp_addon_account::fiscal::ensure_periods(
+            &orm,
+            erp_sdk::BeginOptions::new(SUPERUSER_ID),
+            company,
+            d(2024, 1, 1),
+            d(2024, 12, 31),
+        )
+        .await
+        .unwrap();
+    } else {
+        periods(&orm, company).await;
+    }
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
     let b = books(&mut tx, company).await;
     let equity = account(&mut tx, company, "900000", "equity").await;
@@ -297,6 +316,247 @@ async fn ledger_options(tx: &mut Transaction, f: &Fixture) -> Json {
         .unwrap()["options"]
         .clone()
 }
+
+async fn june_year_end(tx: &mut Transaction, company: i64) {
+    use erp_addon_account::fiscal::settings::{LAST_DAY_SETTING, LAST_MONTH_SETTING};
+    use erp_addon_base::ir_config_setting::{read_values, write_values};
+    use erp_sdk::views::wire::{SettingsScope, WireId};
+
+    let env = tx.env().with_company(company).unwrap();
+    let scope = SettingsScope::Company {
+        company_id: WireId::try_from(u64::try_from(company).unwrap()).unwrap(),
+    };
+    let read = read_values(
+        &env,
+        tx,
+        scope.clone(),
+        vec![LAST_DAY_SETTING.into(), LAST_MONTH_SETTING.into()],
+    )
+    .await
+    .unwrap();
+    let revision = serde_json::to_value(read).unwrap()["revision"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    write_values(
+        &env,
+        tx,
+        scope,
+        revision,
+        vec![
+            (LAST_DAY_SETTING.into(), Value::Int(30)),
+            (LAST_MONTH_SETTING.into(), Value::Str("6".into())),
+        ],
+    )
+    .await
+    .unwrap();
+}
+
+#[test]
+fn fiscal_general_ledger_uses_july_opening_and_does_not_duplicate_posted_closings() {
+    big_stack(fiscal_opening);
+}
+
+async fn fiscal_opening() {
+    let f = setup_with_calendar(true).await;
+    let mut writer = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    post(&mut writer, &f, "30", d(2024, 6, 30)).await;
+    post(&mut writer, &f, "25", d(2024, 7, 1)).await;
+    post(&mut writer, &f, "13", d(2024, 8, 10)).await;
+    let retained = account(&mut writer, f.company, "901000", "equity").await;
+    writer.commit().await.unwrap();
+
+    let mut tx = f.orm.begin(f.reader).await.unwrap();
+    let fiscal_input = json!({
+        "report": f.report, "companies": [f.company],
+        "date": {"preset": "custom", "from": "2024-08-01", "to": "2024-08-31"},
+        "provider": {"fiscal_opening": true}
+    });
+    let env = tx.env();
+    let fiscal = runtime::report_options(&env, &mut tx, f.report, &fiscal_input)
+        .await
+        .unwrap()["options"]
+        .clone();
+    assert_eq!(fiscal["provider"]["fiscal_year_start"], "2024-07-01");
+    let rows = fiscal_accounts(&mut tx, &fiscal, f.report).await;
+    let unallocated = rows
+        .iter()
+        .find(|row| line_id(row).ends_with("|line:UNALLOCATED~~"))
+        .unwrap();
+    assert_eq!(amount(unallocated, 4), num("-110"));
+    let action = runtime::report_drill(
+        &env,
+        &mut tx,
+        &fiscal,
+        line_id(unallocated),
+        &json!({"cell":4}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(drill_balance(&mut tx, &action).await, num("-110"));
+    assert_eq!(
+        rows.iter().map(|row| amount(row, 4)).sum::<Decimal>(),
+        Decimal::ZERO
+    );
+
+    let income = account_row(&rows, f.books.income);
+    let items = runtime::report_expand(&env, &mut tx, &fiscal, line_id(income), 0)
+        .await
+        .unwrap();
+    let balances = items["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| amount(row, 4))
+        .collect::<Vec<_>>();
+    assert_eq!(balances, [num("-25"), num("-38"), num("-38")]);
+    for row in items["lines"].as_array().unwrap() {
+        let action =
+            runtime::report_drill(&env, &mut tx, &fiscal, line_id(row), &json!({"cell":4}))
+                .await
+                .unwrap();
+        assert_eq!(drill_balance(&mut tx, &action).await, amount(row, 4));
+    }
+    fiscal_input_refusals(&mut tx, f.report, &fiscal_input, &fiscal).await;
+
+    let mut raw_input = fiscal_input.clone();
+    raw_input["provider"] = json!({"fiscal_opening": false});
+    let raw = runtime::report_options(&env, &mut tx, f.report, &raw_input)
+        .await
+        .unwrap()["options"]
+        .clone();
+    let raw_rows = fiscal_accounts(&mut tx, &raw, f.report).await;
+    assert_eq!(
+        amount(account_row(&raw_rows, f.books.income), 4),
+        num("-188")
+    );
+    assert!(
+        raw_rows
+            .iter()
+            .all(|row| !line_id(row).ends_with("|line:UNALLOCATED~~"))
+    );
+    tx.commit().await.unwrap();
+
+    let mut writer = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    posted_entry(
+        &mut writer,
+        &f.books,
+        f.books.income,
+        retained,
+        None,
+        "150",
+        d(2024, 6, 30),
+    )
+    .await;
+    posted_entry(
+        &mut writer,
+        &f.books,
+        retained,
+        f.books.expense,
+        None,
+        "40",
+        d(2024, 6, 30),
+    )
+    .await;
+    writer.commit().await.unwrap();
+    let mut tx = f.orm.begin(f.reader).await.unwrap();
+    let env = tx.env();
+    let stale = runtime::report_lines(&env, &mut tx, &fiscal)
+        .await
+        .unwrap_err();
+    assert_eq!(stale.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        stale.message(),
+        "The ledger source or access changed. Refresh the General Ledger before continuing."
+    );
+    let refreshed = runtime::report_options(&env, &mut tx, f.report, &fiscal_input)
+        .await
+        .unwrap()["options"]
+        .clone();
+    let rows = fiscal_accounts(&mut tx, &refreshed, f.report).await;
+    assert_eq!(amount(account_row(&rows, retained), 4), num("-110"));
+    assert_eq!(amount(account_row(&rows, f.books.income), 4), num("-38"));
+    assert!(
+        rows.iter()
+            .all(|row| !line_id(row).ends_with("|line:UNALLOCATED~~"))
+    );
+    assert_eq!(
+        rows.iter().map(|row| amount(row, 4)).sum::<Decimal>(),
+        Decimal::ZERO
+    );
+}
+
+async fn fiscal_input_refusals(tx: &mut Transaction, report: i64, input: &Json, normal: &Json) {
+    let env = tx.env();
+    let mut crossing = input.clone();
+    crossing["date"]["from"] = json!("2024-06-01");
+    let error = runtime::report_options(&env, tx, report, &crossing)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "General Ledger fiscal opening requires a range within one company fiscal year."
+    );
+    let mut wrong_type = input.clone();
+    wrong_type["provider"]["fiscal_opening"] = json!("true");
+    let error = runtime::report_options(&env, tx, report, &wrong_type)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "General Ledger provider.fiscal_opening must be a boolean."
+    );
+    let mut forged = normal.clone();
+    forged["provider"]["fiscal_year_start"] = json!("2024-01-01");
+    let error = runtime::report_lines(&env, tx, &forged).await.unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "The ledger source or access changed. Refresh the General Ledger before continuing."
+    );
+}
+
+fn line_id(row: &Json) -> &str {
+    row["id"].as_str().unwrap()
+}
+
+fn account_row(rows: &[Json], account: i64) -> &Json {
+    let suffix = format!("|group:account_id~account.account~{account}");
+    rows.iter()
+        .find(|row| line_id(row).ends_with(&suffix))
+        .unwrap()
+}
+
+async fn fiscal_accounts(tx: &mut Transaction, options: &Json, report: i64) -> Vec<Json> {
+    let root = format!("root~reporting.report~{report}|line:GL~~");
+    runtime::report_expand(&tx.env(), tx, options, &root, 0)
+        .await
+        .unwrap()["lines"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+async fn drill_balance(tx: &mut Transaction, action: &Json) -> Decimal {
+    tx.env()
+        .records("account.move.line")
+        .unwrap()
+        .search(tx, &Domain::from_json(&action["domain"]).unwrap())
+        .await
+        .unwrap()
+        .read_with(tx, &["balance"], erp_sdk::Load::Raw)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| match row["balance"] {
+            Value::Decimal(amount) => amount,
+            ref other => panic!("{other:?}"),
+        })
+        .sum()
+}
+
 fn cash_id(f: &Fixture) -> String {
     format!(
         "root~reporting.report~{}|line:GL~~|group:account_id~account.account~{}",

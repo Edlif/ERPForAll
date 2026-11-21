@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "erp-addon-purchase-three-way-match"
+description = "Receipt-based purchase matching for native vendor bills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+erp-sdk.workspace = true
+erp-addon-purchase.workspace = true
+erp-addon-account.workspace = true
+
+[lints]
+workspace = true

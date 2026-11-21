@@ -41,5 +41,6 @@
     <field name="view_mode">form</field>
     <field name="sequence" eval="20"/>
   </record>
-  <menuitem id="settings_currencies_menu" name="Currencies" parent="settings_menu" action="settings_currencies_action" groups="base.group_system" sequence="30"/>
+  <menuitem id="settings_currencies_menu" name="Currencies" parent="settings_reference_menu" action="settings_currencies_action" groups="base.group_system" sequence="30"/>
+  <record id="settings_currencies_menu" model="ir.ui.menu"><field name="web_icon">lucide:coins</field></record>
 </erp>

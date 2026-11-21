@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! FIFO layer and consumption schema; costing and residual validation remain future slices.
+//! FIFO layer and consumption storage, provenance, and residual constraints.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -58,6 +58,8 @@ async fn layer_schema() {
     .await;
     for (assignment, key) in [
         ("original_quantity=0", "_original_nonzero"),
+        ("generation=-1", "_generation_nonneg"),
+        ("residual_den=-1", "_valid_fraction"),
         ("kind='shortage'", "_shortage_complete"),
         ("consumed_quantity=4", "_consumed_within"),
         ("consumed_quantity=-1", "_consumed_within"),
@@ -138,6 +140,15 @@ async fn consumption_schema() {
         &["quantity", "grid_value"],
     )
     .await;
+    for (field, key) in [("generation", "_generation_nonneg"), ("seq", "_seq_nonneg")] {
+        rejected(
+            &mut tx,
+            &format!("UPDATE stk_layer_consumption SET {field}=-1 WHERE id={id}"),
+            "stk_layer_consumption",
+            key,
+        )
+        .await;
+    }
     unique(&mut tx, &sql, "stk_layer_consumption", "_identity").await;
     let mismatch = tx
         .savepoint(async |tx| {

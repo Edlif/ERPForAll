@@ -75,7 +75,7 @@ fn format_of(symbology: Symbology) -> BarcodeFormat {
         Symbology::Ean13 => BarcodeFormat::EAN_13,
         Symbology::Ean8 => BarcodeFormat::EAN_8,
         Symbology::UpcA => BarcodeFormat::UPC_A,
-        Symbology::Code39 => BarcodeFormat::CODE_39,
+        Symbology::Code39 | Symbology::Extended39 => BarcodeFormat::CODE_39,
         Symbology::Itf14 | Symbology::Interleaved2of5 => BarcodeFormat::ITF,
         Symbology::Qr => BarcodeFormat::QR_CODE,
         Symbology::DataMatrix => BarcodeFormat::DATA_MATRIX,
@@ -527,5 +527,166 @@ fn datamatrix_template_scans_keep_the_requested_encoding() {
                 identifier.into()
             ))
         );
+    }
+}
+
+#[test]
+fn extended39_full_ascii_pdf_reads_with_extended_decoder() {
+    use rxing::{
+        BinaryBitmap, Luma8LuminanceSource, Reader, common::HybridBinarizer, oned::Code39Reader,
+    };
+    let ascii: Vec<u8> = (0u8..=127).collect();
+    for bytes in ascii.chunks(8) {
+        let value = std::str::from_utf8(bytes).unwrap();
+        let code = Code::encode(
+            Symbology::Extended39,
+            value,
+            QrLevel::Low,
+            &Limits::default(),
+        )
+        .unwrap();
+        let pdf = printed_code(&code, (380.0, 60.0), ModuleGrid::default(), false);
+        let (grey, width, height) = raster(&pdf, 4.0);
+        let source = Luma8LuminanceSource::new(grey, width, height).unwrap();
+        let mut image = BinaryBitmap::new(HybridBinarizer::new(source));
+        // The barcode sits near the page top, outside the reader's default middle-row scan.
+        let hints = rxing::DecodeHints {
+            TryHarder: Some(true),
+            ..Default::default()
+        };
+        let found = Code39Reader::with_all_config(false, true)
+            .decode_with_hints(&mut image, &hints)
+            .unwrap();
+        assert_eq!(*found.getBarcodeFormat(), BarcodeFormat::CODE_39);
+        assert_eq!(found.getText(), value, "ASCII batch {bytes:?}");
+    }
+}
+
+#[test]
+fn gs1_code128_pdf_preserves_function_symbols_and_weighted_checksum() {
+    use rxing::{DecodeHints, RXingResultMetadataType, RXingResultMetadataValue};
+    for value in [
+        "12345678",
+        "12345\u{1d}67890",
+        "10LOT-7\u{1d}2110",
+        "AB12\u{1d}345678CD",
+    ] {
+        for dpi in [203, 300, 600] {
+            for gs1 in [false, true] {
+                let code = if gs1 {
+                    Code::encode_gs1_code128(value, &Limits::default()).unwrap()
+                } else {
+                    Code::encode(Symbology::Code128, value, QrLevel::Low, &Limits::default())
+                        .unwrap()
+                };
+                let pdf = printed_code(&code, (380.0, 60.0), ModuleGrid::new(dpi).unwrap(), false);
+                let (grey, width, height) = raster(&pdf, dpi as f32 / 72.0);
+                let mut hints = DecodeHints {
+                    AssumeGs1: Some(true),
+                    ..Default::default()
+                };
+                let found = rxing::helpers::detect_in_luma_with_hints(
+                    grey,
+                    width,
+                    height,
+                    Some(BarcodeFormat::CODE_128),
+                    &mut hints,
+                )
+                .unwrap();
+                assert_eq!(
+                    found.getText(),
+                    if gs1 {
+                        format!("]C1{value}")
+                    } else {
+                        value.to_owned()
+                    }
+                );
+                assert_eq!(
+                    found
+                        .getRXingResultMetadata()
+                        .get(&RXingResultMetadataType::SYMBOLOGY_IDENTIFIER),
+                    Some(&RXingResultMetadataValue::SymbologyIdentifier(
+                        if gs1 { "]C1" } else { "]C0" }.into()
+                    ))
+                );
+                let words = found.getRawBytes();
+                assert_eq!(words.last(), Some(&106));
+                let checksum_at = words.len() - 2;
+                let weighted = usize::from(words[0])
+                    + words[1..checksum_at]
+                        .iter()
+                        .enumerate()
+                        .map(|(index, word)| (index + 1) * usize::from(*word))
+                        .sum::<usize>();
+                assert_eq!(usize::from(words[checksum_at]), weighted % 103);
+                let functions = words[1..checksum_at]
+                    .iter()
+                    .filter(|word| **word == 102)
+                    .count();
+                if gs1 {
+                    assert_eq!(words[1], 102, "FNC1 must immediately follow start");
+                    assert_eq!(functions, 1 + value.bytes().filter(|b| *b == 29).count());
+                } else {
+                    assert_eq!(functions, 0, "ordinary ASCII GS must not become FNC1");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn itf14_bearer_pdf_reads_at_printer_resolution() {
+    for dpi in [203, 300, 600] {
+        for bearer in [2, 10] {
+            for caption in [false, true] {
+                let code = Code::encode(
+                    Symbology::Itf14,
+                    "1540014128876",
+                    QrLevel::Low,
+                    &Limits::default(),
+                )
+                .unwrap()
+                .with_bearer_modules(bearer)
+                .unwrap();
+                let pdf =
+                    printed_code(&code, (300.0, 80.0), ModuleGrid::new(dpi).unwrap(), caption);
+                let (grey, width, height) = raster(&pdf, dpi as f32 / 72.0);
+                let found =
+                    rxing::helpers::detect_in_luma(grey, width, height, Some(BarcodeFormat::ITF))
+                        .unwrap();
+                assert_eq!(found.getText(), "15400141288763");
+            }
+        }
+    }
+}
+
+#[test]
+fn extended39_printable_pdf_reads_at_printer_resolution() {
+    use rxing::{
+        BinaryBitmap, Luma8LuminanceSource, Reader, common::HybridBinarizer, oned::Code39Reader,
+    };
+    for dpi in [203, 300, 600] {
+        for caption in [false, true] {
+            let value = "aZ*$+%/@";
+            let code = Code::encode(
+                Symbology::Extended39,
+                value,
+                QrLevel::Low,
+                &Limits::default(),
+            )
+            .unwrap();
+            let pdf = printed_code(&code, (380.0, 60.0), ModuleGrid::new(dpi).unwrap(), caption);
+            let (grey, width, height) = raster(&pdf, dpi as f32 / 72.0);
+            let source = Luma8LuminanceSource::new(grey, width, height).unwrap();
+            let mut image = BinaryBitmap::new(HybridBinarizer::new(source));
+            let hints = rxing::DecodeHints {
+                TryHarder: Some(true),
+                ..Default::default()
+            };
+            let found = Code39Reader::with_all_config(false, true)
+                .decode_with_hints(&mut image, &hints)
+                .unwrap();
+            assert_eq!(found.getText(), value);
+        }
     }
 }

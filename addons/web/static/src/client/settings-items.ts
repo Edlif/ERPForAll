@@ -6,7 +6,7 @@ import { ClientError } from "./transport.js";
 /** Authorized root-menu presentation in server order. Module is provenance, never authority. */
 export interface SettingsRootMenu { readonly id: number; readonly module: string | null; readonly label: string; readonly icon: string | null }
 /** Shell-owned dispatch preserves action authorization and the current service's departure guard. */
-export interface SettingsNavigation { readonly currentCompanyId?: number; readonly roots: readonly SettingsRootMenu[]; openTarget(target: SettingsLinkTarget): Promise<void> }
+export interface SettingsNavigation { readonly currentCompanyId?: number; readonly scopePreferenceKey?: string; readonly roots: readonly SettingsRootMenu[]; openTarget(target: SettingsLinkTarget): Promise<void> }
 /** Additional Settings host capabilities; standalone scalar-only pages need none. */
 export interface SettingsViewOptions { readonly navigation?: SettingsNavigation }
 

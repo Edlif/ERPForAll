@@ -125,6 +125,9 @@ pub struct StockPicking {
         string = "Returns"
     )]
     pub return_ids: Vec<RecId>,
+    /// Directly linked returns and exchanges visible to the reader.
+    #[field(integer, compute = "_compute_return_count")]
+    pub return_count: i32,
     /// Shipping policy; computed from the type.
     #[field(
         selection,

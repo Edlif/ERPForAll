@@ -51,6 +51,7 @@ pub use scheduled::{
 };
 pub use store::StoreFields;
 pub use subtype::{DefaultSubtypes, MailMessageSubtype};
+pub use thread_load::thread_change_window;
 pub use thread_load::{
     DEFAULT_MESSAGE_PAGE, MAX_MESSAGE_PAGE, MailMessageStore, MailThreadStore, ThreadFacts,
 };

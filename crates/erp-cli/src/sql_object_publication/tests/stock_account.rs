@@ -136,6 +136,7 @@ async fn observe_admission(
         .view_types(erp_addon_web::view_type_contributions())
         .build()
         .unwrap();
+    eprintln!("receipt-fixture phase=initialize");
     let init = Box::pin(modules.initialize(InitOptions::new().with_skip_auto_install(true)))
         .await
         .unwrap();
@@ -192,6 +193,7 @@ async fn observe_admission(
         ))
         .await
         .unwrap();
+    eprintln!("receipt-fixture phase=valuation-install");
     let installed = Box::pin(modules.button_immediate_install(
         &base_stock.orm.env(SUPERUSER_ID, Context::new()),
         &[ModuleName::new("valuation").unwrap()],
@@ -238,6 +240,7 @@ async fn observe_admission(
     );
     previous_tx.rollback().await.unwrap();
     drop(previous_tx);
+    eprintln!("receipt-fixture phase=authorization-and-receipt");
     let registry = installed.orm.registry().clone();
     let mut tx = installed.orm.begin(SUPERUSER_ID).await.unwrap();
     assert_eq!(
@@ -437,7 +440,7 @@ async fn observe_admission(
     let runtime = Orm::builder(registry.clone(), request_pool)
         .require_core_tables(erp_security::auth::core_tables())
         .resolver(Resolver::for_registry(&registry).unwrap())
-        .policy(Arc::new(policy) as Arc<dyn erp_orm::PolicyProvider>)
+        .policy(Arc::new(policy.clone()) as Arc<dyn erp_orm::PolicyProvider>)
         .impls(erp_modules::base_models::IMPLS.iter().copied())
         .impls([&OBSERVER])
         .constraints(erp_modules::base_models::CONSTRAINTS.iter().copied())
@@ -694,6 +697,115 @@ async fn observe_admission(
     setup.commit().await.unwrap();
     drop(setup);
 
+    eprintln!("receipt-fixture phase=source-bounds");
+    // Repeated source rows for one product also need a bound; the distinct-key cap cannot help.
+    for limit in [1, 10000] {
+        let mut configuration = installed.orm.begin(SUPERUSER_ID).await.unwrap();
+        configuration
+            .env()
+            .records("ir.config_parameter")
+            .unwrap()
+            .call::<(String, Option<i64>), i64>(
+                &mut configuration,
+                "set_int",
+                (
+                    "valuation.max_admission_source_rows".to_owned(),
+                    Some(limit),
+                ),
+            )
+            .await
+            .expect("receipt source-row admission has a declared configurable bound");
+        configuration.commit().await.unwrap();
+        drop(configuration);
+        if limit == 1 {
+            let mut limited = runtime.begin_caller(manager).await.unwrap();
+            let error = limited
+                .env()
+                .with_company(company)
+                .unwrap()
+                .records("stock.picking")
+                .unwrap()
+                .browse([left, right])
+                .unwrap()
+                .call::<(), ()>(&mut limited, "button_validate", ())
+                .await
+                .expect_err("two source rows for the same product exceed the row bound");
+            assert_eq!(error.kind(), ErrorKind::Validation);
+            assert_eq!(
+                error.message(),
+                "Valuation receipt sources exceed valuation.max_admission_source_rows (1). Split the operation."
+            );
+            limited.commit().await.unwrap();
+            drop(limited);
+            let mut clerk = runtime.begin_caller(stock_user).await.unwrap();
+            let denied = validate_batch(&mut clerk, company, &[left, right])
+                .await
+                .unwrap_err();
+            assert_eq!(denied.kind(), ErrorKind::Access);
+            assert_eq!(
+                denied.message(),
+                "Only stock managers may admit a valued stock receipt."
+            );
+            clerk.commit().await.unwrap();
+            drop(clerk);
+
+            let mut config = installed.orm.begin(SUPERUSER_ID).await.unwrap();
+            let model = config
+                .query("SELECT id FROM ir_model WHERE model='stock.move'", &[])
+                .await
+                .unwrap()[0]
+                .get(0);
+            let rule = create(
+                &mut config,
+                company,
+                "ir.access",
+                RawVals::new()
+                    .set_cell("name", Cell::Str("Hide the second receipt movement".into()))
+                    .set_cell("model_id", Cell::Id(model))
+                    .set_cell("operation", Cell::Str("r".into()))
+                    .set_cell(
+                        "domain",
+                        Cell::Str(format!("[('picking_id', '!=', {right})]").into()),
+                    ),
+            )
+            .await;
+            config.commit().await.unwrap();
+            drop(config);
+            policy.refresh_shared().await.unwrap();
+            let mut restricted = runtime.begin_caller(manager).await.unwrap();
+            let denied = validate_batch(&mut restricted, company, &[left, right])
+                .await
+                .unwrap_err();
+            assert_eq!(denied.kind(), ErrorKind::Access, "{denied}");
+            restricted.commit().await.unwrap();
+            drop(restricted);
+            let mut config = installed.orm.begin(SUPERUSER_ID).await.unwrap();
+            config
+                .env()
+                .records("ir.access")
+                .unwrap()
+                .browse([rule])
+                .unwrap()
+                .unlink(&mut config)
+                .await
+                .unwrap();
+            config.commit().await.unwrap();
+            drop(config);
+            policy.refresh_shared().await.unwrap();
+            let unchanged = admin
+                .query_one(
+                    "SELECT (SELECT count(*) FROM public.stk_cost_control WHERE company_id=$1 AND product_id=$2),
+                        (SELECT count(*) FROM public.stock_picking WHERE id=ANY($3) AND date_done IS NOT NULL)",
+                    &[&company, &extra_product, &vec![left, right]],
+                )
+                .await
+                .unwrap();
+            assert_eq!(unchanged.get::<_, i64>(0), 0);
+            assert_eq!(unchanged.get::<_, i64>(1), 0);
+        }
+    }
+
+    eprintln!("receipt-fixture phase=key-bounds");
     // Two distinct valued keys must be refused at an operator-set limit of one.
     for limit in [1, 1000] {
         let mut configuration = installed.orm.begin(SUPERUSER_ID).await.unwrap();
@@ -735,6 +847,7 @@ async fn observe_admission(
         }
     }
 
+    eprintln!("receipt-fixture phase=mixed-unit");
     // An already successful picking holds physical locks until commit. The next picking
     // cannot extend its valuation prelude to a new product in that same transaction.
     let mut mixed = runtime.begin_caller(manager).await.unwrap();
@@ -765,6 +878,7 @@ async fn observe_admission(
             .get::<_, bool>(0)
     );
 
+    eprintln!("receipt-fixture phase=observer-rollback");
     // A caught late failure followed by a real commit leaves neither control nor stock behind.
     let mut failed = runtime.begin_caller(manager).await.unwrap();
     failed
@@ -797,6 +911,7 @@ async fn observe_admission(
         0
     );
 
+    eprintln!("receipt-fixture phase=first-control-race");
     // Both snapshots precede the first control. The loser has not yet locked its picking.
     let mut first = runtime.begin_caller(manager).await.unwrap();
     let mut next = runtime.begin_caller(manager).await.unwrap();
@@ -830,6 +945,7 @@ async fn observe_admission(
     assert_eq!(evidence.get::<_, i64>(0), 1);
     assert_eq!(evidence.get::<_, Decimal>(1), Decimal::from(3));
 
+    eprintln!("receipt-fixture phase=stale-seal");
     // An exclusive coordinator fence precedes an RR writer with an old snapshot.
     let mut stale = runtime.begin_caller(manager).await.unwrap();
     let waiting_pid: i32 = stale.query("SELECT pg_backend_pid()", &[]).await.unwrap()[0].get(0);
@@ -880,6 +996,7 @@ async fn observe_admission(
     assert!(evidence.get::<_, bool>(1));
     assert_eq!(evidence.get::<_, i32>(2), 1);
 
+    eprintln!("receipt-fixture phase=timeout-retry");
     // Unlike NOWAIT, a positively identified admission deadline retries the native operation.
     admin.batch_execute("BEGIN").await.unwrap();
     admin.query_one("SELECT pg_advisory_xact_lock(hashtext('erpforall.stock.valuation.control.v1'),hashtext($1::bigint::text || '/' || $2::bigint::text))",&[&company,&extra_product]).await.unwrap();
@@ -922,6 +1039,59 @@ async fn observe_admission(
         !isolated.get::<_, bool>(2),
         "request login can become the control definer"
     );
+
+    eprintln!("receipt-fixture phase=uninstall");
+    // A neutral control alone must retain its protection, even without any valued source.
+    let controls: i64 = admin
+        .query_one("SELECT count(*) FROM public.stk_cost_control", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let refusal = Box::pin(modules.button_immediate_uninstall(
+        &modules.system_env(Context::new()),
+        &[ModuleName::new("valuation").unwrap()],
+    ))
+    .await
+    .unwrap_err();
+    let erp_modules::Error::Orm(refusal) = refusal else {
+        panic!("unexpected admission uninstall failure: {refusal:?}");
+    };
+    assert_eq!(refusal.kind(), ErrorKind::UserError);
+    assert_eq!(
+        refusal.message(),
+        format!(
+            "Stock valuation admission controls prevent uninstalling Stock Valuation Admission. ({controls})"
+        )
+    );
+    let retained = admin
+        .query_one(
+            "SELECT state::text,
+                (SELECT count(*) FROM public.stk_cost_control),
+                has_function_privilege($1::name,
+                    'public.stk_admit_receipt_control(bigint,bigint,integer)', 'EXECUTE'),
+                has_table_privilege($1::name, 'public.stk_cost_control', 'INSERT,UPDATE,DELETE')
+             FROM public.ir_module_module WHERE name='valuation'",
+            &[&request],
+        )
+        .await
+        .unwrap();
+    assert_eq!(retained.get::<_, String>(0), "installed");
+    assert_eq!(retained.get::<_, i64>(1), controls);
+    assert!(retained.get::<_, bool>(2));
+    assert!(!retained.get::<_, bool>(3));
+}
+
+async fn validate_batch(
+    tx: &mut Transaction,
+    company: i64,
+    pickings: &[i64],
+) -> erp_sdk::Result<()> {
+    tx.env()
+        .with_company(company)?
+        .records("stock.picking")?
+        .browse(pickings.iter().copied())?
+        .call(tx, "button_validate", ())
+        .await
 }
 
 async fn wait_for_database_lock(admin: &deadpool_postgres::Object, pid: i32) {
@@ -946,12 +1116,7 @@ async fn wait_for_database_lock(admin: &deadpool_postgres::Object, pid: i32) {
 }
 
 async fn validate_picking(tx: &mut Transaction, company: i64, picking: i64) -> erp_sdk::Result<()> {
-    tx.env()
-        .with_company(company)?
-        .records("stock.picking")?
-        .browse([picking])?
-        .call::<(), ()>(tx, "button_validate", ())
-        .await
+    validate_batch(tx, company, &[picking]).await
 }
 
 async fn create(tx: &mut Transaction, company: i64, model: &str, values: RawVals) -> i64 {

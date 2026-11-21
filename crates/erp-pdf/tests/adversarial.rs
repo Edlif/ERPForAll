@@ -104,7 +104,7 @@ fn interactive_features_fail_explicitly() {
     rejected(
         bytes(d),
         PdfErrorKind::Unsupported,
-        "PDF feature AcroForm is unsupported (a later release)",
+        "PDF forms are refused by the reading-copy form policy",
     );
 }
 #[test]

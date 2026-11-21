@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name = "Accounting Reports"
+summary = "Explore posted statutory journal activity and its source items"
+category = "Accounting"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["account", "reporting"]
+data = ["data/journal_activity.xml"]

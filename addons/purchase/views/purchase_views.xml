@@ -89,6 +89,8 @@
         <header>
           <button name="button_confirm" type="object" string="Confirm Order" class="btn-primary" invisible="state not in ('draft', 'sent')"/>
           <button name="button_approve" type="object" string="Approve Order" class="btn-primary" invisible="state != 'to approve'" groups="purchase.group_purchase_manager"/>
+          <button name="action_create_vendor_bill" type="object" string="First Vendor Bill" groups="account.group_account_user" invisible="state != 'purchase'"/>
+          <button name="action_bill_remaining" type="object" string="Bill Remaining Received Goods" groups="account.group_account_user" invisible="state != 'purchase'"/>
           <button name="button_lock" type="object" string="Lock" invisible="state != 'purchase' or locked"/>
           <button name="button_unlock" type="object" string="Unlock" invisible="not locked" groups="purchase.group_purchase_manager"/>
           <button name="button_draft" type="object" string="Set to Draft" invisible="state != 'cancel'"/>

@@ -554,6 +554,7 @@ pub async fn until_relation_waiter(h: &Harness, relation: &str, mode: &str, n: i
         let row = client
             .query_one(
                 "SELECT count(*) FROM pg_locks WHERE NOT granted AND locktype = 'relation' \
+                    AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
                     AND relation = $1::text::regclass AND mode = $2",
                 &[&relation, &mode],
             )
@@ -579,7 +580,7 @@ pub async fn advisory_gate(h: &Harness, key: i64) -> Transaction {
     tx
 }
 
-/// Wait until some backend waits for the advisory lock `key`.
+/// Wait until a backend of this fixture database waits for the advisory lock `key`.
 pub async fn until_advisory_waiter(h: &Harness, key: i64) {
     let client = h.db().client().await.unwrap();
     let started = Instant::now();
@@ -587,6 +588,7 @@ pub async fn until_advisory_waiter(h: &Harness, key: i64) {
         let row = client
             .query_one(
                 "SELECT count(*) FROM pg_locks WHERE NOT granted AND locktype = 'advisory' \
+                    AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
                     AND ((classid::bigint << 32) | objid::bigint) = $1",
                 &[&key],
             )

@@ -57,6 +57,6 @@ fn server_config_entry_validates_ai_key_files() {
     assert!(matches!(error, crate::CliError::Execution(_)));
     assert_eq!(
         error.to_string(),
-        "Execution error: invalid [ai] configuration: expected max_providers, max_key_bytes, max_request_bytes and provider.<name>.key_file only"
+        "Execution error: invalid [ai] configuration: expected known [ai] limits and provider key_file/base_url fields only"
     );
 }

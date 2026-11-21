@@ -49,6 +49,13 @@ async fn state_schema() {
     .await;
     rejected(
         &mut tx,
+        &format!("UPDATE stk_cost_state SET currency_increment=0 WHERE id={id}"),
+        "stk_cost_state",
+        "_valid_carry",
+    )
+    .await;
+    rejected(
+        &mut tx,
         &format!("UPDATE stk_cost_state SET generation=-1 WHERE id={id}"),
         "stk_cost_state",
         "_generation_nonneg",
@@ -165,6 +172,13 @@ async fn checkpoint_schema() {
             "currency_carry",
             "currency_increment",
         ],
+    )
+    .await;
+    rejected(
+        &mut tx,
+        &format!("UPDATE stk_cost_checkpoint SET currency_increment=0 WHERE id={id}"),
+        "stk_cost_checkpoint",
+        "_valid_carry",
     )
     .await;
     rejected(

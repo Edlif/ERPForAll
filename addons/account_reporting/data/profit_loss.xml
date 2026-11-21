@@ -70,4 +70,5 @@
         <field name="params" eval="{'report': ref('report_profit_loss')}"/>
     </record>
     <menuitem id="menu_profit_loss" name="Profit and Loss" parent="menu_account_reporting" action="action_profit_loss" groups="account.group_account_readonly" sequence="35"/>
+    <record id="menu_profit_loss" model="ir.ui.menu"><field name="web_icon">lucide:chart-column</field></record>
 </erp>

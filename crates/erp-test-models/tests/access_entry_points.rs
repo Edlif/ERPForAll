@@ -1063,6 +1063,16 @@ const AUDIT_ELEVATION: &str = "returns the given environment in superuser mode, 
 /// leave the engine. replaces them with scoped elevation blocks where it can.
 const SUDO_SITES: &[(&str, usize, &str)] = &[
     (
+        "sale/invoice_lineage.rs::assign_sources",
+        1,
+        "stores only the private source link of an invoice item after checking the caller's write access on the old and new sale lines and read access to the order and matching fields; validates document compatibility within the same savepoint",
+    ),
+    (
+        "sale/invoice_lineage.rs::remove_links",
+        1,
+        "deletes association records only for the authorized accounting items or headers being deleted; accounting enforces its draft and deletion policies in the same savepoint, rolling back the private deletion on refusal",
+    ),
+    (
         "base/report_settings.rs::barcode_grid",
         1,
         "reads the one declared global base.report_barcode_dpi setting for the renderer and returns the validated module grid",
@@ -1151,11 +1161,6 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "account/moves/post.rs::number",
         1,
         "reads the journals of the entries being numbered, archived ones included, for their numbering pattern (prefix, padding, reset); posting was authorized on the entries before, and a number must not depend on which journals the caller's rules show",
-    ),
-    (
-        "account/numbering/mod.rs::from_settings",
-        1,
-        "reads the global lock-wait setting of journal entry numbering; the framework reads its own configuration, and a user who posts needs no settings group; the value is a bounded number and is not returned to the caller (a later release)",
     ),
     (
         "account/payment/mod.rs::_compute_display_name",
@@ -1871,11 +1876,6 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "uom/res_groups.rs::_is_uom_feature_enabled",
         1,
         "reads the `uom.group_uom` external identity, that group's implication closure and the superuser's group links to tell whether the global multi-unit feature is on (the reference ERP `_is_feature_enabled` reads the superuser's groups with privileges); a private method without `#[rpc]`, returning one boolean, that authorizes nothing for the caller",
-    ),
-    (
-        "account/tax/settings.rs::limit",
-        1,
-        "reads the global setting `account.tax_repartition_lines_max` for the tax distribution checks; the framework reads its own configuration, and a user who creates or edits a tax needs no settings group; the value is a bounded number and only named in refusals",
     ),
     (
         "mail/thread_rpc.rs::read_followers",

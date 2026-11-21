@@ -310,3 +310,117 @@ fn thread_serialization_and_mutations_cannot_cross_the_parent_boundary() {
         assert_eq!(m.search(Subject::Admin, "mail.followers", &[]), followers);
     });
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installed_thread_shell_advertises_configured_retry_bounds() {
+    let node = native_http::NativeFixture::start_with_config(
+        "[startup_limits]\n\"ws.retry_initial_ms\"=1400\n\"ws.retry_max_ms\"=7300",
+    )
+    .await;
+    success(&native_http::json_post(
+        node.port,
+        &node.cookies,
+        "/erp/module/install",
+        &json!({"modules":["mail"]}).to_string(),
+    ));
+    let shell = native_http::request(node.port, "GET", "/erp", &[("cookie", &node.cookies)], "");
+    assert_eq!(shell.status, 200);
+    assert_eq!(
+        native_http::embedded(&shell, "erp-bootstrap")["thread_reconnect_ms"],
+        json!([1400, 7300])
+    );
+    node.cleanup().await;
+}
+
+#[test]
+fn saved_thread_websocket_wakes_authorized_reader_on_another_nodes_commit() {
+    use tungstenite::{Message, protocol::frame::coding::CloseCode};
+    run(|f| {
+        let m = Mail::new(f);
+        let a = f.user(Subject::A);
+        let b = f.user(Subject::B);
+        let port = f.native.port;
+        let path = "/erp/bus/websocket";
+        assert_eq!(
+            native_http::request(
+                port,
+                "GET",
+                path,
+                &[("origin", &format!("http://127.0.0.1:{port}"))],
+                ""
+            )
+            .status,
+            401
+        );
+        assert_eq!(
+            native_http::request(
+                port,
+                "GET",
+                path,
+                &[("origin", "https://unrelated.invalid")],
+                ""
+            )
+            .status,
+            403
+        );
+        let bootstrap = f.bootstrap(Subject::A);
+        let subscribe = |id| {
+            Message::Text(
+                json!({"type":"subscribe","model":"product.template","id":id,"company":a.company,"csrf":bootstrap["csrf"]["logout"]})
+                    .to_string()
+                    .into(),
+            )
+        };
+        let peer = f.native.peer();
+        let mut oversized = a.thread_socket(port);
+        let header = tungstenite::protocol::frame::FrameHeader {
+            opcode: OpCode::Data(Data::Text),
+            mask: Some([1, 2, 3, 4]),
+            ..Default::default()
+        };
+        header.format(1024 * 1024 + 1, oversized.get_mut()).unwrap();
+        let Message::Close(Some(close)) = oversized.read().unwrap() else {
+            panic!("Expected size closure");
+        };
+        assert_eq!(close.code, CloseCode::Size);
+        let mut slow = a.thread_socket(port);
+        std::io::Write::write_all(slow.get_mut(), &[0x81]).unwrap();
+        let Message::Close(Some(close)) = slow.read().unwrap() else {
+            panic!("Expected rate closure");
+        };
+        assert_eq!(close.code, CloseCode::Policy);
+        let mut forbidden = a.thread_socket(port);
+        forbidden.send(subscribe(m.b)).unwrap();
+        let Message::Close(Some(denial)) = forbidden.read().unwrap() else {
+            panic!("Expected policy closure");
+        };
+        assert_eq!(denial.code, CloseCode::Policy);
+        let mut socket = a.thread_socket(port);
+        socket.send(subscribe(m.shared)).unwrap();
+        let wake = Message::Text(r#"{"type":"resync"}"#.into());
+        assert_eq!(socket.read().unwrap(), wake);
+        // The connection outlives the HTTP header deadline (5 seconds by default).
+        std::thread::sleep(std::time::Duration::from_secs(6));
+        let posted = success(&b.rpc_on(peer.port,"product.template","thread_post",json!({"ids":[m.shared],"post":{"body":"a message from a second user on a second node"}})));
+        assert!(posted["message_id"].as_i64().unwrap() > 0);
+        assert_eq!(socket.read().unwrap(), wake);
+        use tungstenite::protocol::frame::{
+            Frame,
+            coding::{Data, OpCode},
+        };
+        socket
+            .send(Message::Frame(Frame::message(
+                "incomplete",
+                OpCode::Data(Data::Text),
+                false,
+            )))
+            .unwrap();
+        assert!(matches!(socket.read().unwrap(), Message::Ping(_)));
+        // tungstenite answers the valid heartbeat with a masked, empty Pong.
+        socket.flush().unwrap();
+        let Message::Close(Some(denial)) = socket.read().unwrap() else {
+            panic!("A responsive peer must not retain an incomplete data message");
+        };
+        assert_eq!(denial.code, CloseCode::Policy);
+    });
+}

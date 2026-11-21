@@ -71,6 +71,26 @@ fn zero_is_decided_at_the_cells_precision() {
 }
 
 #[test]
+fn cell_drill_capability_is_optional_and_generated_values_do_not_inherit_it() {
+    let legacy = Cell::number(CellKind::Decimal, Some(Decimal::ONE), 2);
+    assert!(legacy.to_json().get("drillable").is_none());
+
+    let mut declared = legacy.clone().with_drillable(true);
+    assert_eq!(declared.to_json()["drillable"], true);
+    declared.suppress_declared_drill();
+    assert_eq!(declared.to_json()["drillable"], false);
+    assert_eq!(declared.to_json()["value"], legacy.to_json()["value"]);
+
+    let mut unannotated = legacy;
+    unannotated.suppress_declared_drill();
+    assert!(unannotated.to_json().get("drillable").is_none());
+    assert_eq!(
+        Cell::empty().with_drillable(true).to_json()["drillable"],
+        false
+    );
+}
+
+#[test]
 fn drill_targets_are_an_item_or_a_cell() {
     assert_eq!(
         DrillTarget::parse(&json!({"item": "open"})).unwrap(),

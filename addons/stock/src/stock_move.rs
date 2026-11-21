@@ -405,6 +405,17 @@ pub struct StockMove {
     /// Name of the inventory adjustment.
     #[field(char, readonly = true)]
     pub inventory_name: Option<Arc<str>>,
+    /// Initial demand that owns this automatic backorder. Only Stock validation attaches this link.
+    #[field(
+        many2one,
+        comodel = "stock.move",
+        ondelete = "restrict",
+        copy = false,
+        readonly = true,
+        index = "btree_not_null",
+        string = "Original Demand"
+    )]
+    pub backorder_root_move_id: Option<RecId>,
     /// Move this return was created from.
     #[field(
         many2one,

@@ -11,18 +11,17 @@
 //!
 //! The pattern and reset period are declared by the caller (the journal,.2) as a
 //! [`SequencePattern`]; this module renders names with it and resolves the period key from it.
-//! The wait for a chain row held by another posting is the declared setting [`LOCK_WAIT_SETTING`].
+//! The wait for a chain row held by another posting is the declared parameter [`LOCK_WAIT_SETTING`].
 //! Developer page.
 
 use std::collections::BTreeMap;
 
-use erp_addon_base::ir_config_setting::read_values;
 use erp_sdk::prelude::*;
 use erp_sdk::sequence::{FiscalYear, SequencePattern};
-use erp_sdk::serde_json;
-use erp_sdk::settings::{ScopeKind, SettingDecl};
-use erp_sdk::views::wire::SettingsScope;
+use erp_sdk::settings::ParameterDecl;
 use erp_sdk::{Condition, FieldType};
+
+mod settings_migration;
 
 /// The chain model.
 pub const CHAIN_MODEL: &str = "account.sequence.chain";
@@ -86,7 +85,7 @@ pub struct AccountSequenceChain {
     pub last_name: Option<Arc<str>>,
 }
 
-/// Declared setting: how long a posting waits for a number chain another posting holds, in
+/// Declared system parameter: how long a posting waits for a number chain another posting holds, in
 /// milliseconds, before it is refused.
 pub const LOCK_WAIT_SETTING: &str = "account.sequence_lock_wait_ms";
 /// Default of [`LOCK_WAIT_SETTING`].
@@ -97,20 +96,19 @@ pub const LOCK_WAIT_FLOOR_MS: i64 = 100;
 /// contention, and the wait must stay below the unit of work's statement limit.
 pub const LOCK_WAIT_HARD_MS: i64 = 60_000;
 
-fn settings() -> Result<Vec<SettingDecl>> {
-    Ok(vec![
-        SettingDecl::integer(
-            LOCK_WAIT_SETTING,
-            "Journal entry numbering: wait for a number chain in use (milliseconds)",
-            ScopeKind::Global,
-            LOCK_WAIT_DEFAULT_MS,
-            (LOCK_WAIT_FLOOR_MS, LOCK_WAIT_HARD_MS),
-        )?
-        .block("Journal entry numbering")?
-        .access(&["base.group_system"], &["base.group_system"])?,
-    ])
+fn lock_wait_parameter() -> Result<ParameterDecl> {
+    ParameterDecl::integer(
+        LOCK_WAIT_SETTING,
+        "Journal entry numbering: wait for a number chain in use (milliseconds)",
+        LOCK_WAIT_DEFAULT_MS,
+        (LOCK_WAIT_FLOOR_MS, LOCK_WAIT_HARD_MS),
+    )
 }
-erp_sdk::setting_declarations!(settings);
+
+fn parameters() -> Result<Vec<ParameterDecl>> {
+    Ok(vec![lock_wait_parameter()?])
+}
+erp_sdk::system_parameters!(parameters);
 
 /// The wait for a held chain row, inside the bounds of [`LOCK_WAIT_SETTING`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,28 +132,14 @@ impl LockWait {
         Ok(Self { millis })
     }
 
-    /// The configured wait (the setting's default when it was never set). The framework reads
-    /// its own configuration with elevated rights; the poster needs no settings group.
+    /// The configured system parameter, or its declared default when unset. The poster needs
+    /// no System Parameters permissions to use the value.
     ///
     /// # Errors
     ///
-    /// Settings read failures; a stored value outside the bounds.
+    /// Parameter read failures and invalid stored values.
     pub async fn from_settings(tx: &mut Transaction) -> Result<Self> {
-        let env = tx.env().sudo(true);
-        let read = read_values(
-            &env,
-            tx,
-            SettingsScope::Global {},
-            vec![LOCK_WAIT_SETTING.to_owned()],
-        )
-        .await?;
-        let read = serde_json::to_value(&read)
-            .map_err(|error| Error::internal(format!("{LOCK_WAIT_SETTING}: {error}")))?;
-        let millis = read["values"]
-            .as_array()
-            .and_then(|values| values.iter().find(|v| v["key"] == LOCK_WAIT_SETTING))
-            .and_then(|entry| entry["value"].as_i64())
-            .ok_or_else(|| Error::internal(format!("{LOCK_WAIT_SETTING} is not an integer")))?;
+        let millis = erp_sdk::params::get_int(tx, &crate::ADDON, LOCK_WAIT_SETTING).await?;
         Self::from_millis(millis)
     }
 
@@ -526,10 +510,10 @@ mod tests {
     use super::*;
     use erp_sdk::settings::SettingKind;
 
-    /// The lock wait is a declared global setting with a default, a floor and a hard bound.
+    /// The lock wait is declared with a default, a floor and a hard bound.
     #[test]
     fn the_lock_wait_is_a_bounded_declared_setting() {
-        let declarations = settings().unwrap();
+        let declarations = parameters().unwrap();
         assert_eq!(declarations.len(), 1);
         let setting = &declarations[0];
         assert_eq!(setting.key(), LOCK_WAIT_SETTING);
@@ -538,7 +522,6 @@ mod tests {
             panic!("integer setting expected");
         };
         assert_eq!((*min, *max), (LOCK_WAIT_FLOOR_MS, LOCK_WAIT_HARD_MS));
-        assert_eq!(setting.write_groups(), &["base.group_system"]);
     }
 
     #[test]

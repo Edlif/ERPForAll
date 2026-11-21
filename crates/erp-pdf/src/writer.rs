@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::error::{Result, invalid, malformed, owner, refused, unsupported};
 use crate::limits::{Budget, Context};
-use crate::{AnnotationPolicy, Limit, PdfError, PdfErrorKind, annot, graph};
-use lopdf::{Dictionary, Document, Object, ObjectId};
+use crate::{AnnotationPolicy, FormPolicy, Limit, PdfError, PdfErrorKind, annot, forms, graph};
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use std::collections::{BTreeMap, BTreeSet};
 /// A caller-owned output destination. No resource is opened by this crate.
 pub type Emitter<'a> = dyn FnMut(&[u8]) -> std::io::Result<()> + 'a;
@@ -209,6 +209,9 @@ pub(crate) struct Importer<'d, 'b, 'a, 'c> {
     budget: Budget<'a>,
     plain: bool,
     policy: AnnotationPolicy,
+    forms: FormPolicy,
+    /// The source form asks the reader to build every field appearance (`NeedAppearances`).
+    viewer_builds: bool,
     /// One-based position of the document among the inputs, for messages.
     ordinal: usize,
     /// Annotations carried into the copy.
@@ -217,6 +220,8 @@ pub(crate) struct Importer<'d, 'b, 'a, 'c> {
     pub dropped: usize,
     /// Optional content groups the source catalog lists; any other group is refused.
     pub groups: BTreeSet<ObjectId>,
+    /// Form fields flattened into their pages under [`FormPolicy::Flatten`].
+    pub flattened: usize,
 }
 impl<'d, 'b, 'a, 'c> Importer<'d, 'b, 'a, 'c> {
     pub fn new(
@@ -235,15 +240,26 @@ impl<'d, 'b, 'a, 'c> Importer<'d, 'b, 'a, 'c> {
             budget: Budget::new(limits),
             plain,
             policy,
+            forms: FormPolicy::Refuse,
+            viewer_builds: false,
             ordinal,
             kept: 0,
             dropped: 0,
+            flattened: 0,
             groups: BTreeSet::new(),
         }
     }
     /// The output identifier of a source object that was written.
     pub fn copied(&self, old: ObjectId) -> Option<ObjectId> {
         self.map.get(&old).copied()
+    }
+    /// Choose what happens to form fields; flattening reads the form's appearance rule once.
+    pub fn forms(mut self, policy: FormPolicy) -> Result<Self> {
+        if policy == FormPolicy::Flatten {
+            self.viewer_builds = forms::viewer_builds(self.doc, self.budget.limits)?;
+        }
+        self.forms = policy;
+        Ok(self)
     }
     /// Give every page of this copy its output identifier before any is written, so a link can
     /// name a page that comes later.
@@ -269,25 +285,40 @@ impl<'d, 'b, 'a, 'c> Importer<'d, 'b, 'a, 'c> {
             .ok_or_else(|| malformed("PDF page was not reserved for this copy"))?;
         page.remove(b"Parent");
         let annotations = page.remove(b"Annots");
+        let entries = match &annotations {
+            Some(value) => self.classify(value, &page)?,
+            None => Vec::new(), // A page without Annots has nothing to decide.
+        };
+        let draws: Vec<&forms::Draw> = entries
+            .iter()
+            .filter_map(|e| match &e.flat {
+                Some(forms::Flat::Drawn(draw)) => Some(draw),
+                _ => None, // Carried, left out, or a field a reader does not show.
+            })
+            .collect();
+        let contents = if draws.is_empty() {
+            None
+        } else {
+            Some(self.flatten(&mut page, &draws)?)
+        };
         let mut copied = self.copy_dict(&page, 0)?;
-        if let Some(annotations) = annotations {
-            let carried = self.annotations(&annotations, id, number)?;
-            if !carried.is_empty() {
-                copied.set("Annots", carried);
-            }
+        if let Some(contents) = contents {
+            copied.set("Contents", contents);
+        }
+        let carried = self.carry(&entries, id, number)?;
+        if !carried.is_empty() {
+            copied.set("Annots", carried);
         }
         copied.set("Parent", parent);
         self.writer.object(id, &Object::Dictionary(copied))?;
         Ok(id)
     }
-    /// Copy the annotations of one page that stand on their own; refuse or count the others.
-    fn annotations(
-        &mut self,
-        value: &Object,
-        page: ObjectId,
-        number: usize,
-    ) -> Result<Vec<Object>> {
-        let doc = self.doc;
+    /// Read the annotations of one page and decide each: carried, flattened, or why neither.
+    fn classify<'x>(&self, value: &'x Object, page: &Dictionary) -> Result<Vec<annot::Entry<'x>>>
+    where
+        'd: 'x,
+    {
+        let doc: &'x Document = self.doc;
         let l = self.budget.limits;
         let items = graph::resolve(doc, value, l)?
             .as_array()
@@ -295,19 +326,116 @@ impl<'d, 'b, 'a, 'c> Importer<'d, 'b, 'a, 'c> {
         if items.is_empty() {
             return Ok(Vec::new());
         }
-        if self.policy == AnnotationPolicy::Refuse {
+        let flatten = self.forms == FormPolicy::Flatten;
+        if self.policy == AnnotationPolicy::Refuse && !flatten {
             return Err(graph::annotations_refused());
         }
         l.check(Limit::Objects, items.len())?;
+        let turned = flatten && forms::turned(doc, page, l)?;
         let mut entries = Vec::with_capacity(items.len());
         for item in items {
             l.step()?;
             let pages = &self.pages;
-            entries.push(annot::entry(doc, item, l, &|id| pages.contains(&id))?);
+            let mut e = annot::entry(doc, item, l, &|id| pages.contains(&id))?;
+            if flatten && e.widget {
+                match forms::widget(doc, e.dict, self.viewer_builds, turned, l)? {
+                    Ok(flat) => {
+                        e.why = None;
+                        e.flat = Some(flat);
+                    }
+                    Err(why) => e.why = Some(why),
+                }
+            }
+            entries.push(e);
+        }
+        // Under the refusing policy only form fields get past: they are painted, not carried.
+        if self.policy == AnnotationPolicy::Refuse && entries.iter().any(|e| !e.widget) {
+            return Err(graph::annotations_refused());
         }
         annot::settle(&mut entries, l)?;
+        Ok(entries)
+    }
+    /// Paint flattened form fields into the page: each appearance stream becomes an XObject of
+    /// the page's own resources, and the content is the original, closed, then one paint per
+    /// field. Returns the page's new `Contents` in output identifiers.
+    fn flatten(&mut self, page: &mut Dictionary, draws: &[&forms::Draw]) -> Result<Object> {
+        let doc = self.doc;
+        let l = self.budget.limits;
+        // The original content must leave the graphics state as it found it, or the fields
+        // would be painted in whatever state it left behind.
+        let original = graph::page_content(doc, page, l)?;
+        crate::stamp::balanced(&original, l)?;
+        let mut resources = match page.get(b"Resources") {
+            Ok(v) => {
+                let d = graph::dict(doc, v, l)?;
+                graph::charge_dictionary(d, l, 0)?;
+                d.clone()
+            }
+            Err(_) => Dictionary::new(), // A page without resource references can omit Resources.
+        };
+        let mut xobjects = match resources.get(b"XObject") {
+            Ok(v) => {
+                let d = graph::dict(doc, v, l)?;
+                graph::charge_dictionary(d, l, 0)?;
+                d.clone()
+            }
+            Err(_) => Dictionary::new(), // Resources without XObject name no XObjects yet.
+        };
+        let mut n = 0usize;
+        let mut paints = Vec::with_capacity(draws.len());
+        for draw in draws {
+            let name = loop {
+                l.step()?;
+                let name = format!("ERPField{n}");
+                n = n
+                    .checked_add(1)
+                    .ok_or_else(|| malformed("PDF field name overflow"))?;
+                if !xobjects.has(name.as_bytes()) {
+                    break name;
+                }
+            };
+            xobjects.set(name.as_bytes(), Object::Reference(draw.stream));
+            paints.push((name, draw.matrix));
+        }
+        resources.set("XObject", xobjects);
+        page.set("Resources", resources);
+        let open = b"q\n".to_vec();
+        let close = forms::paint(&paints);
+        l.copied(open.len())?;
+        l.copied(close.len())?;
+        let mut contents = vec![self.stream(open)?];
+        if let Some(value) = page.remove(b"Contents") {
+            match graph::resolve(doc, &value, l)? {
+                Object::Array(items) => {
+                    for item in items {
+                        contents.push(self.copy(item, 1)?);
+                    }
+                }
+                _ => contents.push(self.copy(&value, 1)?),
+            }
+        }
+        contents.push(self.stream(close)?);
+        Ok(Object::Array(contents))
+    }
+    fn stream(&mut self, content: Vec<u8>) -> Result<Object> {
+        let id = self.writer.id()?;
+        self.writer
+            .object(id, &Object::Stream(Stream::new(Dictionary::new(), content)))?;
+        Ok(Object::Reference(id))
+    }
+    /// Write the annotations that stand on their own; refuse or count the others.
+    fn carry(
+        &mut self,
+        entries: &[annot::Entry<'_>],
+        page: ObjectId,
+        number: usize,
+    ) -> Result<Vec<Object>> {
         // Identifiers first: a note and its popup name each other.
-        for e in &entries {
+        for e in entries {
+            if e.flat.is_some() {
+                self.flattened = count(self.flattened)?;
+                continue;
+            }
             match (e.why, e.id) {
                 (Some(_), _) if self.policy == AnnotationPolicy::KeepOrDrop => {
                     self.dropped = count(self.dropped)?;
@@ -332,9 +460,9 @@ impl<'d, 'b, 'a, 'c> Importer<'d, 'b, 'a, 'c> {
                 (None, None) => {} // Written inside the page's own array.
             }
         }
-        let carried = annot::carried(&entries);
+        let carried = annot::carried(entries);
         let mut out = Vec::new();
-        for e in entries.iter().filter(|e| e.why.is_none()) {
+        for e in entries.iter().filter(|e| e.carried()) {
             let mut d = e.dict.clone();
             // The owning page is set below; a popup that is not carried is not named.
             d.remove(b"P");

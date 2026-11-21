@@ -26,6 +26,30 @@
         <field name="code">CLOSING</field>
         <field name="name">Closing (raw ledger)</field>
     </record>
+    <record id="gl_line_gl_fiscal" model="reporting.report.line">
+        <field name="report_id" ref="report_general_ledger"/>
+        <field name="sequence">40</field>
+        <field name="code">GL_FISCAL</field>
+        <field name="name">Posted ledger (fiscal opening)</field>
+    </record>
+    <record id="gl_line_opening_fiscal" model="reporting.report.line">
+        <field name="report_id" ref="report_general_ledger"/>
+        <field name="sequence">50</field>
+        <field name="code">OPENING_FISCAL</field>
+        <field name="name">Fiscal opening</field>
+    </record>
+    <record id="gl_line_closing_fiscal" model="reporting.report.line">
+        <field name="report_id" ref="report_general_ledger"/>
+        <field name="sequence">60</field>
+        <field name="code">CLOSING_FISCAL</field>
+        <field name="name">Closing balance after fiscal opening</field>
+    </record>
+    <record id="gl_line_unallocated" model="reporting.report.line">
+        <field name="report_id" ref="report_general_ledger"/>
+        <field name="sequence">70</field>
+        <field name="code">UNALLOCATED</field>
+        <field name="name">Unallocated prior-year earnings</field>
+    </record>
     <record id="gl_column_date" model="reporting.report.column">
         <field name="report_id" ref="report_general_ledger"/>
         <field name="sequence">10</field>
@@ -67,4 +91,5 @@
         <field name="params" eval="{'report': ref('report_general_ledger')}"/>
     </record>
     <menuitem id="menu_general_ledger" name="General Ledger" parent="menu_account_reporting" action="action_general_ledger" groups="account.group_account_readonly" sequence="35"/>
+    <record id="menu_general_ledger" model="ir.ui.menu"><field name="web_icon">lucide:book-open</field></record>
 </erp>

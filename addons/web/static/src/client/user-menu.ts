@@ -79,7 +79,7 @@ export function renderUserMenuItems(
 ): UserMenuRendererHandle {
   const disposables: (() => void)[] = [];
   // The built-in entries (My Preferences, Sign out) carry icons, so every custom entry gets one as well.
-  const entryIcons = menuEntryIcons(items.map(item => item.icon), true);
+  const entryIcons = menuEntryIcons(items.map(item => item.icon));
 
   for (const [position, item] of items.entries()) {
     const type = item.type || "item";

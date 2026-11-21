@@ -43,6 +43,357 @@ fn company_scope(id: i64) -> SettingsScope {
 }
 
 #[test]
+fn delivery_policy_save_updates_only_changed_active_types_in_the_selected_company() {
+    use erp_orm::{Transaction, UserId};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    const POLICY: &str = "stock.picking_policy";
+    const HORIZON: &str = "stock.horizon_days";
+
+    // xmin also detects an UPDATE that stored the original value back to the same row.
+    async fn policies(tx: &mut Transaction, company: i64) -> Vec<(i64, i64, bool, String, String)> {
+        tx.flush().await.unwrap();
+        tx.query(
+            "SELECT id, warehouse_id, active, move_type, xmin::text FROM stock_picking_type \
+             WHERE company_id=$1 ORDER BY id",
+            &[&company],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
+        .collect()
+    }
+
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let installed = install(&db).await;
+        let roles = super::security::roles(&installed).await;
+        let company = super::security::xid(&installed, "base", "main_company").await;
+        let scope = company_scope(company);
+        let mut setup = installed.begin(SUPERUSER_ID).await.unwrap();
+        let env = setup.env().with_company(company).unwrap();
+        let currency = env
+            .records("res.company")
+            .unwrap()
+            .browse([company])
+            .unwrap()
+            .cell(&mut setup, "currency_id")
+            .await
+            .unwrap();
+        let other = env
+            .records("res.company")
+            .unwrap()
+            .create(
+                &mut setup,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Other shipping company".into()))
+                        .set_cell("currency_id", currency),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let warehouse = env
+            .records("stock.warehouse")
+            .unwrap()
+            .create(
+                &mut setup,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Second shipping warehouse".into()))
+                        .set_cell("code", Cell::Str("SHIP2".into()))
+                        .set_cell("company_id", Cell::Id(company)),
+                ],
+            )
+            .await
+            .unwrap();
+        let Cell::Id(already_one) = warehouse.cell(&mut setup, "out_type_id").await.unwrap() else {
+            panic!("the second warehouse has no delivery type");
+        };
+        env.records("stock.picking.type")
+            .unwrap()
+            .browse([already_one])
+            .unwrap()
+            .write(
+                &mut setup,
+                RawVals::new().set_cell("move_type", Cell::Str("one".into())),
+            )
+            .await
+            .unwrap();
+        setup.commit().await.unwrap();
+        drop(setup);
+
+        let orm = super::security::secure(&db, &installed).await;
+        let admin = UserId::new(roles[0]).unwrap();
+        let manager = UserId::new(roles[3]).unwrap();
+        let change = |policy| vec![(POLICY.into(), Value::str(policy))];
+        let mut denied = orm.begin(manager).await.unwrap();
+        let error = write_values(
+            &denied.env(),
+            &mut denied,
+            scope.clone(),
+            "0".into(),
+            change("one"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Access);
+        assert_eq!(
+            error.message(),
+            "Setting stock.picking_policy is unavailable or access is denied."
+        );
+        denied.rollback().await.unwrap();
+        drop(denied);
+
+        let mut tx = orm.begin(admin).await.unwrap();
+        let env = tx.env();
+        let error = write_values(
+            &env,
+            &mut tx,
+            company_scope(other),
+            "0".into(),
+            change("one"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Access);
+        assert_eq!(
+            error.message(),
+            "Choose a company available to your account."
+        );
+        let before = policies(&mut tx, company).await;
+        let foreign = policies(&mut tx, other).await;
+        assert!(foreign.iter().any(|row| row.2 && row.3 == "direct"));
+        assert!(before.iter().any(|row| !row.2 && row.3 == "direct"));
+        assert_eq!(
+            before
+                .iter()
+                .filter(|row| row.2)
+                .map(|row| row.1)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2
+        );
+        let blocked = before
+            .iter()
+            .find(|row| row.2 && row.3 == "direct")
+            .unwrap()
+            .0;
+        let saved = write_values(&env, &mut tx, scope.clone(), "0".into(), change("direct"))
+            .await
+            .unwrap();
+        assert_eq!(saved.revision, "1");
+        assert_eq!(policies(&mut tx, company).await, before);
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut lock = installed.begin(SUPERUSER_ID).await.unwrap();
+        lock.env()
+            .records("stock.picking.type")
+            .unwrap()
+            .browse([blocked])
+            .unwrap()
+            .lock_for_update(&mut lock, true)
+            .await
+            .unwrap();
+        let mut tx = orm.begin(admin).await.unwrap();
+        let env = tx.env();
+        let mut changes = change("one");
+        changes.push((HORIZON.into(), Value::Int(49)));
+        let error = write_values(&env, &mut tx, scope.clone(), "1".into(), changes)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Lock);
+        assert_eq!(error.message(), "Cannot grab a lock on records");
+        let saved = read_values(
+            &env,
+            &mut tx,
+            scope.clone(),
+            vec![POLICY.into(), HORIZON.into()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.revision, "1");
+        let values: BTreeMap<_, _> = saved
+            .values
+            .iter()
+            .map(|entry| (entry.key.as_str(), json!(&entry.value)))
+            .collect();
+        assert_eq!(
+            values,
+            BTreeMap::from([(HORIZON, json!(365)), (POLICY, json!("direct"))])
+        );
+        let audit = tx
+            .query(
+                "SELECT setting_key, new_value FROM ir_config_setting_audit a \
+             JOIN ir_config_setting_scope s ON s.id=a.scope_id WHERE s.company_id=$1",
+                &[&company],
+            )
+            .await
+            .unwrap();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].get::<_, String>(0), POLICY);
+        assert_eq!(audit[0].get::<_, String>(1), "\"direct\"");
+        assert_eq!(policies(&mut tx, company).await, before);
+        tx.commit().await.unwrap();
+        drop(tx);
+        lock.rollback().await.unwrap();
+        drop(lock);
+
+        // A customized record rule must refuse an incomplete update instead of silently
+        // retaining the previous policy on the hidden row.
+        let model = super::security::xid(&installed, "stock", "model_stock_picking_type").await;
+        let mut setup = installed.begin(SUPERUSER_ID).await.unwrap();
+        let access = setup.env().records("ir.access").unwrap();
+        let restriction = access
+            .create(
+                &mut setup,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Hide one operation type".into()))
+                        .set_cell("model_id", Cell::Id(model))
+                        .set_cell("operation", Cell::Str("r".into()))
+                        .set_cell(
+                            "domain",
+                            Cell::Str(format!("[('id', '!=', {blocked})]").into()),
+                        ),
+                ],
+            )
+            .await
+            .unwrap();
+        setup.commit().await.unwrap();
+        drop(setup);
+        let restricted = super::security::secure(&db, &installed).await;
+        let mut tx = restricted.begin(admin).await.unwrap();
+        let env = tx.env();
+        let error = write_values(&env, &mut tx, scope.clone(), "1".into(), change("one"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Access);
+        assert_eq!(
+            error.message(),
+            "You cannot change the delivery policy because some affected operation types are not accessible."
+        );
+        assert_eq!(policies(&mut tx, company).await, before);
+        tx.commit().await.unwrap();
+        drop(tx);
+        let mut setup = installed.begin(SUPERUSER_ID).await.unwrap();
+        setup
+            .env()
+            .records("ir.access")
+            .unwrap()
+            .browse(restriction.ids())
+            .unwrap()
+            .unlink(&mut setup)
+            .await
+            .unwrap();
+        setup.commit().await.unwrap();
+        drop(setup);
+
+        let orm = super::security::secure(&db, &installed).await;
+        let mut tx = orm.begin(admin).await.unwrap();
+        let env = tx.env();
+        let saved: Value = env
+            .records("ir.config.setting")
+            .unwrap()
+            .call(
+                &mut tx,
+                "erp_write_values",
+                (
+                    Value::Json(Arc::new(json!(scope))),
+                    "1".to_owned(),
+                    vec![Value::Json(Arc::new(
+                        json!({ "key": POLICY, "value": "one" }),
+                    ))],
+                ),
+            )
+            .await
+            .unwrap();
+        let Value::Json(saved) = saved else {
+            panic!("Settings must return its typed JSON result");
+        };
+        assert_eq!(saved["revision"], "2");
+        for (old, new) in before.iter().zip(policies(&mut tx, company).await) {
+            if old.2 && old.3 == "direct" {
+                assert_eq!(
+                    (new.0, new.1, new.2, new.3.as_str()),
+                    (old.0, old.1, true, "one")
+                );
+                assert_ne!(new.4, old.4);
+            } else {
+                assert_eq!(&new, old);
+            }
+        }
+        assert_eq!(policies(&mut tx, other).await, foreign);
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        // Explicit owner B takes precedence over the environment's current company A.
+        let env = tx.env().with_company(company).unwrap();
+        let types = env.records("stock.picking.type").unwrap();
+        let value = types.default_get(&mut tx, &["move_type"]).await.unwrap();
+        assert_eq!(value["move_type"], Value::str("one"));
+        let values = |name: &str, owner| {
+            RawVals::new()
+                .set_cell("name", Cell::Str(name.into()))
+                .set_cell("company_id", Cell::Id(owner))
+        };
+        let created = types
+            .create(
+                &mut tx,
+                vec![
+                    values("Company policy", company),
+                    values("Explicit policy", company)
+                        .set_cell("move_type", Cell::Str("direct".into())),
+                    values("Other company default", other),
+                ],
+            )
+            .await
+            .unwrap();
+        let policies = created.cells(&mut tx, "move_type").await.unwrap();
+        assert_eq!(
+            policies,
+            [
+                Cell::Str("one".into()),
+                Cell::Str("direct".into()),
+                Cell::Str("direct".into())
+            ]
+        );
+
+        // Generated types also use their warehouse's owner, even in another active company.
+        let env = env.with_company(other).unwrap();
+        let warehouse = env
+            .records("stock.warehouse")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("New policy warehouse".into()))
+                        .set_cell("code", Cell::Str("POL3".into()))
+                        .set_cell("company_id", Cell::Id(company)),
+                ],
+            )
+            .await
+            .unwrap();
+        let rows = tx
+            .query(
+                "SELECT move_type FROM stock_picking_type WHERE warehouse_id=$1 ORDER BY id",
+                &[&warehouse.ids()[0]],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 8);
+        assert!(rows.iter().all(|row| row.get::<_, String>(0) == "one"));
+        tx.commit().await.unwrap();
+    });
+}
+
+#[test]
 fn inventory_settings_publish_typed_scoped_defaults_after_install() {
     run(async {
         let db = TestDb::create().await.unwrap();

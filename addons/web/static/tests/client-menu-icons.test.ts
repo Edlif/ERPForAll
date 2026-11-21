@@ -29,25 +29,24 @@ test("the built-in form Actions entries all carry an icon and Unarchive has its 
   expect(archive.querySelectorAll(".erp-icon")).toHaveLength(1);
 });
 
-test("menuEntryIcons: none when no entry names one, every entry when one does, unknown names fall back loudly", () => {
-  expect(menuEntryIcons([undefined, null])).toEqual([null, null]);
+test("menuEntryIcons: every entry has a glyph including menus with no declared icons, unknown names fall back loudly", () => {
+  expect(menuEntryIcons([undefined, null]).map(svg => svg.getAttribute("data-icon"))).toEqual([DEFAULT_MENU_ICON, DEFAULT_MENU_ICON]);
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const mixed = menuEntryIcons(["settings", undefined, "no-such-icon"]);
   expect(mixed.map(svg => svg?.getAttribute("data-icon"))).toEqual(["settings", DEFAULT_MENU_ICON, DEFAULT_MENU_ICON]);
   expect(warn).toHaveBeenCalledOnce();
-  expect(menuEntryIcons([undefined], true)[0]?.getAttribute("data-icon")).toBe(DEFAULT_MENU_ICON);
 });
 
-test("list Actions menu: an entry without an icon gets the default one when a sibling names one, and none when no sibling does", () => {
+test("list Actions menu: all entries have an icon even when no sibling declares one", () => {
   const env = { resModel: "res.partner", getActiveIds: () => [1] };
-  for (const [items, expected] of [
-    [[{ id: 1, label: "Export", icon: "files" }, { id: 2, label: "Archive" }, { id: 3, label: "Delete" }], "all"],
-    [[{ id: 1, label: "Export" }, { id: 2, label: "Archive" }], "none"],
+  for (const items of [
+    [{ id: 1, label: "Export", icon: "files" }, { id: 2, label: "Archive" }, { id: 3, label: "Delete" }],
+    [{ id: 1, label: "Export" }, { id: 2, label: "Archive" }],
   ] as const) {
     const node = new ActionMenus(items, env).render(); document.body.append(node);
     const entries = [...node.querySelectorAll(".action-menu-item")];
     expectUniform(entries, "list Actions menu");
-    expect(entries.every(entry => (entry.querySelector(".erp-icon") !== null) === (expected === "all"))).toBe(true);
+    expect(entries.every(entry => entry.querySelector(".erp-icon") !== null)).toBe(true);
     node.remove();
   }
 });
@@ -64,7 +63,7 @@ test("cog menu entries share one icon rule", async () => {
   document.body.append(plain.node);
   await vi.waitFor(() => expect(plain.node.querySelectorAll(".cog-menu-item")).toHaveLength(2));
   expectUniform([...plain.node.querySelectorAll(".cog-menu-item")], "plain cog menu");
-  expect(plain.node.querySelector(".erp-icon")).toBeNull();
+  expect(iconNames([...plain.node.querySelectorAll(".cog-menu-item")])).toEqual([DEFAULT_MENU_ICON, DEFAULT_MENU_ICON]);
   plain.dispose();
 });
 
@@ -95,4 +94,40 @@ test("debug menu decides once for all its sections", async () => {
   expectUniform(entries, "debug menu");
   expect(iconNames(entries)).toEqual(["list", DEFAULT_MENU_ICON, "shield"]);
   handle.dispose();
+});
+
+
+test("action-menu icons preserve names, disabled state and one callback activation", () => {
+  const active = vi.fn(), disabled = vi.fn();
+  const handle = new ActionMenus([
+    { id: "plain", label: "Delete", callback: active },
+    { id: "disabled", label: "Archive", icon: "archive", disabled: true, callback: disabled },
+  ], { resModel: "res.partner", getActiveIds: () => [1] });
+  const node = handle.render(); document.body.append(node);
+  const entries = [...node.querySelectorAll<HTMLButtonElement>(".action-menu-item")];
+  expect(entries.map(entry => entry.textContent)).toEqual(["Delete", "Archive"]);
+  expect(iconNames(entries)).toEqual([DEFAULT_MENU_ICON, "archive"]);
+  for (const entry of entries) {
+    const svg = entry.querySelector("svg")!;
+    expect(svg.getAttribute("aria-hidden")).toBe("true");
+    expect(svg.getAttribute("focusable")).toBe("false");
+  }
+  entries[0]!.click(); entries[1]!.click();
+  expect(active).toHaveBeenCalledOnce(); expect(disabled).not.toHaveBeenCalled();
+  handle.dispose();
+});
+
+test("cog components and separators keep ownership while standard rows get icons", async () => {
+  const custom = document.createElement("div"); custom.textContent = "Custom control";
+  const dispose = vi.fn();
+  const handle = renderCogMenu([
+    { key: "one", label: "First", groupNumber: 1 },
+    { key: "custom", groupNumber: 2, render: () => ({ node: custom, dispose }) },
+  ], {});
+  document.body.append(handle.node);
+  await vi.waitFor(() => expect(handle.node.contains(custom)).toBe(true));
+  expect(handle.node.querySelector(".cog-menu-item > .erp-icon")).not.toBeNull();
+  expect(custom.querySelector("svg")).toBeNull();
+  expect(handle.node.querySelector('[role="separator"]')?.querySelector("svg")).toBeNull();
+  handle.dispose(); expect(dispose).toHaveBeenCalledOnce();
 });

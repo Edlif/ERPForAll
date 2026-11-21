@@ -83,4 +83,5 @@
         <field name="params" eval="{'report': ref('report_ledger_trial_balance')}"/>
     </record>
     <menuitem id="menu_ledger_trial_balance" name="Ledger Trial Balance" parent="menu_account_reporting" action="action_ledger_trial_balance" groups="account.group_account_readonly" sequence="30"/>
+    <record id="menu_ledger_trial_balance" model="ir.ui.menu"><field name="web_icon">lucide:list</field></record>
 </erp>

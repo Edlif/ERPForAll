@@ -51,7 +51,8 @@
       1
     ],
     "attachment_limits": null,
-    "rpc_body_bytes": null
+    "rpc_body_bytes": null,
+    "thread_reconnect_ms": null
   },
   "menus": {
     "path": "/erp/json/2/ir.ui.menu/erp_load_web_menus",

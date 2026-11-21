@@ -23,5 +23,11 @@ test("a field modifier reads only its expression operands", () => {
   const visible = effectiveField({...field, modifiers: {readonly: null, required: null, invisible: boolean(false)}}, [field, models], values);
   expect(visible.invisible).toBe(false);
   const operand = decodeAst(parseBoundedJson(JSON.stringify({schema: 1, nodes: [{kind: "name", name: "allowed_models"}]})));
-  expect(() => effectiveField({...field, modifiers: {readonly: null, required: null, invisible: operand}}, [field, models], values)).toThrow("Cannot evaluate invisible");
+  expect(() => effectiveField({...field, modifiers: {readonly: null, required: null, invisible: operand}}, [field, models], values)).toThrowError(expect.objectContaining({kind: "validation", message: "Cannot evaluate invisible for Name: Field allowed_models cannot be used in a button expression."}));
+});
+
+test("scalar operands keep server readonly restrictions", () => {
+  const operand = decodeAst(parseBoundedJson(JSON.stringify({schema: 1, nodes: [{kind: "name", name: "name"}]})));
+  const effective = effectiveField({...field, readonly: true, modifiers: {readonly: boolean(false), required: operand, invisible: null}}, [field], {name: "configured"});
+  expect(effective).toMatchObject({readonly: true, required: true});
 });

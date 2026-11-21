@@ -164,6 +164,64 @@ pub fn embedded(reply: &Reply, id: &str) -> serde_json::Value {
     .unwrap()
 }
 
+/// Obtain the login document before the fixture sends credentials.
+pub fn fixture_login_page(port: u16, database: &str) -> Result<Reply, &'static str> {
+    let page = request(port, "GET", "/erp/login", &[], "");
+    if page.status != 200 {
+        return Err("fixture login page was unavailable");
+    }
+    if embedded(&page, "erp-login")["database"].as_str() != Some(database) {
+        return Err("ready listener belongs to a different fixture database");
+    }
+    Ok(page)
+}
+
+fn start_ready_server(
+    reservation: TcpListener,
+    config_path: &Path,
+    database: &str,
+) -> (Server, Reply) {
+    let port = reservation.local_addr().unwrap().port();
+    let stderr = fs::File::create(config_path.with_file_name("server.stderr")).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_erp"));
+    command
+        .args(["server", "--config"])
+        .arg(config_path)
+        .stdout(Stdio::null())
+        .stderr(stderr);
+    // Keep this port bound through DB initialization and file preparation. The binary binds it
+    // itself, so release the reservation only when it is ready to spawn.
+    drop(reservation);
+    let mut child = Server(command.spawn().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            panic!("fixture server for {database} exited {status} before readiness");
+        }
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            let ready = request(port, "GET", "/erp/health/ready", &[], "");
+            match ready.status {
+                200 => {
+                    let page = fixture_login_page(port, database)
+                        .unwrap_or_else(|reason| panic!("fixture server for {database}: {reason}"));
+                    assert!(
+                        child.0.try_wait().unwrap().is_none(),
+                        "fixture server for {database} exited during readiness"
+                    );
+                    return (child, page);
+                }
+                503 => {}
+                status => panic!("fixture server for {database} readiness returned HTTP {status}"),
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fixture server for {database} did not become ready"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 pub fn copy_dir(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
@@ -286,7 +344,6 @@ impl NativeFixture {
         let dir = tempfile::tempdir_in(temporary).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener);
         let config_path = config(
             dir.path(),
             &self.db,
@@ -308,35 +365,7 @@ impl NativeFixture {
         text.push_str(extra);
         text.push('\n');
         fs::write(&config_path, text).unwrap();
-        let stderr_path = dir.path().join("server.stderr");
-        let mut server = Server(
-            Command::new(env!("CARGO_BIN_EXE_erp"))
-                .args(["server", "--config"])
-                .arg(config_path)
-                .stdout(Stdio::null())
-                .stderr(fs::File::create(&stderr_path).unwrap())
-                .spawn()
-                .unwrap(),
-        );
-        let deadline = Instant::now() + Duration::from_secs(120);
-        loop {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                let ready = request(port, "GET", "/erp/health/ready", &[], "");
-                match ready.status {
-                    200 => break,
-                    503 => {}
-                    status => panic!("peer readiness returned HTTP {status}"),
-                }
-            }
-            if let Some(status) = server.0.try_wait().unwrap() {
-                panic!(
-                    "peer exited {status}: {}",
-                    fs::read_to_string(&stderr_path).unwrap()
-                );
-            }
-            assert!(Instant::now() < deadline, "peer did not become available");
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        let (server, _) = start_ready_server(listener, &config_path, self.db.name());
         NativePeer { server, dir, port }
     }
 
@@ -394,7 +423,6 @@ impl NativeFixture {
         fs::write(unlinked.join("src/lib.rs"), "").unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener);
         let config_path = config(dir.path(), &db, port, &role, &addons);
         if !extra.is_empty() {
             let mut text = fs::read_to_string(&config_path).unwrap();
@@ -441,37 +469,7 @@ impl NativeFixture {
             String::from_utf8_lossy(&init.stderr)
         );
         login_rollout::prepare(&db, &role).await;
-        let stderr_path = dir.path().join("server.stderr");
-        let mut server = Server(
-            Command::new(env!("CARGO_BIN_EXE_erp"))
-                .args(["server", "--config"])
-                .arg(&config_path)
-                .stdout(Stdio::null())
-                .stderr(fs::File::create(&stderr_path).unwrap())
-                .spawn()
-                .unwrap(),
-        );
-        let deadline = Instant::now() + Duration::from_secs(120);
-        loop {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                let ready = request(port, "GET", "/erp/health/ready", &[], "");
-                match ready.status {
-                    200 => break,
-                    // Membership settles before the listener admits ordinary requests.
-                    503 => {}
-                    status => panic!("server readiness returned HTTP {status}"),
-                }
-            }
-            if let Some(status) = server.0.try_wait().unwrap() {
-                panic!(
-                    "server exited {status}: {}",
-                    fs::read_to_string(&stderr_path).unwrap()
-                );
-            }
-            assert!(Instant::now() < deadline, "server did not become available");
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let login = request(port, "GET", "/erp/login", &[], "");
+        let (server, login) = start_ready_server(listener, &config_path, db.name());
         let prefs = cookie(&login, "prefs");
         let login_data = embedded(&login, "erp-login");
         let form = format!(
@@ -489,7 +487,12 @@ impl NativeFixture {
             ],
             &form,
         );
-        assert_eq!(logged.status, 303);
+        assert_eq!(
+            logged.status,
+            303,
+            "fixture login failed for verified database {}",
+            db.name()
+        );
         let cookies = format!("{prefs}; {}", cookie(&logged, "session_id"));
 
         Self {
@@ -500,7 +503,7 @@ impl NativeFixture {
             role,
             port,
             cookies,
-            stderr_path,
+            stderr_path: config_path.with_file_name("server.stderr"),
         }
     }
     pub async fn cleanup(self) {

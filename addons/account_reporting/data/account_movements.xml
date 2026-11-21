@@ -67,4 +67,5 @@
         <field name="params" eval="{'report': ref('report_account_movements')}"/>
     </record>
     <menuitem id="menu_account_movements" name="Account Movements" parent="menu_account_reporting" action="action_account_movements" groups="account.group_account_readonly" sequence="20"/>
+    <record id="menu_account_movements" model="ir.ui.menu"><field name="web_icon">lucide:list</field></record>
 </erp>

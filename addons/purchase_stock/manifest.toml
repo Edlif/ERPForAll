@@ -3,8 +3,8 @@ summary = "Purchase orders, receipts, and vendor bills for stock"
 category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.1.1"
+version = "1.2.2"
 depends = ["base", "stock", "stock_account", "purchase"]
 # An administrator enables this bridge for the configured direct-receipt workflow.
 auto_install = false
-data = ["security/ir.access.csv"]
+data = ["security/ir.access.csv", "views/purchase_order_views.xml", "views/received_quantity.xml"]

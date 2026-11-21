@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::error::{Result, guard, invalid, malformed, owner, refused, unsupported};
 use crate::limits::Context;
-use crate::{AnnotationPolicy, Emitter, Limit, PageSelection, PdfLimits, Rotation};
+use crate::{AnnotationPolicy, Emitter, FormPolicy, Limit, PageSelection, PdfLimits, Rotation};
 use crate::{
     graph::{self, PageProfile},
     ocg::{Layers, Source},
@@ -28,6 +28,7 @@ use lopdf::{Dictionary, Document, Object, ObjectId, dictionary};
 #[non_exhaustive]
 pub struct ReadingCopy {
     annotations: AnnotationPolicy,
+    forms: FormPolicy,
 }
 /// What a finished reading copy did with page annotations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -35,6 +36,7 @@ pub struct ReadingCopy {
 pub struct ReadingCopySummary {
     kept: usize,
     dropped: usize,
+    flattened: usize,
 }
 impl ReadingCopySummary {
     /// Annotations carried into the output.
@@ -45,9 +47,15 @@ impl ReadingCopySummary {
     pub fn annotations_dropped(&self) -> usize {
         self.dropped
     }
-    fn add(&mut self, kept: usize, dropped: usize) {
-        self.kept = self.kept.saturating_add(kept);
-        self.dropped = self.dropped.saturating_add(dropped);
+    /// Form fields painted into their pages; non-zero only under [`FormPolicy::Flatten`].
+    /// A field a reader does not show counts too: it was flattened to nothing.
+    pub fn fields_flattened(&self) -> usize {
+        self.flattened
+    }
+    fn add(&mut self, importer: &Importer<'_, '_, '_, '_>) {
+        self.kept = self.kept.saturating_add(importer.kept);
+        self.dropped = self.dropped.saturating_add(importer.dropped);
+        self.flattened = self.flattened.saturating_add(importer.flattened);
     }
 }
 impl ReadingCopy {
@@ -59,6 +67,30 @@ impl ReadingCopy {
     pub fn annotations(mut self, policy: AnnotationPolicy) -> Self {
         self.annotations = policy;
         self
+    }
+    /// Choose what happens to an interactive form ([`FormPolicy::Refuse`] unless chosen).
+    ///
+    /// ```
+    /// use erp_pdf::{FormPolicy, PdfError, PdfLimits, ReadingCopy};
+    /// fn printable(filled_form: &[u8]) -> Result<(Vec<u8>, usize), PdfError> {
+    ///     let mut output = Vec::new();
+    ///     let summary = ReadingCopy::new().forms(FormPolicy::Flatten).merge(
+    ///         [filled_form],
+    ///         &PdfLimits::default(),
+    ///         &mut |bytes| {
+    ///             output.extend_from_slice(bytes);
+    ///             Ok(())
+    ///         },
+    ///     )?;
+    ///     Ok((output, summary.fields_flattened())) // The values are page content now.
+    /// }
+    /// ```
+    pub fn forms(mut self, policy: FormPolicy) -> Self {
+        self.forms = policy;
+        self
+    }
+    fn profile(&self) -> PageProfile {
+        PageProfile::ReadingCopy(self.annotations, self.forms)
     }
     /// Concatenate documents lazily into a plain PDF reading copy.
     /// All emitted bytes must be discarded on error. No files, clocks or global state are used.
@@ -92,11 +124,12 @@ impl ReadingCopy {
                 count += 1;
                 limits.check(Limit::Documents, count)?;
                 let doc = graph::load(input.as_ref(), limits, count)?;
-                let pages = graph::pages(&doc, limits, PageProfile::ReadingCopy(self.annotations))?;
+                let pages = graph::pages(&doc, limits, self.profile())?;
                 limits.check(Limit::Pages, kids.len() + pages.len())?;
                 let source = Source::read(&doc, limits)?;
                 let mut importer =
-                    Importer::new(&doc, &mut w, limits, true, self.annotations, count);
+                    Importer::new(&doc, &mut w, limits, true, self.annotations, count)
+                        .forms(self.forms)?;
                 importer.groups.clone_from(&source.listed);
                 importer.reserve(pages.iter().map(|(id, _)| *id))?;
                 for (index, (id, page)) in pages.into_iter().enumerate() {
@@ -108,7 +141,7 @@ impl ReadingCopy {
                     )?));
                 }
                 source.carry(&doc, &|id| importer.copied(id), &mut layers, limits)?;
-                summary.add(importer.kept, importer.dropped);
+                summary.add(&importer);
             }
             if count == 0 {
                 return Err(invalid("PDF merge requires at least one document"));
@@ -139,15 +172,9 @@ impl ReadingCopy {
         guard(|| {
             let context = Context::new(l);
             let doc = graph::load(input, &context, 1)?;
+            let pages = graph::pages(&doc, &context, self.profile())?;
             let mut summary = ReadingCopySummary::default();
-            extract_doc(
-                &doc,
-                selection,
-                self.annotations,
-                &mut summary,
-                &context,
-                emit,
-            )?;
+            self.extract_doc(&doc, &pages, selection, &mut summary, &context, emit)?;
             Ok(summary)
         })
     }
@@ -166,7 +193,7 @@ impl ReadingCopy {
             let context = Context::new(l);
             let l = &context;
             let doc = graph::load(input, l, 1)?;
-            let pages = graph::pages(&doc, l, PageProfile::ReadingCopy(self.annotations))?;
+            let pages = graph::pages(&doc, l, self.profile())?;
             let mut next = 1u32;
             let mut selections = Vec::new();
             l.check(Limit::Documents, ranges.len())?;
@@ -191,7 +218,7 @@ impl ReadingCopy {
             let mut summary = ReadingCopySummary::default();
             for s in selections {
                 let mut bytes = Vec::new();
-                extract_doc(&doc, &s, self.annotations, &mut summary, l, &mut |b| {
+                self.extract_doc(&doc, &pages, &s, &mut summary, l, &mut |b| {
                     bytes.extend_from_slice(b);
                     Ok(())
                 })?;
@@ -249,41 +276,47 @@ pub(crate) fn selected<'a>(
         })
         .collect()
 }
-fn extract_doc(
-    doc: &Document,
-    selection: &PageSelection,
-    policy: AnnotationPolicy,
-    summary: &mut ReadingCopySummary,
-    l: &Context<'_>,
-    emit: &mut Emitter<'_>,
-) -> Result<()> {
-    let pages = graph::pages(doc, l, PageProfile::ReadingCopy(policy))?;
-    let selected = selected(&pages, selection, l)?;
-    let mut w = Writer::new(l, emit)?;
-    let root = w.id()?;
-    let cat = w.id()?;
-    let mut kids = Vec::new();
-    let mut layers = Layers::default();
-    let source = Source::read(doc, l)?;
-    let mut importer = Importer::new(doc, &mut w, l, true, policy, 1);
-    importer.groups.clone_from(&source.listed);
-    importer.reserve(selected.iter().map(|page| page.0))?;
-    for (number, (old, page)) in selection.0.iter().zip(selected) {
-        kids.push(Object::Reference(importer.page(
-            *number as usize,
-            *old,
-            page.clone(),
+impl ReadingCopy {
+    /// Write the selected pages of an already admitted document as one reading copy.
+    fn extract_doc(
+        &self,
+        doc: &Document,
+        pages: &[(lopdf::ObjectId, lopdf::Dictionary)],
+        selection: &PageSelection,
+        summary: &mut ReadingCopySummary,
+        l: &Context<'_>,
+        emit: &mut Emitter<'_>,
+    ) -> Result<()> {
+        let selected = selected(pages, selection, l)?;
+        let mut w = Writer::new(l, emit)?;
+        let root = w.id()?;
+        let cat = w.id()?;
+        let mut kids = Vec::new();
+        let mut layers = Layers::default();
+        let source = Source::read(doc, l)?;
+        let mut importer =
+            Importer::new(doc, &mut w, l, true, self.annotations, 1).forms(self.forms)?;
+        importer.groups.clone_from(&source.listed);
+        importer.reserve(selected.iter().map(|page| page.0))?;
+        for (number, (old, page)) in selection.0.iter().zip(selected) {
+            kids.push(Object::Reference(importer.page(
+                *number as usize,
+                *old,
+                page.clone(),
+                root,
+            )?));
+        }
+        source.carry(doc, &|id| importer.copied(id), &mut layers, l)?;
+        summary.add(&importer);
+        w.object(
             root,
-        )?));
+            &Object::Dictionary(
+                dictionary! {"Type"=>"Pages","Count"=>kids.len() as i64,"Kids"=>kids},
+            ),
+        )?;
+        w.object(cat, &Object::Dictionary(plain_catalog(root, layers)))?;
+        w.finish(dictionary! {"Root"=>cat})
     }
-    source.carry(doc, &|id| importer.copied(id), &mut layers, l)?;
-    summary.add(importer.kept, importer.dropped);
-    w.object(
-        root,
-        &Object::Dictionary(dictionary! {"Type"=>"Pages","Count"=>kids.len() as i64,"Kids"=>kids}),
-    )?;
-    w.object(cat, &Object::Dictionary(plain_catalog(root, layers)))?;
-    w.finish(dictionary! {"Root"=>cat})
 }
 /// Extract selected pages into a plain reading copy that refuses page annotations;
 /// [`ReadingCopy::extract`] takes the annotation policy.
@@ -314,6 +347,7 @@ pub fn split(
 /// Rotate selected pages, preserving other document objects.
 /// Page annotations stay as they are: their rectangles are in page coordinates and turn with it.
 /// Optional content stays as it is: the catalog configuration is written again unchanged.
+/// An unsigned form stays a form: the catalog form and every field are written again.
 /// Archival metadata and signed documents require their dedicated integration and are refused.
 pub fn rotate(
     input: &[u8],
@@ -349,13 +383,8 @@ pub fn rotate(
     })
 }
 pub(crate) fn mutable(doc: &Document, l: &Context<'_>) -> Result<()> {
+    // Forms and signatures are decided with the page profile (`forms::admit`).
     let catalog = graph::catalog(doc, l)?;
-    if catalog.has(b"Perms") {
-        return Err(unsupported("signed document", owner::SIGNED));
-    }
-    if catalog.has(b"AcroForm") {
-        return Err(unsupported("AcroForm", owner::FORMS));
-    }
     // Conservatively refuse output intents: no claim of preserving an archival/colour profile.
     if catalog.has(b"OutputIntents") {
         return Err(unsupported("archival mutation", owner::ARCHIVAL));

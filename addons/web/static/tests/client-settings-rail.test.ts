@@ -53,3 +53,34 @@ test("null ownership and label similarity do not replace the settings-only fallb
   expect(host.querySelector('.settings-app-icon [data-icon="layout-grid"]')).not.toBeNull();
   expect(host.querySelector(".settings-app-icon[data-letter]")).toBeNull();
 });
+
+test("Inventory and general entry share all authorized app tabs across scopes", async () => {
+  const readScopes: string[] = [];
+  const rpc = new RpcClient(async (path, init) => {
+    const { scope } = JSON.parse(String(init?.body));
+    const app = scope.kind === "global" ? "base" : "stock";
+    let value;
+    if (String(path).endsWith("erp_describe")) {
+      value = { wire_major: 1, registry_version: "r1", scope, declarations: [], items: [{ ...item, key: app + ".info", app }] };
+    } else {
+      readScopes.push(scope.kind);
+      value = { wire_major: 1, scope, revision: "1", values: [] };
+    }
+    return new Response(JSON.stringify(value), {headers: {"Content-Type":"application/json"}});
+  }, () => {});
+  for (const entry of ["stock", null]) {
+    const host = document.createElement("div");
+    let pending = Promise.resolve();
+    const mounted = await settingsView(host, rpc, [{ id: 1, name: "Store" }], job => { pending = job(); }, () => {},
+      {}, ["global", "company"], "r1", undefined, undefined, entry,
+      { navigation: { roots: ["base", "stock"].map((module,i)=>({id:i+1,module,label:i ? "Inventory" : "Settings", icon:null})), openTarget: async () => {} } });
+    expect([...host.querySelectorAll("[data-app]")].map(tab => tab.getAttribute("data-app"))).toEqual(["base","stock"]);
+    expect(host.querySelector('[aria-selected="true"]')?.getAttribute("data-app")).toBe(entry ?? "base");
+    const other = entry ? "base" : "stock";
+    host.querySelector<HTMLButtonElement>(`[data-app="${other}"]`)!.click();
+    await pending;
+    expect(host.querySelector('[aria-selected="true"]')?.getAttribute("data-app")).toBe(other);
+    expect(readScopes.at(-1)).toBe(entry ? "global" : "company");
+    mounted.dispose?.();
+  }
+});

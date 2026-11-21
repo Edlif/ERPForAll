@@ -91,6 +91,8 @@ pub use warehouse::{StockPickingType, StockWarehouse};
 pub mod quant_engine;
 mod quant_unit;
 pub use quant_unit::{QuantRetryExhausted, QuantUnit, run_quant_unit};
+pub mod position;
+mod position_report;
 mod quant_guards;
 mod quant_names;
 mod quant_scope;
@@ -112,10 +114,13 @@ mod reservation;
 mod confirm;
 
 // Validation of transfers: the done transition of moves and lines, and done work kept fixed.
+mod backorder;
+mod backorder_choice;
 mod done;
 
 // The transfer's own rules: defaults and reference from the operation type, cancel, delete.
 mod picking_flow;
+mod returns;
 
 // Status changes of transfers written by the stock statements, reported for their history.
 mod state_history;

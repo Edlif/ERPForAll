@@ -5,12 +5,14 @@
 //! byte/graph limits and caught panics do not replace operating-system memory/deadline enforcement.
 //! No operation opens files or network resources. Discard ALL emitted bytes on any failure.
 //! Merge/extract/split produce plain reading copies, not archival documents. Encryption,
-//! signatures and forms are outside the current profile. Page annotations follow an explicit
+//! signatures are outside the current profile. Page annotations follow an explicit
 //! [`AnnotationPolicy`] in reading copies ([`ReadingCopy`]) and stay as they are in rotate and
 //! stamp. Optional content (layers) stays as it is in rotate and stamp; a reading copy gets the
 //! default configuration of its inputs rebuilt for the groups its pages use, so a layer hidden by
 //! default stays hidden. Alternate configurations are not carried, and an overlay with layers is
 //! refused.
+//! An unsigned form stays a form in rotate and stamp; a reading copy refuses it or, under
+//! [`FormPolicy::Flatten`], paints its fields into their pages.
 //! Embedded-file, metadata and e-invoice edits are incremental updates: the input bytes are the
 //! unchanged prefix of the output.
 //! Collect a plain reading copy inside an already-isolated worker.
@@ -33,6 +35,7 @@ mod date;
 mod edit;
 mod einvoice;
 mod error;
+mod forms;
 mod graph;
 mod limits;
 mod meta;
@@ -50,7 +53,7 @@ pub use einvoice::{ConformanceLevel, EInvoiceName, EInvoiceOptions, einvoice, ei
 pub use error::{PdfError, PdfErrorKind};
 pub use limits::{Limit, PdfLimits};
 pub use meta::{Metadata, MetadataField, MetadataUpdate, PdfaId, metadata, update_metadata};
-pub use options::{AnnotationPolicy, PageSelection, Rotation, StampPlacement};
+pub use options::{AnnotationPolicy, FormPolicy, PageSelection, Rotation, StampPlacement};
 pub use pages::{ReadingCopy, ReadingCopySummary, extract, merge, rotate, split};
 pub use stamp::stamp;
 pub use writer::Emitter;

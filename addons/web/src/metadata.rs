@@ -1843,7 +1843,11 @@ type FieldWireMetadata<'a> = (
 
 pub(crate) fn field_kind<'a>(model: &str, field: &'a FieldSpec) -> Result<FieldWireMetadata<'a>> {
     let (kind, selection, relation, relation_field) = match &field.ty {
-        FieldType::Char { .. } | FieldType::Uuid => (wire::FieldKind::Char, None, None, None),
+        // BigInt already travels through JSON-2 as canonical decimal text, including values
+        // outside the browser's exact integer range. Keep that representation in human views.
+        FieldType::Char { .. } | FieldType::Uuid | FieldType::BigInt => {
+            (wire::FieldKind::Char, None, None, None)
+        }
         FieldType::Text | FieldType::Json => (wire::FieldKind::Text, None, None, None),
         FieldType::Html => (wire::FieldKind::Html, None, None, None),
         FieldType::Binary { .. } => (wire::FieldKind::Binary, None, None, None),
@@ -3703,7 +3707,7 @@ mod tests {
     }
 
     #[test]
-    fn uuid_and_json_fields_map_to_human_wire_kinds() {
+    fn uuid_bigint_and_json_fields_map_to_human_wire_kinds() {
         let registry = erp_sdk::RegistryBuilder::new([&erp_addon_base::ADDON, &crate::ADDON])
             .build()
             .unwrap();
@@ -3714,6 +3718,9 @@ mod tests {
         field.ty = FieldType::Uuid;
         let (uuid_kind, _, _, _) = field_kind("ir.job", &field).unwrap();
         assert_eq!(uuid_kind, wire::FieldKind::Char);
+        field.ty = FieldType::BigInt;
+        let (bigint_kind, _, _, _) = field_kind("ir.job", &field).unwrap();
+        assert_eq!(bigint_kind, wire::FieldKind::Char);
         field.ty = FieldType::Json;
         let (json_kind, _, _, _) = field_kind("ir.job", &field).unwrap();
         assert_eq!(json_kind, wire::FieldKind::Text);

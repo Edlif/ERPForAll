@@ -31,6 +31,7 @@ members = [
     "addons/account_mail",
     "addons/purchase",
     "addons/purchase_mail",
+    "addons/purchase_three_way_match",
     "addons/sales_team",
     "addons/sale",
     "addons/reporting",
@@ -126,6 +127,7 @@ erp-addon-account = { path = "addons/account" }
 erp-addon-account-mail = { path = "addons/account_mail" }
 erp-addon-purchase = { path = "addons/purchase" }
 erp-addon-purchase-mail = { path = "addons/purchase_mail" }
+erp-addon-purchase-three-way-match = { path = "addons/purchase_three_way_match" }
 erp-addon-sales_team = { path = "addons/sales_team" }
 erp-addon-sale = { path = "addons/sale" }
 erp-addon-reporting = { path = "addons/reporting" }

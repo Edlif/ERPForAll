@@ -50,6 +50,7 @@ fn route(family: &str) -> ConfiguredRoute {
         model: MODEL.to_owned(),
         base_url: "https://provider.example.invalid".to_owned(),
         request_bytes: crate::config::DEFAULT_REQUEST_BYTES,
+        interactive: true,
     }
 }
 
@@ -363,3 +364,5 @@ fn node_provider_request_limit_loads_named_bounds() {
         },
     );
 }
+
+mod transport;

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_order_form_direct_receipt" model="ir.ui.view">
+    <field name="name">purchase.order.form.direct.receipt</field>
+    <field name="model">purchase.order</field>
+    <field name="inherit_id" ref="purchase.purchase_order_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='date_planned']" position="after">
+        <field name="direct_receipt_id" readonly="1" invisible="not direct_receipt_id"
+               options="{'no_create': True}"/>
+      </xpath>
+    </field>
+  </record>
+  <record id="view_picking_form_purchase_order_id" model="ir.ui.view">
+    <field name="name">stock.picking.form.purchase.order</field>
+    <field name="model">stock.picking</field>
+    <field name="inherit_id" ref="stock.view_picking_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='origin']" position="after">
+        <field name="purchase_order_id" invisible="not purchase_order_id" readonly="1" options="{'no_create': True}"/>
+      </xpath>
+    </field>
+  </record>
+</erp>

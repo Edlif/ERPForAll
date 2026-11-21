@@ -188,3 +188,19 @@ test.each([[390, 4, 4, false], [390, 5, 3, true], [800, 4, 4, false], [1440, 6, 
   expect(host.querySelectorAll(".form-stat-button")).toHaveLength(count);
   layout.dispose(); vi.restoreAllMocks();
 });
+
+
+test("a purchase comparison heading follows its nested fields while an explicit spacer survives", () => {
+  const host = document.createElement("form");
+  const source = { ...field("purchase_ordered_qty"), field: { name: "purchase_ordered_qty", invisible: true } };
+  const group = (label: string, children: unknown[]) => ({ kind: "group", label, columns: 4, colspan: 2, children });
+  const nodes = [group("", []), group("Purchase and receipt", [group("", [source])])] as unknown as Node[];
+  renderFormLayout(host, nodes, renderField, new Map());
+  expect(host.querySelectorAll(".form-group")).toHaveLength(1);
+  expect(host.querySelector(".form-group-title")).toBeNull();
+  source.field.invisible = false;
+  host.replaceChildren();
+  renderFormLayout(host, nodes, renderField, new Map());
+  expect(host.querySelector(".form-group-title")?.textContent).toBe("Purchase and receipt");
+  expect(host.querySelector("input")?.name).toBe("purchase_ordered_qty");
+});

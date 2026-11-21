@@ -5,6 +5,9 @@ import type { MessageServices } from "./messages.js";
 import type { ActivityWindowAction } from "./activity-menu.js";
 
 export interface SystrayEnvironment {
+  userId?: number;
+  /** Token issued for this browser session, for authorized same-origin addon requests. */
+  csrfToken?: string;
   rpc?: RpcClient;
   context?: Record<string, unknown>;
   run?: (job: () => Promise<void>) => void;

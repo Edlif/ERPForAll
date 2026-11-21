@@ -26,6 +26,18 @@ use erp_sdk::views::wire::{SettingsScope, WireId};
 use erp_security::{resolver::Resolver, source::PolicySource};
 use erp_testkit::TestDb;
 
+#[path = "support/accounting.rs"]
+mod bill_books;
+
+#[path = "purchase_orders/remainder.rs"]
+mod remainder;
+
+#[path = "purchase_orders/bill_snapshot.rs"]
+mod bill_snapshot;
+
+#[path = "purchase_orders/returns.rs"]
+mod returns;
+
 fn addons_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -58,7 +70,7 @@ async fn install(db: &TestDb) -> Orm {
     install_module(db, "purchase").await
 }
 
-async fn install_module(db: &TestDb, module: &str) -> Orm {
+fn purchase_module_system(db: &TestDb) -> ModuleSystem {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(addons_dir());
     let identities = index
@@ -74,7 +86,7 @@ async fn install_module(db: &TestDb, module: &str) -> Orm {
             (name, snapshot.digest().to_owned())
         })
         .collect();
-    let system = ModuleSystem::builder(db.pool().clone(), index)
+    ModuleSystem::builder(db.pool().clone(), index)
         .view_types(erp_addon_web::view_type_contributions())
         .native_artifact_identities(identities)
         .code(erp_cli::native_addons::DESCRIPTORS.iter().copied())
@@ -82,25 +94,47 @@ async fn install_module(db: &TestDb, module: &str) -> Orm {
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
         .require_core_tables(erp_security::auth::core_tables())
         .build()
-        .unwrap();
+        .unwrap()
+}
+
+async fn install_module(db: &TestDb, module: &str) -> Orm {
+    install_modules(db, &[module]).await
+}
+
+async fn install_modules(db: &TestDb, modules: &[&str]) -> Orm {
+    let system = purchase_module_system(db);
     let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
         .await
         .unwrap();
     let env = init.orm.env(SUPERUSER_ID, Context::new());
-    let installed =
-        Box::pin(system.button_immediate_install(&env, &[ModuleName::new(module).unwrap()]))
-            .await
-            .unwrap();
+    let installed = Box::pin(
+        system.button_immediate_install(
+            &env,
+            &modules
+                .iter()
+                .map(|name| ModuleName::new(*name).unwrap())
+                .collect::<Vec<_>>(),
+        ),
+    )
+    .await
+    .unwrap();
     assert!(
         installed.post_commit.is_clean(),
         "{:?}",
         installed.post_commit
     );
-    purchase_policy_orm(db, &installed.orm).await
+    purchase_policy_orm(db, &installed.orm, &[]).await
 }
 
-async fn purchase_policy_orm(db: &TestDb, installed: &Orm) -> Orm {
-    let source = PolicySource::build(Arc::clone(installed.registry()), db.pool().clone())
+async fn purchase_policy_orm(
+    db: &TestDb,
+    installed: &Orm,
+    field_overrides: &[&'static erp_orm::FieldAccessImpl],
+) -> Orm {
+    let registry = Arc::clone(installed.registry());
+    let compiler = erp_security::Compiler::new(Arc::clone(&registry))
+        .field_overrides(field_overrides.iter().copied());
+    let source = PolicySource::build_with(registry, db.pool().clone(), compiler)
         .await
         .unwrap();
     Orm::builder(Arc::clone(installed.registry()), db.pool().clone())
@@ -2852,7 +2886,20 @@ fn approving_a_purchase_order_creates_one_direct_receipt() {
 
         let mut tx = orm.begin(buyer).await.unwrap();
         let po = orders(&tx, &[main]).browse([direct]).unwrap();
+        assert_eq!(cell(&mut tx, &po, "direct_receipt_id").await, Cell::Null);
         act(&mut tx, &po, "button_confirm").await.unwrap();
+        let original: i64 = tx
+            .query(
+                "SELECT picking_id FROM purchase_stock_receipt_link WHERE order_id=$1",
+                &[&direct],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        assert_eq!(
+            cell(&mut tx, &po, "direct_receipt_id").await,
+            Cell::Id(original)
+        );
         assert_eq!(state(&mut tx, &po).await, "purchase");
         let error = act(&mut tx, &po, "button_confirm").await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Validation);
@@ -2981,6 +3028,119 @@ async fn assert_direct_receipt(
 }
 
 #[test]
+fn original_receipt_is_visible_on_the_right_order_after_reopening() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install_module(&db, "purchase_stock").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let k = catalog(&mut tx, main).await;
+        let values = || {
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(k.vendor))
+                .set_commands("order_line", [Command::Create(line_vals(k.bolt))])
+        };
+        let confirmed = order(&mut tx, &[main], values()).await;
+        let draft = order(&mut tx, &[main], values()).await;
+        act(&mut tx, &confirmed, "button_confirm").await.unwrap();
+        let confirmed_id = confirmed.ids()[0];
+        let draft_id = draft.ids()[0];
+        let picking: i64 = tx
+            .query(
+                "SELECT picking_id FROM purchase_stock_receipt_link WHERE order_id=$1",
+                &[&confirmed_id],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        // Old imports may carry a different display reference. Only the immutable
+        // association can determine which order should open the transfer.
+        let other_reference = name(&mut tx, &draft).await;
+        tx.execute(
+            "UPDATE stock_picking SET origin=$1 WHERE id=$2",
+            &[&other_reference, &picking],
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let batch = orders(&tx, &[main])
+            .browse([draft_id, confirmed_id])
+            .unwrap();
+        assert_eq!(
+            batch.cells(&mut tx, "direct_receipt_id").await.unwrap(),
+            [Cell::Null, Cell::Id(picking)]
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
+fn direct_receipt_source_obeys_purchase_access_even_after_an_elevated_read() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install_module(&db, "purchase_stock").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let main = xmlid(&mut tx, "base", "main_company").await;
+        let catalog = catalog(&mut tx, main).await;
+        let group = xmlid(&mut tx, "stock", "group_stock_user").await;
+        let admin_group = xmlid(&mut tx, "base", "group_system").await;
+        user(&mut tx, "receipt-source-admin", &[admin_group], &[main]).await;
+        let clerk = user(&mut tx, "receipt-source-clerk", &[group], &[main]).await;
+        let purchase = order(
+            &mut tx,
+            &[main],
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(catalog.vendor))
+                .set_commands("order_line", [Command::Create(line_vals(catalog.bolt))]),
+        )
+        .await;
+        act(&mut tx, &purchase, "button_confirm").await.unwrap();
+        let order_id = purchase.ids()[0];
+        let [Cell::Id(picking_id)] =
+            purchase.cells(&mut tx, "direct_receipt_id").await.unwrap()[..]
+        else {
+            panic!("The purchase order must have its direct receipt");
+        };
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(clerk).await.unwrap();
+        let receipt = tx
+            .env()
+            .with_company(main)
+            .unwrap()
+            .records("stock.picking")
+            .unwrap()
+            .browse([picking_id])
+            .unwrap();
+        assert_eq!(
+            receipt.cells(&mut tx, "purchase_order_id").await.unwrap(),
+            [Cell::Null]
+        );
+        assert_eq!(
+            receipt
+                .sudo(true)
+                .cells(&mut tx, "purchase_order_id")
+                .await
+                .unwrap(),
+            [Cell::Id(order_id)]
+        );
+        assert_eq!(
+            receipt.cells(&mut tx, "purchase_order_id").await.unwrap(),
+            [Cell::Null]
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}
+
+#[test]
 fn direct_receipt_requires_readable_demand_and_matching_stock_parents() {
     run(async {
         let db = TestDb::builder().pool_size(8).create().await.unwrap();
@@ -3089,7 +3249,7 @@ fn direct_receipt_requires_readable_demand_and_matching_stock_parents() {
         tx.commit().await.unwrap();
         drop(tx);
 
-        let orm = purchase_policy_orm(&db, &orm).await;
+        let orm = purchase_policy_orm(&db, &orm, &[]).await;
         let mut tx = orm.begin(buyer).await.unwrap();
         let visible_lines = tx
             .env()

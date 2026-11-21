@@ -6,6 +6,8 @@ pub mod access;
 pub mod addon;
 mod addon_life;
 pub mod args;
+pub mod assistant_read;
+pub mod assistant_turn;
 mod attachment_content;
 mod attachment_recovery;
 mod attachment_schedules;

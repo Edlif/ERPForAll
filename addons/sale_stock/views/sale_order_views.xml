@@ -11,6 +11,18 @@
                readonly="state not in ('draft', 'sent')"
                domain="[('company_id', '=', company_id), ('active', '=', True), ('delivery_steps', '=', 'ship_only'), ('delivery_route_id', '!=', False)]"
                options="{'no_create': True, 'no_open': True}"/>
+        <field name="direct_delivery_id" readonly="1" invisible="not direct_delivery_id"
+               options="{'no_create': True}"/>
+      </xpath>
+    </field>
+  </record>
+  <record id="view_picking_form_sale_order_id" model="ir.ui.view">
+    <field name="name">stock.picking.form.sale.order</field>
+    <field name="model">stock.picking</field>
+    <field name="inherit_id" ref="stock.view_picking_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='origin']" position="after">
+        <field name="sale_order_id" invisible="not sale_order_id" readonly="1" options="{'no_create': True}"/>
       </xpath>
     </field>
   </record>

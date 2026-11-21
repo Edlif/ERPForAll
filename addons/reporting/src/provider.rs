@@ -35,6 +35,7 @@ pub struct ProviderSpec {
     pub version: u32,
     /// [`Snapshot::PerRequest`] unless set.
     pub snapshot: Snapshot,
+    server_search: bool,
 }
 
 impl ProviderSpec {
@@ -44,8 +45,21 @@ impl ProviderSpec {
             name,
             version,
             snapshot: Snapshot::PerRequest,
+            server_search: false,
         }
     }
+    /// Declare that the provider applies the resolved search to the report's result.
+    /// Screens and exports can then use that result without filtering display labels a second time.
+    #[must_use]
+    pub const fn server_search(mut self) -> Self {
+        self.server_search = true;
+        self
+    }
+
+    pub(crate) const fn searches_on_server(self) -> bool {
+        self.server_search
+    }
+
     /// With another snapshot kind.
     #[must_use]
     pub const fn snapshot(mut self, snapshot: Snapshot) -> Self {

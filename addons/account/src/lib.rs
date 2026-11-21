@@ -23,4 +23,5 @@ pub mod payment;
 pub mod payterm;
 pub mod reconcile;
 
+mod settings_migration;
 pub mod tax;

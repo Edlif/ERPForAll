@@ -629,3 +629,48 @@ test("a formula amount without source records has no cell drill or empty actions
   expect(row.querySelector("[data-drill]")).toBeNull();
   expect(row.querySelector(".report-caret")).toBeNull();
 });
+
+test("Stock Position can narrow and replace a refused initial product set", async () => {
+  const filters = wireFilters({ provider: "example.sku_search", server_search: true, current_only: true });
+  const r = mount(standard({
+    erp_report_options: () => optionsAnswer(wireOptions(), filters),
+    erp_report_lines: ({ options }) => {
+      const requested = options as Record<string, unknown>;
+      if (!requested["search"]) throw new Error("Narrow the search or category.");
+      return linesAnswer([country(belgium, "Office desk", "3")], requested);
+    }
+  }));
+  await settle();
+  expect(r.env.host.querySelector("[role=alert]")?.textContent).toBe("Narrow the search or category.");
+  expect(r.env.host.querySelector(".report-empty")).toBeNull();
+  const search = () => r.env.host.querySelector<HTMLInputElement>("input[name=search]")!;
+  expect(search()).not.toBeNull();
+  for (const code of ["DESK1", "DESK2"]) {
+    search().value = code;
+    search().form!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await settle();
+    expect(names(r)).toEqual(["Office desk"]);
+    expect(search().value).toBe(code);
+    expect(r.calls.filter(call => call.method === "erp_report_lines").at(-1)?.args).toMatchObject({ options: { search: code } });
+  }
+});
+
+test("General Ledger can switch fiscal opening and restores the raw opening", async () => {
+  const defaults = wireOptions({ provider: { epoch: "current", fiscal_opening: false } });
+  const filters = wireFilters({ provider: "account_reporting.general_ledger", unfold_all: false, hide_zero: "never" });
+  const r = mount(standard({
+    erp_report_options: args => optionsAnswer((args["previous"] || defaults) as Record<string, unknown>, filters),
+    erp_report_lines: args => linesAnswer([top()], args["options"] as Record<string, unknown>)
+  }));
+  await settle();
+  for (const enabled of [true, false]) {
+    click(r.env.host.querySelector("[data-filter=options] .report-filter-button"));
+    const box = r.env.host.querySelector<HTMLInputElement>('input[name="fiscal_opening"]');
+    expect(box?.checked).toBe(!enabled);
+    box!.click();
+    await settle();
+    expect(r.calls.at(-1)).toMatchObject({ method: "erp_report_lines", args: { options: {
+      provider: { epoch: "current", fiscal_opening: enabled }, unfolded: [], loaded_pages: {}
+    } } });
+  }
+});

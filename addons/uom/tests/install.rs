@@ -137,7 +137,7 @@ fn uom_views_xml_declares_list_form_search_action_and_menu() {
 
     // Menuitem: settings menu parent
     assert!(content.contains(r#"id="menu_uom_form_action""#));
-    assert!(content.contains(r#"parent="base.settings_menu""#));
+    assert!(content.contains(r#"parent="base.settings_reference_menu""#));
     assert!(content.contains(r#"action="uom_uom_action_list""#));
     assert!(content.contains(r#"groups="base.group_system""#));
 }

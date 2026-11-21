@@ -355,10 +355,7 @@ impl fmt::Display for StockError {
             ),
             Self::BackorderNotAvailable { product } => write!(
                 f,
-                "{product} is short of its demand. Validating part of a transfer creates a \
-                 backorder for the rest, and backorders are not available yet: set the \
-                 quantities to the demand, lower the demand, or set the operation type to never \
-                 create backorders."
+                "{product} is short of its demand. Validate the transfer in Inventory and choose whether to create a backorder for the remaining demand."
             ),
             Self::CancelChained => f.write_str(
                 "This move feeds another open operation; cancelling along such a chain is not \

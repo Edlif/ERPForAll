@@ -1057,6 +1057,9 @@ async fn message_post_inner(
     record
         .call::<_, ()>(tx, "_message_post_after_hook", (message,))
         .await?;
+    // PostgreSQL delivers this payload-free signal only on commit. A rolled-back post stays invisible.
+    tx.notify_once(&erp_sdk::NotifyChannel::new("erp_thread_changed")?)
+        .await?;
     Ok(Posted {
         message_id: message,
         replayed: false,

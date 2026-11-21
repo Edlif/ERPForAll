@@ -15,5 +15,6 @@
     <field name="view_mode">form</field>
     <field name="view_id" ref="addons_form"/>
   </record>
-  <menuitem id="addons_menu" name="Addons" parent="base.settings_menu" action="addons_action" groups="base.group_system" sequence="20"/>
+  <menuitem id="addons_menu" name="Addons" parent="base.technical_modules_menu" action="addons_action" groups="base.group_system" sequence="20"/>
+  <record id="addons_menu" model="ir.ui.menu"><field name="web_icon">lucide:package</field></record>
 </erp>

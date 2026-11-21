@@ -9,6 +9,7 @@ mod lifecycle;
 mod product;
 mod repartition;
 pub mod settings;
+pub(crate) use settings::repartition_lines_parameter;
 mod uniqueness;
 mod validation;
 

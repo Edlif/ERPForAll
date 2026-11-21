@@ -48,6 +48,7 @@ async fn journal_schema() {
     .await;
     for (assignment, key) in [
         ("currency_increment=0", "_increment_positive"),
+        ("generation=-1", "_generation_nonneg"),
         (
             "seq=-1,role='mapping_transfer',quantity_delta=0",
             "_seq_nonneg",
@@ -117,6 +118,13 @@ async fn remainder_schema() {
         ],
     )
     .await;
+    rejected(
+        &mut tx,
+        &format!("UPDATE stk_value_remainder SET remainder_den=0 WHERE id={id}"),
+        "stk_value_remainder",
+        "_valid_fraction",
+    )
+    .await;
     unique(&mut tx,&format!("INSERT INTO stk_value_remainder(journal_id,company_id,policy,boundary,remainder_num,remainder_den,recorded_at) VALUES({jid},101,'cost_scale_v1','source_value',0,1,'2026-01-01')"),"stk_value_remainder","_journal").await;
     let mismatch = tx
         .savepoint(async |tx| {
@@ -129,6 +137,10 @@ async fn remainder_schema() {
         })
         .await
         .unwrap_err();
+    assert_eq!(
+        mismatch.constraint(),
+        Some("stk_value_remainder_journal_company")
+    );
     foreign_error(&tx, &mismatch, "stk_value_remainder", "23503");
     tx.rollback().await.unwrap();
 }

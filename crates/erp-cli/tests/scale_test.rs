@@ -152,6 +152,8 @@ fn harness_expired_database_admission_retains_owner_for_cleanup() {
         .enable_all()
         .build()
         .unwrap();
+    // A forced database checkpoint during teardown shares the two-node fixture deadline.
+    let total = Deadline::after(Duration::from_secs(115));
     let mut fixture = Fixture::empty();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runtime.block_on(fixture.start(Deadline::after(Duration::ZERO)))
@@ -161,7 +163,7 @@ fn harness_expired_database_admission_retains_owner_for_cleanup() {
         .as_ref()
         .map(|db| (db.name().to_owned(), db.cluster().clone()));
     runtime
-        .block_on(fixture.cleanup(Deadline::after(Duration::from_secs(20))))
+        .block_on(fixture.cleanup(total))
         .expect("expired admission must clean the isolated database");
     assert!(outcome.is_err(), "expired work must refuse admission");
     let (name, cluster) =

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="vendor_bill_line_purchase_review" model="ir.ui.view">
+    <field name="name">account.move.line.invoice.form.purchase.review</field>
+    <field name="model">account.move.line</field>
+    <field name="inherit_id" ref="account.view_invoice_line_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//sheet" position="inside">
+        <field name="purchase_source_line_id" invisible="1" groups="purchase.group_purchase_user"/>
+        <group string="Purchase and receipt" groups="purchase.group_purchase_user">
+          <group>
+            <field name="purchase_source_order_id" invisible="not purchase_source_line_id"/>
+            <field name="purchase_ordered_qty" invisible="not purchase_source_line_id"/>
+            <field name="purchase_received_qty" invisible="not purchase_source_line_id"/>
+          </group>
+          <group>
+            <field name="purchase_agreed_price" invisible="not purchase_source_line_id"/>
+            <field name="purchase_agreed_discount" invisible="not purchase_source_line_id"/>
+          </group>
+        </group>
+      </xpath>
+    </field>
+  </record>
+</erp>

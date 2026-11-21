@@ -66,5 +66,7 @@
         <field name="params" eval="{'report': ref('report_posted_journal_activity')}"/>
     </record>
     <menuitem id="menu_account_reporting" name="Reporting" parent="account.menu_finance" groups="account.group_account_readonly" sequence="60"/>
+    <record id="menu_account_reporting" model="ir.ui.menu"><field name="web_icon">lucide:chart-column</field></record>
     <menuitem id="menu_posted_journal_activity" name="Posted Journal Activity" parent="menu_account_reporting" action="action_posted_journal_activity" groups="account.group_account_readonly" sequence="10"/>
+    <record id="menu_posted_journal_activity" model="ir.ui.menu"><field name="web_icon">lucide:notebook-pen</field></record>
 </erp>

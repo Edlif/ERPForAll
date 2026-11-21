@@ -33,6 +33,9 @@ use tokio::{
     sync::{Mutex, RwLock, Semaphore},
 };
 
+mod thread_socket;
+pub use thread_socket::WebThreadFeed;
+
 type HttpResult<T> = Result<T, Response>;
 
 #[derive(Clone)]
@@ -256,11 +259,13 @@ pub trait WebLifecycle: Send + Sync {
     ) -> erp_orm::BoxFuture<'a, Result<Publication, LifecycleFailure>>;
 }
 
+mod assistant;
 mod content;
 mod password_change;
 mod pivot_export;
 mod report;
 mod reporting_export;
+pub use assistant::WebAssistant;
 pub use content::{
     ContentLookup, ContentOpenFailure, ContentOpener, ContentRange, ContentReader, FoundContent,
     WebAttachmentContent,
@@ -397,6 +402,10 @@ pub struct WebApp {
     attachment_policy: Option<Arc<dyn WebAttachmentPolicy>>,
     pivot_export: Option<Arc<dyn WebPivotExport>>,
     reporting_export: Option<Arc<dyn WebReportingExport>>,
+    assistant: Option<Arc<dyn WebAssistant>>,
+    thread_feed: Option<Arc<dyn WebThreadFeed>>,
+    thread_wakes: thread_socket::WakeHub,
+    socket_slots: Arc<Semaphore>,
     report: Option<Arc<dyn WebReport>>,
     refreshing: Mutex<()>,
     requests: Arc<Semaphore>,
@@ -404,7 +413,7 @@ pub struct WebApp {
     report_limiter: crate::client_error::ReportLimiter,
     admission: Option<erp_orm::node::NodeAdmission>,
     login_available: AtomicBool,
-    draining: AtomicBool,
+    draining: Arc<AtomicBool>,
     shutdown_at: std::sync::OnceLock<tokio::time::Instant>,
 }
 impl WebApp {
@@ -440,6 +449,11 @@ impl WebApp {
             asset_store: store,
             expected_asset_runtime: None,
             asset_authority: None,
+            thread_feed: None,
+            thread_wakes: thread_socket::WakeHub::default(),
+            socket_slots: Arc::new(Semaphore::new(thread_socket::capacity(
+                config.startup_limits(),
+            ))),
             config,
             services: RwLock::new(Services {
                 auth,
@@ -451,6 +465,7 @@ impl WebApp {
             attachment_policy: None,
             pivot_export: None,
             reporting_export: None,
+            assistant: None,
             report: None,
             refreshing: Mutex::new(()),
             requests: Arc::new(Semaphore::new(crate::startup_limits::RPC_CONCURRENCY)),
@@ -458,7 +473,7 @@ impl WebApp {
             report_limiter: crate::client_error::ReportLimiter::default(),
             admission: None,
             login_available: AtomicBool::new(false),
-            draining: AtomicBool::new(false),
+            draining: Arc::new(AtomicBool::new(false)),
             shutdown_at: std::sync::OnceLock::new(),
         })
     }
@@ -748,7 +763,8 @@ impl WebApp {
         {
             return finish_response(busy(), true);
         }
-        let navigation = !classified_path.starts_with(routes::JSON2_PREFIX)
+        let navigation = !matches!(classified_path.as_ref(), routes::THREAD_SOCKET | routes::ASSISTANT_STATUS | routes::ASSISTANT_TURN)
+            && !classified_path.starts_with(routes::JSON2_PREFIX)
             && LifecycleOperation::from_path(&classified_path).is_none()
             && !classified_path.starts_with(routes::ASSETS_PREFIX)
             // attachment errors keep their class and stay plain text, never the HTML page
@@ -1017,6 +1033,14 @@ impl WebApp {
         }
         if let Some(rest) = path.strip_prefix(content::CONTENT_PREFIX) {
             return self.attachment_content(&parts, rest, &auth).await;
+        }
+        if path == routes::THREAD_SOCKET {
+            return self.thread_socket(parts, auth).await;
+        }
+        if matches!(path, routes::ASSISTANT_TURN | routes::ASSISTANT_STATUS) {
+            return self
+                .assistant(&parts, body, &auth, path == routes::ASSISTANT_STATUS)
+                .await;
         }
         if path == routes::PIVOT_EXPORT {
             return self.pivot_export(&parts, body, &auth).await;
@@ -1927,7 +1951,11 @@ impl WebApp {
             Some(provider) => Some(provider.load(tx).await.map_err(auth_error)?),
             None => None, // No provider composed: bootstrap explicitly carries no policy snapshot.
         };
-        let document = serde_json::json!({"wire_major":1,"registry_version":env.registry().generation().to_string(),
+        let limits = self.config.startup_limits();
+        let thread_reconnect = (self.thread_feed.is_some()
+            && env.registry().model("mail.thread").is_some())
+        .then(|| [limits.ws_retry_initial_ms(), limits.ws_retry_max_ms()]);
+        let document = serde_json::json!({"thread_reconnect_ms":thread_reconnect,"wire_major":1,"registry_version":env.registry().generation().to_string(),
             "attachment_limits":attachment_limits,"rpc_body_bytes":self.config.startup_limits().rpc_body_bytes(),
             "asset_version":self.assets.version(),"identity":{"uid":env.uid(),"name":name,"internal":true},
             "companies":companies,"current_company_id":current,"allowed_company_ids":ids,"active_company_ids":active,

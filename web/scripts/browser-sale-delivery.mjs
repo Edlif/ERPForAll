@@ -38,7 +38,7 @@ try {
     const reply = await page.evaluate(async id => {
       const response = await fetch("/erp/json/2/sale.order/read", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ids: [id], fields: ["state", "warehouse_id"] }),
+        body: JSON.stringify({ ids: [id], fields: ["state", "warehouse_id", "direct_delivery_id", "name"] }),
       });
       return { status: response.status, body: await response.json() };
     }, order);
@@ -89,6 +89,49 @@ try {
   assert.equal(await picker.count(), 0);
   await screenshot("warehouse-confirmed-phone.png");
   result.checks.push("readonly warehouse fits 390px layout without page overflow");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const deliveryLink = page.getByRole("button", { name: /^Open Delivery: / });
+  const deliveryName = (await deliveryLink.innerText()).trim();
+  assert.ok(deliveryName);
+  const confirmedOrder = await readOrder();
+  const transfer = confirmedOrder.direct_delivery_id;
+  const transferId = Array.isArray(transfer) ? transfer[0] : transfer;
+  assert.ok(Number.isSafeInteger(transferId) && transferId > 0);
+  assert.equal(await deliveryLink.locator("svg.related-record-arrow").count(), 1);
+  await deliveryLink.click();
+  const sourceOrder = page.getByRole("button", { name: /^Open Sales Order: / });
+  await sourceOrder.waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("id"), String(transferId));
+  assert.equal((await sourceOrder.innerText()).trim(), confirmedOrder.name);
+  assert.match(await page.locator("[data-control-breadcrumbs]").innerText(), /\bDeliveries\b/);
+  await screenshot("delivery-source-order.png");
+  await sourceOrder.click();
+  await deliveryLink.waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("id"), String(order));
+  assert.equal((await deliveryLink.innerText()).trim(), deliveryName);
+  result.checks.push("Delivery opens the saved shipment and Sales Order returns to its original order");
+  await deliveryLink.click();
+  const validate = page.getByRole("button", { name: "Validate", exact: true });
+  await validate.click();
+  const decision = page.getByRole("dialog", { name: "Remaining demand" });
+  await decision.waitFor();
+  await decision.getByText("Browser Shipping Cartons", { exact: true }).waitFor();
+  await decision.getByRole("button", { name: "Close Remaining Demand" }).waitFor();
+  await screenshot("backorder-ask-desktop.png");
+  await decision.getByRole("button", { name: "Cancel", exact: true }).click();
+  await decision.waitFor({ state: "hidden" });
+  await validate.click();
+  await decision.waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const bounds = await decision.boundingBox();
+  assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 391, "phone dialog fits the viewport");
+  await screenshot("backorder-ask-phone.png");
+  const completed = page.waitForResponse(response => response.url().endsWith("/stock.picking/action_keep_backorder"));
+  await decision.getByRole("button", { name: "Create Backorder" }).click();
+  assert.equal((await completed).status(), 200, "backorder action succeeds");
+  await decision.waitFor({ state: "hidden" });
+  await validate.waitFor({ state: "hidden" });
+  result.checks.push("Validate opens the live Ask dialog, Cancel preserves the transfer, and Create Backorder finishes it");
   assert.deepEqual(errors, [], "no uncaught browser errors");
   result.status = "passed";
 } catch (error) {

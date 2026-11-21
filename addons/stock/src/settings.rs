@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Inventory's scoped values; consumers read the shared Settings API.
 use erp_sdk::settings::{ParameterDecl, ScopeKind, SettingDecl, SettingGroupDecl};
-use erp_sdk::{Error, Result, Value};
+use erp_sdk::{Cell, Domain, Error, RawVals, Result, Value, ValueMap};
 use std::collections::BTreeMap;
 
 const ADMIN: &str = "base.group_system";
 const READ: &[&str] = &["stock.group_stock_manager", ADMIN];
 const MONTH: &str = "stock.annual_inventory_month";
 const DAY: &str = "stock.annual_inventory_day";
+const PICKING_POLICY: &str = "stock.picking_policy";
 
 /// The stock unit policy: declared technical system parameters,
 /// read by the runner with `erp_sdk::params::get_int`. One snapshot uses exactly these keys.
@@ -73,6 +74,12 @@ fn parameters() -> Result<Vec<ParameterDecl>> {
             (1, 1_000_000),
         ),
         (
+            crate::position::FACT_LIMIT_KEY,
+            "Source rows one current stock position may read",
+            10_000,
+            (1, 1_000_000),
+        ),
+        (
             crate::warehouse_setup::CODE_LENGTH_KEY,
             "Characters of the company name in a new warehouse's short name",
             5,
@@ -107,12 +114,28 @@ fn company(decl: SettingDecl, block: &str, sequence: u32, help: &str) -> Result<
         .help(help)?
         .access(READ, &[ADMIN])
 }
+pub(super) fn picking_policy() -> Result<SettingDecl> {
+    company(
+        SettingDecl::selection(
+            PICKING_POLICY,
+            "Delivery policy",
+            ScopeKind::Company,
+            "direct",
+            &[
+                ("direct", "Send available items"),
+                ("one", "Wait for the complete order"),
+            ],
+        )?,
+        "Shipping",
+        10,
+        "Changing this policy updates all active operation types in this company. New operation types use it by default.",
+    )
+}
+
 fn declarations() -> Result<Vec<SettingDecl>> {
     use ScopeKind::{Company, Global};
     let declarations = vec![
-        company(SettingDecl::selection("stock.picking_policy", "Delivery policy", Company, "direct",
-            &[("direct", "Send available items"), ("one", "Wait for the complete order")])?,
-            "Shipping", 10, "Saved for this company. Operation types do not use this value yet.")?,
+        picking_policy()?,
         company(SettingDecl::integer("stock.horizon_days", "Replenishment horizon (days)", Company, 365, (1, 3650))?,
             "Planning", 20, "Default: 365 days. Allowed: 1 to 3650 days. Saved only; replenishment does not use this value yet.")?,
         company(SettingDecl::selection(MONTH, "Annual count month", Company, "12", &[
@@ -191,7 +214,7 @@ erp_sdk::setting_groups!(groups);
 
 // the service hook is linked independently of the settings factories. Publishing
 // inventory without one of its native registrations must fail, rather than show a partial page.
-use erp_addon_base::ir_config_setting::IrConfigSetting;
+use erp_addon_base::ir_config_setting::{IrConfigSetting, fence_company_field_defaults};
 use erp_sdk::prelude::{RecordSet, Transaction, extend, methods};
 
 #[extend(IrConfigSetting, addon = "stock")]
@@ -199,6 +222,68 @@ struct StockSettings {}
 
 #[methods(IrConfigSetting, addon = "stock")]
 impl StockSettings {
+    /// Apply the saved company's policy with the settings administrator's own stock permissions.
+    #[method(override)]
+    async fn _apply_value_changes(
+        this: &RecordSet<IrConfigSetting>,
+        tx: &mut Transaction,
+        company: Option<i64>,
+        changes: ValueMap,
+        sup: Super,
+    ) -> Result<()> {
+        if let Some(value) = changes.get(PICKING_POLICY) {
+            let (Some(company), Value::Str(policy)) = (company, value) else {
+                return Err(Error::programming(
+                    "The delivery policy requires a company and selection.",
+                ));
+            };
+            let env = this.env().with_company(company)?;
+            fence_company_field_defaults(tx).await?;
+            let types = env.records("stock.picking.type")?;
+            let domain = Domain::field("company_id")?.eq(company)
+                & Domain::field("active")?.eq(true)
+                & Domain::field("move_type")?.ne(policy.as_ref());
+            let candidates = types.search(tx, &domain).await?;
+            // As with reservation-method changes, refuse a partial update when custom rules
+            // hide affected rows. The scoped probe returns only the count, never a hidden ID.
+            tx.flush_model(types.model_id()).await?;
+            let policy_key: &str = policy;
+            let rows = tx
+                .query(
+                    "SELECT count(*)::int8 FROM stock_picking_type \
+                 WHERE company_id=$1 AND active IS TRUE AND move_type IS DISTINCT FROM $2",
+                    &[&company, &policy_key],
+                )
+                .await?;
+            let [row] = rows.as_slice() else {
+                return Err(Error::internal(
+                    "The delivery policy dependency probe returned no count.",
+                ));
+            };
+            let count: i64 = row.try_get(0).map_err(|e| {
+                Error::db("The delivery policy dependency count is invalid.").with_source(e)
+            })?;
+            let count = usize::try_from(count).map_err(|e| {
+                Error::db("The delivery policy dependency count is out of range.").with_source(e)
+            })?;
+            if count != candidates.len() {
+                return Err(Error::access(
+                    "You cannot change the delivery policy because some affected operation types are not accessible.",
+                ));
+            }
+            if !candidates.is_empty() {
+                candidates.lock_for_update(tx, true).await?;
+                candidates
+                    .write(
+                        tx,
+                        RawVals::new().set_cell("move_type", Cell::Str(policy.clone())),
+                    )
+                    .await?;
+            }
+        }
+        sup.call(tx, this.as_records(), (company, changes)).await
+    }
+
     #[method(override)]
     async fn _register_hook(
         this: &RecordSet<IrConfigSetting>,
@@ -206,7 +291,7 @@ impl StockSettings {
         sup: Super,
     ) -> Result<()> {
         let expected: std::collections::BTreeSet<_> = [
-            "stock.picking_policy",
+            PICKING_POLICY,
             "stock.horizon_days",
             MONTH,
             DAY,
@@ -248,6 +333,7 @@ impl StockSettings {
         let expected_parameters: std::collections::BTreeSet<_> = QUANT_KEYS
             .into_iter()
             .chain([
+                crate::position::FACT_LIMIT_KEY,
                 crate::move_relations::CHAIN_LIMIT_KEY,
                 crate::warehouse_setup::CODE_LENGTH_KEY,
                 crate::quant_guards::SHOW_EXPECTED_KEY,

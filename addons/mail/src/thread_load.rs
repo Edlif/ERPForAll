@@ -369,6 +369,15 @@ fn require_thread_model(env: &Env, model: &str) -> Result<()> {
 async fn require_readable_thread(tx: &mut Transaction, input: &TopicInput<'_>) -> Result<()> {
     let env = input.env();
     let (model, id) = thread_ref(input.params())?;
+    require_thread_access(tx, env, model, id).await
+}
+
+async fn require_thread_access(
+    tx: &mut Transaction,
+    env: &Env,
+    model: &str,
+    id: i64,
+) -> Result<()> {
     require_thread_model(env, model)?;
     if standing(tx, env).await? == Standing::Public {
         return Err(Error::access(PUBLIC_DENIED));
@@ -788,6 +797,25 @@ fn run_thread<'a>(
         out.data(document);
         Ok(())
     })
+}
+
+/// The same authorized message window the native saved-record chatter loads on opening.
+/// Only the server compares these IDs. Notification frames never carry them.
+/// # Errors
+/// Returns the thread, message ACL, or database error for the caller's active transaction.
+pub async fn thread_change_window(tx: &mut Transaction, model: &str, id: i64) -> Result<Vec<i64>> {
+    let env = tx.env();
+    require_thread_access(tx, &env, model, id).await?;
+    Ok(load_page(
+        tx,
+        &env,
+        model,
+        id,
+        Cursor::Latest,
+        DEFAULT_MESSAGE_PAGE as usize,
+    )
+    .await?
+    .ids)
 }
 
 #[cfg(test)]
