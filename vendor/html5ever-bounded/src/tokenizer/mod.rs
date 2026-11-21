@@ -2157,6 +2157,7 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
         }
     }
 
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
     /// Checks for supported SIMD feature, which is now either SSE2 for x86/x86_64 or NEON for aarch64.
     fn is_supported_simd_feature_detected() -> bool {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -2168,9 +2169,6 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
         {
             std::arch::is_aarch64_feature_detected!("neon")
         }
-
-        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-        false
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]

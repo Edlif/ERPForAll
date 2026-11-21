@@ -6,7 +6,7 @@ use std::num::NonZeroU32;
 
 /// The supported section-description version, independent of the outer wire major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(try_from = "u8", into = "u8")]
 pub struct PanelVersion(#[cfg_attr(feature = "schema-gen", ts(type = "1"))] u8);
 impl PanelVersion {
@@ -31,7 +31,7 @@ impl From<PanelVersion> for u8 {
 
 /// Nonnegative display limit exactly representable by the browser. Zero does not lift safety limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(try_from = "u64", into = "u64")]
 pub struct PanelDisplayLimit(#[cfg_attr(feature = "schema-gen", ts(type = "number"))] u64);
 impl TryFrom<u64> for PanelDisplayLimit {
@@ -52,7 +52,7 @@ impl From<PanelDisplayLimit> for u64 {
 
 /// A raw default scalar; the host overlay separately checks the section's field kind and access.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum PanelValue {
@@ -100,7 +100,7 @@ impl PanelDefaults {
 
 /// Ordered raw category/filter declarations. Host validation and client admission are independent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum PanelSection {

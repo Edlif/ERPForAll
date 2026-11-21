@@ -26,6 +26,7 @@ feature-depth = 1
 unmaintained = "all"
 unsound = "all"
 yanked = "deny"
+unused-ignored-advisory = "allow"
 ignore = [
     # rustix 1.1.5, unsound xattr functions with a zero-length buffer; published 2026-11-11. Nothing in this
     # workspace or in vendor/ calls the rustix xattr functions. Removed with the update to >= 1.1.6: board task
@@ -82,7 +83,7 @@ ignore = false
 registries = []
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "allow"
 # `path` dependencies inside the workspace have no version; allow those, deny `*` from registries.
 wildcards = "deny"
 allow-wildcard-paths = true

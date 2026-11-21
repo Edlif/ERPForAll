@@ -2087,6 +2087,7 @@ name = "erp-expr"
 version = "0.1.0"
 dependencies = [
  "erp-alloc-budget",
+ "erp-macros",
  "indexmap",
  "nix",
  "proptest",
@@ -2572,6 +2573,7 @@ dependencies = [
  "erp-alloc-budget",
  "erp-expr",
  "erp-fields",
+ "erp-macros",
  "erp-orm",
  "erp-registry",
  "nix",

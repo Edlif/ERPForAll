@@ -6,7 +6,7 @@ macro_rules! operators {
     ($wire:ident, $native:ident, $file:literal, $($variant:ident),+ $(,)?) => {
         #[doc = concat!("Wire representation of [`crate::", stringify!($native), "`].")]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-        #[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+        #[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
         #[cfg_attr(feature = "schema-gen", ts(export_to = $file))]
         #[serde(rename_all = "snake_case")]
         #[non_exhaustive]
@@ -68,7 +68,7 @@ operators!(
 /// [`super::ValidatedAst::from_json`] to guarantee browser-equivalent numeric token rounding;
 /// validating a raw DTO cannot recover a token already rounded by another deserializer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[cfg_attr(feature = "schema-gen", ts(export_to = "WireDocument.d.ts"))]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -83,7 +83,7 @@ pub struct WireDocument {
 
 /// Exact scalar encoding. Integer and float payloads are strings, never JSON numbers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[cfg_attr(feature = "schema-gen", ts(export_to = "WireLiteral.d.ts"))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
@@ -110,7 +110,7 @@ pub enum WireLiteral {
 
 /// Index or optional slice bounds; nullable fields must still be present.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[cfg_attr(feature = "schema-gen", ts(export_to = "WireSubscript.d.ts"))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
@@ -131,7 +131,7 @@ pub enum WireSubscript {
 
 /// Ordered keyword argument; null means dictionary unpacking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[cfg_attr(feature = "schema-gen", ts(export_to = "WireKeyword.d.ts"))]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -144,7 +144,7 @@ pub struct WireKeyword {
 
 /// One comprehension clause, preserving target, iterable and filter order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[cfg_attr(feature = "schema-gen", ts(export_to = "WireComprehension.d.ts"))]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -159,7 +159,7 @@ pub struct WireComprehension {
 
 /// Closed transport union for every current expression node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[cfg_attr(feature = "schema-gen", ts(export_to = "WireNode.d.ts"))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]

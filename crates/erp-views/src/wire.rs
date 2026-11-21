@@ -11,7 +11,7 @@ macro_rules! object {
     ($(#[$meta:meta])* $name:ident { $($(#[$field_meta:meta])* $field:ident : $kind:ty),* $(,)? }) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Serialize, Deserialize)]
-        #[cfg_attr(feature="schema-gen", derive(ts_rs::TS))]
+        #[cfg_attr(feature="schema-gen", erp_macros::wire_ts)]
         #[serde(deny_unknown_fields)]
         #[non_exhaustive]
         pub struct $name {
@@ -24,7 +24,7 @@ macro_rules! choice {
     ($name:ident { $($variant:ident),* $(,)? }) => {
         #[doc = concat!("Closed wire vocabulary for ", stringify!($name), ".")]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-        #[cfg_attr(feature="schema-gen", derive(ts_rs::TS))]
+        #[cfg_attr(feature="schema-gen", erp_macros::wire_ts)]
         #[serde(rename_all="snake_case")]
         #[non_exhaustive]
         pub enum $name { $(#[doc = stringify!($variant)] $variant,)* }
@@ -40,7 +40,7 @@ pub use panel::{
 
 /// Positive database identity representable exactly by the JSON browser client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(try_from = "u64", into = "u64")]
 pub struct WireId(#[cfg_attr(feature = "schema-gen", ts(type = "number"))] u64);
 impl TryFrom<u64> for WireId {
@@ -60,7 +60,7 @@ impl From<WireId> for u64 {
 }
 /// Positive page size that the JSON browser client can represent exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(try_from = "u64", into = "u64")]
 pub struct WirePageLimit(#[cfg_attr(feature = "schema-gen", ts(type = "number"))] u64);
 impl TryFrom<u64> for WirePageLimit {
@@ -80,7 +80,7 @@ impl From<WirePageLimit> for u64 {
 }
 /// Supported wire major; unknown versions cannot deserialize as version one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(try_from = "u8", into = "u8")]
 pub struct WireMajor(#[cfg_attr(feature = "schema-gen", ts(type = "1"))] u8);
 impl WireMajor {
@@ -234,7 +234,7 @@ object!(/// Accessible model field metadata; field types never silently fall bac
         #[serde(deserialize_with="required_nullable")] relation_field: Option<String> });
 /// A selected persisted view or a genuinely generated view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum ViewIdentity {
@@ -316,7 +316,7 @@ ButtonDetails {
 });
 /// Explicit non-object execution identity; captions never select an action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum ButtonTarget {
@@ -398,7 +398,7 @@ pub fn is_settings_app_name(name: &str) -> bool {
 }
 /// Strict service-widget options; widget registration validates the corresponding shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum WidgetOptions {
@@ -583,7 +583,7 @@ impl CodeOptions {
 }
 /// Identity-specific field options. Existing widgets preserve the exact empty-object wire shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum FieldOptions {
@@ -598,7 +598,7 @@ pub enum FieldOptions {
 }
 /// Registered service widget identities. Unknown component strings are refused.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[non_exhaustive]
 pub enum ServiceWidget {
     /// Typed settings service.
@@ -610,7 +610,7 @@ pub enum ServiceWidget {
 }
 /// Caller-visible standard search-panel presentation for the first supported selection category.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum ListSearchPanel {
@@ -649,7 +649,7 @@ pub enum ListSearchPanel {
 }
 /// Declarative dashboard metric; references are descriptive and require host authorization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum DashboardItem {
@@ -711,7 +711,7 @@ impl ColumnWidth {
 }
 /// Strict list/form arena, including the static record-form layout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum ViewNode {
@@ -1185,7 +1185,7 @@ choice!(NotificationLevel {
 /// Normalized result of an object-method call. The client decodes it strictly and never
 /// interprets the raw dictionary the method returned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum ActionResult {
@@ -1277,7 +1277,7 @@ object!(/// Typed, public view-selection notice.
     Notice { code: String, message: String });
 /// Exact declared settings scope; company membership still requires current server authorization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum SettingsScope {
@@ -1298,7 +1298,7 @@ choice!(SettingKind {
 });
 /// Scalar setting payload; declaration validation must enforce its kind and numeric bounds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum SettingValue {
@@ -1318,7 +1318,7 @@ object!(/// Authorized non-secret settings declarations, since, the page's infor
         #[serde(default)] items: Vec<SettingsItem> });
 /// Target of a settings link row: a window action, optionally opening one record, or a menu.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum SettingsLinkTarget {
@@ -1339,7 +1339,7 @@ pub enum SettingsLinkTarget {
 /// One read-only information row or link row of a settings page. Items are never settings: their
 /// keys are refused by `erp_read_values` and `erp_write_values`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum SettingsItem {
@@ -1423,7 +1423,7 @@ object!(/// Durable uninstall outcome, including only addons actually removed.
     UninstallResult { uninstalled: Vec<String>, registry_version: String, asset_version: String });
 /// Detail page admission size. Omitted request limits default to 50; supplied limits are 1–100.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(try_from = "u64", into = "u64")]
 pub struct AddonDetailLimit(#[cfg_attr(feature = "schema-gen", ts(type = "number"))] u64);
 impl TryFrom<u64> for AddonDetailLimit {
@@ -1480,7 +1480,7 @@ object!(/// Authorized addon detail. Text is plain text; visibility never grants
 
 /// Lossless canonical unsigned 64-bit count, transported as decimal text rather than JSON number.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(ts_rs::TS))]
+#[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(try_from = "String", into = "String")]
 pub struct WireDecimalCount(#[cfg_attr(feature = "schema-gen", ts(type = "string"))] String);
 impl TryFrom<String> for WireDecimalCount {

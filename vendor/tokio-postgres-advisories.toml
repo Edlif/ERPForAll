@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# The driver's independent upstream lockfile has its own dependency graph. Exceptions
+# justified for the shipping workspace do not apply here. See vendor/README.md.
+[graph]
+# Build hosts and the platforms we ship to. Keeps Windows/macOS-only crates out of the licence check
+# noise while still covering what we distribute.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+]
+all-features = true
+
+[output]
+feature-depth = 1
+
+[advisories]
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+unused-ignored-advisory = "allow"

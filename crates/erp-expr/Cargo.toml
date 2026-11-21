@@ -12,7 +12,7 @@ publish.workspace = true
 # Must keep building for wasm32-wasip2.
 [features]
 default = []
-schema-gen = ["dep:ts-rs"]
+schema-gen = ["dep:erp-macros", "dep:ts-rs"]
 
 [dependencies]
 indexmap = { workspace = true }
@@ -22,7 +22,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 # Build tooling only; keep the production evaluator and wasm dependency trees pure.
-ts-rs = { version = "=11.1.0", optional = true, default-features = false, features = ["serde-compat"] }
+erp-macros = { workspace = true, optional = true }
+ts-rs = { version = "=11.1.0", optional = true, default-features = false, features = ["serde-compat", "no-serde-warnings"] }
 
 [dev-dependencies]
 erp-alloc-budget = { workspace = true }

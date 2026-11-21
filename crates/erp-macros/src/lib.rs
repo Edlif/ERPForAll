@@ -25,6 +25,7 @@ mod migration;
 mod model;
 mod model_ref;
 mod typed;
+mod wire_ts;
 
 /// Declare a new model. See the crate documentation.
 #[proc_macro_attribute]
@@ -91,6 +92,17 @@ pub fn addon(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn model_ref(input: TokenStream) -> TokenStream {
     model_ref::expand(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Internal schema generator for wire DTOs. Apply after the Serde derives so their full input
+/// validation runs in both regular and schema-generation builds.
+#[doc(hidden)]
+#[proc_macro_attribute]
+pub fn wire_ts(attr: TokenStream, item: TokenStream) -> TokenStream {
+    syn::parse_macro_input!(attr as syn::parse::Nothing);
+    wire_ts::expand(syn::parse_macro_input!(item as syn::DeriveInput))
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
