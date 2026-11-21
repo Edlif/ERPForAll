@@ -22,9 +22,9 @@ const FEATURES: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "stock.group_stock_production_lot",
-        "Lot and serial tracking",
+        "Company-wide lot tracking",
         "Traceability",
-        TRACKING,
+        "Administrators grant access to lot and serial records in the user's Access Rights. Per-product tracking is unavailable.",
     ),
     (
         "stock.group_stock_lot_print_gs1",
@@ -73,6 +73,37 @@ const FEATURES: &[(&str, &str, &str, &str)] = &[
         "Replenish on order",
         "Warehouse",
         ROUTES,
+    ),
+];
+// Each shortcut opens the ordinary menu of the records that own the policy.
+const CONFIGURATION: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "stock.backorder_policies",
+        "Backorder policies by operation type",
+        "Operations",
+        "stock.menu_stock_picking_type_config",
+        "stock.group_stock_manager",
+    ),
+    (
+        "stock.reordering_rules",
+        "Reordering rules (minimum and maximum)",
+        "Planning",
+        "stock.menu_stock_orderpoint",
+        "stock.group_stock_manager",
+    ),
+    (
+        "stock.lot_serial_register",
+        "Lots and serial numbers",
+        "Traceability",
+        "stock.menu_stock_lot",
+        "stock.group_production_lot",
+    ),
+    (
+        "stock.lot_user_access",
+        "Manage user access to lots and serial numbers",
+        "Traceability",
+        "base.settings_users_menu",
+        "base.group_system",
     ),
 ];
 const MODULES: &[(&str, &str, &str)] = &[
@@ -124,6 +155,15 @@ const MODULES: &[(&str, &str, &str)] = &[
 ];
 fn items() -> Result<Vec<PanelItemDecl>> {
     let mut items = Vec::new();
+    for (key, label, block, menu, group) in CONFIGURATION {
+        items.push(
+            PanelItemDecl::menu_link(key, label, menu)?
+                .block(block)?
+                .sequence(10)
+                .scope(ScopeKind::Company)
+                .access(&[group])?,
+        );
+    }
     for (key, label, block, _) in FEATURES {
         items.push(
             PanelItemDecl::info(key, label)?
@@ -165,6 +205,7 @@ pub(super) fn require_linked() -> Result<()> {
     let expected: std::collections::BTreeSet<_> = FEATURES
         .iter()
         .map(|(key, _, _, _)| *key)
+        .chain(CONFIGURATION.iter().map(|(key, _, _, _, _)| *key))
         .chain(MODULES.iter().map(|(key, _, _)| *key))
         .map(str::to_owned)
         .collect();

@@ -90,7 +90,7 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
   const { field, value, change, run } = environment;
   const subview = field.subview, items = lineList(value);
   const editable = !field.readonly && subview?.form !== undefined;
-
+  const searchField = constantRelationContext(field)?.["inline_search_field"];
 
   const wrapper = el("div", undefined, "x2many-field");
   wrapper.setAttribute("role", "group");
@@ -132,7 +132,8 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
     head.append(headRow);
     const body = el("tbody");
     const width = (columns.length || 1) + (editable ? 1 : 0);
-    if (!items.length) {
+    const searchColumn = columns.find(column => column.name === searchField && column.kind === "many2one" && !column.readonly);
+    if (!items.length && !(editable && searchColumn)) {
       const row = el("tr", undefined, "x2many-empty"), cell = el("td", field.readonly ? "No lines." : "No lines yet.", "muted");
       cell.colSpan = width; row.append(cell); body.append(row);
     }
@@ -146,6 +147,21 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
           // Same masking as the main list and the form; reveal stays on those surfaces.
           const raw = line[column.name];
           cell.textContent = raw === false || raw === null || raw === undefined || raw === "" ? "" : "••••••••";
+        } else if (editable && searchColumn && subview && line["__key"] && (column.kind === "float" || column.kind === "integer") && (!column.widget || column.widget === column.kind) && !column.readonly) {
+          const policy = linePolicy(subview, line);
+          const writable = policy.find(candidate => candidate.name === column.name && !candidate.readonly && !candidate.invisible);
+          const control = resolveFieldWidget(column.kind, "list").render({
+            field: { ...column, readonly: !writable }, value: line[column.name], values: line,
+            fields: policy, viewContext: "list", numericLocale: environment.numericLocale,
+            rpc: environment.rpc, context: environment.context, run, report: environment.report,
+            change: next => {
+              if (!writable) throw new ClientError("validation", `${column.label} is read-only.`);
+              touchNewLine(String(line["__key"]), [column.name]);
+              change(items.map((item, i) => i === index ? { ...item, [column.name]: next } : item));
+            }
+          });
+          cell.classList.add("x2many-inline-number");
+          cell.append(control.node); cellStops.push(control.dispose);
         } else {
           // The comodel's list widgets (color swatch, priority stars, badge, tags, percentage, favorite), read-only, the
           // same adapters the main list uses, so a line reads the same in both places.
@@ -168,7 +184,7 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
         const open = (): void => run(() => openLine(environment, items, index));
         // A link or control inside a cell (a URL, a related record) keeps its own action.
         row.addEventListener("click", event => { if (!(event.target instanceof HTMLElement && event.target.closest(".x2many-remove,a[href],button:not([disabled]),input:not([disabled]),select,textarea"))) open(); });
-        row.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
+        row.addEventListener("keydown", event => { if (event.target === row && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); open(); } });
       }
       if (editable) {
         const cell = el("td", undefined, "x2many-actions");
@@ -180,6 +196,68 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
       body.append(row);
     });
     table.append(head, body);
+    if (editable && subview) {
+      const footer = table.createTFoot(), cell = footer.insertRow().insertCell();
+      cell.colSpan = width; cell.className = "x2many-entry";
+      const actions = el("div", undefined, "x2many-entry-actions");
+      const detail = (): void => run(() => openLine(environment, items, null));
+      const add = button("Add a line", searchColumn ? () => run(startSearch) : detail, "x2many-add link-button");
+      add.prepend(icon("plus"));
+      actions.append(add);
+      if (searchColumn) {
+        const form = button("", detail, "x2many-detail-add");
+        form.append(icon("panels-top-left"));
+        form.title = "Open line form";
+        form.setAttribute("aria-label", form.title);
+        actions.append(form);
+      }
+      cell.append(actions);
+      async function startSearch(): Promise<void> {
+        if (!subview || !searchColumn || add.disabled) return;
+        add.disabled = true;
+        try {
+          const lineContext = relationQuery(field, environment.values ?? {}, environment.context, environment.fields ?? [], "context").context;
+          const values = await readLineDefaults(environment, subview, lineContext);
+          if (!cell.isConnected || environment.signal?.aborted) return;
+          const policy = linePolicy(subview, values);
+          const permitted = policy.find(candidate => candidate.name === searchColumn.name && !candidate.readonly && !candidate.invisible);
+          if (!permitted) { await openLine(environment, items, null); return; }
+          const picker = resolveFieldWidget("many2one", "form").render({
+            field: permitted, model: subview.model, fields: policy, values, value: values[permitted.name],
+            context: lineContext, rpc: environment.rpc, run, report: environment.report, signal: environment.signal,
+            messages: environment.messages,
+            change: selected => {
+              if (!selected || !cell.isConnected) return;
+              const proposed = { ...values, [permitted.name]: selected };
+              if (missingLineField(subview, proposed)) {
+                reset(); run(() => openLine(environment, items, null, proposed)); return;
+              }
+              const key = newLineKey();
+              touchNewLine(key, [permitted.name]);
+              reset(); change([...items, { ...proposed, __key: key }]);
+            }
+          });
+          const entry = el("div", undefined, "x2many-inline-search");
+          const stop = (): void => picker.dispose();
+          const reset = (): void => {
+            const index = cellStops.indexOf(stop);
+            if (index >= 0) cellStops.splice(index, 1);
+            stop(); entry.remove(); actions.hidden = false; add.focus();
+          };
+          cellStops.push(stop);
+          const cancel = button("", reset, "x2many-entry-cancel");
+          cancel.append(icon("x"));
+          cancel.title = "Cancel line entry";
+          cancel.setAttribute("aria-label", cancel.title);
+          entry.append(picker.node, cancel);
+          entry.addEventListener("keydown", event => {
+            if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); reset(); }
+            if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault();
+          });
+          actions.hidden = true; cell.append(entry); picker.node.querySelector("input")?.focus();
+        } finally { add.disabled = false; }
+      }
+    }
     // The main list's width rules (kind, arch width, even fill, resize); measured once the form attaches the table.
     if (columns.length && subview) {
       const widths = subListWidths.get(subview) ?? new Map<string, number>(); subListWidths.set(subview, widths);
@@ -190,10 +268,6 @@ export function one2manyField(environment: WidgetEnvironment): WidgetHandle {
   }
   drawTable();
   wrapper.append(scroller);
-  if (editable) {
-    const add = button("Add a line", () => run(() => openLine(environment, items, null)), "x2many-add link-button");
-    wrapper.append(add);
-  }
   return { node: wrapper, dispose: () => { choices.dispose(); for (const stop of cellStops.splice(0)) stop(); } };
 }
 
@@ -213,11 +287,25 @@ function lineDefault(field: Field, value: unknown): unknown {
   return ids;
 }
 
+async function readLineDefaults(environment: WidgetEnvironment, subview: Subview, context: Record<string, unknown>): Promise<Line> {
+  const fields = lineFields(subview).filter(field => field.name !== environment.field.relationField);
+  const defaults = object(await environment.rpc.call(subview.model, "default_get", { fields: fields.map(field => field.name), context }), "line defaults");
+  return Object.fromEntries(fields.filter(field => Object.hasOwn(defaults, field.name)).map(field => [field.name, lineDefault(field, defaults[field.name])]));
+}
+
+function missingLineField(subview: Subview, values: Line): Field | undefined {
+  return linePolicy(subview, values).find(field => {
+    if (!field.required || field.readonly || field.invisible || field.kind === "boolean") return false;
+    const value = values[field.name];
+    return value === undefined || value === null || value === false || value === "" || Array.isArray(value) && value.length === 0;
+  });
+}
+
 /**
  *  Save & New keeps the dialog open for the next line; every saved line reaches the parent
  *  record in one change when the dialog closes. 
  */
-async function openLine(environment: WidgetEnvironment, items: readonly Line[], index: number | null): Promise<void> {
+async function openLine(environment: WidgetEnvironment, items: readonly Line[], index: number | null, initial?: Line): Promise<void> {
   const { field, rpc, context, change, run, report, signal } = environment;
   if (signal?.aborted) return;
   const subview = field.subview, form = subview?.form;
@@ -237,9 +325,8 @@ async function openLine(environment: WidgetEnvironment, items: readonly Line[], 
     changed = new Set();
     lineContext = relationQuery(field, environment.values ?? {}, context, environment.fields ?? [], "context").context;
     if (current !== null) { values = { ...working[current]! }; return; }
-    const defaults = object(await rpc.call(subview.model, "default_get", { fields: formFields.map(candidate => candidate.name), context: lineContext }), "line defaults");
-    values = {};
-    for (const candidate of formFields) if (Object.hasOwn(defaults, candidate.name)) values[candidate.name] = lineDefault(candidate, defaults[candidate.name]);
+    values = initial ?? await readLineDefaults(environment, subview, lineContext);
+    initial = undefined;
   };
   await load();
   if (signal?.aborted) return;
@@ -273,13 +360,8 @@ async function openLine(environment: WidgetEnvironment, items: readonly Line[], 
     else if (prior instanceof HTMLElement && prior.isConnected) prior.focus();
   };
 
-  const missing = (): Field | undefined => linePolicy(subview, values).find(candidate => {
-    if (!candidate.required || candidate.readonly || candidate.invisible || readonly || candidate.kind === "boolean") return false;
-    const v = values[candidate.name];
-    return v === undefined || v === null || v === false || v === "" || Array.isArray(v) && v.length === 0;
-  });
   const commit = (): void => {
-    const absent = missing();
+    const absent = missingLineField(subview, values);
     if (absent) { body.reportValidity(); throw new ClientError("validation", `${absent.label} is required.`); }
     if (!body.reportValidity()) throw new ClientError("validation", "Correct the invalid line fields before saving.");
     committed = true;

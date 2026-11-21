@@ -22,6 +22,7 @@ pub const ACCOUNT: &[(&str, &[&str])] = &[
         "SELECT name FROM ir_model_data WHERE module = 'account' AND model = 'ir.ui.menu' ORDER BY name",
         &[
             "menu_account_fiscal_period",
+            "menu_account_settings",
             "menu_account_tag",
             "menu_action_account_form",
             "menu_action_account_journal_form",

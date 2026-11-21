@@ -1,8 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <erp>
+  <record id="account_settings_form" model="ir.ui.view">
+    <field name="name">account.settings.service</field>
+    <field name="model">ir.config.setting</field>
+    <field name="arch" type="xml">
+      <form record_mode="service"><widget name="web.settings" scope_kinds="global,company" app="account"/></form>
+    </field>
+  </record>
+  <record id="account_settings_action" model="ir.actions.act_window">
+    <field name="name">Accounting settings</field>
+    <field name="res_model">ir.config.setting</field>
+    <field name="view_mode">form</field>
+    <field name="view_id" ref="account_settings_form"/>
+  </record>
   <menuitem id="menu_finance" name="Accounting" groups="account.group_account_readonly" sequence="40" web_icon="lucide:calculator">
     <menuitem id="menu_finance_configuration" name="Configuration" sequence="90">
+      <menuitem id="menu_account_settings" name="Settings" action="account_settings_action" groups="account.group_account_manager" sequence="5"/>
       <menuitem id="menu_action_account_form" name="Chart of Accounts" action="action_account_form" sequence="10"/>
       <menuitem id="menu_account_tag" name="Account Tags" action="action_account_tag" sequence="20"/>
       <menuitem id="menu_action_account_journal_form" name="Journals" action="action_account_journal_form" groups="account.group_account_manager" sequence="30"/>
@@ -12,5 +26,16 @@
       <menuitem id="menu_action_payment_term" name="Payment Terms" action="action_payment_term" sequence="70"/>
     </menuitem>
   </menuitem>
+  <record id="menu_account_settings" model="ir.ui.menu"><field name="web_icon">lucide:settings</field></record>
   <menuitem id="menu_account_fiscal_period" name="Fiscal Periods" parent="menu_finance_configuration" action="action_account_fiscal_period" sequence="30"/>
+
+  <record id="menu_finance_configuration" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="menu_action_account_form" model="ir.ui.menu"><field name="web_icon">lucide:notebook-text</field></record>
+  <record id="menu_account_tag" model="ir.ui.menu"><field name="web_icon">lucide:tag</field></record>
+  <record id="menu_action_account_journal_form" model="ir.ui.menu"><field name="web_icon">lucide:notebook-pen</field></record>
+  <record id="menu_action_account_journal_group_list" model="ir.ui.menu"><field name="web_icon">lucide:book-open</field></record>
+  <record id="menu_taxes" model="ir.ui.menu"><field name="web_icon">lucide:tag</field></record>
+  <record id="menu_tax_groups" model="ir.ui.menu"><field name="web_icon">lucide:tags</field></record>
+  <record id="menu_action_payment_term" model="ir.ui.menu"><field name="web_icon">lucide:calendar-days</field></record>
+  <record id="menu_account_fiscal_period" model="ir.ui.menu"><field name="web_icon">lucide:calendar-days</field></record>
 </erp>

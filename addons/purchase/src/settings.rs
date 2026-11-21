@@ -38,10 +38,11 @@ const LOCK_CHOICES: [(&str, &str); 2] = [
     ("lock", "Confirmed orders are locked"),
 ];
 
-// Procurement uses the catalogue’s existing master records, including their ordinary access checks.
-fn product_setup() -> Result<Vec<PanelItemDecl>> {
+// Open the installed master-data menus with their ordinary access checks.
+fn setup_links() -> Result<Vec<PanelItemDecl>> {
     [
         (
+            "Products",
             "purchase.attributes",
             "Product attributes",
             "product.menu_product_attribute",
@@ -49,6 +50,7 @@ fn product_setup() -> Result<Vec<PanelItemDecl>> {
             10,
         ),
         (
+            "Products",
             "purchase.variants",
             "Product variants",
             "product.menu_product_product",
@@ -56,17 +58,26 @@ fn product_setup() -> Result<Vec<PanelItemDecl>> {
             20,
         ),
         (
+            "Products",
             "purchase.units",
             "Units of measure",
             "uom.menu_uom_form_action",
             "base.group_system",
             30,
         ),
+        (
+            "Vendor bills",
+            "purchase.bill_payment_terms",
+            "Payment terms",
+            "account.menu_action_payment_term",
+            "account.group_account_readonly",
+            10,
+        ),
     ]
     .into_iter()
-    .map(|(key, label, menu, group, order)| {
+    .map(|(block, key, label, menu, group, order)| {
         PanelItemDecl::menu_link(key, label, menu)?
-            .block("Products")?
+            .block(block)?
             .sequence(order)
             .scope(ScopeKind::Company)
             .access(&[group])
@@ -75,7 +86,7 @@ fn product_setup() -> Result<Vec<PanelItemDecl>> {
 }
 
 // Static menu targets are resolved by the settings service, with the caller's menu visibility.
-fn resolve_product_setup<'a>(
+fn resolve_setup<'a>(
     _: &'a Env,
     _: &'a mut Transaction,
     _: &'a erp_sdk::settings::SettingsScope,
@@ -87,7 +98,7 @@ fn resolve_product_setup<'a>(
         )))
     })
 }
-erp_sdk::settings_panel_items!(product_setup, resolve_product_setup);
+erp_sdk::settings_panel_items!(setup_links, resolve_setup);
 
 fn settings() -> Result<Vec<SettingDecl>> {
     let place = |decl: SettingDecl, sequence: u32| -> Result<SettingDecl> {
@@ -230,26 +241,34 @@ mod tests {
     }
 
     #[test]
-    fn product_setup_links_use_existing_catalogue_and_unit_menus() {
+    fn setup_links_use_existing_menus_and_groups() {
         use erp_sdk::settings::PanelItemKind;
-        let items = product_setup().unwrap();
+        let items = setup_links().unwrap();
         let targets: Vec<_> = items
             .iter()
             .map(|item| {
-                assert_eq!(item.block_title(), "Products");
                 assert_eq!(item.scope_restriction(), Some(ScopeKind::Company));
                 let PanelItemKind::Link(target) = item.kind() else {
-                    panic!("expected a product setup link");
+                    panic!("expected a setup link");
                 };
-                (target.xmlid(), item.read_groups()[0].as_str())
+                (
+                    item.block_title(),
+                    target.xmlid(),
+                    item.read_groups()[0].as_str(),
+                )
             })
             .collect();
         assert_eq!(
             targets,
             [
-                ("product.menu_product_attribute", USER_GROUP),
-                ("product.menu_product_product", USER_GROUP),
-                ("uom.menu_uom_form_action", "base.group_system"),
+                ("Products", "product.menu_product_attribute", USER_GROUP),
+                ("Products", "product.menu_product_product", USER_GROUP),
+                ("Products", "uom.menu_uom_form_action", "base.group_system"),
+                (
+                    "Vendor bills",
+                    "account.menu_action_payment_term",
+                    "account.group_account_readonly"
+                ),
             ]
         );
     }

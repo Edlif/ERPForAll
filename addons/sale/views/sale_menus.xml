@@ -15,4 +15,11 @@ The Sales menu (sale/views/sale_menus.xml:4-40, laid out anew). The root ships i
       <menuitem id="sales_team_config" name="Sales Teams" action="sales_team.crm_team_action_config" sequence="10"/>
     </menuitem>
   </menuitem>
+
+  <record id="sale_order_menu" model="ir.ui.menu"><field name="web_icon">lucide:clipboard-list</field></record>
+  <record id="menu_sale_quotations" model="ir.ui.menu"><field name="web_icon">lucide:file-text</field></record>
+  <record id="menu_sale_order" model="ir.ui.menu"><field name="web_icon">lucide:clipboard-list</field></record>
+  <record id="res_partner_menu" model="ir.ui.menu"><field name="web_icon">lucide:contact</field></record>
+  <record id="menu_sale_config" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="sales_team_config" model="ir.ui.menu"><field name="web_icon">lucide:users</field></record>
 </erp>

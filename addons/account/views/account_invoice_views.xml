@@ -299,4 +299,11 @@
     <menuitem id="menu_action_move_in_invoice_type" name="Bills" action="action_move_in_invoice_type" sequence="10"/>
     <menuitem id="menu_action_move_in_refund_type" name="Refunds" action="action_move_in_refund_type" sequence="20"/>
   </menuitem>
+
+  <record id="menu_finance_receivables" model="ir.ui.menu"><field name="web_icon">lucide:contact</field></record>
+  <record id="menu_action_move_out_invoice_type" model="ir.ui.menu"><field name="web_icon">lucide:receipt-text</field></record>
+  <record id="menu_action_move_out_refund_type" model="ir.ui.menu"><field name="web_icon">lucide:undo-2</field></record>
+  <record id="menu_finance_payables" model="ir.ui.menu"><field name="web_icon">lucide:handshake</field></record>
+  <record id="menu_action_move_in_invoice_type" model="ir.ui.menu"><field name="web_icon">lucide:receipt-text</field></record>
+  <record id="menu_action_move_in_refund_type" model="ir.ui.menu"><field name="web_icon">lucide:undo-2</field></record>
 </erp>

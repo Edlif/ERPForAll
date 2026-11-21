@@ -802,8 +802,32 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
             .unwrap();
         assert_eq!(
             tracking["detail"],
-            "Unavailable until a later release and a later release supply tracking controls."
+            "Administrators grant access to lot and serial records in the user's Access Rights. Per-product tracking is unavailable."
         );
+        for (key, module, menu) in [
+            (
+                "stock.backorder_policies",
+                "stock",
+                "menu_stock_picking_type_config",
+            ),
+            ("stock.reordering_rules", "stock", "menu_stock_orderpoint"),
+            ("stock.lot_serial_register", "stock", "menu_stock_lot"),
+            ("stock.lot_user_access", "base", "settings_users_menu"),
+        ] {
+            let item = json["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["key"] == key)
+                .expect(key);
+            assert_eq!(item["app"], "stock");
+            assert_eq!(item["kind"], "link");
+            assert_eq!(item["target"]["kind"], "menu");
+            assert_eq!(
+                item["target"]["id"],
+                super::security::xid(&orm, module, menu).await
+            );
+        }
         let route = json["items"]
             .as_array()
             .unwrap()

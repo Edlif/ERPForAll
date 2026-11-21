@@ -320,4 +320,9 @@
         <menuitem id="loan_menu" name="Loans" action="loan_action" sequence="30"/>
         <menuitem id="genre_menu" name="Genres" action="genre_action" sequence="40"/>
     </menuitem>
+
+  <record id="book_menu" model="ir.ui.menu"><field name="web_icon">lucide:book-open</field></record>
+  <record id="author_menu" model="ir.ui.menu"><field name="web_icon">lucide:pen-tool</field></record>
+  <record id="loan_menu" model="ir.ui.menu"><field name="web_icon">lucide:book</field></record>
+  <record id="genre_menu" model="ir.ui.menu"><field name="web_icon">lucide:tags</field></record>
 </erp>

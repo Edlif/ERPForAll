@@ -17,4 +17,19 @@
   <menuitem id="menu_stock_putaway_rule" name="Putaway Rules" parent="menu_stock_config_settings" action="action_stock_putaway_rule" groups="stock.group_stock_multi_locations" sequence="80"/>
   <menuitem id="menu_stock_package_type" name="Package Types" parent="menu_stock_config_settings" action="action_stock_package_type" groups="stock.group_tracking_lot" sequence="90"/>
   <menuitem id="menu_stock_orderpoint" name="Replenishment" parent="menu_stock_config_settings" action="action_stock_orderpoint" sequence="95"/>
+
+  <record id="menu_stock_products" model="ir.ui.menu"><field name="web_icon">lucide:package</field></record>
+  <record id="menu_stock_product_templates" model="ir.ui.menu"><field name="web_icon">lucide:package</field></record>
+  <record id="menu_stock_lot" model="ir.ui.menu"><field name="web_icon">lucide:scan-barcode</field></record>
+  <record id="menu_stock_reporting" model="ir.ui.menu"><field name="web_icon">lucide:chart-column</field></record>
+  <record id="menu_stock_quant" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+  <record id="menu_stock_warehouse" model="ir.ui.menu"><field name="web_icon">lucide:warehouse</field></record>
+  <record id="menu_stock_picking_type_config" model="ir.ui.menu"><field name="web_icon">lucide:workflow</field></record>
+  <record id="menu_stock_location" model="ir.ui.menu"><field name="web_icon">lucide:map-pin</field></record>
+  <record id="menu_stock_route" model="ir.ui.menu"><field name="web_icon">lucide:route</field></record>
+  <record id="menu_stock_rule" model="ir.ui.menu"><field name="web_icon">lucide:list-todo</field></record>
+  <record id="menu_stock_storage_category" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+  <record id="menu_stock_putaway_rule" model="ir.ui.menu"><field name="web_icon">lucide:workflow</field></record>
+  <record id="menu_stock_package_type" model="ir.ui.menu"><field name="web_icon">lucide:package</field></record>
+  <record id="menu_stock_orderpoint" model="ir.ui.menu"><field name="web_icon">lucide:refresh-cw</field></record>
 </erp>

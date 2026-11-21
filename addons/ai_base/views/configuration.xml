@@ -114,4 +114,7 @@
   <menuitem id="usage_menu" name="Usage" parent="configuration_menu" action="usage_action" groups="base.group_system" sequence="40"/>
   <record id="budget_menu" model="ir.ui.menu"><field name="web_icon">lucide:calculator</field></record>
   <record id="usage_menu" model="ir.ui.menu"><field name="web_icon">lucide:clock</field></record>
+
+  <record id="provider_menu" model="ir.ui.menu"><field name="web_icon">lucide:cpu</field></record>
+  <record id="route_menu" model="ir.ui.menu"><field name="web_icon">lucide:route</field></record>
 </erp>

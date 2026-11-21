@@ -8,4 +8,6 @@
     </record>
     <menuitem id="menu_report_stock_valuation" name="Stock Valuation" parent="stock.menu_stock_reporting"
               action="action_report_stock_valuation" groups="stock.group_stock_manager" sequence="25"/>
+
+  <record id="menu_report_stock_valuation" model="ir.ui.menu"><field name="web_icon">lucide:coins</field></record>
 </erp>

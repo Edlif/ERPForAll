@@ -28,4 +28,6 @@
   </record>
   <!-- Lowest sequence under the root, so opening Inventory lands here. -->
   <menuitem id="menu_stock_overview" name="Overview" parent="menu_stock_root" action="stock_picking_type_action" sequence="0"/>
+
+  <record id="menu_stock_overview" model="ir.ui.menu"><field name="web_icon">lucide:panels-top-left</field></record>
 </erp>

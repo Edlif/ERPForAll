@@ -7,4 +7,10 @@
     <menuitem id="menu_product_category" name="Product Categories" action="product_category_action_form" sequence="40"/>
     <menuitem id="menu_product_attribute" name="Attributes" action="product_attribute_action" sequence="50"/>
   </menuitem>
+
+  <record id="menu_product_template" model="ir.ui.menu"><field name="web_icon">lucide:package</field></record>
+  <record id="menu_product_product" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+  <record id="menu_product_pricelist" model="ir.ui.menu"><field name="web_icon">lucide:tag</field></record>
+  <record id="menu_product_category" model="ir.ui.menu"><field name="web_icon">lucide:tags</field></record>
+  <record id="menu_product_attribute" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
 </erp>

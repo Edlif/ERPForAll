@@ -1179,6 +1179,34 @@ async fn valuation_hidden_target_body() {
 }
 
 #[test]
+fn accounting_configuration_opens_its_unified_settings_panel() {
+    big_stack(|| async {
+        let (_db, orm, _system) = install().await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let navigation = tx
+            .query(
+                "SELECT a.res_model, a.view_mode, v.arch_db FROM ir_ui_menu m \
+         JOIN ir_model_data dm ON dm.model='ir.ui.menu' AND dm.res_id=m.id \
+         JOIN ir_model_data parent ON parent.model='ir.ui.menu' AND parent.res_id=m.parent_id \
+         JOIN ir_act_window a ON m.action='ir.actions.act_window,' || a.id \
+         JOIN ir_ui_view v ON v.id=a.view_id \
+         WHERE dm.module='account' AND dm.name='menu_account_settings' \
+           AND parent.module='account' AND parent.name='menu_finance_configuration'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(navigation.len(), 1);
+        assert_eq!(navigation[0].get::<_, String>(0), "ir.config.setting");
+        assert_eq!(navigation[0].get::<_, String>(1), "form");
+        let arch: String = navigation[0].get(2);
+        assert!(arch.contains(r#"name="web.settings""#), "{arch}");
+        assert!(arch.contains(r#"app="account""#), "{arch}");
+        tx.rollback().await.unwrap();
+    });
+}
+
+#[test]
 fn settings_links_to_selected_company_without_granting_company_writes() {
     big_stack(settings_body);
 }
@@ -1311,6 +1339,24 @@ async fn settings_body() {
         .unwrap()
         .browse(vec![main])
         .unwrap();
+    let manager_panel =
+        erp_sdk::serde_json::to_value(describe(&env, &mut tx, scope(main)).await.unwrap()).unwrap();
+    for (key, menu) in [
+        ("account.setup_journals", "menu_action_account_journal_form"),
+        ("account.setup_taxes", "menu_taxes"),
+    ] {
+        let link = manager_panel["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["key"] == key)
+            .expect(key);
+        let id: i64 = tx.query(
+            "SELECT res_id::int8 FROM ir_model_data WHERE module='account' AND model='ir.ui.menu' AND name=$1", &[&menu]
+        ).await.unwrap()[0].get(0);
+        assert_eq!(link["target"]["kind"], "menu");
+        assert_eq!(link["target"]["id"], id);
+    }
     let error = write(
         &c,
         &mut tx,

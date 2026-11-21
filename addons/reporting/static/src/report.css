@@ -17,7 +17,8 @@
 .report-button { min-height: 32px; padding: 4px 12px; font-size: 13px; }
 .report-panel, .report-menu { position: absolute; z-index: 20; display: flex; flex-direction: column; gap: 8px; min-width: 240px; margin-top: 4px; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-panel); box-shadow: var(--shadow-menu); }
 .report-menu { gap: 0; min-width: 200px; padding: 4px; }
-.report-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 4px 12px; text-align: start; background: transparent; border: 0; border-radius: var(--radius-control); color: var(--text); font-size: 13px; }
+.report-menu-item { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; min-height: 32px; padding: 4px 12px; text-align: start; background: transparent; border: 0; border-radius: var(--radius-control); color: var(--text); font-size: 13px; }
+.report-menu-item > .erp-icon { flex: none; }
 .report-menu-item:hover, .report-menu-item:focus-visible { background: var(--hover); }
 .report-menu-item:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
 .report-field, .report-check { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }

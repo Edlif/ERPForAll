@@ -35,14 +35,15 @@
       <form string="Order Line">
         <sheet>
           <group>
-            <group>
+            <group string="Product and delivery">
               <field name="product_id"/>
               <field name="name"/>
               <field name="product_qty"/>
               <field name="uom_id"/>
               <field name="date_planned"/>
+              <field name="qty_received" readonly="1"/>
             </group>
-            <group>
+            <group string="Pricing">
               <field name="price_unit"/>
               <field name="technical_price_unit" invisible="1"/>
               <field name="discount"/>
@@ -51,7 +52,6 @@
               <field name="price_subtotal" readonly="1"/>
               <field name="price_tax" readonly="1"/>
               <field name="price_total" readonly="1"/>
-              <field name="qty_received" readonly="1"/>
             </group>
           </group>
         </sheet>
@@ -118,7 +118,7 @@
           </group>
           <notebook>
             <page string="Products" name="products">
-              <field name="order_line" readonly="state == 'cancel' or locked"/>
+              <field name="order_line" context="{'inline_search_field': 'product_id'}" readonly="state == 'cancel' or locked"/>
               <group name="totals">
                 <group/>
                 <group string="Totals">
@@ -225,4 +225,10 @@
       <menuitem id="menu_purchase_general_settings" name="Settings" action="purchase_settings_action" sequence="10"/>
     </menuitem>
   </menuitem>
+
+  <record id="menu_procurement_management" model="ir.ui.menu"><field name="web_icon">lucide:clipboard-list</field></record>
+  <record id="menu_purchase_rfq" model="ir.ui.menu"><field name="web_icon">lucide:file-text</field></record>
+  <record id="menu_purchase_form_action" model="ir.ui.menu"><field name="web_icon">lucide:shopping-cart</field></record>
+  <record id="menu_purchase_config" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="menu_purchase_general_settings" model="ir.ui.menu"><field name="web_icon">lucide:settings</field></record>
 </erp>

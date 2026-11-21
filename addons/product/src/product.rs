@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap};
     inherits = [("product.template", "product_tmpl_id")],
     order = "default_code, id",
     rec_name = "display_name",
-    rec_names_search = ["default_code", "barcode"],
+    rec_names_search = ["default_code", "barcode", "name"],
     company_access = parent(edge = "product_tmpl_id"),
     unique_indexes = [(
         "_combination_unique",

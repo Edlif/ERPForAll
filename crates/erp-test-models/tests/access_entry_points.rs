@@ -1788,6 +1788,21 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "after the caller's write check on the templates whose `uom_id` changes, searches their variants (archived too) and calls the `_update_uom` hook on them with privileges and `skip_uom_conversion`, as the reference ERP's template write does (`product_template.py:839`), so documents of dependent addons follow the unit change; base product's hook changes nothing and the target unit was validated and registered first",
     ),
     (
+        "purchase_stock/buy_route.rs::provision",
+        1,
+        "the addon loader or an authorized warehouse creation provisions one generated Buy rule for each eligible warehouse using its own company, receiving operation and locations; a rule already serving the same company or shared destination prevents a duplicate",
+    ),
+    (
+        "purchase_stock/replenish.rs::direct_buy_route",
+        1,
+        "compares a bounded count of active local and shared rules on this route and destination to the caller-visible count; denies incomplete visibility, then reads and validates the selected rule as the caller",
+    ),
+    (
+        "purchase_stock/replenish.rs::forecast",
+        1,
+        "checks whether the caller can see every source in the orderpoint company's product and location forecast; refuses incomplete visibility and sizes the quotation from the caller's forecast",
+    ),
+    (
         "purchase/line.rs::sync_lines",
         1,
         "after the base create or write of the caller's own lines (create and write access checked by then), reads those lines' product, quantity, unit, price, discount, taxes and currency, the definitions of the taxes linked to them (kept in the order's company by `check_company`; a tax is named only in a refusal of a tax kind the computation lacks), the currency rounding, the Product Unit precision and the product's unit, and writes only the four computed amount fields of those same lines before `sync_orders`; the amount fields are read-only to every caller, and nothing read leaves the function",

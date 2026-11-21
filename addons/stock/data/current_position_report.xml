@@ -61,4 +61,6 @@
     </record>
     <menuitem id="menu_current_product_position" name="Product Stock Position" parent="menu_stock_reporting"
               action="action_current_product_position" groups="stock.group_stock_user" sequence="25"/>
+
+  <record id="menu_current_product_position" model="ir.ui.menu"><field name="web_icon">lucide:chart-line</field></record>
 </erp>

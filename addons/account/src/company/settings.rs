@@ -15,6 +15,20 @@ fn items() -> Result<Vec<PanelItemDecl>> {
         .sequence(10)
         .scope(ScopeKind::Company)
         .access(&["base.group_system"])?,
+        PanelItemDecl::menu_link(
+            "account.setup_journals",
+            "Journals",
+            "account.menu_action_account_journal_form",
+        )?
+        .block("Journals")?
+        .sequence(10)
+        .scope(ScopeKind::Company)
+        .access(&["account.group_account_manager"])?,
+        PanelItemDecl::menu_link("account.setup_taxes", "Taxes", "account.menu_taxes")?
+            .block("Taxes")?
+            .sequence(10)
+            .scope(ScopeKind::Company)
+            .access(&["account.group_account_readonly"])?,
     ])
 }
 fn resolve<'a>(

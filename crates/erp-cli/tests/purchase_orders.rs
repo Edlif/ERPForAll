@@ -35,6 +35,8 @@ mod remainder;
 #[path = "purchase_orders/bill_snapshot.rs"]
 mod bill_snapshot;
 
+#[path = "purchase_orders/replenish.rs"]
+mod replenish;
 #[path = "purchase_orders/returns.rs"]
 mod returns;
 
@@ -49,6 +51,10 @@ fn addons_dir() -> PathBuf {
 
 /// Run `body` on a thread with a large stack: a full install chain exceeds the default one.
 fn run(body: impl std::future::Future<Output = ()> + Send + 'static) {
+    run_body(move || body)
+}
+
+fn run_body<F: std::future::Future<Output = ()>>(build: impl FnOnce() -> F + Send + 'static) {
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
@@ -57,7 +63,7 @@ fn run(body: impl std::future::Future<Output = ()> + Send + 'static) {
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(body);
+                .block_on(build());
         })
         .unwrap()
         .join()

@@ -50,4 +50,12 @@
       </menuitem>
     </menuitem>
   </menuitem>
+
+  <record id="menu_contacts" model="ir.ui.menu"><field name="web_icon">lucide:contact</field></record>
+  <record id="menu_contacts_config" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="menu_contact_tags" model="ir.ui.menu"><field name="web_icon">lucide:tags</field></record>
+  <record id="menu_localisation" model="ir.ui.menu"><field name="web_icon">lucide:globe</field></record>
+  <record id="menu_country_partner" model="ir.ui.menu"><field name="web_icon">lucide:globe</field></record>
+  <record id="menu_country_state_partner" model="ir.ui.menu"><field name="web_icon">lucide:map</field></record>
+  <record id="menu_country_group" model="ir.ui.menu"><field name="web_icon">lucide:git-branch</field></record>
 </erp>

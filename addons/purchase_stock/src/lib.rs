@@ -6,6 +6,8 @@ erp_sdk::addon!(
     depends = ["stock", "stock_account", "purchase"]
 );
 
+mod buy_route;
 mod receipt;
 mod receipt_access;
 mod received_quantity;
+mod replenish;

@@ -29,4 +29,6 @@
   </record>
 
   <menuitem id="menu_board_journal_1" name="Dashboard" parent="menu_finance" action="open_account_journal_dashboard_kanban" sequence="1"/>
+
+  <record id="menu_board_journal_1" model="ir.ui.menu"><field name="web_icon">lucide:panels-top-left</field></record>
 </erp>

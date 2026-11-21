@@ -660,3 +660,35 @@ test("line column choices survive reopening the field without changing draft lin
   expect(reopened.node.textContent).toContain("2026");
   reopened.dispose(); other.dispose(); messages.dispose();
 });
+
+test("inline entry loads line defaults, offers relation search in the table and keeps full form entry", async () => {
+  const owner = books();
+  const str = (value: string) => ({ kind: "literal" as const, value: { kind: "str" as const, value } });
+  owner.options = { context: { schema: 1, nodes: [str("inline_search_field"), str("author_id"), { kind: "dict", items: [[0, 1]] }] } };
+  owner.relationField = null;
+  owner.subview = { ...subview, list: [author, title, year] };
+  const rpc = rpcWith(path => path.includes("default_get") ? { title: "New book", publication_year: 2026 } : [{ id: 5, display_name: "Ayu" }]);
+  const change = vi.fn(), messages = new MessageServices(document.body, error => { throw error; });
+  const { node, dispose } = fieldWidgets.get("one2many").render({ field: owner, value: [], rpc, change, run, context: {}, messages, report: error => { throw error; } });
+  document.body.append(node);
+  node.querySelector<HTMLButtonElement>(".x2many-add")!.click();
+  await Promise.all(jobs);
+  const cancel = node.querySelector<HTMLButtonElement>('[aria-label="Cancel line entry"]')!;
+  cancel.click();
+  expect(change).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(node.querySelector(".x2many-add"));
+  node.querySelector<HTMLButtonElement>(".x2many-add")!.click();
+  await Promise.all(jobs);
+  const input = node.querySelector<HTMLInputElement>("tfoot [role=combobox]")!;
+  expect(input).toBe(document.activeElement);
+  expect(document.querySelector("dialog")).toBeNull();
+  input.click();
+  const match = () => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "Ayu");
+  await vi.waitFor(() => expect(match()).toBeDefined());
+  match()!.click();
+  expect(change.mock.calls[0]?.[0]).toMatchObject([{ author_id: { id: 5 }, title: "New book", publication_year: 2026 }]);
+  node.querySelector<HTMLButtonElement>(".x2many-detail-add")!.click();
+  await Promise.all(jobs);
+  expect(document.querySelector("dialog[open]")).not.toBeNull();
+  dispose(); messages.dispose();
+});

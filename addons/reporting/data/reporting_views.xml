@@ -77,4 +77,6 @@
     </record>
     <menuitem id="menu_reporting_report" name="Dynamic Reports" parent="base.technical_reporting_menu"
               action="action_reporting_report" groups="base.group_system" sequence="5"/>
+
+  <record id="menu_reporting_report" model="ir.ui.menu"><field name="web_icon">lucide:chart-column</field></record>
 </erp>

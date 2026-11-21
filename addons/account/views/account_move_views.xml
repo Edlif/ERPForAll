@@ -258,4 +258,8 @@
     <menuitem id="menu_action_move_journal_line" name="Journal Entries" action="action_move_journal_line" sequence="10"/>
     <menuitem id="menu_action_account_moves_all" name="Journal Items" action="action_account_moves_all" sequence="20"/>
   </menuitem>
+
+  <record id="menu_finance_entries" model="ir.ui.menu"><field name="web_icon">lucide:book-open</field></record>
+  <record id="menu_action_move_journal_line" model="ir.ui.menu"><field name="web_icon">lucide:notebook-text</field></record>
+  <record id="menu_action_account_moves_all" model="ir.ui.menu"><field name="web_icon">lucide:list</field></record>
 </erp>

@@ -883,4 +883,39 @@
     <field name="sequence" eval="20"/>
   </record>
   <menuitem id="technical_reports_menu" name="Reports" parent="technical_reporting_menu" action="technical_report_action" groups="base.group_system" sequence="20"/>
+
+  <record id="technical_db_menu" model="ir.ui.menu"><field name="web_icon">lucide:database</field></record>
+  <record id="technical_models_menu" model="ir.ui.menu"><field name="web_icon">lucide:database</field></record>
+  <record id="technical_fields_menu" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="technical_relations_menu" model="ir.ui.menu"><field name="web_icon">lucide:git-branch</field></record>
+  <record id="technical_precision_menu" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="technical_seq_menu" model="ir.ui.menu"><field name="web_icon">lucide:list-todo</field></record>
+  <record id="technical_sequences_menu" model="ir.ui.menu"><field name="web_icon">lucide:list-todo</field></record>
+  <record id="technical_seq_ranges_menu" model="ir.ui.menu"><field name="web_icon">lucide:calendar-days</field></record>
+  <record id="technical_data_menu" model="ir.ui.menu"><field name="web_icon">lucide:key</field></record>
+  <record id="technical_ui_menu" model="ir.ui.menu"><field name="web_icon">lucide:panels-top-left</field></record>
+  <record id="technical_views_menu" model="ir.ui.menu"><field name="web_icon">lucide:panels-top-left</field></record>
+  <record id="technical_menus_menu" model="ir.ui.menu"><field name="web_icon">lucide:menu</field></record>
+  <record id="technical_actions_menu" model="ir.ui.menu"><field name="web_icon">lucide:zap</field></record>
+  <record id="technical_actions_act_menu" model="ir.ui.menu"><field name="web_icon">lucide:zap</field></record>
+  <record id="technical_act_window_menu" model="ir.ui.menu"><field name="web_icon">lucide:panels-top-left</field></record>
+  <record id="technical_act_server_menu" model="ir.ui.menu"><field name="web_icon">lucide:server</field></record>
+  <record id="technical_act_client_menu" model="ir.ui.menu"><field name="web_icon">lucide:zap</field></record>
+  <record id="technical_act_url_menu" model="ir.ui.menu"><field name="web_icon">lucide:globe</field></record>
+  <record id="technical_defaults_menu" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="technical_params_menu" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="technical_params_act_menu" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="technical_security_menu" model="ir.ui.menu"><field name="web_icon">lucide:shield-check</field></record>
+  <record id="technical_privilege_menu" model="ir.ui.menu"><field name="web_icon">lucide:key</field></record>
+  <record id="settings_access_menu" model="ir.ui.menu"><field name="web_icon">lucide:shield-check</field></record>
+  <record id="technical_access_menu" model="ir.ui.menu"><field name="web_icon">lucide:shield-check</field></record>
+  <record id="technical_modules_menu" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+  <record id="technical_modules_act_menu" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+  <record id="technical_automation_menu" model="ir.ui.menu"><field name="web_icon">lucide:workflow</field></record>
+  <record id="technical_jobs_menu" model="ir.ui.menu"><field name="web_icon">lucide:server</field></record>
+  <record id="technical_job_runs_menu" model="ir.ui.menu"><field name="web_icon">lucide:clock</field></record>
+  <record id="technical_jobs_settings_menu" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
+  <record id="technical_reporting_menu" model="ir.ui.menu"><field name="web_icon">lucide:chart-column</field></record>
+  <record id="technical_paperformat_menu" model="ir.ui.menu"><field name="web_icon">lucide:file-text</field></record>
+  <record id="technical_reports_menu" model="ir.ui.menu"><field name="web_icon">lucide:file-text</field></record>
 </erp>

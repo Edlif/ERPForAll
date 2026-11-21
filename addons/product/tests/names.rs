@@ -33,6 +33,16 @@ async fn product(tx: &mut Transaction) -> (Records, Records) {
 }
 
 #[tokio::test]
+async fn variant_picker_finds_the_catalogue_name() {
+    let h = support::base_harness().await;
+    let mut tx = h.begin().await.unwrap();
+    let (_, variant) = product(&mut tx).await;
+    let variants = tx.env().records("product.product").unwrap();
+    let found = variants.name_search(&mut tx, "Chair").await.unwrap();
+    assert!(found.iter().any(|(id, _)| *id == variant.ids()[0]));
+}
+
+#[tokio::test]
 async fn template_label_obeys_both_code_context_switches() {
     let h = support::base_harness().await;
     let mut tx = h.begin().await.unwrap();

@@ -229,4 +229,10 @@
   <menuitem id="menu_stock_deliveries" name="Deliveries" parent="menu_stock_operations" action="action_picking_tree_outgoing" sequence="20"/>
   <menuitem id="menu_stock_internal" name="Internal Transfers" parent="menu_stock_operations" action="action_picking_tree_internal" sequence="30"/>
   <menuitem id="menu_stock_all_transfers" name="All Transfers" parent="menu_stock_operations" action="action_picking_tree_all" sequence="40"/>
+
+  <record id="menu_stock_operations" model="ir.ui.menu"><field name="web_icon">lucide:workflow</field></record>
+  <record id="menu_stock_receipts" model="ir.ui.menu"><field name="web_icon">lucide:inbox</field></record>
+  <record id="menu_stock_deliveries" model="ir.ui.menu"><field name="web_icon">lucide:truck</field></record>
+  <record id="menu_stock_internal" model="ir.ui.menu"><field name="web_icon">lucide:redo-2</field></record>
+  <record id="menu_stock_all_transfers" model="ir.ui.menu"><field name="web_icon">lucide:list</field></record>
 </erp>

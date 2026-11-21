@@ -182,4 +182,7 @@
     <field name="target">new</field>
     <field name="view_id" ref="view_account_payment_register_form"/>
   </record>
+
+  <record id="menu_action_account_payments_receivable" model="ir.ui.menu"><field name="web_icon">lucide:banknote</field></record>
+  <record id="menu_action_account_payments_payable" model="ir.ui.menu"><field name="web_icon">lucide:wallet</field></record>
 </erp>

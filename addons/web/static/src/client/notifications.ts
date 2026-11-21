@@ -1,5 +1,6 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 import { button, el } from "./dom.js";
+import { icon } from "./icons.js";
 import { ClientError } from "./transport.js";
 import { notificationClasses } from "./notification-classes.js";
 
@@ -60,8 +61,11 @@ export class NotificationService {
     const node = el("div", undefined, "client-notification");
     if (className) node.classList.add(...className.split(" "));
     node.dataset["level"] = level; node.setAttribute("role", "alert"); node.setAttribute("aria-live", "assertive"); node.setAttribute("aria-atomic", "true");
-    if (title !== undefined) node.append(el("strong", title, "client-notification-title"));
-    node.append(el("p", message, "client-notification-message"));
+    const status = icon(level === "success" ? "badge-check" : "bell");
+    const contentNode = el("div", undefined, "client-notification-content");
+    if (title) contentNode.append(el("strong", title, "client-notification-title"));
+    contentNode.append(el("p", message, "client-notification-message"));
+    node.append(status, contentNode);
     const controls = el("div", undefined, "client-notification-actions");
     let timer: ReturnType<typeof setTimeout> | undefined, closed = false, notified = false;
     const clear = (): void => { clearTimeout(timer); timer = undefined; };
@@ -87,7 +91,10 @@ export class NotificationService {
         })();
       }); controls.append(control);
     }
-    const dismiss = button("×", close, "client-notification-close"); dismiss.setAttribute("aria-label", "Close notification"); controls.append(dismiss); node.append(controls);
+    const dismiss = button("", close, "client-notification-close");
+    dismiss.setAttribute("aria-label", "Close notification");
+    if (actions.length) node.append(controls);
+    dismiss.append(icon("x")); node.append(dismiss);
     node.addEventListener("mouseenter", clear); node.addEventListener("mouseleave", reset);
     this.entries.set(message, { node, bytes: size, close, detach, notify }); this.bytes += size;
     this.node.insertBefore(node, this.overflow); reset(); prior?.notify(); return close;

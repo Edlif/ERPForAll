@@ -11,6 +11,17 @@ test.each(["info", "success", "warning", "danger"] as const)("notification rende
   const notice = document.querySelector<HTMLElement>(".client-notification")!;
   expect(notice.dataset["level"]).toBe(level); expect(notice.textContent).toContain("Title"); expect(notice.textContent).toContain("<b>Body</b>"); expect(notice.querySelector("b")).toBeNull();
 });
+test("a message-only notice keeps dismiss alongside the message and has no action footer", () => {
+  const { service } = setup();
+  service.add("AI Assistant status is unavailable.", { level: "warning", sticky: true });
+  const notice = document.querySelector<HTMLElement>(".client-notification")!;
+  expect(notice.querySelector(".client-notification-actions")).toBeNull();
+  expect(notice.querySelector(":scope > .client-notification-close")?.getAttribute("aria-label")).toBe("Close notification");
+  expect(notice.querySelector(":scope > svg")?.getAttribute("aria-hidden")).toBe("true");
+  notice.querySelector<HTMLButtonElement>(".client-notification-close")!.click();
+  expect(notice.isConnected).toBe(false);
+});
+
 test("timed notice pauses on hover and resets duration on leave; sticky and nonpositive delay remain", () => {
   vi.useFakeTimers(); const { service } = setup();
   service.add("Timed", { delay: 100 }); service.add("Sticky", { sticky: true, delay: 10 }); service.add("No timer", { delay: 0 });
