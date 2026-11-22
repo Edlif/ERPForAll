@@ -265,7 +265,7 @@ mod password_change;
 mod pivot_export;
 mod report;
 mod reporting_export;
-pub use assistant::WebAssistant;
+pub use assistant::{HistoryEntry, HistoryRole, WebAssistant};
 pub use content::{
     ContentLookup, ContentOpenFailure, ContentOpener, ContentRange, ContentReader, FoundContent,
     WebAttachmentContent,

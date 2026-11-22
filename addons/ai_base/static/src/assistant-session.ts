@@ -159,6 +159,21 @@ export function assistantSession(rpcKey: object, company: number, token: string,
       const prompt = value.trim();
       if (!prompt || pending || ended || !token || !Number.isSafeInteger(company) || company <= 0) return;
       pending = new AbortController();
+      // The transcript the tab already trimmed to the server policy, without pending or failed
+      // exchanges: a completed question is resent only together with its completed, resendable
+      // reply, so the history stays strictly alternating (the Anthropic family refuses adjacent
+      // same-role messages) and never leaks a question the provider never answered.
+      const history: { role: "user" | "assistant"; text: string }[] = [];
+      for (let i = 0; i < entries.length; i++) {
+        const item = entries[i]!;
+        if (item.state !== "ready" || encoder.encode(item.text).length > policy.messageBytes) continue;
+        if (item.role === "user") {
+          const reply = entries[i + 1];
+          if (!reply || reply.role !== "assistant" || reply.state !== "ready"
+              || encoder.encode(reply.text).length > policy.messageBytes) continue;
+        }
+        history.push({ role: item.role, text: item.text });
+      }
       entries.push({ role: "user", text: prompt, state: "ready" }, { role: "assistant", text: "Waiting for reply…", state: "pending" });
       publish();
       let reply: AssistantMessage;
@@ -166,7 +181,7 @@ export function assistantSession(rpcKey: object, company: number, token: string,
         const response = await (options.request ?? globalThis.fetch)("/erp/ai/assistant/turn", {
           method: "POST", credentials: "same-origin", redirect: "error", cache: "no-store",
           headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
-          body: JSON.stringify({ message: providerText ?? prompt, company_id: company }), signal: pending.signal,
+          body: JSON.stringify({ message: providerText ?? prompt, company_id: company, history }), signal: pending.signal,
         });
         const data: unknown = response.headers.get("content-type")?.includes("application/json") ? await response.json() : null;
         if (!response.ok) {

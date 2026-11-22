@@ -135,10 +135,19 @@ erp_sdk::system_parameters!(parameters);
 
 /// Browser transcript policy shared by the dock and the dedicated workspace.
 pub async fn tab_history(tx: &mut Transaction) -> Result<serde_json::Value> {
+    let (turns, bytes, message) = history_bounds(tx).await?;
+    Ok(serde_json::json!({ "turns": turns, "bytes": bytes, "message_bytes": message }))
+}
+
+/// The typed transcript bounds a turn re-validates submitted history against:
+/// `(exchanges, transcript bytes, message bytes)`. The transcript byte bound is measured on the
+/// history's serialized JSON (role and text keys included), the same shape the tab resends;
+/// single-entry text is measured in UTF-8 bytes against `turn_message_bytes`.
+pub async fn history_bounds(tx: &mut Transaction) -> Result<(usize, usize, usize)> {
     let turns = crate::catalog::limit(tx, "ai_base.tab_history_turns").await?;
     let bytes = crate::catalog::limit(tx, "ai_base.tab_history_bytes").await?;
     let message = crate::catalog::limit(tx, "ai_base.turn_message_bytes").await?;
-    Ok(serde_json::json!({ "turns": turns, "bytes": bytes, "message_bytes": message }))
+    Ok((turns, bytes, message))
 }
 
 /// Fixed, user-independent bounds read from the current database.
@@ -186,6 +195,12 @@ async fn lock_user(tx: &mut Transaction, uid: i64) -> Result<()> {
 
 /// Reserve one bounded provider exchange against every applicable policy. A company row is
 /// required and its provider/model must match. This transaction must commit before network I/O.
+///
+/// The caller's `input` estimate is the byte length of the entire serialized provider payload
+/// (system instructions, resent transcript, message, tools and framing) and is metered against
+/// the budget's `token_limit` without conversion: a budget sized in tokens therefore caps the
+/// request at roughly that many payload bytes. Raising `ai_base.tab_history_bytes` without
+/// re-sizing the budget shortens the usable conversation before any token is spent.
 /// # Errors
 /// Refuses missing budgets, exhausted limits, admission contention and malformed usage estimates.
 pub async fn reserve(

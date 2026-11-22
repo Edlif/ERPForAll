@@ -1,4 +1,5 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+import { icon } from "@erpforall/client";
 
 export type ColumnItem =
   | string
@@ -142,6 +143,8 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
     const th = document.createElement("th");
     th.scope = "col";
     th.className = "canvas-th-sortable";
+    th.setAttribute("aria-sort", "none");
+    th.tabIndex = 0;
 
     const labelSpan = document.createElement("span");
     labelSpan.textContent = col.label;
@@ -151,7 +154,7 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
 
     th.append(labelSpan, sortIndicator);
 
-    th.addEventListener("click", () => {
+    const sortColumn = () => {
       if (sortColIndex === idx) {
         sortAsc = !sortAsc;
       } else {
@@ -159,6 +162,13 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
         sortAsc = true;
       }
       renderRows();
+    };
+    th.addEventListener("click", sortColumn);
+    th.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        sortColumn();
+      }
     });
 
     headerRow.append(th);
@@ -199,14 +209,14 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
     // Update header sort indicators
     headerRow.querySelectorAll("th").forEach((th, idx) => {
       const indicator = th.querySelector(".canvas-sort-indicator");
-      if (indicator) {
-        if (idx === sortColIndex) {
-          indicator.textContent = sortAsc ? " [asc]" : " [desc]";
-          th.classList.add("active-sort");
-        } else {
-          indicator.textContent = "";
-          th.classList.remove("active-sort");
-        }
+      if (idx === sortColIndex) {
+        th.setAttribute("aria-sort", sortAsc ? "ascending" : "descending");
+        th.classList.add("active-sort");
+        indicator?.replaceChildren(icon("chevron-down"));
+      } else {
+        th.setAttribute("aria-sort", "none");
+        th.classList.remove("active-sort");
+        indicator?.replaceChildren();
       }
     });
 

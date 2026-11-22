@@ -4,6 +4,39 @@ use super::*;
 use erp_security::auth::SessionSecret;
 use serde_json::{Value, json};
 
+/// The sender of one prior message the signed-in browser tab keeps in its transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryRole {
+    /// What the user typed.
+    User,
+    /// The assistant's earlier reply as shown in the tab.
+    Assistant,
+}
+
+/// One prior message of the visible conversation, resent by the tab with the current question.
+/// The addon re-validates every bound before the entry reaches a provider.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryEntry {
+    role: HistoryRole,
+    text: String,
+}
+
+impl HistoryEntry {
+    /// The sender of the message.
+    #[must_use]
+    pub fn role(&self) -> HistoryRole {
+        self.role
+    }
+
+    /// The message text.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
 /// Application composition for one explicitly submitted message. The service authenticates the
 /// session again with the selected company. A provider call must run outside a database transaction.
 pub trait WebAssistant: Send + Sync {
@@ -13,13 +46,15 @@ pub trait WebAssistant: Send + Sync {
         tx: &'a mut erp_orm::Transaction,
     ) -> erp_orm::BoxFuture<'a, erp_fields::Result<Value>>;
 
-    /// Process one standalone, user-authored message with the configured company provider.
+    /// Process one user-authored message with the configured company provider, with the prior
+    /// visible conversation the browser tab supplied as bounded, re-validated history.
     fn turn<'a>(
         &'a self,
         auth: &'a Arc<Auth>,
         secret: &'a SessionSecret,
         company: erp_orm::CompanyId,
         message: String,
+        history: Vec<HistoryEntry>,
     ) -> erp_orm::BoxFuture<'a, erp_fields::Result<Value>>;
 }
 
@@ -28,6 +63,7 @@ pub trait WebAssistant: Send + Sync {
 struct Input {
     company_id: i64,
     message: String,
+    history: Option<Vec<HistoryEntry>>,
 }
 
 fn refusal(status: StatusCode, message: &str) -> Response {
@@ -176,18 +212,27 @@ impl WebApp {
         .map_err(|_| {
             refusal(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "The assistant message is too large.",
+                "The assistant request is too large.",
             )
         })?;
         let request: Input = serde_json::from_slice(&bytes).map_err(|_| {
             refusal(
                 StatusCode::BAD_REQUEST,
-                "Enter one message and select a company.",
+                "Enter one message, an optional conversation history, and select a company.",
             )
         })?;
         let company = erp_orm::CompanyId::new(request.company_id)
             .map_err(|_| refusal(StatusCode::BAD_REQUEST, "Select an active company."))?;
-        match engine.turn(auth, &secret, company, request.message).await {
+        match engine
+            .turn(
+                auth,
+                &secret,
+                company,
+                request.message,
+                request.history.unwrap_or_default(),
+            )
+            .await
+        {
             Ok(reply) => json_response(StatusCode::OK, &reply),
             Err(err) => {
                 let explicit = err.message().starts_with("erp.ai.");

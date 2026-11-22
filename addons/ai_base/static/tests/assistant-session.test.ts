@@ -79,3 +79,69 @@ test("editors share draft updates without re-rendering the transcript", () => {
   session.updateDock({ draft: "Later" });
   expect(editor).toHaveBeenCalledTimes(2);
 });
+
+test("each question resends the completed transcript as history", async () => {
+  const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ text: "Second answer" }));
+  const options = { userId: 51, request, history: { turns: 4, bytes: 4096, messageBytes: 4096 } };
+  const session = assistantSession({}, 7, "token-1", options);
+  await session.send("First question");
+  expect(JSON.parse(String(request.mock.calls[0]![1]?.body)).history).toEqual([]);
+  await session.send("Follow up");
+  const body = JSON.parse(String(request.mock.calls[1]![1]?.body));
+  expect(body.message).toBe("Follow up");
+  expect(body.company_id).toBe(7);
+  expect(body.history).toEqual([
+    { role: "user", text: "First question" },
+    { role: "assistant", text: "Second answer" },
+  ]);
+});
+
+test("history carries only completed exchanges, never failed replies or their questions", async () => {
+  const request = vi.fn<typeof fetch>()
+    .mockImplementationOnce(async () => new Response(JSON.stringify({ message: "erp.ai.provider_failed: no" }), { status: 502, headers: { "content-type": "application/json" } }))
+    .mockImplementationOnce(async () => Response.json({ text: "Ready" }));
+  const options = { userId: 51, request, history: { turns: 4, bytes: 4096, messageBytes: 4096 } };
+  const session = assistantSession({}, 7, "token", options);
+  await session.send("Question one");
+  expect(session.messages.at(-1)?.state).toBe("error");
+  await session.send("Question two");
+  const body = JSON.parse(String(request.mock.calls[1]![1]?.body));
+  // The unanswered question stays visible but is not resent, so the history never sends
+  // two adjacent user messages the provider protocols cannot represent.
+  expect(body.history).toEqual([]);
+});
+
+test("history drops an exchange whose reply exceeds the per-message limit", async () => {
+  const oversized = "詳".repeat(5000);
+  const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ text: oversized }));
+  const options = { userId: 51, request, history: { turns: 4, bytes: 4096, messageBytes: 4096 } };
+  const session = assistantSession({}, 7, "token", options);
+  await session.send("Show everything");
+  request.mockImplementationOnce(async () => Response.json({ text: "Fine" }));
+  await session.send("Now shorter");
+  const body = JSON.parse(String(request.mock.calls[1]![1]?.body));
+  // A question whose reply cannot be resent is dropped with it, so the history never carries
+  // two adjacent user messages.
+  expect(body.history).toEqual([]);
+});
+
+test("history keeps later exchanges when an earlier reply is too large to resend", async () => {
+  const oversized = "詳".repeat(5000);
+  const request = vi.fn<typeof fetch>()
+    .mockImplementationOnce(async () => Response.json({ text: oversized }))
+    .mockImplementationOnce(async () => Response.json({ text: "Small one" }))
+    .mockImplementationOnce(async () => Response.json({ text: "Small two" }));
+  const options = { userId: 51, request, history: { turns: 4, bytes: 32768, messageBytes: 4096 } };
+  const session = assistantSession({}, 7, "token", options);
+  await session.send("First big");
+  await session.send("Second small");
+  // The oversized exchange drops out of the resent history instead of leaving an orphan
+  // question that would create two adjacent user messages.
+  expect(JSON.parse(String(request.mock.calls[1]![1]?.body)).history).toEqual([]);
+  await session.send("Third small");
+  const body = JSON.parse(String(request.mock.calls[2]![1]?.body));
+  expect(body.history).toEqual([
+    { role: "user", text: "Second small" },
+    { role: "assistant", text: "Small one" },
+  ]);
+});

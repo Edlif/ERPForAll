@@ -79,13 +79,21 @@ describe("Canvas Visual Components", () => {
 
     // Sort by Amount ascending (click column 2)
     const amountTh = el.querySelectorAll("th")[2]!;
+    expect(amountTh.getAttribute("aria-sort")).toBe("none");
     amountTh.click();
+    expect(amountTh.getAttribute("aria-sort")).toBe("ascending");
     expect(rows()[0]?.[0]).toBe("SO003"); // 10000 is first
     expect(rows()[2]?.[0]).toBe("SO002"); // 50000 is last
 
     // Sort descending
     amountTh.click();
+    expect(amountTh.getAttribute("aria-sort")).toBe("descending");
     expect(rows()[0]?.[0]).toBe("SO002"); // 50000 is first
+
+    // Keyboard activation sorts the same way (Enter on the header)
+    amountTh.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(amountTh.getAttribute("aria-sort")).toBe("ascending");
+    expect(rows()[0]?.[0]).toBe("SO003");
   });
 
   test("renderWorkflowFlow displays status badges and active indicators", () => {
@@ -284,19 +292,19 @@ describe("Canvas Visual Components", () => {
     stage.dispose();
   });
 
-  test("createCanvasStage renders bento launchpad with live badge and actionable cards", () => {
+  test("createCanvasStage renders the suggestion launchpad with status text and actionable chips", () => {
     let triggeredPrompt = "";
     const stage = createCanvasStage(p => { triggeredPrompt = p; });
     document.body.append(stage.node);
 
-    expect(stage.node.querySelector(".canvas-live-badge")).not.toBeNull();
-    const bentoCards = stage.node.querySelectorAll(".canvas-bento-card");
-    expect(bentoCards.length).toBeGreaterThanOrEqual(4);
+    expect(stage.node.querySelector(".canvas-stage-status")?.textContent).toContain("Terhubung");
+    const chips = stage.node.querySelectorAll(".canvas-suggestion-chip");
+    expect(chips.length).toBeGreaterThanOrEqual(4);
 
-    // Click on a bento card to verify callback
-    const pivotCard = Array.from(bentoCards).find(c => c.textContent?.includes("Pivot")) as HTMLButtonElement;
-    expect(pivotCard).toBeDefined();
-    pivotCard.click();
+    // Click on a suggestion chip to verify the callback
+    const pivotChip = Array.from(chips).find(c => c.textContent?.includes("Pivot")) as HTMLButtonElement;
+    expect(pivotChip).toBeDefined();
+    pivotChip.click();
     expect(triggeredPrompt).toContain("pivot");
 
     stage.dispose();
@@ -396,6 +404,15 @@ describe("Canvas Visual Components", () => {
     tableBtn.click();
     expect(card.querySelector(".canvas-data-table")).not.toBeNull();
 
+    // Arrow keys move the selection and switch the view; roving tabindex keeps one tab stop.
+    tableBtn.focus();
+    tableBtn.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    const barBtn = card.querySelector<HTMLButtonElement>('.canvas-btn-switch[data-mode="bar"]')!;
+    expect(barBtn.getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(barBtn);
+    expect(barBtn.tabIndex).toBe(0);
+    expect(tableBtn.tabIndex).toBe(-1);
+
     stage.dispose();
   });
 
@@ -441,9 +458,8 @@ describe("Canvas Visual Components", () => {
     followups[0]!.click();
     expect(selectedPrompt.length).toBeGreaterThan(0);
 
-    // Query details present
-    expect(stage.node.querySelector(".canvas-query-details")).not.toBeNull();
-    expect(stage.node.textContent).toContain("Logika Query ERP & Agregasi");
+    // No invented query text: only the follow-up prompts appear
+    expect(stage.node.querySelector(".canvas-query-details")).toBeNull();
 
     stage.dispose();
   });

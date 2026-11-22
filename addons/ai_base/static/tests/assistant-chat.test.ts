@@ -39,7 +39,7 @@ test("one company-scoped request, plain text reply, minimize and keyboard close"
   expect(request).toHaveBeenCalledTimes(2);
   expect(request.mock.calls[1]).toEqual(["/erp/ai/assistant/turn", expect.objectContaining({
     method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-CSRF-Token": "session-test" },
-    body: JSON.stringify({ message: "Summarize receipts", company_id: 7 }),
+    body: JSON.stringify({ message: "Summarize receipts", company_id: 7, history: [] }),
   })]);
   finish(json({ text: "<img src=x> is text" }));
   await vi.waitFor(() => expect(dock.querySelector('[role="log"]')?.textContent).toContain("<img src=x> is text"));

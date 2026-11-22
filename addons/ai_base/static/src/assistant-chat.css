@@ -8,7 +8,7 @@
   box-shadow: var(--shadow-dialog); overflow: hidden;
 }
 .ai-chat-dock > header { display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 14px; background: var(--surface-subtle); border-bottom: 1px solid var(--line); }
-.ai-chat-dock > header > svg { color: var(--accent); }
+.ai-chat-dock > header > svg { color: var(--muted); }
 .ai-chat-dock h2 { margin: 0; flex: 1; font-size: 15px; font-weight: 600; }
 .ai-chat-dock button[aria-expanded="false"] svg { transform: rotate(180deg); }
 .ai-chat-thread { overflow: auto; overscroll-behavior: contain; min-height: 0; max-height: min(44dvh, 380px); }
@@ -16,7 +16,7 @@
 .ai-chat-message { margin: 8px 0 14px; overflow-wrap: anywhere; }
 .ai-chat-message strong { font-size: 12px; color: var(--muted); }
 .ai-chat-content { margin: 3px 0 0; white-space: pre-wrap; }
-.ai-chat-question { border-inline-start: 2px solid var(--selected-line); padding-inline-start: 10px; }
+.ai-chat-question { border-inline-start: 2px solid var(--line); padding-inline-start: 10px; }
 .ai-chat-error { color: var(--danger); }
 .ai-chat-dock form { padding: 10px 12px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 .ai-chat-hint { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
@@ -48,10 +48,10 @@
 .ai-chat-chip {
   background: var(--surface-subtle); border: 1px solid var(--line); border-radius: var(--radius-control);
   padding: 6px 10px; font-size: 0.775rem; color: var(--text); text-align: start; cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background var(--motion-fast) ease-out, border-color var(--motion-fast) ease-out, color var(--motion-fast) ease-out;
 }
 .ai-chat-chip:hover {
-  background: var(--surface); border-color: var(--accent); color: var(--accent);
+  background: var(--hover); border-color: var(--input-line); color: var(--text);
 }
 
 @media (max-width: 600px) {

@@ -24,6 +24,8 @@ fn addons() -> PathBuf {
 mod aggregate_turn;
 #[path = "ai_config_install/find_models.rs"]
 mod find_models;
+#[path = "ai_config_install/history_turn.rs"]
+mod history_turn;
 #[allow(
     clippy::panic,
     reason = "the shared test HTTP harness asserts native process failures"

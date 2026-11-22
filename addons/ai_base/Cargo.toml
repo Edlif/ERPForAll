@@ -12,7 +12,7 @@ erp-addon-base.workspace = true
 getrandom.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 tokio = { workspace = true, features = ["time"] }
-url = "=2.5.8"
+url = "2.5.9"
 serde = { workspace = true, features = ["derive"] }
 toml.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }

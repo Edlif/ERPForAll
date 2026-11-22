@@ -66,9 +66,8 @@ function createDragHandle(): HTMLElement {
 export function createCanvasStage(onPromptSelect?: (prompt: string) => void): CanvasStageHandle {
   const container = document.createElement("section");
   container.className = "ai-workspace-canvas-stage";
-  container.setAttribute("aria-label", "AI Dynamic Canvas");
+  container.setAttribute("aria-label", "AI Canvas");
 
-  // Minimal top header bar
   const header = document.createElement("div");
   header.className = "canvas-stage-header";
 
@@ -77,24 +76,20 @@ export function createCanvasStage(onPromptSelect?: (prompt: string) => void): Ca
 
   const stageTitle = document.createElement("h2");
   stageTitle.className = "canvas-stage-title";
-  stageTitle.textContent = "AI Workspace Canvas";
+  stageTitle.textContent = "Canvas";
 
   const stageSubtitle = document.createElement("p");
   stageSubtitle.className = "canvas-stage-subtitle";
-  stageSubtitle.textContent = "Visualisasi dinamis, grafik interaktif, dan simulasi proses bisnis";
+  stageSubtitle.textContent = "Analisis dan visualisasi dari data perusahaan";
 
   titleGroup.append(stageTitle, stageSubtitle);
 
   const actions = document.createElement("div");
   actions.className = "canvas-stage-actions";
 
-  const liveBadge = document.createElement("div");
-  liveBadge.className = "canvas-live-badge";
-  const liveDot = document.createElement("span");
-  liveDot.className = "canvas-live-dot";
-  const liveText = document.createElement("span");
-  liveText.textContent = "Live Data Connected";
-  liveBadge.append(liveDot, liveText);
+  const status = document.createElement("span");
+  status.className = "canvas-stage-status";
+  status.textContent = "Terhubung ke data perusahaan";
 
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";
@@ -102,114 +97,49 @@ export function createCanvasStage(onPromptSelect?: (prompt: string) => void): Ca
   clearBtn.textContent = "Bersihkan";
   clearBtn.hidden = true;
 
-  actions.append(liveBadge, clearBtn);
+  actions.append(status, clearBtn);
   header.append(titleGroup, actions);
 
   // Viewport
   const viewport = document.createElement("div");
   viewport.className = "canvas-stage-viewport";
 
-  // Blank placeholder (fits screen with zero scrollbar before content)
+  // Blank placeholder
   const blankState = document.createElement("div");
   blankState.className = "canvas-blank-state";
 
-  const heroHeader = document.createElement("div");
-  heroHeader.className = "canvas-hero-header";
-
-  const eyebrow = document.createElement("span");
-  eyebrow.className = "canvas-hero-eyebrow";
-  eyebrow.textContent = "AI Analytics Studio";
-
-  const blankHeading = document.createElement("h3");
-  blankHeading.className = "canvas-hero-heading";
-  blankHeading.textContent = "Visualisasikan Data Bisnis Secara Cepat & Interaktif";
+  const blankTitle = document.createElement("p");
+  blankTitle.className = "canvas-blank-title";
+  blankTitle.textContent = "Tanyakan analisis bisnis, hasilnya muncul di sini.";
 
   const blankDesc = document.createElement("p");
-  blankDesc.className = "canvas-hero-desc";
+  blankDesc.className = "canvas-blank-desc";
   blankDesc.textContent =
-    "Pilih analisis instan di bawah ini atau ajukan pertanyaan melalui Chat Assistant di kanan bawah untuk merender grafik dan pivot dinamis.";
+    "Pilih analisis siap pakai di bawah ini atau ajukan pertanyaan lewat AI Assistant untuk grafik, tabel dan pivot dari data perusahaan.";
 
-  heroHeader.append(eyebrow, blankHeading, blankDesc);
+  const suggestionList = document.createElement("div");
+  suggestionList.className = "canvas-suggestion-list";
 
-  const bentoGrid = document.createElement("div");
-  bentoGrid.className = "canvas-bento-grid";
-
-  const bentoItems = [
-    {
-      category: "Peringkat Penjualan",
-      title: "5 Customer Terloyal",
-      desc: "Grafik omzet pelanggan dengan transaksi tertinggi.",
-      meta: "sale.order · Bar Chart",
-      prompt: "Siapa 5 customer terloyal tahun ini? Tampilkan grafiknya di canvas.",
-      theme: "accent",
-    },
-    {
-      category: "BI Pivot Matrix",
-      title: "Pivot Omzet & Status",
-      desc: "Matriks multidimensi omzet per pelanggan dan status pesanan.",
-      meta: "Hierarki Multidimensi · Ekspor CSV",
-      prompt: "Tampilkan pivot table omzet penjualan per customer dan status pesanan.",
-      theme: "emerald",
-    },
-    {
-      category: "Tren Keuangan",
-      title: "Tren Omzet Bulanan",
-      desc: "Analisis pergerakan total nilai penjualan per bulan sepanjang tahun.",
-      meta: "Performa Bulanan · Trend Chart",
-      prompt: "Tampilkan omzet penjualan bulanan tahun ini dalam bentuk chart.",
-      theme: "purple",
-    },
-    {
-      category: "Aging Piutang",
-      title: "Ringkasan Piutang Jatuh Tempo",
-      desc: "Daftar ringkasan faktur pelanggan yang telah jatuh tempo.",
-      meta: "account.move · Sisa Tagihan",
-      prompt: "Tampilkan tabel ringkasan faktur piutang yang jatuh tempo.",
-      theme: "amber",
-    },
-    {
-      category: "Workflow Proses",
-      title: "Alur Siklus Pesanan",
-      desc: "Diagram visual alur dari penawaran harga hingga faktur lunas.",
-      meta: "Sales Lifecycle · Flowchart",
-      prompt: "Gambarkan alur proses dari penawaran harga hingga faktur terbayar.",
-      theme: "blue",
-    },
+  const suggestions = [
+    { label: "5 customer terloyal", prompt: "Siapa 5 customer terloyal tahun ini? Tampilkan grafiknya di canvas." },
+    { label: "Pivot omzet & status", prompt: "Tampilkan pivot table omzet penjualan per customer dan status pesanan." },
+    { label: "Tren omzet bulanan", prompt: "Tampilkan omzet penjualan bulanan tahun ini dalam bentuk chart." },
+    { label: "Piutang jatuh tempo", prompt: "Tampilkan tabel ringkasan faktur piutang yang jatuh tempo." },
+    { label: "Alur siklus pesanan", prompt: "Gambarkan alur proses dari penawaran harga hingga faktur terbayar." },
   ];
 
-  bentoItems.forEach(item => {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = `canvas-bento-card canvas-suggestion-chip card-theme-${item.theme}`;
-
-    const topRow = document.createElement("div");
-    topRow.className = "canvas-bento-top";
-
-    const catSpan = document.createElement("span");
-    catSpan.className = "canvas-bento-category";
-    catSpan.textContent = item.category;
-    topRow.append(catSpan);
-
-    const titleEl = document.createElement("h4");
-    titleEl.className = "canvas-bento-title";
-    titleEl.textContent = item.title;
-
-    const descEl = document.createElement("p");
-    descEl.className = "canvas-bento-desc";
-    descEl.textContent = item.desc;
-
-    const metaEl = document.createElement("span");
-    metaEl.className = "canvas-bento-meta";
-    metaEl.textContent = item.meta;
-
-    card.append(topRow, titleEl, descEl, metaEl);
-    card.addEventListener("click", () => {
+  suggestions.forEach(item => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "canvas-suggestion-chip";
+    chip.textContent = item.label;
+    chip.addEventListener("click", () => {
       if (onPromptSelect) onPromptSelect(item.prompt);
     });
-    bentoGrid.append(card);
+    suggestionList.append(chip);
   });
 
-  blankState.append(heroHeader, bentoGrid);
+  blankState.append(blankTitle, blankDesc, suggestionList);
 
   // Cards container for generated dashboard widgets
   const cardsGrid = document.createElement("div");
@@ -279,8 +209,8 @@ export function createCanvasStage(onPromptSelect?: (prompt: string) => void): Ca
   function clear() {
     cardsGrid.replaceChildren();
     viewport.replaceChildren(blankState);
-    stageTitle.textContent = "AI Workspace Canvas";
-    stageSubtitle.textContent = "Visualisasi dinamis, grafik interaktif, dan simulasi proses bisnis";
+    stageTitle.textContent = "Canvas";
+    stageSubtitle.textContent = "Analisis dan visualisasi dari data perusahaan";
     clearBtn.hidden = true;
   }
 
@@ -424,17 +354,15 @@ export function createCanvasStage(onPromptSelect?: (prompt: string) => void): Ca
     function updateView(mode: ViewMode) {
       currentMode = mode;
       switcher.querySelectorAll<HTMLButtonElement>(".canvas-btn-switch").forEach(btn => {
-        if (btn.dataset["mode"] === mode) {
-          btn.classList.add("active");
-          btn.setAttribute("aria-selected", "true");
-        } else {
-          btn.classList.remove("active");
-          btn.setAttribute("aria-selected", "false");
-        }
+        const selected = btn.dataset["mode"] === mode;
+        btn.classList.toggle("active", selected);
+        btn.setAttribute("aria-selected", String(selected));
+        btn.tabIndex = selected ? 0 : -1;
       });
       body.replaceChildren(renderViewModeContent(mode, title, series, unit, tableSpec, pivotSpec));
     }
 
+    const switchButtons: HTMLButtonElement[] = [];
     modes.forEach(m => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -442,9 +370,28 @@ export function createCanvasStage(onPromptSelect?: (prompt: string) => void): Ca
       btn.dataset["mode"] = m.id;
       btn.setAttribute("role", "tab");
       btn.setAttribute("aria-selected", String(m.id === currentMode));
+      btn.tabIndex = m.id === currentMode ? 0 : -1;
       btn.append(icon(m.iconName), document.createTextNode(` ${m.label}`));
       btn.addEventListener("click", () => updateView(m.id));
+      switchButtons.push(btn);
       switcher.append(btn);
+    });
+    // Roving tabindex with arrow-key navigation, like a tab list.
+    switcher.addEventListener("keydown", event => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const visible = switchButtons.filter(btn => !btn.hidden);
+      const index = visible.findIndex(btn => btn.dataset["mode"] === currentMode);
+      let next = index;
+      if (event.key === "ArrowLeft") next = (index - 1 + visible.length) % visible.length;
+      else if (event.key === "ArrowRight") next = (index + 1) % visible.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = visible.length - 1;
+      const target = visible[next];
+      if (target) {
+        updateView(target.dataset["mode"] as ViewMode);
+        target.focus();
+      }
     });
 
     // Actions (close button)
@@ -496,56 +443,8 @@ export function createCanvasStage(onPromptSelect?: (prompt: string) => void): Ca
 
     card.append(cardHeader, body);
 
-    // Query Logic & Transparency
+    // Contextual follow-up questions
     const lowerTitle = title.toLowerCase();
-    const queryDetails = document.createElement("details");
-    queryDetails.className = "canvas-query-details";
-
-    const querySummary = document.createElement("summary");
-    querySummary.className = "canvas-query-summary";
-    querySummary.textContent = "Logika Query ERP & Agregasi";
-
-    const queryBody = document.createElement("div");
-    queryBody.className = "canvas-query-body";
-
-    let modelName = "sale.order";
-    let aggLogic = "SUM(amount_total) GROUP BY partner_id ORDER BY amount_total DESC";
-    let filterLogic = "state in ('sale', 'done')";
-
-    if (lowerTitle.includes("piutang") || lowerTitle.includes("invoice") || lowerTitle.includes("faktur")) {
-      modelName = "account.move";
-      aggLogic = "SUM(amount_residual) GROUP BY partner_id ORDER BY amount_residual DESC";
-      filterLogic = "payment_state != 'paid' AND move_type = 'out_invoice'";
-    } else if (lowerTitle.includes("bulan") || lowerTitle.includes("tren") || lowerTitle.includes("omzet")) {
-      modelName = "sale.order";
-      aggLogic = "SUM(amount_total) GROUP BY date_trunc('month', date_order)";
-      filterLogic = "state in ('sale', 'done')";
-    }
-
-    const rowsInfo = [
-      { label: "ERP Model", value: modelName },
-      { label: "Agregasi", value: aggLogic },
-      { label: "Kondisi Filter", value: filterLogic },
-      { label: "Data Source", value: "PostgreSQL Live Database (ERPForAll ORM)" },
-    ];
-
-    rowsInfo.forEach(r => {
-      const row = document.createElement("div");
-      row.className = "canvas-query-row";
-      const lbl = document.createElement("span");
-      lbl.className = "canvas-query-label";
-      lbl.textContent = r.label;
-      const val = document.createElement("code");
-      val.className = "canvas-query-code";
-      val.textContent = r.value;
-      row.append(lbl, val);
-      queryBody.append(row);
-    });
-
-    queryDetails.append(querySummary, queryBody);
-    card.append(queryDetails);
-
-    // Contextual Follow-up Chips ("Pertanyaan Lanjutan")
     let followups = [
       "Tampilkan rincian tabel lengkap",
       "Bandingkan dengan performa periode lalu",
@@ -577,7 +476,7 @@ export function createCanvasStage(onPromptSelect?: (prompt: string) => void): Ca
 
     const followupsTitle = document.createElement("span");
     followupsTitle.className = "canvas-followups-label";
-    followupsTitle.textContent = "Pertanyaan Lanjutan:";
+    followupsTitle.textContent = "Pertanyaan lanjutan";
 
     const followupsChips = document.createElement("div");
     followupsChips.className = "canvas-followups-chips";

@@ -94,6 +94,7 @@ impl WebAssistant for TextAssistant {
         secret: &'a SessionSecret,
         company: CompanyId,
         message: String,
+        history: Vec<erp_server::web::HistoryEntry>,
     ) -> BoxFuture<'a, Result<Json>> {
         Box::pin(async move {
             let _slot = self.slots.try_acquire().map_err(|_| {
@@ -120,6 +121,18 @@ impl WebAssistant for TextAssistant {
                 return Err(Error::validation(
                     "erp.ai.message_invalid: enter a message within the configured length limit.",
                 ));
+            }
+            let (history_turns, history_bytes, history_message_bytes) =
+                ledger::history_bounds(&mut begun.tx).await?;
+            if let Err(reason) = validate_history(
+                &history,
+                history_turns,
+                history_bytes,
+                history_message_bytes,
+            ) {
+                return Err(Error::validation(format!(
+                    "erp.ai.message_invalid: {reason}"
+                )));
             }
             let route = routing::resolve(&env, &mut begun.tx, &self.credentials)
                 .await
@@ -168,7 +181,27 @@ impl WebAssistant for TextAssistant {
                 vec![ContentPart::UserText(UserText::new(message))],
             )
             .map_err(invalid)?;
-            let mut messages = vec![sys_msg, user_msg];
+            // The visible conversation the tab resent, oldest first, before the current question.
+            // Every entry already passed the transcript bounds; roles map onto the typed parts.
+            let mut messages = Vec::with_capacity(history.len() + 2);
+            messages.push(sys_msg);
+            for entry in &history {
+                let prior = match entry.role() {
+                    erp_server::web::HistoryRole::User => TurnMessage::new(
+                        TurnRole::User,
+                        vec![ContentPart::UserText(UserText::new(
+                            entry.text().to_string(),
+                        ))],
+                    ),
+                    erp_server::web::HistoryRole::Assistant => TurnMessage::new(
+                        TurnRole::Assistant,
+                        vec![ContentPart::AssistantText(entry.text().to_string())],
+                    ),
+                }
+                .map_err(invalid)?;
+                messages.push(prior);
+            }
+            messages.push(user_msg);
 
             let initial_req = ToolTurnRequest::new(route.model(), messages.clone(), tools.clone())
                 .map_err(invalid)?
@@ -418,4 +451,47 @@ impl WebAssistant for TextAssistant {
             Ok(resp)
         })
     }
+}
+
+/// Re-validate the tab-supplied transcript against the declared bounds before any entry reaches
+/// a provider. Refuse, never truncate: the client trims to the same policy, so an oversized
+/// submission is stale or hostile and gets a named error instead of a silent cut.
+fn validate_history(
+    history: &[erp_server::web::HistoryEntry],
+    turns: usize,
+    bytes: usize,
+    message_bytes: usize,
+) -> std::result::Result<(), String> {
+    use erp_server::web::HistoryRole;
+    if history.len() > turns.saturating_mul(2) {
+        return Err(format!("history exceeds {turns} exchanges."));
+    }
+    if history
+        .first()
+        .is_some_and(|entry| entry.role() != HistoryRole::User)
+    {
+        return Err("history must begin with a question.".to_string());
+    }
+    // The provider protocols cannot represent adjacent messages of one role (the Anthropic
+    // family refuses them outright), so the transcript must alternate strictly.
+    for pair in history.windows(2) {
+        if pair[0].role() == pair[1].role() {
+            return Err("history must alternate between questions and replies.".to_string());
+        }
+    }
+    let serialized =
+        serde_json::to_vec(history).map_err(|_| "history could not be encoded.".to_string())?;
+    if serialized.len() > bytes {
+        return Err("history exceeds the conversation byte limit.".to_string());
+    }
+    if history
+        .iter()
+        .any(|entry| entry.text().len() > message_bytes || entry.text().trim().is_empty())
+    {
+        return Err(
+            "one or more earlier messages exceed the message length limit or are empty."
+                .to_string(),
+        );
+    }
+    Ok(())
 }

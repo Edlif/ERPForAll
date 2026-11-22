@@ -71,7 +71,7 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
   input.setAttribute("aria-label", "Message to AI Assistant");
   const hint = document.createElement("p");
   hint.className = "ai-chat-hint";
-  hint.textContent = "Each question is sent separately to your company’s AI provider.";
+  hint.textContent = "This tab’s recent conversation is sent with each question so the assistant keeps the context.";
   const send = control("Send message", "send", "erp-button erp-button-primary");
   send.type = "submit";
   send.disabled = true;
@@ -96,7 +96,7 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
     trigger.hidden = false;
     unsubscribeDraft = session.subscribeDraft(text => {
       if (input.value !== text) input.value = text;
-      hint.textContent = session?.persistenceWarning || "Each question is sent separately to your company’s AI provider.";
+      hint.textContent = session?.persistenceWarning || "This tab’s recent conversation is sent with each question so the assistant keeps the context.";
       update();
     });
     unsubscribe = session.subscribe(renderMessages);
@@ -236,7 +236,7 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
       thread.append(part);
       rendered.set(item, part);
     }
-    hint.textContent = session.persistenceWarning || "Each question is sent separately to your company’s AI provider.";
+    hint.textContent = session.persistenceWarning || "This tab’s recent conversation is sent with each question so the assistant keeps the context.";
     if (atBottom) thread.scrollTop = thread.scrollHeight;
     update();
   }

@@ -32,7 +32,7 @@ hkdf = { workspace = true }
 zeroize = { workspace = true }
 getrandom = { workspace = true }
 subtle.workspace = true
-url = "=2.5.8"
+url = "2.5.9"
 libc.workspace = true
 sysinfo.workspace = true
 flate2 = "1.1"
