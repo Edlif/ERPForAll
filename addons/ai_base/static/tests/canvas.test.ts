@@ -301,4 +301,29 @@ describe("Canvas Visual Components", () => {
 
     stage.dispose();
   });
+
+  test("renderRichTable supports object column definitions without throwing toLowerCase errors", () => {
+    const el = renderRichTable({
+      title: "Top Loyal Customers",
+      columns: [
+        { name: "partner_id", label: "Customer" },
+        { name: "order_count", label: "Total Order" },
+        { name: "amount_total", label: "Nilai Order" },
+      ],
+      rows: [
+        { partner_id: "Deco Addict", order_count: 5, amount_total: 4500000 },
+        { partner_id: "Azure Interior", order_count: 3, amount_total: 2100000 },
+      ],
+    });
+    document.body.append(el);
+
+    const headers = Array.from(el.querySelectorAll("th"), th => th.textContent?.trim());
+    expect(headers).toContain("Customer");
+    expect(headers).toContain("Total Order");
+    expect(headers).toContain("Nilai Order");
+
+    const cells = Array.from(el.querySelectorAll("tbody td"), td => td.textContent?.trim());
+    expect(cells).toContain("Deco Addict");
+    expect(cells).toContain("Azure Interior");
+  });
 });

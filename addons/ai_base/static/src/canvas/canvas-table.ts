@@ -1,32 +1,79 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 
+export type ColumnItem =
+  | string
+  | {
+      key?: string;
+      label?: string;
+      name?: string;
+      title?: string;
+      field?: string;
+      dataIndex?: string;
+    };
+
 export type TableSpec = {
   title?: string;
-  columns?: string[];
+  columns?: ColumnItem[];
   rows?: unknown[];
   records?: Record<string, unknown>[];
 };
+
+interface NormalizedColumn {
+  key: string;
+  label: string;
+}
 
 export function renderRichTable(spec: TableSpec): HTMLElement {
   const container = document.createElement("div");
   container.className = "canvas-table-container";
 
-  let columns: string[] = Array.isArray(spec.columns) ? [...spec.columns] : [];
   const rawInputRows: unknown[] = Array.isArray(spec.rows)
     ? spec.rows
     : Array.isArray(spec.records)
     ? spec.records
     : [];
 
+  // Normalize column definitions from strings, objects, or keys
+  let normalizedCols: NormalizedColumn[] = [];
+  if (Array.isArray(spec.columns) && spec.columns.length > 0) {
+    normalizedCols = spec.columns.map((col, idx) => {
+      if (typeof col === "string") {
+        return { key: col, label: col };
+      }
+      if (typeof col === "object" && col !== null) {
+        const obj = col as Record<string, unknown>;
+        const key = String(
+          obj["key"] ??
+            obj["name"] ??
+            obj["field"] ??
+            obj["dataIndex"] ??
+            obj["id"] ??
+            obj["label"] ??
+            `col_${idx}`
+        );
+        const label = String(
+          obj["label"] ??
+            obj["title"] ??
+            obj["header"] ??
+            obj["name"] ??
+            obj["key"] ??
+            `Col ${idx + 1}`
+        );
+        return { key, label };
+      }
+      return { key: String(col), label: String(col) };
+    });
+  }
+
   // If columns are empty or not specified, derive from the first row object's keys
-  if (!columns.length && rawInputRows.length > 0) {
+  if (!normalizedCols.length && rawInputRows.length > 0) {
     const first = rawInputRows[0];
     if (typeof first === "object" && first !== null && !Array.isArray(first)) {
-      columns = Object.keys(first);
+      normalizedCols = Object.keys(first).map(k => ({ key: k, label: k }));
     }
   }
 
-  if (!columns.length) {
+  if (!normalizedCols.length) {
     container.textContent = "Tidak ada kolom yang didefinisikan.";
     return container;
   }
@@ -38,8 +85,18 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
     }
     if (typeof row === "object" && row !== null) {
       const rec = row as Record<string, unknown>;
-      return columns.map(col => {
-        const val = rec[col] ?? rec[col.toLowerCase()] ?? rec[col.replace(/ /g, "_").toLowerCase()];
+      return normalizedCols.map(col => {
+        const k = col.key;
+        const l = col.label;
+        const kLow = k.toLowerCase();
+        const lLow = l.toLowerCase();
+        const val =
+          rec[k] ??
+          rec[l] ??
+          rec[kLow] ??
+          rec[lLow] ??
+          rec[k.replace(/ /g, "_").toLowerCase()] ??
+          rec[l.replace(/ /g, "_").toLowerCase()];
         return val === undefined ? null : (val as any);
       });
     }
@@ -81,13 +138,13 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
   const thead = table.createTHead();
   const headerRow = thead.insertRow();
 
-  columns.forEach((col, idx) => {
+  normalizedCols.forEach((col, idx) => {
     const th = document.createElement("th");
     th.scope = "col";
     th.className = "canvas-th-sortable";
 
     const labelSpan = document.createElement("span");
-    labelSpan.textContent = col;
+    labelSpan.textContent = col.label;
 
     const sortIndicator = document.createElement("span");
     sortIndicator.className = "canvas-sort-indicator";
@@ -157,7 +214,7 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
     if (!displayRows.length) {
       const emptyTr = tbody.insertRow();
       const emptyTd = emptyTr.insertCell();
-      emptyTd.colSpan = columns.length;
+      emptyTd.colSpan = normalizedCols.length;
       emptyTd.className = "canvas-td-empty";
       emptyTd.textContent = "Tidak ada baris yang sesuai pencarian.";
       return;
@@ -187,8 +244,9 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
   });
 
   exportBtn.addEventListener("click", () => {
+    const title = spec.title || "tabel-ekspor";
     const csvLines = [
-      columns.map(c => `"${c.replace(/"/g, '""')}"`).join(","),
+      normalizedCols.map(c => `"${c.label.replace(/"/g, '""')}"`).join(","),
       ...displayRows.map(r =>
         (Array.isArray(r) ? r : [r]).map(cell => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")
       ),
@@ -197,7 +255,7 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${spec.title || "export"}.csv`;
+    a.download = `${title.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}-${Date.now()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   });

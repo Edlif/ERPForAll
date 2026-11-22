@@ -134,7 +134,7 @@ export function renderPivotTable(spec: PivotSpec): HTMLElement {
     const map = new Map<string, Record<string, unknown>[]>();
     for (const rec of records) {
       const g = resolveItemDimValue(rec, activeDimension);
-      if (filterText && !g.toLowerCase().includes(filterText)) {
+      if (filterText && !String(g).toLowerCase().includes(filterText)) {
         // Check if any measure value or other fields contain filterText
         const matchAny = Object.values(rec).some(v => String(v).toLowerCase().includes(filterText));
         if (!matchAny) continue;
@@ -189,7 +189,7 @@ export function renderPivotTable(spec: PivotSpec): HTMLElement {
     const blob = new Blob([csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `pivot-${activeDimension.toLowerCase()}-${Date.now()}.csv`;
+    link.download = `pivot-${String(activeDimension).toLowerCase()}-${Date.now()}.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
   }
