@@ -1,5 +1,5 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
-import { icon, type ClientActionEnvironment, type ClientActionHandle } from "@erpforall/client";
+import { type ClientActionEnvironment, type ClientActionHandle } from "@erpforall/client";
 import { assistantSession, readHistoryPolicy, type AssistantMessage } from "./assistant-session.js";
 import { createCanvasStage } from "./canvas/canvas-stage.js";
 import { renderReply } from "./presentation.js";
@@ -25,74 +25,15 @@ export async function workspace(env: ClientActionEnvironment): Promise<ClientAct
 
   const canvasStage = createCanvasStage(prompt => {
     chat.updateDock({ draft: prompt, mode: "expanded" });
-    env.run(() => chat.send(prompt));
-  });
-
-  const records = workspaceRecords(env, company);
-
-  // Full-page Studio wrapper with top mode switcher tabs
-  const studio = document.createElement("div");
-  studio.className = "ai-workspace-studio";
-
-  const modeBar = document.createElement("div");
-  modeBar.className = "ai-workspace-mode-bar";
-
-  const tabsGroup = document.createElement("div");
-  tabsGroup.className = "ai-workspace-tabs-group";
-
-  const canvasTab = document.createElement("button");
-  canvasTab.type = "button";
-  canvasTab.className = "ai-mode-btn active";
-  canvasTab.textContent = "Canvas Studio (BI & Analytics)";
-
-  const recordsTab = document.createElement("button");
-  recordsTab.type = "button";
-  recordsTab.className = "ai-mode-btn";
-  recordsTab.textContent = "Form Explorer";
-
-  tabsGroup.append(canvasTab, recordsTab);
-
-  const studioActions = document.createElement("div");
-  studioActions.className = "ai-workspace-top-actions";
-
-  const openDockBtn = document.createElement("button");
-  openDockBtn.type = "button";
-  openDockBtn.className = "erp-button erp-button-secondary ai-btn-dock-focus";
-  openDockBtn.append(icon("message-square"), document.createTextNode(" Chat Assistant"));
-  openDockBtn.addEventListener("click", () => {
-    chat.updateDock({ mode: "expanded" });
     const dockEl = document.getElementById("ai-assistant-dock");
     if (dockEl) {
       dockEl.hidden = false;
       dockEl.querySelector("textarea")?.focus();
     }
+    env.run(() => chat.send(prompt));
   });
 
-  studioActions.append(openDockBtn);
-  modeBar.append(tabsGroup, studioActions);
-
-  const stageViewport = document.createElement("div");
-  stageViewport.className = "ai-workspace-stage-viewport";
-
-  // Canvas stage active by default, records explorer secondary
-  records.node.classList.add("hidden-mode");
-  stageViewport.append(canvasStage.node, records.node);
-
-  canvasTab.addEventListener("click", () => {
-    canvasTab.classList.add("active");
-    recordsTab.classList.remove("active");
-    canvasStage.node.classList.remove("hidden-mode");
-    records.node.classList.add("hidden-mode");
-  });
-
-  recordsTab.addEventListener("click", () => {
-    recordsTab.classList.add("active");
-    canvasTab.classList.remove("active");
-    records.node.classList.remove("hidden-mode");
-    canvasStage.node.classList.add("hidden-mode");
-  });
-
-  studio.append(modeBar, stageViewport);
+  const records = workspaceRecords(env, company);
 
   // Accessible off-screen transcript kept for screen readers and automated test inspection
   const hiddenTranscript = document.createElement("div");
@@ -143,7 +84,7 @@ export async function workspace(env: ClientActionEnvironment): Promise<ClientAct
     }
   }
 
-  shell.append(studio, hiddenTranscript);
+  shell.append(canvasStage.node, hiddenTranscript);
   env.host.append(shell);
   render();
 

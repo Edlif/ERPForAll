@@ -1,6 +1,6 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { renderBarChart, renderDonutChart } from "../src/canvas/canvas-chart.js";
+import { renderBarChart, renderDonutChart, renderLineChart } from "../src/canvas/canvas-chart.js";
 import { renderRichTable } from "../src/canvas/canvas-table.js";
 import { renderWorkflowFlow } from "../src/canvas/canvas-flow.js";
 import { renderSimulation } from "../src/canvas/canvas-simulation.js";
@@ -325,5 +325,126 @@ describe("Canvas Visual Components", () => {
     const cells = Array.from(el.querySelectorAll("tbody td"), td => td.textContent?.trim());
     expect(cells).toContain("Deco Addict");
     expect(cells).toContain("Azure Interior");
+  });
+
+  test("renderLineChart renders smooth SVG path with circles and text badges", () => {
+    const el = renderLineChart({
+      title: "Tren Penjualan Bulanan",
+      series: [
+        { label: "Jan", value: 100 },
+        { label: "Feb", value: 150 },
+        { label: "Mar", value: 200 },
+      ],
+      unit: "Juta",
+    });
+    document.body.append(el);
+
+    const svg = el.querySelector("svg");
+    expect(svg).not.toBeNull();
+    const path = el.querySelector(".canvas-line-path");
+    expect(path).not.toBeNull();
+    const points = el.querySelectorAll(".canvas-line-point");
+    expect(points.length).toBe(3);
+
+    const textContent = el.textContent || "";
+    expect(textContent).toContain("Jan");
+    expect(textContent).toContain("Feb");
+    expect(textContent).toContain("Mar");
+  });
+
+  test("createCanvasStage supports visual mode switching across representations", () => {
+    const stage = createCanvasStage();
+    document.body.append(stage.node);
+
+    stage.renderArtifact({
+      canvas_type: "chart",
+      title: "Performa Sales",
+      data: {
+        series: [
+          { label: "Produk A", value: 50 },
+          { label: "Produk B", value: 80 },
+        ],
+      },
+    });
+
+    const card = stage.node.querySelector(".canvas-card-item")!;
+    expect(card).not.toBeNull();
+    // Default initial mode is bar
+    expect(card.querySelector(".canvas-bar-chart")).not.toBeNull();
+
+    // Switch to Line
+    const lineBtn = card.querySelector<HTMLButtonElement>('.canvas-btn-switch[data-mode="line"]')!;
+    expect(lineBtn).not.toBeNull();
+    lineBtn.click();
+    expect(card.querySelector(".canvas-line-chart")).not.toBeNull();
+
+    // Switch to Donut
+    const donutBtn = card.querySelector<HTMLButtonElement>('.canvas-btn-switch[data-mode="donut"]')!;
+    expect(donutBtn).not.toBeNull();
+    donutBtn.click();
+    expect(card.querySelector(".canvas-donut-chart")).not.toBeNull();
+
+    // Switch to Pivot
+    const pivotBtn = card.querySelector<HTMLButtonElement>('.canvas-btn-switch[data-mode="pivot"]')!;
+    expect(pivotBtn).not.toBeNull();
+    pivotBtn.click();
+    expect(card.querySelector(".canvas-pivot-table")).not.toBeNull();
+
+    // Switch to Table
+    const tableBtn = card.querySelector<HTMLButtonElement>('.canvas-btn-switch[data-mode="table"]')!;
+    expect(tableBtn).not.toBeNull();
+    tableBtn.click();
+    expect(card.querySelector(".canvas-data-table")).not.toBeNull();
+
+    stage.dispose();
+  });
+
+  test("createCanvasStage card supports HTML5 drag-and-drop attributes and close button", () => {
+    const stage = createCanvasStage();
+    document.body.append(stage.node);
+
+    stage.renderArtifact({
+      canvas_type: "chart",
+      title: "Kartu 1",
+      data: { series: [{ label: "X", value: 10 }] },
+    });
+
+    const card = stage.node.querySelector(".canvas-card-item")!;
+    expect(card.getAttribute("draggable")).toBe("true");
+    expect(card.querySelector(".canvas-drag-handle")).not.toBeNull();
+
+    // Close button removes card and restores blank state
+    const closeBtn = card.querySelector<HTMLButtonElement>(".canvas-card-btn-close")!;
+    expect(closeBtn).not.toBeNull();
+    closeBtn.click();
+
+    expect(stage.node.querySelector(".canvas-blank-state")).not.toBeNull();
+    stage.dispose();
+  });
+
+  test("createCanvasStage renders contextual follow-up chips and triggers callback", () => {
+    let selectedPrompt = "";
+    const stage = createCanvasStage(p => {
+      selectedPrompt = p;
+    });
+    document.body.append(stage.node);
+
+    stage.renderArtifact({
+      canvas_type: "chart",
+      title: "5 Customer Terloyal",
+      data: { series: [{ label: "Deco Addict", value: 100 }] },
+    });
+
+    const followups = stage.node.querySelectorAll<HTMLButtonElement>(".canvas-followup-chip");
+    expect(followups.length).toBeGreaterThanOrEqual(1);
+
+    followups[0]!.click();
+    expect(selectedPrompt.length).toBeGreaterThan(0);
+
+    // Query details present
+    expect(stage.node.querySelector(".canvas-query-details")).not.toBeNull();
+    expect(stage.node.textContent).toContain("Logika Query ERP & Agregasi");
+
+    stage.dispose();
   });
 });

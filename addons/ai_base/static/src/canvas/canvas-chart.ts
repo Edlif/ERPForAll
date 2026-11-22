@@ -19,17 +19,16 @@ function formatNum(val: number, unit?: string): string {
 }
 
 const COLORS = [
-  "var(--accent, #1a73e8)",
-  "var(--success, #1e8e3e)",
-  "var(--warning, #f9ab00)",
-  "var(--danger, #d93025)",
-  "#9c27b0",
-  "#00bcd4",
-  "#ff9800",
-  "#795548",
+  "var(--accent)",
+  "var(--success)",
+  "var(--warning)",
+  "var(--danger)",
+  "var(--group-text)",
+  "var(--selected-text)",
+  "var(--focus)",
 ];
 
-function normalizeSeries(input: unknown): ChartPoint[] {
+export function normalizeSeries(input: unknown): ChartPoint[] {
   if (Array.isArray(input)) {
     return input.map((item, idx) => {
       if (typeof item === "object" && item !== null) {
@@ -130,6 +129,103 @@ export function renderBarChart(spec: ChartSpec): HTMLElement {
     rect.append(titleEl);
 
     svg.append(rect, textVal, textLabel);
+  });
+
+  container.append(svg);
+  return container;
+}
+
+/**
+ * Render an interactive SVG Trend Line Chart.
+ */
+export function renderLineChart(spec: ChartSpec): HTMLElement {
+  const container = document.createElement("div");
+  container.className = "canvas-chart canvas-line-chart";
+
+  const series = normalizeSeries(spec.series);
+  const unit = spec.unit;
+  if (!series.length) {
+    container.textContent = "Tidak ada data untuk ditampilkan.";
+    return container;
+  }
+
+  const maxValue =
+    Math.max(...series.map(s => (Number.isFinite(s.value) ? Math.abs(s.value) : 0))) || 1;
+  const height = 240;
+  const stepX = Math.max(64, Math.floor(480 / Math.max(1, series.length - 1)));
+  const svgWidth = Math.max(500, (series.length - 1) * stepX + 120);
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${svgWidth} ${height + 60}`);
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "100%");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", spec.title || "Grafik Tren");
+
+  // Grid line at 0
+  const baseLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  baseLine.setAttribute("x1", "40");
+  baseLine.setAttribute("y1", String(height));
+  baseLine.setAttribute("x2", String(svgWidth - 20));
+  baseLine.setAttribute("y2", String(height));
+  baseLine.setAttribute("stroke", "var(--line)");
+  baseLine.setAttribute("stroke-width", "1");
+  svg.append(baseLine);
+
+  const points = series.map((point, i) => {
+    const x = 60 + i * stepX;
+    const val = Number.isFinite(point.value) ? Math.abs(point.value) : 0;
+    const pointHeight = Math.max(4, Math.round((val / maxValue) * (height - 40)));
+    const y = height - pointHeight;
+    return { x, y, point };
+  });
+
+  if (points.length > 1) {
+    const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+    const linePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    linePath.setAttribute("d", pathD);
+    linePath.setAttribute("fill", "none");
+    linePath.setAttribute("stroke", "var(--accent)");
+    linePath.setAttribute("stroke-width", "3");
+    linePath.setAttribute("stroke-linecap", "round");
+    linePath.setAttribute("stroke-linejoin", "round");
+    linePath.classList.add("canvas-line-path");
+    svg.append(linePath);
+  }
+
+  points.forEach(({ x, y, point }, i) => {
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", String(x));
+    circle.setAttribute("cy", String(y));
+    circle.setAttribute("r", "5");
+    circle.setAttribute("fill", point.color || COLORS[i % COLORS.length] || "var(--accent)");
+    circle.setAttribute("stroke", "var(--surface)");
+    circle.setAttribute("stroke-width", "2");
+    circle.classList.add("canvas-line-point");
+
+    const textVal = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    textVal.setAttribute("x", String(x));
+    textVal.setAttribute("y", String(y - 10));
+    textVal.setAttribute("text-anchor", "middle");
+    textVal.setAttribute("font-size", "11");
+    textVal.setAttribute("font-weight", "600");
+    textVal.setAttribute("fill", "var(--text)");
+    textVal.textContent = formatNum(point.value, unit);
+
+    const textLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    textLabel.setAttribute("x", String(x));
+    textLabel.setAttribute("y", String(height + 20));
+    textLabel.setAttribute("text-anchor", "middle");
+    textLabel.setAttribute("font-size", "11");
+    textLabel.setAttribute("fill", "var(--muted)");
+    const shortLabel = point.label.length > 16 ? point.label.slice(0, 15) + "…" : point.label;
+    textLabel.textContent = shortLabel;
+
+    const titleEl = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    titleEl.textContent = `${point.label}: ${formatNum(point.value, unit)}`;
+    circle.append(titleEl);
+
+    svg.append(circle, textVal, textLabel);
   });
 
   container.append(svg);
