@@ -239,6 +239,14 @@ SELECT NOT has_schema_privilege('public','USAGE') OR EXISTS (
         WHEN c.relkind='S' AND c.relname=ANY($2::text[]) THEN has_sequence_privilege(c.oid,'USAGE,SELECT,UPDATE')
         WHEN c.relkind IN ('r','p') AND c.oid IN (SELECT oid FROM restricted) THEN FALSE
         WHEN c.relkind='S' AND EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_class t ON t.oid=d.refobjid WHERE d.classid='pg_catalog.pg_class'::regclass AND d.refclassid='pg_catalog.pg_class'::regclass AND d.objid=c.oid AND d.deptype IN ('a','i') AND t.relnamespace=n.oid AND t.oid IN (SELECT oid FROM restricted)) THEN FALSE
+        WHEN c.relkind IN ('r','p') AND c.relname = 'ai_session'
+        THEN NOT (has_table_privilege(c.oid,'SELECT') AND has_table_privilege(c.oid,'INSERT') AND has_table_privilege(c.oid,'UPDATE'))
+            OR has_table_privilege(c.oid,'DELETE') OR has_table_privilege(c.oid,'TRUNCATE') OR has_table_privilege(c.oid,'REFERENCES') OR has_table_privilege(c.oid,'TRIGGER')
+            OR has_any_column_privilege(c.oid,'REFERENCES')
+        WHEN c.relkind IN ('r','p') AND (c.relname IN ('ai_session_event','ai_context_cache') OR c.relname LIKE 'ai_session_event_p%' OR c.relname LIKE 'ai_context_cache_p%')
+        THEN NOT (has_table_privilege(c.oid,'SELECT') AND has_table_privilege(c.oid,'INSERT'))
+            OR has_table_privilege(c.oid,'UPDATE') OR has_table_privilege(c.oid,'DELETE') OR has_table_privilege(c.oid,'TRUNCATE') OR has_table_privilege(c.oid,'REFERENCES') OR has_table_privilege(c.oid,'TRIGGER')
+            OR has_any_column_privilege(c.oid,'UPDATE') OR has_any_column_privilege(c.oid,'REFERENCES')
         WHEN c.relkind IN ('r','p') AND c.relname IN ('installed_addon_identity','installed_addon_identity_audit','erp_node_feature','erp_node_feature_digest')
         THEN has_table_privilege(c.oid,'SELECT') OR has_table_privilege(c.oid,'INSERT')
             OR has_table_privilege(c.oid,'UPDATE') OR has_table_privilege(c.oid,'DELETE')
@@ -254,6 +262,7 @@ SELECT NOT has_schema_privilege('public','USAGE') OR EXISTS (
              'ir_module_wasm_audit','ir_module_package','erp_transient_vacuum_state','erp_schema_generated','erp_translated_verified',
              'erp_schema_sql_object','erp_schema_sql_object_dependency',
              'erp_node','erp_node_detail','erp_node_rollout','erp_node_feature','erp_node_feature_digest','installed_addon_identity','installed_addon_identity_audit',
+             'ai_session','ai_session_event','ai_context_cache',
              'ir_ui_asset_blob','ir_ui_asset_bundle','uom_reference_fence','uom_reference_use',
              'erp_job','erp_job_run','erp_job_item_failure','ir_blob_store','ir_blob_owner_identity','ir_blob_owner_state','ir_blob_peer_probe','ir_blob_owner_claim','ir_blob_owner_recovery',
              'ir_blob','ir_blob_inline','ir_blob_upload','ir_blob_usage_base','ir_blob_usage_delta','ir_attachment_pending_guard')
@@ -848,6 +857,60 @@ async fn grant_runtime_with_registry(
     tx.reconcile_sql_object_grants(registry, &options).await?;
     crate::sql_object_publication::grant_ordinary(tx, role, registry).await?;
     tx.batch(&format!("REVOKE ALL ON erp_module_install_audit FROM {role_sql}; REVOKE ALL ON SEQUENCE erp_module_install_audit_id_seq FROM {role_sql}")).await?;
+    // Assistant sessions (5): the event log is append-only (SELECT, INSERT, no
+    // UPDATE or DELETE) and the session row has no DELETE; the blanket grant above gave both
+    // tables full CRUD, so narrow them when the addon is installed. A half-present schema is a
+    // defect, never silently narrowed. This runs on every publication path (module install,
+    // upgrade and `erp db publish-grants`), so the narrowed sets exist before any admission
+    // verification.
+    let sessions = tx
+        .query(
+            "SELECT to_regclass('public.ai_session') IS NOT NULL, \
+             to_regclass('public.ai_session_event') IS NOT NULL",
+            &[],
+        )
+        .await?;
+    let [sessions] = sessions.as_slice() else {
+        return Err(
+            erp_fields::Error::programming("assistant session schema state missing").into(),
+        );
+    };
+    let decode = |column| {
+        sessions.try_get(column).map_err(|source| {
+            erp_fields::Error::programming("Invalid assistant session schema state")
+                .with_source(source)
+        })
+    };
+    match (decode(0)?, decode(1)?) {
+        (false, false) => {}
+        (true, true) => erp_addon_ai_base::session::publish_runtime_grants(tx, role).await?,
+        (true, false) | (false, true) => {
+            return Err(failed(
+                "assistant session schema is incomplete; operator recovery is required",
+            ));
+        }
+    }
+    // Assistant context cache: the runtime role may only insert exchanges and read
+    // them back for the owner-filtered bookkeeping path; the blanket grant above gave full CRUD,
+    // so narrow it when the table exists. Unlike the sessions, a missing table is the pre-install
+    // state and is simply left alone.
+    let cache = tx
+        .query(
+            "SELECT to_regclass('public.ai_context_cache') IS NOT NULL",
+            &[],
+        )
+        .await?;
+    let [cache] = cache.as_slice() else {
+        return Err(
+            erp_fields::Error::programming("assistant context cache schema state missing").into(),
+        );
+    };
+    if cache
+        .try_get(0)
+        .map_err(|_| failed("invalid assistant context cache schema state"))?
+    {
+        erp_addon_ai_base::context_cache::publish_runtime_grants(tx, role).await?;
+    }
     // The validation marks may not exist until a translated model is first synchronized.
     let marks = tx
         .query(

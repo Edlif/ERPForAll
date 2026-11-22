@@ -3,6 +3,7 @@ import { icon, type Command, type IconName, type SystrayEnvironment } from "@erp
 
 import { renderReply } from "./presentation.js";
 import { assistantSession, readHistoryPolicy, type AssistantSession, type AssistantMessage } from "./assistant-session.js";
+import { sessionPanel, type SessionPanelHandle } from "./session-panel.js";
 
 function control(label: string, glyph: IconName, style: string): HTMLButtonElement {
   const button = document.createElement("button");
@@ -55,9 +56,13 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
   const header = document.createElement("header");
   const title = document.createElement("h2");
   title.textContent = "AI Assistant";
+  const sessionsButton = control("Sessions", "book-open", "icon-button ai-chat-sessions-trigger");
+  sessionsButton.hidden = true;
+  sessionsButton.setAttribute("aria-expanded", "false");
+  sessionsButton.setAttribute("aria-controls", "ai-session-panel");
   const fold = control("Minimize chat", "chevron-down", "icon-button");
   const close = control("Close chat", "x", "icon-button");
-  header.append(icon("message-square"), title, fold, close);
+  header.append(icon("message-square"), title, sessionsButton, fold, close);
 
   const thread = document.createElement("div");
   thread.className = "ai-chat-thread";
@@ -81,6 +86,16 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
   form.append(hint, compose);
   dock.append(header, thread, form);
 
+  // The session panel replaces the thread and form while it is open; the fold hides both surfaces.
+  let panel: SessionPanelHandle | undefined;
+  let panelOpen = false;
+  let minimized = false;
+  const renderViews = () => {
+    thread.hidden = form.hidden = panelOpen || minimized;
+    if (panel) panel.node.hidden = !panelOpen || minimized;
+    sessionsButton.setAttribute("aria-expanded", String(panelOpen && !minimized));
+  };
+
   const ready = async () => {
     if (typeof company !== "number" || !Number.isSafeInteger(company) || company <= 0 || !token) return;
     const response = await request("/erp/ai/assistant/status", {
@@ -94,6 +109,7 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
     if (lifetime.signal.aborted || !data["available"]) return;
     session = assistantSession(env.rpc ?? request, company, token, { ...(env.userId !== undefined && { userId: env.userId }), request, history: readHistoryPolicy(data["history"]) });
     trigger.hidden = false;
+    sessionsButton.hidden = !env.rpc;
     unsubscribeDraft = session.subscribeDraft(text => {
       if (input.value !== text) input.value = text;
       hint.textContent = session?.persistenceWarning || "This tab’s recent conversation is sent with each question so the assistant keeps the context.";
@@ -117,24 +133,66 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
   const expand = (focus = true) => {
     if (!dock.isConnected) document.body.append(dock);
     dock.hidden = false;
-    thread.hidden = form.hidden = false;
+    minimized = false;
     fold.setAttribute("aria-label", "Minimize chat");
     fold.title = "Minimize chat";
     fold.setAttribute("aria-expanded", "true");
     trigger.setAttribute("aria-expanded", "true");
-    if (focus) { input.focus(); session?.updateDock({ mode: "expanded" }); }
+    renderViews();
+    if (focus) {
+      if (panelOpen) panel?.node.querySelector<HTMLInputElement>(".ai-session-search")?.focus();
+      else input.focus();
+      session?.updateDock({ mode: "expanded" });
+    }
   };
   const minimize = (focus = true) => {
-    thread.hidden = form.hidden = true;
+    minimized = true;
     fold.setAttribute("aria-label", "Expand chat");
     fold.title = "Expand chat";
     fold.setAttribute("aria-expanded", "false");
     trigger.setAttribute("aria-expanded", "false");
+    renderViews();
     if (focus) { fold.focus(); session?.updateDock({ mode: "minimized" }); }
   };
+  const closePanel = () => {
+    if (!panelOpen) return;
+    panelOpen = false;
+    renderViews();
+    input.focus();
+  };
+  const openPanel = () => {
+    if (!env.rpc || !session) return;
+    if (!panel) {
+      panel = sessionPanel({
+        rpc: env.rpc,
+        context: env.context,
+        onResume: () => closePanel(),
+        onClose: () => closePanel(),
+      });
+    }
+    if (!panel.node.isConnected) dock.insertBefore(panel.node, form);
+    panelOpen = true;
+    minimized = false;
+    renderViews();
+    fold.setAttribute("aria-label", "Minimize chat");
+    fold.title = "Minimize chat";
+    fold.setAttribute("aria-expanded", "true");
+    trigger.setAttribute("aria-expanded", "true");
+    panel.node.querySelector<HTMLInputElement>(".ai-session-search")?.focus();
+    session.updateDock({ mode: "expanded" });
+  };
+  sessionsButton.onclick = () => { if (panelOpen) closePanel(); else openPanel(); };
   trigger.onclick = () => { if (dock.hidden || form.hidden) expand(); else minimize(); };
-  fold.onclick = () => { if (form.hidden) expand(); else minimize(); };
-  close.onclick = () => { session?.updateDock({ mode: "closed" }); dock.hidden = true; trigger.setAttribute("aria-expanded", "false"); trigger.focus(); };
+  fold.onclick = () => { if (form.hidden && !panelOpen) expand(); else if (panelOpen && minimized) expand(); else minimize(); };
+  close.onclick = () => {
+    panelOpen = false;
+    panel?.dispose();
+    panel = undefined;
+    session?.updateDock({ mode: "closed" });
+    dock.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.focus();
+  };
   dock.addEventListener("keydown", event => {
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close.click(); }
   });
@@ -249,5 +307,5 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
     void session.send(prompt);
     thread.scrollTop = thread.scrollHeight;
   });
-  return { node: trigger, dispose() { lifetime.abort(); unsubscribe?.(); unsubscribeDraft?.(); dock.remove(); trigger.remove(); } };
+  return { node: trigger, dispose() { lifetime.abort(); panel?.dispose(); unsubscribe?.(); unsubscribeDraft?.(); dock.remove(); trigger.remove(); } };
 }

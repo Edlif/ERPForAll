@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native assistant composition with multi-turn tool calling, live data aggregation, and canvas staging.
 use crate::assistant_read;
-use erp_addon_ai_base::{canvas, catalog, config::Credentials, ledger, routing};
+use erp_addon_ai_base::{canvas, catalog, config::Credentials, context_cache, ledger, routing};
 use erp_fields::{Error, Result, Value};
 use erp_orm::{BoxFuture, CompanyId, Context, CredentialOptions};
 use erp_rpc::RpcService;
@@ -262,6 +262,22 @@ impl WebAssistant for TextAssistant {
             let mut final_text = String::new();
             let mut staged_canvas: Option<Json> = None;
 
+            // AI1.CONTEXT-CACHE (1): every provider exchange below is recorded for
+            // the running session. The turn loop does not yet receive a session id; the
+            // turn-to-session wiring (and the event log's turn id) arrives with AI1.ASSIST-TURN,
+            // so the branch in the loop is inert until then.
+            let ai_session: Option<i64> = None;
+            let turn_id: Option<erp_sdk::Uuid> = match ai_session {
+                Some(_) => match context_cache::new_turn_id() {
+                    Ok(id) => Some(id),
+                    Err(error) => {
+                        tracing::warn!(%error, "assistant context cache could not generate a turn id");
+                        None
+                    }
+                },
+                None => None,
+            };
+
             const MAX_TURNS: usize = 6;
             for _turn_idx in 0..MAX_TURNS {
                 let req = ToolTurnRequest::new(route.model(), messages.clone(), tools.clone())
@@ -287,6 +303,58 @@ impl WebAssistant for TextAssistant {
                 total_completion_tokens = total_completion_tokens
                     .saturating_add(u64::from(reply.usage().completion_tokens));
                 last_model = reply.usage().model.clone();
+
+                // AI1.CONTEXT-CACHE (1): record this exchange's bytes and prefix
+                // hash for the session. The request is re-encoded with the same deterministic
+                // inputs the transport sent; the turn carries no labelled data yet, so the
+                // bytes are identical to what the provider received. The stable prefix is the
+                // instruction template today; the assembled prefix (template, tool list, skill
+                // index, memory,.2) replaces these bytes with AI1.ASSIST-TURN. The
+                // raw response body is not exposed by the transport yet and is recorded when
+                // the turn wiring lands.
+                if let (Some(session_id), Some(turn_id)) = (ai_session, turn_id) {
+                    let request_bytes = route
+                        .request_encoder()
+                        .ok()
+                        .and_then(|encoder| encoder.encode(&req).ok())
+                        .and_then(|value| serde_json::to_vec(&value).ok());
+                    if let Some(request_bytes) = request_bytes {
+                        let round = i32::try_from(_turn_idx)
+                            .ok()
+                            .and_then(|index| index.checked_add(1))
+                            .ok_or_else(|| {
+                                Error::programming("assistant round index cannot be represented")
+                            })?;
+                        let prefix = ASSISTANT_SYSTEM_PROMPT.as_bytes().to_vec();
+                        let input_tokens = i64::from(reply.usage().prompt_tokens);
+                        let output_tokens = i64::from(reply.usage().completion_tokens);
+                        let recorded = auth
+                            .orm()
+                            .run(user, Context::new(), async move |tx| {
+                                let exchange = context_cache::Exchange {
+                                    turn_id,
+                                    round,
+                                    prefix: &prefix,
+                                    request: &request_bytes,
+                                    response: None,
+                                    input_tokens: Some(input_tokens),
+                                    output_tokens: Some(output_tokens),
+                                };
+                                context_cache::record_exchange(tx, session_id, &exchange).await
+                            })
+                            .await;
+                        if let Err(error) = recorded {
+                            tracing::warn!(
+                                %error, session_id, round,
+                                "assistant context cache refused this exchange"
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            "assistant context cache could not re-encode the sent request"
+                        );
+                    }
+                }
 
                 messages.push(
                     TurnMessage::new(TurnRole::Assistant, reply.parts().to_vec())

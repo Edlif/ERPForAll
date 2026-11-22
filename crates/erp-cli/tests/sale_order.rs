@@ -1103,3 +1103,45 @@ fn the_base_upgrade_adds_the_partner_salesperson_column() {
         tx.rollback().await.unwrap();
     });
 }
+
+/// The sale order form opts its lines into the client's inline add (the x2many widget reads
+/// `context={'inline_search_field': 'product_id'}` on the field): "Add a line" opens the inline
+/// product search on the embedded list, the same mechanism the purchase order form uses,
+/// instead of only the line form dialog.
+#[test]
+fn sale_order_form_offers_inline_line_entry_like_purchase_orders() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let orm = install(&db).await;
+        let mut setup = orm.begin(SUPERUSER_ID).await.unwrap();
+        admin(&mut setup).await;
+        let salesman = user(&mut setup, "inline-salesman", "group_sale_salesman").await;
+        setup.commit().await.unwrap();
+        drop(setup);
+        let secured = policy_orm(&db, &orm).await;
+        let mut tx = secured
+            .begin(erp_sdk::UserId::new(salesman).unwrap())
+            .await
+            .unwrap();
+        let requests = ["list", "form"]
+            .into_iter()
+            .map(|kind| Value::list([Value::False, Value::str(kind)]))
+            .collect();
+        let views = erp_addon_web::metadata_test_support::test_get_views(
+            &tx.env(),
+            &mut tx,
+            "sale.order",
+            requests,
+            32 * 1024 * 1024,
+        )
+        .await
+        .expect("the served sale.order views");
+        let text = serde_json::to_string(&views).unwrap();
+        assert!(
+            text.contains("\"inline_search_field\""),
+            "the served sale.order form must pass inline_search_field=product_id on its order_line field: {text}"
+        );
+        tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
+    });
+}

@@ -62,3 +62,80 @@
   .ai-chat-dock:not([hidden]) { animation: ai-chat-open var(--motion-fast) ease-out; }
   @keyframes ai-chat-open { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 }
+
+/* Session panel (AI1.SESSION-VIEW / AI1.SESSION-LIST.WEB): the panel replaces the thread and form. */
+.ai-session-panel {
+  display: flex; flex-direction: column; flex: 1; min-height: 0;
+  overflow: hidden;
+}
+.ai-session-head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 6px;
+  background: var(--surface-subtle); border-bottom: 1px solid var(--line);
+}
+.ai-session-head h2 { margin: 0; flex: 1; font-size: 15px; font-weight: 600; }
+.ai-session-toolbar {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.ai-session-search {
+  font: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--input-line); border-radius: var(--radius-control); padding: 6px 9px;
+}
+.ai-session-archived-toggle {
+  display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted);
+}
+.ai-session-status { margin: 8px 14px 0; font-size: 12px; color: var(--muted); }
+.ai-session-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding-bottom: 8px; }
+.ai-session-group h3 {
+  margin: 0; padding: 10px 14px 6px; font-size: 12px; font-weight: 600; color: var(--muted);
+}
+.ai-session-list { list-style: none; margin: 0; padding: 0; }
+.ai-session-row {
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.ai-session-row:hover { background: var(--hover); }
+.ai-session-row.is-active { background: var(--selected); }
+.ai-session-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ai-session-title {
+  font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 0;
+  text-align: start; padding: 0; min-height: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer;
+}
+.ai-session-row.is-active .ai-session-title { color: var(--selected-text); font-weight: 600; }
+.ai-session-title:hover { color: var(--accent); }
+.ai-session-meta {
+  margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 12px; color: var(--muted);
+}
+.ai-session-time { font-variant-numeric: tabular-nums; }
+.ai-session-badge {
+  padding: 0 6px; border: 1px solid var(--line); border-radius: var(--radius-control);
+  font-size: 11px;
+}
+.ai-session-anchor { display: inline-flex; align-items: center; gap: 4px; }
+.ai-session-anchor svg { width: 13px; height: 13px; }
+.ai-session-anchor-missing { color: var(--muted); }
+.ai-session-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.ai-session-actions .icon-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; min-height: 0; padding: 0;
+  border: 0; border-radius: var(--radius-control);
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.ai-session-actions .icon-button:hover { background: var(--hover); color: var(--text); }
+.ai-session-actions .icon-button svg { width: 15px; height: 15px; }
+.ai-session-actions .ai-session-delete-confirm {
+  width: auto; height: 24px; min-height: 0; display: inline-flex; align-items: center; gap: 4px;
+  padding: 0 8px; font-size: 12px; color: var(--danger); border: 1px solid var(--danger-line);
+  border-radius: var(--radius-control); background: var(--danger-bg);
+}
+.ai-session-actions .ai-session-delete-confirm svg { width: 13px; height: 13px; }
+.ai-session-actions .ai-session-delete-confirm:hover { background: var(--danger-bg); border-color: var(--danger); }
+.ai-session-empty { padding: 24px 16px; display: flex; flex-direction: column; gap: 6px; }
+.ai-session-empty p { margin: 0; font-size: 13px; color: var(--muted); }
+.ai-session-empty .ai-session-empty-hint { font-size: 12px; }
+.ai-session-error { padding: 24px 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.ai-session-error p { margin: 0; font-size: 13px; color: var(--danger); }
+/* The panel clips its rows at the dock edge; an inset ring stays visible there. */
+.ai-session-panel button:focus-visible, .ai-session-panel input:focus-visible { outline-offset: -2px; }

@@ -183,7 +183,7 @@ The total with taxes and
           </group>
           <notebook>
             <page string="Order Lines" name="order_lines">
-              <field name="order_line" readonly="locked or state == 'cancel'"/>
+              <field name="order_line" context="{'inline_search_field': 'product_id'}" readonly="locked or state == 'cancel'"/>
               <group name="note_group">
                 <group>
                   <field name="note"/>
