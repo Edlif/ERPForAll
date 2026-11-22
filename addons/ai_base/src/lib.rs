@@ -2,6 +2,8 @@
 //! AI provider configuration, explicit company routing and offline request encoding.
 erp_sdk::addon!(name = "ai_base", depends = ["base"], exact_only = true);
 
+pub mod aggregate;
+pub mod canvas;
 pub mod catalog;
 pub mod config;
 pub mod encoding;

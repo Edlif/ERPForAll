@@ -1439,6 +1439,7 @@ pub(crate) fn serve(args: &ServerArgs) -> Result<()> {
                 .compose_current(true)
                 .await
                 .map_err(CliError::from)?;
+            assistant.set_rpc(rpc.clone());
             let app = WebApp::new_with_store(Arc::clone(&config), auth, asset_store)
                 .map_err(|e| failed(e.to_string()))?
                 .with_rpc(rpc)

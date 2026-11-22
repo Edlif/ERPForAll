@@ -3,6 +3,7 @@ export interface AssistantMessage {
   readonly role: "user" | "assistant";
   readonly text: string;
   readonly state: "ready" | "pending" | "error";
+  readonly canvas?: unknown;
 }
 
 export interface AssistantSession {
@@ -173,7 +174,8 @@ export function assistantSession(rpcKey: object, company: number, token: string,
           throw new Error(reason ? reason[0]!.toUpperCase() + reason.slice(1) : "The assistant could not return a reply.");
         }
         if (!record(data) || typeof data["text"] !== "string" || !data["text"].trim()) throw new Error("The provider returned an empty or invalid reply.");
-        reply = { role: "assistant", text: data["text"], state: "ready" };
+        const canvas = record(data) && data["canvas"] !== undefined ? data["canvas"] : undefined;
+        reply = { role: "assistant", text: data["text"], state: "ready", canvas };
       } catch (error) {
         reply = { role: "assistant", state: "error", text: error instanceof TypeError ? "Connection lost. The provider may already have processed this question."
           : error instanceof Error ? error.message : "The assistant could not return a reply." };

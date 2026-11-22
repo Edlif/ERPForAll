@@ -20,6 +20,8 @@ fn addons() -> PathBuf {
         .canonicalize()
         .unwrap()
 }
+#[path = "ai_config_install/aggregate_turn.rs"]
+mod aggregate_turn;
 #[path = "ai_config_install/find_models.rs"]
 mod find_models;
 #[allow(
