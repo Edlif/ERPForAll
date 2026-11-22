@@ -4,9 +4,11 @@ import { renderBarChart, renderDonutChart, type ChartSpec } from "./canvas-chart
 import { renderRichTable, type TableSpec } from "./canvas-table.js";
 import { renderWorkflowFlow, type FlowSpec } from "./canvas-flow.js";
 import { renderSimulation, type SimulationSpec } from "./canvas-simulation.js";
+import { renderPivotTable, type PivotSpec } from "./canvas-pivot.js";
+import { slides } from "../presentation.js";
 
 export type CanvasArtifact = {
-  canvas_type: "chart" | "table" | "flow" | "dashboard" | "simulation";
+  canvas_type: "chart" | "table" | "pivot" | "flow" | "dashboard" | "simulation" | "slides";
   title?: string;
   description?: string;
   data: unknown;
@@ -78,6 +80,7 @@ export function createCanvasStage(onPromptSelect?: (prompt: string) => void): Ca
   const chips = [
     { label: "5 Customer Terloyal", prompt: "Siapa 5 customer terloyal tahun ini? Tampilkan grafiknya di canvas." },
     { label: "Tren Omzet Bulanan", prompt: "Tampilkan omzet penjualan bulanan tahun ini dalam bentuk chart." },
+    { label: "Pivot Omzet & Status", prompt: "Tampilkan pivot table omzet penjualan per customer dan status pesanan." },
     { label: "Ringkasan Piutang Jatuh Tempo", prompt: "Tampilkan tabel ringkasan faktur piutang yang jatuh tempo." },
     { label: "Alur Siklus Pesanan", prompt: "Gambarkan alur proses dari penawaran harga hingga faktur terbayar." },
   ];
@@ -148,6 +151,27 @@ export function createCanvasStage(onPromptSelect?: (prompt: string) => void): Ca
         const rows = (data["rows"] as any[][]) || [];
         const tableSpec: TableSpec = { title, columns, rows };
         renderedContent = renderRichTable(tableSpec);
+        break;
+      }
+      case "pivot": {
+        const dims = (data["dimensions"] || data["dimension"] || data["groupby"] || data["group_by"]) as string[] | undefined;
+        const measures = data["measures"] as any[] | undefined;
+        const records = (data["records"] || data["groups"] || (Array.isArray(data) ? data : undefined)) as Record<string, unknown>[] | undefined;
+        const columns = (data["columns"] as string[]) || [];
+        const rows = (data["rows"] as any[][]) || [];
+        const pivotSpec: PivotSpec = {
+          title,
+          dimensions: Array.isArray(dims) ? dims : undefined,
+          measures: Array.isArray(measures) ? measures : undefined,
+          records: Array.isArray(records) ? records : undefined,
+          columns,
+          rows,
+        };
+        renderedContent = renderPivotTable(pivotSpec);
+        break;
+      }
+      case "slides": {
+        renderedContent = slides(data);
         break;
       }
       case "flow": {

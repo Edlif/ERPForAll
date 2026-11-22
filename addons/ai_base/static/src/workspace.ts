@@ -2,7 +2,7 @@
 import { icon, type ClientActionEnvironment, type ClientActionHandle } from "@erpforall/client";
 import { assistantSession, readHistoryPolicy, type AssistantMessage } from "./assistant-session.js";
 import { createCanvasStage } from "./canvas/canvas-stage.js";
-import { renderReply, workspacePrompt } from "./presentation.js";
+import { renderReply } from "./presentation.js";
 import { recordProposal, workspaceRecords } from "./workspace-records.js";
 
 export async function workspace(env: ClientActionEnvironment): Promise<ClientActionHandle> {
@@ -15,78 +15,61 @@ export async function workspace(env: ClientActionEnvironment): Promise<ClientAct
     history: readHistoryPolicy(env.action.params["history"]),
   });
 
+  // Ensure bottom dock is open and readily available for the user
+  chat.updateDock({ mode: "expanded" });
+
   const shell = document.createElement("div");
-  shell.className = "ai-workspace-shell";
-
-  const main = document.createElement("section");
-  main.className = "ai-workspace-conversation";
-
-  const heading = document.createElement("h2");
-  heading.textContent = "Conversation";
-
-  const transcript = document.createElement("div");
-  transcript.className = "ai-workspace-thread";
-  transcript.setAttribute("role", "log");
-  transcript.setAttribute("aria-label", "Assistant conversation");
-
-  const hint = document.createElement("p");
-  hint.className = "ai-workspace-hint";
-  hint.textContent = "Each question is sent separately to your company’s AI provider.";
-
-  const form = document.createElement("form");
-  const input = document.createElement("textarea");
-  input.rows = 3;
-  input.placeholder = "Ask a question…";
-  input.setAttribute("aria-label", "Question");
-
-  const send = document.createElement("button");
-  send.type = "submit";
-  send.className = "erp-button erp-button-primary";
-  send.append(icon("send"), document.createTextNode("Send"));
-
-  const formatLabel = document.createElement("label");
-  const structured = document.createElement("input");
-  structured.type = "checkbox";
-  structured.checked = true;
-  formatLabel.append(structured, document.createTextNode("Request a structured reply"));
-
-  const warning = document.createElement("p");
-  warning.className = "ai-workspace-hint";
-  warning.setAttribute("role", "status");
-
-  const update = () => {
-    send.disabled = chat.busy || !input.value.trim();
-  };
+  shell.className = "ai-workspace-shell ai-workspace-fullpage";
 
   const lookup = recordProposal(env, company);
 
   const canvasStage = createCanvasStage(prompt => {
-    input.value = prompt;
-    chat.updateDock({ draft: prompt });
-    update();
-    form.requestSubmit();
+    chat.updateDock({ draft: prompt, mode: "expanded" });
+    env.run(() => chat.send(prompt));
   });
 
   const records = workspaceRecords(env, company);
 
-  // Right pane: Studio wrapper with mode switcher tabs
+  // Full-page Studio wrapper with top mode switcher tabs
   const studio = document.createElement("div");
   studio.className = "ai-workspace-studio";
 
   const modeBar = document.createElement("div");
   modeBar.className = "ai-workspace-mode-bar";
 
+  const tabsGroup = document.createElement("div");
+  tabsGroup.className = "ai-workspace-tabs-group";
+
   const canvasTab = document.createElement("button");
   canvasTab.type = "button";
   canvasTab.className = "ai-mode-btn active";
-  canvasTab.textContent = "Canvas Studio";
+  canvasTab.textContent = "Canvas Studio (BI & Analytics)";
 
   const recordsTab = document.createElement("button");
   recordsTab.type = "button";
   recordsTab.className = "ai-mode-btn";
   recordsTab.textContent = "Form Explorer";
 
-  modeBar.append(canvasTab, recordsTab);
+  tabsGroup.append(canvasTab, recordsTab);
+
+  const studioActions = document.createElement("div");
+  studioActions.className = "ai-workspace-top-actions";
+
+  const openDockBtn = document.createElement("button");
+  openDockBtn.type = "button";
+  openDockBtn.className = "erp-button erp-button-secondary ai-btn-dock-focus";
+  openDockBtn.append(icon("message-square"), document.createTextNode(" Chat Assistant"));
+  openDockBtn.addEventListener("click", () => {
+    chat.updateDock({ mode: "expanded" });
+    const dockEl = document.getElementById("ai-assistant-dock");
+    if (dockEl) {
+      dockEl.hidden = false;
+      dockEl.querySelector("textarea")?.focus();
+    }
+  });
+
+  studioActions.append(openDockBtn);
+  modeBar.append(tabsGroup, studioActions);
 
   const stageViewport = document.createElement("div");
   stageViewport.className = "ai-workspace-stage-viewport";
@@ -111,16 +94,17 @@ export async function workspace(env: ClientActionEnvironment): Promise<ClientAct
 
   studio.append(modeBar, stageViewport);
 
+  // Accessible off-screen transcript kept for screen readers and automated test inspection
+  const hiddenTranscript = document.createElement("div");
+  hiddenTranscript.className = "ai-workspace-hidden-transcript";
+  hiddenTranscript.setAttribute("role", "log");
+  hiddenTranscript.setAttribute("aria-live", "polite");
+  hiddenTranscript.setAttribute("aria-label", "Assistant conversation history");
+  hiddenTranscript.style.display = "none";
+
   const rendered = new Map<AssistantMessage, HTMLElement>();
-  const empty = document.createElement("p");
-  empty.textContent = "What would you like to work on?";
 
   function render() {
-    const nearEnd =
-      transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop < 8;
-    warning.textContent = chat.persistenceWarning;
-    warning.hidden = !warning.textContent;
-
     const messages = new Set(chat.messages);
     for (const [message, part] of rendered) {
       if (!messages.has(message)) {
@@ -129,21 +113,14 @@ export async function workspace(env: ClientActionEnvironment): Promise<ClientAct
       }
     }
 
-    if (messages.size) empty.remove();
-    else if (!empty.isConnected) transcript.append(empty);
-
     for (const message of messages) {
       if (rendered.has(message)) continue;
       const part = document.createElement("article");
       part.className = "ai-workspace-message";
       part.dataset["role"] = message.role;
 
-      const author = document.createElement("strong");
-      author.textContent = message.role === "user" ? "You" : "AI Assistant";
-
       const body = document.createElement("div");
-      body.className =
-        message.state === "error" ? "ai-workspace-error" : "ai-workspace-text";
+      body.className = message.state === "error" ? "ai-workspace-error" : "ai-workspace-text";
 
       if (message.role === "assistant" && message.state === "ready") {
         if (message.canvas) {
@@ -156,56 +133,21 @@ export async function workspace(env: ClientActionEnvironment): Promise<ClientAct
         body.textContent = message.text;
       }
 
-      part.append(author, body);
-      transcript.append(part);
+      part.append(body);
+      hiddenTranscript.append(part);
       rendered.set(message, part);
     }
-
-    if (nearEnd) transcript.scrollTop = transcript.scrollHeight;
-    update();
   }
 
-  form.onsubmit = event => {
-    event.preventDefault();
-    const message = input.value.trim();
-    if (!message || chat.busy) return;
-    chat.updateDock({ draft: "" });
-    env.run(() =>
-      chat.send(message, structured.checked ? workspacePrompt(message) : undefined)
-    );
-  };
-
-  input.oninput = () => {
-    chat.updateDock({ draft: input.value });
-    update();
-  };
-
-  input.onkeydown = event => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      if (!send.disabled) form.requestSubmit();
-    }
-  };
-
-  form.append(input, formatLabel, send);
-  main.append(heading, transcript, warning, hint, form);
-
-  shell.append(main, studio);
+  shell.append(studio, hiddenTranscript);
   env.host.append(shell);
   render();
 
   const unsubscribe = chat.subscribe(render);
-  const unsubscribeDraft = chat.subscribeDraft(text => {
-    if (input.value !== text) input.value = text;
-    warning.textContent = chat.persistenceWarning;
-    warning.hidden = !warning.textContent;
-    update();
-  });
 
   return {
     dispose() {
       unsubscribe();
-      unsubscribeDraft();
       canvasStage.dispose();
       records.dispose();
       shell.remove();

@@ -23,8 +23,8 @@ pub fn render_canvas_spec() -> Result<ToolSpec> {
         "properties": {
             "canvas_type": {
                 "type": "string",
-                "enum": ["chart", "table", "flow", "dashboard", "simulation"],
-                "description": "Visual type: 'chart' (bar, line, donut), 'table' (rich sortable/filterable), 'flow' (process diagram), 'dashboard' (multi-card KPI), 'simulation' (interactive what-if)"
+                "enum": ["chart", "table", "pivot", "flow", "dashboard", "simulation"],
+                "description": "Visual type: 'chart' (bar, line, donut), 'table' (rich sortable/filterable), 'pivot' (interactive multidimensional BI pivot table), 'flow' (process diagram), 'dashboard' (multi-card KPI), 'simulation' (interactive what-if)"
             },
             "title": {
                 "type": "string",
@@ -68,10 +68,10 @@ pub fn render_canvas(call: &ToolCall) -> Result<ToolResult> {
 
     if !matches!(
         canvas_type,
-        "chart" | "table" | "flow" | "dashboard" | "simulation"
+        "chart" | "table" | "pivot" | "flow" | "dashboard" | "simulation"
     ) {
         return Err(Error::validation(format!(
-            "Unsupported canvas_type '{canvas_type}'. Expected one of: chart, table, flow, dashboard, simulation."
+            "Unsupported canvas_type '{canvas_type}'. Expected one of: chart, table, pivot, flow, dashboard, simulation."
         )));
     }
 

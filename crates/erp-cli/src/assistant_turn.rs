@@ -15,14 +15,28 @@ use serde_json::{Value as Json, json};
 use std::sync::Arc;
 
 const ASSISTANT_SYSTEM_PROMPT: &str = "\
-You are ERPForAll Assistant, an intelligent ERP agent. \
-You have access to live ERP tools: \
-- `find_models`: search installed business models by query or description. \
-- `search_records`: read detailed records of a model with domain filter and field list. \
-- `aggregate_records`: group and compute aggregates (sums, counts) on a model, such as ranking customer sales, monthly revenues, or invoice balances. \
-- `render_canvas`: render interactive visual cards, dashboards, charts, tables, or workflow diagrams on the user's workspace canvas. \
-Always use `aggregate_records` or `search_records` to verify live facts before answering questions about business data. \
-When the user asks for a chart, graph, table, or visual workflow, call `render_canvas` with appropriate visual specifications.";
+You are ERPForAll Assistant, an executive AI analyst and ERP agent for modern business intelligence and operations.\n\
+CRITICAL EXECUTION RULES:\n\
+1. NEVER output conversational promises, preliminary filler, or thoughts as plain text (do NOT say 'I will look up...', 'I will check...', 'Let me pull the data').\n\
+2. Immediately execute the appropriate tool calls in your first turn.\n\
+3. For ANY business data question, ranking, statistics, or reports: ALWAYS use `aggregate_records` or `search_records`.\n\
+   Common ERP models:\n\
+   - Sales: 'sale.order' (fields: name, partner_id, amount_total, date_order, state).\n\
+     Example aggregate_records: {\"model\": \"sale.order\", \"domain\": [[\"state\", \"=\", \"sale\"]], \"groupby\": [\"partner_id\"], \"aggregates\": [\"amount_total:sum\"], \"limit\": 5, \"order\": \"amount_total desc\"}\n\
+   - Invoices / Piutang: 'account.move' (fields: name, partner_id, amount_total, amount_residual, invoice_date, invoice_date_due, payment_state, state).\n\
+     Customer invoices filter: [[\"move_type\", \"=\", \"out_invoice\"]]\n\
+   - Purchases: 'purchase.order' (fields: name, partner_id, amount_total, date_order, state).\n\
+   - Stock / Deliveries: 'stock.picking' (fields: name, partner_id, state, scheduled_date).\n\
+   - Partners / Customers: 'res.partner' (fields: name, email, phone, city, customer_rank).\n\
+4. Visual Canvas Rendering:\n\
+   Whenever the user asks for a chart, graph, table, pivot table, dashboard, or workflow, you MUST call `render_canvas` after retrieving data.\n\
+   Allowed canvas_type values:\n\
+   - 'pivot': Interactive multidimensional BI Pivot Table. Provide data_json containing {\"dimensions\": [\"...\"], \"measures\": [{\"key\": \"...\", \"label\": \"...\"}], \"records\": [...]}.\n\
+   - 'dashboard': Multi-card executive dashboard with KPI stats, chart, and table.\n\
+   - 'chart': Bar, line, or donut chart. Provide series: [{\"label\": \"...\", \"value\": 100}].\n\
+   - 'table': Tabular view with columns and rows.\n\
+   - 'flow': Process workflow diagram.\n\
+5. Language: Always respond in the language used by the user (Indonesian if asked in Indonesian). In your final response after calling tools, provide a concise, professional summary highlighting key insights.";
 
 struct AssistantFallbackHost;
 impl erp_rpc::RpcHost for AssistantFallbackHost {
@@ -212,6 +226,7 @@ impl WebAssistant for TextAssistant {
             let mut total_completion_tokens: u64 = 0;
             let mut last_model = route.model().to_string();
             let mut text = String::new();
+            let mut final_text = String::new();
             let mut staged_canvas: Option<Json> = None;
 
             const MAX_TURNS: usize = 6;
@@ -245,16 +260,20 @@ impl WebAssistant for TextAssistant {
                         .map_err(invalid)?,
                 );
 
+                let mut current_turn_text = String::new();
                 let mut tool_calls = Vec::new();
                 for part in reply.parts() {
                     match part {
                         ContentPart::AssistantText(chunk) => {
-                            if !text.is_empty() && !text.ends_with('\n') && !text.ends_with(' ') {
-                                text.push('\n');
+                            if !current_turn_text.is_empty()
+                                && !current_turn_text.ends_with('\n')
+                                && !current_turn_text.ends_with(' ')
+                            {
+                                current_turn_text.push('\n');
                             }
-                            text.push_str(chunk);
-                            if text.len() > 65536 {
-                                text.truncate(65536);
+                            current_turn_text.push_str(chunk);
+                            if current_turn_text.len() > 65536 {
+                                current_turn_text.truncate(65536);
                             }
                         }
                         ContentPart::ToolCall(call) => {
@@ -265,7 +284,12 @@ impl WebAssistant for TextAssistant {
                 }
 
                 if tool_calls.is_empty() {
+                    if !current_turn_text.trim().is_empty() {
+                        final_text = current_turn_text;
+                    }
                     break;
+                } else if !current_turn_text.trim().is_empty() {
+                    text = current_turn_text;
                 }
 
                 const MAX_TOOL_CALLS_PER_TURN: usize = 8;
@@ -363,14 +387,24 @@ impl WebAssistant for TextAssistant {
             }
             check.tx.rollback().await?;
 
-            if text.trim().is_empty() && staged_canvas.is_none() {
+            let output_text = if !final_text.trim().is_empty() {
+                final_text
+            } else if !text.trim().is_empty() {
+                text
+            } else if staged_canvas.is_some() {
+                "Visualisasi telah disiapkan di canvas.".to_string()
+            } else {
+                String::new()
+            };
+
+            if output_text.trim().is_empty() && staged_canvas.is_none() {
                 return Err(Error::user(
                     "erp.ai.provider_failed: the provider returned no text or canvas.",
                 ));
             }
 
             let mut resp = json!({
-                "text": text,
+                "text": output_text,
                 "model": last_model,
                 "usage": {
                     "input_tokens": total_prompt_tokens,

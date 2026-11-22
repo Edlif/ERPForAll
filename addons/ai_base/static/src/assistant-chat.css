@@ -22,6 +22,38 @@
 .ai-chat-hint { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
 .ai-chat-compose { display: flex; align-items: flex-end; gap: 8px; }
 .ai-chat-compose textarea { flex: 1; min-width: 0; max-height: 20dvh; resize: vertical; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--input-line); border-radius: var(--radius-control); padding: 7px 9px; }
+
+/* Rich Canvas Notification Card in Chat Dock */
+.ai-chat-canvas-card {
+  margin-top: 8px; padding: 10px 12px; background: var(--surface-subtle);
+  border: 1px solid var(--line); border-radius: var(--radius-control);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.ai-chat-canvas-badge {
+  display: flex; align-items: center; gap: 6px; color: var(--accent); font-size: 0.85rem;
+}
+.ai-chat-canvas-badge strong { color: var(--text); font-size: 0.875rem; }
+.ai-chat-canvas-desc { margin: 0; font-size: 0.775rem; color: var(--muted); line-height: 1.35; }
+.ai-chat-canvas-view-btn {
+  align-self: flex-start; padding: 4px 10px; font-size: 0.75rem; font-weight: 500;
+  margin-top: 2px;
+}
+
+/* Empty State Intro & Chips in Chat Dock */
+.ai-chat-empty-intro {
+  padding: 14px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.ai-chat-empty-intro p { margin: 0; font-size: 0.8rem; color: var(--muted); }
+.ai-chat-chip-list { display: flex; flex-direction: column; gap: 6px; }
+.ai-chat-chip {
+  background: var(--surface-subtle); border: 1px solid var(--line); border-radius: var(--radius-control);
+  padding: 6px 10px; font-size: 0.775rem; color: var(--text); text-align: start; cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ai-chat-chip:hover {
+  background: var(--surface); border-color: var(--accent); color: var(--accent);
+}
+
 @media (max-width: 600px) {
   .ai-chat-dock { width: 100%; inset-inline: 0; box-sizing: border-box; }
   .ai-chat-dock button { min-width: 44px; min-height: 44px; }

@@ -149,6 +149,32 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
       if (!send.disabled) form.requestSubmit();
     }
   });
+  const emptyPromptContainer = document.createElement("div");
+  emptyPromptContainer.className = "ai-chat-empty-intro";
+  const introP = document.createElement("p");
+  introP.textContent = "Tanyakan analisis bisnis atau visualisasi data:";
+  const chipList = document.createElement("div");
+  chipList.className = "ai-chat-chip-list";
+  const chips = [
+    { label: "5 Customer Terloyal", prompt: "Siapa 5 customer terloyal tahun ini? Tampilkan grafiknya di canvas." },
+    { label: "Tren Omzet Bulanan", prompt: "Tampilkan omzet penjualan bulanan tahun ini dalam bentuk chart." },
+    { label: "Pivot Omzet & Status", prompt: "Tampilkan pivot table omzet penjualan per customer dan status pesanan." },
+    { label: "Ringkasan Piutang Jatuh Tempo", prompt: "Tampilkan tabel ringkasan faktur piutang yang jatuh tempo." },
+  ];
+  chips.forEach(c => {
+    const chipBtn = document.createElement("button");
+    chipBtn.type = "button";
+    chipBtn.className = "ai-chat-chip";
+    chipBtn.textContent = c.label;
+    chipBtn.addEventListener("click", () => {
+      input.value = c.prompt;
+      update();
+      form.requestSubmit();
+    });
+    chipList.append(chipBtn);
+  });
+  emptyPromptContainer.append(introP, chipList);
+
   const rendered = new Map<AssistantMessage, HTMLElement>();
   function renderMessages() {
     if (!session) return;
@@ -156,6 +182,11 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
     const visible = new Set(session.messages);
     for (const [item, part] of rendered) {
       if (!visible.has(item)) { part.remove(); rendered.delete(item); }
+    }
+    if (visible.size === 0) {
+      if (!emptyPromptContainer.isConnected) thread.append(emptyPromptContainer);
+    } else {
+      emptyPromptContainer.remove();
     }
     for (const item of visible) {
       if (rendered.has(item)) continue;
@@ -166,8 +197,41 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
       const content = document.createElement("div");
       content.className = "ai-chat-content";
       content.classList.toggle("ai-chat-error", item.state === "error");
-      if (item.role === "assistant" && item.state === "ready") renderReply(content, item.text);
-      else content.textContent = item.text;
+      if (item.role === "assistant" && item.state === "ready") {
+        renderReply(content, item.text);
+        if (item.canvas && typeof item.canvas === "object") {
+          const c = item.canvas as Record<string, unknown>;
+          const canvasCard = document.createElement("div");
+          canvasCard.className = "ai-chat-canvas-card";
+          const badge = document.createElement("div");
+          badge.className = "ai-chat-canvas-badge";
+          const iconEl = icon("panels-top-left");
+          const titleSpan = document.createElement("strong");
+          titleSpan.textContent = String(c["title"] || "Visualisasi Canvas");
+          badge.append(iconEl, titleSpan);
+
+          const descP = document.createElement("p");
+          descP.className = "ai-chat-canvas-desc";
+          descP.textContent = String(c["description"] || `Tipe: ${c["canvas_type"] || "chart"}`);
+
+          const viewBtn = document.createElement("button");
+          viewBtn.type = "button";
+          viewBtn.className = "erp-button erp-button-secondary ai-chat-canvas-view-btn";
+          viewBtn.textContent = "Lihat di Canvas Studio";
+          viewBtn.addEventListener("click", () => {
+            const stage = document.querySelector(".ai-workspace-canvas-stage");
+            if (stage) {
+              stage.scrollIntoView({ behavior: "smooth" });
+            } else {
+              window.location.href = "/erp/action-137?menu=152";
+            }
+          });
+          canvasCard.append(badge, descP, viewBtn);
+          content.append(canvasCard);
+        }
+      } else {
+        content.textContent = item.text;
+      }
       part.append(author, content);
       thread.append(part);
       rendered.set(item, part);

@@ -4,6 +4,7 @@ import { renderBarChart, renderDonutChart } from "../src/canvas/canvas-chart.js"
 import { renderRichTable } from "../src/canvas/canvas-table.js";
 import { renderWorkflowFlow } from "../src/canvas/canvas-flow.js";
 import { renderSimulation } from "../src/canvas/canvas-simulation.js";
+import { renderPivotTable } from "../src/canvas/canvas-pivot.js";
 import { createCanvasStage } from "../src/canvas/canvas-stage.js";
 
 afterEach(() => document.body.replaceChildren());
@@ -171,5 +172,41 @@ describe("Canvas Visual Components", () => {
     expect(stage.node.textContent).toContain("Format Visualisasi Tidak Valid");
 
     stage.dispose();
+  });
+
+  test("renderPivotTable dynamically pivots data by dimension, aggregates measures, and toggles collapse", () => {
+    const el = renderPivotTable({
+      title: "Pivot Sales",
+      dimensions: ["Customer", "Status"],
+      measures: [
+        { key: "amount", label: "Total Omzet", agg: "sum" },
+        { key: "id", label: "Jumlah Order", agg: "count" },
+      ],
+      records: [
+        { Customer: "Deco Addict", Status: "sale", amount: 10000000, id: 1 },
+        { Customer: "Deco Addict", Status: "draft", amount: 5000000, id: 2 },
+        { Customer: "Azure Interior", Status: "sale", amount: 20000000, id: 3 },
+      ],
+    });
+    document.body.append(el);
+
+    expect(el.querySelector(".canvas-pivot-table")).not.toBeNull();
+    const groupRows = el.querySelectorAll(".canvas-pivot-group-row");
+    expect(groupRows.length).toBe(2); // Deco Addict & Azure Interior
+
+    // Check Grand Total
+    const grandTotalVal = el.querySelector(".canvas-pivot-grandtotal-val");
+    expect(grandTotalVal?.textContent).toContain("35.000.000"); // 10M + 5M + 20M
+
+    // Switch Dimension to Status
+    const statusBtn = Array.from(el.querySelectorAll<HTMLButtonElement>(".canvas-pivot-dim-btn")).find(
+      b => b.textContent === "Status"
+    )!;
+    statusBtn.click();
+
+    const newGroupRows = el.querySelectorAll(".canvas-pivot-group-row");
+    expect(newGroupRows.length).toBe(2); // sale & draft
+    expect(el.textContent).toContain("sale");
+    expect(el.textContent).toContain("draft");
   });
 });

@@ -299,6 +299,9 @@ impl<'route> RequestEncoder<'route> {
                 ) => {
                     if !openai_calls.is_empty() {
                         let mut encoded = json!({"role": "assistant", "tool_calls": openai_calls});
+                        if self.provider == "deepseek" || self.model.contains("deepseek") {
+                            encoded["reasoning_content"] = json!("");
+                        }
                         if !content.is_empty() {
                             encoded["content"] = Value::Array(content);
                         }

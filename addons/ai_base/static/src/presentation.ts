@@ -69,7 +69,7 @@ function chart(view: Record<string, unknown>): HTMLElement | undefined {
   }
   return list;
 }
-function slides(view: Record<string, unknown>): HTMLElement | undefined {
+export function slides(view: Record<string, unknown>): HTMLElement | undefined {
   if (!Array.isArray(view["slides"]) || !view["slides"].length || view["slides"].length > 40) return;
   const deck: {heading: string; points: string[]}[] = [];
   for (const item of view["slides"]) {

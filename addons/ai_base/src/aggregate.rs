@@ -260,7 +260,7 @@ pub async fn prepare(tx: &mut Transaction, call: &ToolCall) -> Result<AggregateP
     }
     let company = env.company()?.ok_or_else(denied)?.get();
     let args = call.arguments().as_object().ok_or_else(invalid)?;
-    if call.name() != TOOL || args.len() != 6 {
+    if call.name() != TOOL || args.len() < 3 || args.len() > 7 {
         return Err(invalid());
     }
 
@@ -289,7 +289,7 @@ pub async fn prepare(tx: &mut Transaction, call: &ToolCall) -> Result<AggregateP
         .get("limit")
         .and_then(Json::as_u64)
         .and_then(|v| usize::try_from(v).ok())
-        .ok_or_else(invalid)?;
+        .unwrap_or(20);
     let max_rows = crate::catalog::limit(tx, ROWS).await?;
     if limit == 0 || limit > max_rows {
         return Err(Error::validation(format!(
@@ -297,10 +297,12 @@ pub async fn prepare(tx: &mut Transaction, call: &ToolCall) -> Result<AggregateP
         )));
     }
 
+    let empty_arr = vec![];
     let raw_groupby = args
         .get("groupby")
+        .or_else(|| args.get("group_by"))
         .and_then(Json::as_array)
-        .ok_or_else(invalid)?;
+        .unwrap_or(&empty_arr);
     let max_groupby = crate::catalog::limit(tx, GROUPBY_FIELDS).await?;
     if raw_groupby.is_empty() || raw_groupby.len() > max_groupby {
         return Err(Error::validation(format!(
@@ -327,7 +329,18 @@ pub async fn prepare(tx: &mut Transaction, call: &ToolCall) -> Result<AggregateP
 
     let mut aggregates = Vec::new();
     for agg in raw_aggregates {
-        let text = agg.as_str().ok_or_else(invalid)?;
+        let text = match agg {
+            Json::String(s) => s.clone(),
+            Json::Object(o) => {
+                let f = o.get("field").and_then(Json::as_str).unwrap_or("");
+                let func = o.get("function").and_then(Json::as_str).unwrap_or("sum");
+                if f.is_empty() {
+                    return Err(invalid());
+                }
+                format!("{f}:{func}")
+            }
+            _ => return Err(invalid()),
+        };
         let mut parts = text.split(':');
         let clean_field = parts.next().unwrap_or("");
         let func = parts.next().unwrap_or("sum");
@@ -340,13 +353,14 @@ pub async fn prepare(tx: &mut Transaction, call: &ToolCall) -> Result<AggregateP
         {
             return Err(invalid());
         }
-        aggregates.push(text.to_string());
+        aggregates.push(text);
     }
 
+    let empty_domain = vec![];
     let raw_domain = args
         .get("domain")
         .and_then(Json::as_array)
-        .ok_or_else(invalid)?;
+        .unwrap_or(&empty_domain);
     let max_terms = crate::catalog::limit(tx, TERMS).await?;
     if raw_domain.len() > max_terms {
         return Err(Error::validation(format!(
@@ -354,10 +368,7 @@ pub async fn prepare(tx: &mut Transaction, call: &ToolCall) -> Result<AggregateP
         )));
     }
 
-    let order = args
-        .get("order")
-        .and_then(Json::as_str)
-        .ok_or_else(invalid)?;
+    let order = args.get("order").and_then(Json::as_str).unwrap_or("");
     if order.len() > 70 {
         return Err(invalid());
     }
