@@ -204,7 +204,12 @@ export function renderPivotTable(spec: PivotSpec): HTMLElement {
     // Dimension header
     const thDim = document.createElement("th");
     thDim.className = "canvas-th-sortable" + (sortCol === "__group" ? " active-sort" : "");
-    thDim.innerHTML = `<span>${activeDimension}</span> <span class="canvas-sort-indicator">${sortCol === "__group" ? (sortAsc ? "▲" : "▼") : ""}</span>`;
+    const dimSpan = document.createElement("span");
+    dimSpan.textContent = activeDimension;
+    const dimSortSpan = document.createElement("span");
+    dimSortSpan.className = "canvas-sort-indicator";
+    dimSortSpan.textContent = sortCol === "__group" ? (sortAsc ? "▲" : "▼") : "";
+    thDim.append(dimSpan, " ", dimSortSpan);
     thDim.addEventListener("click", () => {
       if (sortCol === "__group") {
         sortAsc = !sortAsc;
@@ -220,7 +225,12 @@ export function renderPivotTable(spec: PivotSpec): HTMLElement {
     measures.forEach(m => {
       const th = document.createElement("th");
       th.className = "canvas-th-sortable cell-numeric" + (sortCol === m.key ? " active-sort" : "");
-      th.innerHTML = `<span>${m.label}</span> <span class="canvas-sort-indicator">${sortCol === m.key ? (sortAsc ? "▲" : "▼") : ""}</span>`;
+      const labelSpan = document.createElement("span");
+      labelSpan.textContent = m.label;
+      const measureSortSpan = document.createElement("span");
+      measureSortSpan.className = "canvas-sort-indicator";
+      measureSortSpan.textContent = sortCol === m.key ? (sortAsc ? "▲" : "▼") : "";
+      th.append(labelSpan, " ", measureSortSpan);
       th.addEventListener("click", () => {
         if (sortCol === m.key) {
           sortAsc = !sortAsc;
