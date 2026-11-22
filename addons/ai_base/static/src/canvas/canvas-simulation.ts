@@ -22,11 +22,15 @@ export function renderSimulation(spec: SimulationSpec): HTMLElement {
   const container = document.createElement("div");
   container.className = "canvas-simulation-container";
 
-  const { variables, baseRevenue, baseMarginPct } = spec;
+  const rawVars = spec.variables;
+  const variables: SimulationVariable[] = Array.isArray(rawVars)
+    ? rawVars.filter((v): v is SimulationVariable => Boolean(v && typeof v === "object"))
+    : [];
+  const { baseRevenue, baseMarginPct } = spec;
 
   const values: Record<string, number> = {};
   variables.forEach(v => {
-    values[v.key] = v.initial;
+    values[v.key] = typeof v.initial === "number" ? v.initial : 0;
   });
 
   // KPI Dashboard Cards for projected outcomes

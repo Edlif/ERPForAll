@@ -9,7 +9,7 @@ export type ChartPoint = {
 export type ChartSpec = {
   type?: "bar" | "donut" | "line";
   title?: string;
-  series: ChartPoint[];
+  series: unknown;
   unit?: string;
 };
 
@@ -29,6 +29,28 @@ const COLORS = [
   "#795548",
 ];
 
+function normalizeSeries(input: unknown): ChartPoint[] {
+  if (Array.isArray(input)) {
+    return input.map((item, idx) => {
+      if (typeof item === "object" && item !== null) {
+        const obj = item as Record<string, unknown>;
+        const label = String(obj["label"] ?? obj["name"] ?? obj["key"] ?? obj["category"] ?? `Item ${idx + 1}`);
+        const val = Number(obj["value"] ?? obj["val"] ?? obj["amount"] ?? obj["total"] ?? obj["count"] ?? 0);
+        const color = typeof obj["color"] === "string" ? obj["color"] : undefined;
+        return { label, value: Number.isFinite(val) ? val : 0, color };
+      }
+      return { label: `Item ${idx + 1}`, value: Number(item) || 0 };
+    });
+  }
+  if (typeof input === "object" && input !== null) {
+    return Object.entries(input as Record<string, unknown>).map(([k, v]) => ({
+      label: k,
+      value: Number.isFinite(Number(v)) ? Number(v) : 0,
+    }));
+  }
+  return [];
+}
+
 /**
  * Render an interactive SVG bar chart with animated transitions and tooltips.
  */
@@ -36,7 +58,8 @@ export function renderBarChart(spec: ChartSpec): HTMLElement {
   const container = document.createElement("div");
   container.className = "canvas-chart canvas-bar-chart";
 
-  const { series, unit } = spec;
+  const series = normalizeSeries(spec.series);
+  const unit = spec.unit;
   if (!series.length) {
     container.textContent = "Tidak ada data untuk ditampilkan.";
     return container;
@@ -120,7 +143,8 @@ export function renderDonutChart(spec: ChartSpec): HTMLElement {
   const container = document.createElement("div");
   container.className = "canvas-chart canvas-donut-chart";
 
-  const { series, unit } = spec;
+  const series = normalizeSeries(spec.series);
+  const unit = spec.unit;
   if (!series.length) {
     container.textContent = "Tidak ada data untuk ditampilkan.";
     return container;

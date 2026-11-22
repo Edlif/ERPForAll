@@ -123,10 +123,14 @@ export async function workspace(env: ClientActionEnvironment): Promise<ClientAct
       body.className = message.state === "error" ? "ai-workspace-error" : "ai-workspace-text";
 
       if (message.role === "assistant" && message.state === "ready") {
-        if (message.canvas) {
-          canvasStage.renderArtifact(message.canvas);
-        } else {
-          canvasStage.detectAndRender(message.text);
+        try {
+          if (message.canvas) {
+            canvasStage.renderArtifact(message.canvas);
+          } else {
+            canvasStage.detectAndRender(message.text);
+          }
+        } catch (canvasErr) {
+          console.warn("Canvas stage rendering caught an error:", canvasErr);
         }
         renderReply(body, message.text, env, lookup);
       } else {

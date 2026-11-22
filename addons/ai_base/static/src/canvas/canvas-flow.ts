@@ -17,7 +17,10 @@ export function renderWorkflowFlow(spec: FlowSpec): HTMLElement {
   const container = document.createElement("div");
   container.className = "canvas-flow-container";
 
-  const { steps } = spec;
+  const rawSteps = spec.steps;
+  const steps: FlowStep[] = Array.isArray(rawSteps)
+    ? rawSteps.filter((s): s is FlowStep => Boolean(s && typeof s === "object"))
+    : [];
   if (!steps.length) {
     container.textContent = "Tidak ada alur proses yang didefinisikan.";
     return container;

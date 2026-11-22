@@ -28,8 +28,8 @@ export function renderPivotTable(spec: PivotSpec): HTMLElement {
 
   const { dimensions: rawDimensions, measures: rawMeasures, records, columns: rawColumns, rows: rawRows } = spec;
 
-  let activeDimension = rawDimensions && rawDimensions.length ? rawDimensions[0]! : "Kategori";
-  const dimensions = rawDimensions && rawDimensions.length ? [...rawDimensions] : ["Kategori"];
+  let activeDimension = rawDimensions && Array.isArray(rawDimensions) && rawDimensions.length ? rawDimensions[0]! : "Kategori";
+  const dimensions = rawDimensions && Array.isArray(rawDimensions) && rawDimensions.length ? [...rawDimensions] : ["Kategori"];
   
   // Resolve measures
   let measures: PivotMeasure[] = [];
@@ -249,16 +249,21 @@ export function renderPivotTable(spec: PivotSpec): HTMLElement {
     if (!Array.isArray(records) && Array.isArray(rawRows)) {
       rawRows.forEach(row => {
         const tr = tbody.insertRow();
-        row.forEach((val, idx) => {
+        const cells: unknown[] = Array.isArray(row)
+          ? row
+          : typeof row === "object" && row !== null
+          ? Object.values(row)
+          : [row];
+        cells.forEach((val, idx) => {
           const td = tr.insertCell();
           if (idx === 0) {
-            td.textContent = String(val || "—");
+            td.textContent = String(val ?? "—");
             td.className = "canvas-pivot-group-cell";
           } else if (typeof val === "number") {
             td.textContent = formatValue(val);
             td.className = "cell-numeric";
           } else {
-            td.textContent = String(val || "—");
+            td.textContent = String(val ?? "—");
           }
         });
       });
@@ -336,7 +341,16 @@ export function renderPivotTable(spec: PivotSpec): HTMLElement {
           const itemTd = itemRow.insertCell();
           itemTd.className = "canvas-pivot-child-cell";
           const subLabel = Object.entries(item).find(([k]) => k !== activeDimension && typeof item[k] === "string");
-          itemTd.textContent = subLabel ? String(subLabel[1]) : "—";
+          const text = subLabel ? String(subLabel[1]) : "—";
+          const lower = text.toLowerCase();
+          if (["draft", "sale", "cancel", "done", "posted", "paid"].includes(lower)) {
+            const badge = document.createElement("span");
+            badge.className = `pivot-state-badge pivot-state-${lower}`;
+            badge.textContent = text;
+            itemTd.append(badge);
+          } else {
+            itemTd.textContent = text;
+          }
 
           measures.forEach(m => {
             const td = itemRow.insertCell();

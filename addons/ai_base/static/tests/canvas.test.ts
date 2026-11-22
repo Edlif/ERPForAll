@@ -209,4 +209,96 @@ describe("Canvas Visual Components", () => {
     expect(el.textContent).toContain("sale");
     expect(el.textContent).toContain("draft");
   });
+
+  test("renderRichTable safely handles rows as objects without forEach error", () => {
+    // When LLM returns rows as objects [ { col: val } ] instead of arrays
+    const el = renderRichTable({
+      title: "Invoices Due",
+      columns: ["Invoice", "Customer", "Amount"],
+      rows: [
+        { Invoice: "INV/001", Customer: "PT ABC", Amount: 5000000 },
+        { Invoice: "INV/002", Customer: "CV XYZ", Amount: 2500000 },
+      ] as any,
+    });
+    document.body.append(el);
+
+    const rows = Array.from(el.querySelectorAll("tbody tr"), tr =>
+      Array.from(tr.querySelectorAll("td"), td => td.textContent)
+    );
+    expect(rows.length).toBe(2);
+    expect(rows[0]?.[0]).toBe("INV/001");
+    expect(rows[0]?.[1]).toBe("PT ABC");
+    expect(rows[0]?.[2]).toBe("5.000.000");
+  });
+
+  test("renderRichTable derives columns from record keys when columns omitted", () => {
+    const el = renderRichTable({
+      title: "Automatic Columns",
+      rows: [
+        { Code: "P01", Description: "Widget", Price: 15000 },
+      ] as any,
+    });
+    document.body.append(el);
+
+    const headers = Array.from(el.querySelectorAll("thead th"), th => th.textContent?.trim());
+    expect(headers).toContain("Code");
+    expect(headers).toContain("Description");
+    expect(headers).toContain("Price");
+  });
+
+  test("renderBarChart normalizes object series format safely", () => {
+    const el = renderBarChart({
+      title: "Key-Value Series",
+      series: {
+        "Q1": 120,
+        "Q2": 250,
+      } as any,
+    });
+    document.body.append(el);
+
+    const bars = el.querySelectorAll("rect.canvas-bar");
+    expect(bars.length).toBe(2);
+    expect(el.textContent).toContain("Q1");
+    expect(el.textContent).toContain("Q2");
+  });
+
+  test("createCanvasStage renders table with object rows gracefully without crashing", () => {
+    const stage = createCanvasStage();
+    document.body.append(stage.node);
+
+    stage.renderArtifact({
+      canvas_type: "table",
+      title: "Daftar Piutang",
+      data: {
+        columns: ["Nomor", "Customer", "Total"],
+        rows: [
+          { Nomor: "INV/01", Customer: "Customer 1", Total: 1000000 },
+        ],
+      },
+    });
+
+    expect(stage.node.querySelector(".canvas-table-container")).not.toBeNull();
+    expect(stage.node.textContent).toContain("INV/01");
+    expect(stage.node.textContent).toContain("Customer 1");
+
+    stage.dispose();
+  });
+
+  test("createCanvasStage renders bento launchpad with live badge and actionable cards", () => {
+    let triggeredPrompt = "";
+    const stage = createCanvasStage(p => { triggeredPrompt = p; });
+    document.body.append(stage.node);
+
+    expect(stage.node.querySelector(".canvas-live-badge")).not.toBeNull();
+    const bentoCards = stage.node.querySelectorAll(".canvas-bento-card");
+    expect(bentoCards.length).toBeGreaterThanOrEqual(4);
+
+    // Click on a bento card to verify callback
+    const pivotCard = Array.from(bentoCards).find(c => c.textContent?.includes("Pivot")) as HTMLButtonElement;
+    expect(pivotCard).toBeDefined();
+    pivotCard.click();
+    expect(triggeredPrompt).toContain("pivot");
+
+    stage.dispose();
+  });
 });

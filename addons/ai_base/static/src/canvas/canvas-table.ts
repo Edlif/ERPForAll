@@ -2,19 +2,49 @@
 
 export type TableSpec = {
   title?: string;
-  columns: string[];
-  rows: (string | number | boolean | null)[][];
+  columns?: string[];
+  rows?: unknown[];
+  records?: Record<string, unknown>[];
 };
 
 export function renderRichTable(spec: TableSpec): HTMLElement {
   const container = document.createElement("div");
   container.className = "canvas-table-container";
 
-  const { columns, rows: rawRows } = spec;
+  let columns: string[] = Array.isArray(spec.columns) ? [...spec.columns] : [];
+  const rawInputRows: unknown[] = Array.isArray(spec.rows)
+    ? spec.rows
+    : Array.isArray(spec.records)
+    ? spec.records
+    : [];
+
+  // If columns are empty or not specified, derive from the first row object's keys
+  if (!columns.length && rawInputRows.length > 0) {
+    const first = rawInputRows[0];
+    if (typeof first === "object" && first !== null && !Array.isArray(first)) {
+      columns = Object.keys(first);
+    }
+  }
+
   if (!columns.length) {
     container.textContent = "Tidak ada kolom yang didefinisikan.";
     return container;
   }
+
+  // Convert every row into a guaranteed (string | number | boolean | null)[]
+  const rawRows: (string | number | boolean | null)[][] = rawInputRows.map(row => {
+    if (Array.isArray(row)) {
+      return row.map(cell => (cell === undefined ? null : (cell as any)));
+    }
+    if (typeof row === "object" && row !== null) {
+      const rec = row as Record<string, unknown>;
+      return columns.map(col => {
+        const val = rec[col] ?? rec[col.toLowerCase()] ?? rec[col.replace(/ /g, "_").toLowerCase()];
+        return val === undefined ? null : (val as any);
+      });
+    }
+    return [row as any];
+  });
 
   let sortColIndex = -1;
   let sortAsc = true;
@@ -84,13 +114,13 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
     if (filterText.trim()) {
       const q = filterText.toLowerCase();
       rows = rows.filter(r =>
-        r.some(cell => cell !== null && String(cell).toLowerCase().includes(q))
+        Array.isArray(r) && r.some(cell => cell !== null && String(cell).toLowerCase().includes(q))
       );
     }
     if (sortColIndex >= 0) {
       rows.sort((a, b) => {
-        const valA = a[sortColIndex];
-        const valB = b[sortColIndex];
+        const valA = Array.isArray(a) ? a[sortColIndex] : null;
+        const valB = Array.isArray(b) ? b[sortColIndex] : null;
         if (valA === valB) return 0;
         if (valA === null || valA === undefined) return 1;
         if (valB === null || valB === undefined) return -1;
@@ -135,7 +165,8 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
 
     displayRows.forEach(row => {
       const tr = tbody.insertRow();
-      row.forEach(val => {
+      const cells = Array.isArray(row) ? row : [row];
+      cells.forEach(val => {
         const td = tr.insertCell();
         if (val === null || val === undefined) {
           td.textContent = "—";
@@ -159,7 +190,7 @@ export function renderRichTable(spec: TableSpec): HTMLElement {
     const csvLines = [
       columns.map(c => `"${c.replace(/"/g, '""')}"`).join(","),
       ...displayRows.map(r =>
-        r.map(cell => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")
+        (Array.isArray(r) ? r : [r]).map(cell => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")
       ),
     ];
     const blob = new Blob([csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
