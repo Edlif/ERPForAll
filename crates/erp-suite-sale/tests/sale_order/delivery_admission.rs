@@ -9,8 +9,7 @@ const ROUTE_ERROR: &str = "This sales order needs an active one-step warehouse w
 #[test]
 fn hidden_unit_ancestor_refuses_before_elevated_stock_creation() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let installed = install_sales(&db, true).await;
+        let (db, installed) = cloned_sales(true).await;
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let salesperson = user(&mut tx, "ancestor-admission", "group_sale_salesman").await;
@@ -149,8 +148,7 @@ fn hidden_product_unit_and_shipping_contact_refuse_the_complete_confirmation() {
         // Each policy is installed in its own database: a denied shared unit must not
         // accidentally decide the product/contact cases before their own checks run.
         for hidden_model in ["product.product", "uom.uom", "res.partner"] {
-            let db = TestDb::create().await.unwrap();
-            let installed = install_sales(&db, true).await;
+            let (db, installed) = cloned_sales(true).await;
             let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
             admin(&mut tx).await;
             let salesperson = user(&mut tx, "source-admission", "group_sale_salesman").await;
@@ -236,8 +234,7 @@ fn hidden_product_unit_and_shipping_contact_refuse_the_complete_confirmation() {
 #[test]
 fn unsupported_route_configuration_refuses_without_stock_side_effects() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let installed = install_sales(&db, true).await;
+        let (db, installed) = cloned_sales(true).await;
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let salesperson = user(&mut tx, "route-admission", "group_sale_salesman").await;
@@ -294,8 +291,7 @@ fn unsupported_route_configuration_refuses_without_stock_side_effects() {
 #[test]
 fn source_row_limit_counts_descriptive_lines_and_admits_the_exact_boundary() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let installed = install_sales(&db, true).await;
+        let (db, installed) = cloned_sales(true).await;
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let salesperson = user(&mut tx, "bounded-delivery", "group_sale_salesman").await;

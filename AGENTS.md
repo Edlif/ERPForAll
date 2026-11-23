@@ -25,9 +25,11 @@ small; business domains are addons. It is in early development and not ready to 
 ## Build and test
 
 Commands are in [CONTRIBUTING.md](CONTRIBUTING.md#build-and-test) and [docs/development.md](docs/development.md).
-In short: `scripts/check.sh` (format, lints, build) and `scripts/check.sh --tests` (adds the Rust tests; needs
-PostgreSQL 18 reachable through `DATABASE_URL`). Web checks: `pnpm run typecheck` and `pnpm run test` in `web/`, after
-`eval "$(scripts/web-toolchain.sh env)"`. Do not guess flags: `erp --help` and the subcommand help list what exists.
+In short: `scripts/check.sh --affected --tests` runs formatting, layer checks, clippy, and Rust tests for only the
+packages affected by your diff against `origin/main` (needs PostgreSQL 18 reachable through `DATABASE_URL`), or pass
+`-p <crate>` for explicit packages. `scripts/check.sh --tests` runs the full workspace. Web checks: `pnpm run typecheck`
+and `pnpm run test` in `web/`, after `eval "$(scripts/web-toolchain.sh env)"`. Do not guess flags: `erp --help` and the
+subcommand help list what exists.
 
 ## Rules
 
@@ -51,7 +53,8 @@ PostgreSQL 18 reachable through `DATABASE_URL`). Web checks: `pnpm run typecheck
 - The `erp` program: `crates/erp-cli`. The server and its configuration: `crates/erp-server`.
 - A model, a field or the ORM: `crates/erp-orm`, `crates/erp-fields`, `crates/erp-registry`.
 - A view or the web client: `crates/erp-views`, `addons/web`, `web/`.
-- Tests for a crate are in its `tests/` directory and in `#[cfg(test)]` modules; `crates/erp-test-models` holds the
-  fixture addons many tests use.
+- Tests for a crate are in its `tests/` directory and in `#[cfg(test)]` modules; `crates/erp-test-models` holds core
+  fixture addons, and domain integration suites live in isolated L13 crates under `crates/erp-suite-*` (never add leaf
+  addons to `erp-test-models` or domain tests to `erp-cli`).
 
-Tools and skills for agents will be added to the repository later.
+Tools, static linters, and skills for coding agents live in https://github.com/IndoERP/erpforall-agent-kit.

@@ -62,16 +62,16 @@ const MAX_CONTEXT_KEYS = 16;
  *  keys, each with a text, boolean or safe-integer value. A `search_default_<name>` preselects a filter, group-by item or
  *  field of the action's search view that the user can still remove. Session keys (companies, language, time zone) and
  *  every other key or value form are refused by name. The application checks a request's context again where it uses it. */
-export function admitRequestContext(value: unknown, path: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return refuse(path, "must be an object");
+export function admitRequestContext(value: unknown, path: string, fail: (path: string, problem: string) => never = refuse): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return fail(path, "must be an object");
   const entries = Object.entries(value as Json);
-  if (entries.length > MAX_CONTEXT_KEYS) refuse(path, `has more than ${MAX_CONTEXT_KEYS} keys`);
+  if (entries.length > MAX_CONTEXT_KEYS) fail(path, `has more than ${MAX_CONTEXT_KEYS} keys`);
   const admitted: Record<string, unknown> = {};
   for (const [key, item] of entries) {
     // A key is quoted and clipped: it is server data on its way into a message.
     const at = `${path}[${JSON.stringify(key.slice(0, 64))}]`;
-    if (!/^default_[a-z_][a-z0-9_]*$/.test(key) && !/^search_default_[A-Za-z_][A-Za-z0-9_]*$/.test(key)) refuse(at, "is not admitted: only default_<field> and search_default_<name> keys are");
-    if (!(typeof item === "string" || typeof item === "boolean" || typeof item === "number" && Number.isSafeInteger(item))) refuse(at, "must be a text, a boolean or a whole number");
+    if (!/^default_[a-z_][a-z0-9_]*$/.test(key) && !/^search_default_[A-Za-z_][A-Za-z0-9_]*$/.test(key)) fail(at, "is not admitted: only default_<field> and search_default_<name> keys are");
+    if (!(typeof item === "string" || typeof item === "boolean" || typeof item === "number" && Number.isSafeInteger(item))) fail(at, "must be a text, a boolean or a whole number");
     admitted[key] = item;
   }
   return admitted;

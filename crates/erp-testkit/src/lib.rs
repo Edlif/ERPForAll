@@ -4,6 +4,9 @@
 //! `ERP_TEST_DATABASE_URLS` with connection headroom, or on the server named by `DATABASE_URL`
 //! ([`cluster`] module), hands out a deadpool-postgres pool, and drops the database on
 //! [`TestDb::cleanup`] or on drop.
+//! [`TemplateDb`] caches initialised template databases (`erpforall_tpl_<32hex>`) per run scope
+//! under PostgreSQL advisory locks so multi-addon behavior suites clone a pre-installed database
+//! instead of repeating full schema and seed installs in every test.
 //! [`alloc`] counts heap allocations for the allocation-budget tests of standards §5b.
 //! [`serve`] measures a server under test: allocations per request, heap per idle connection,
 //! future sizes (PERF.SERVE-HARNESS); [`WireCounter`] counts round trips and client message types
@@ -44,6 +47,7 @@ mod snapshot;
 pub mod stand_in_base;
 mod sweep;
 mod tag;
+mod template;
 mod timeout_check;
 mod wire;
 
@@ -65,7 +69,11 @@ pub use policy::{DomainPolicy, DomainPolicyBuilder, Otherwise, RulesPolicy, Test
 pub use rpc::{RpcHarness, RpcHarnessBuilder};
 pub use snapshot::{BLESS_ENV, assert_snapshot};
 pub use sweep::{MIN_ORPHAN_AGE, SweepOptions, SweepReason, SweepReport, sweep};
-pub use tag::{Comment, RUN_ID_ENV, TEST_DB_PREFIX, Tag, TestDbName, is_test_db_name};
+pub use tag::{
+    Comment, RUN_ID_ENV, TEMPLATE_DB_PREFIX, TEST_DB_PREFIX, Tag, TemplateComment, TemplateDbName,
+    TemplateTag, TestDbName, is_template_db_name, is_test_db_name,
+};
+pub use template::{TemplateDb, TemplateDbBuilder};
 pub use timeout_check::{ATTEMPTS as TIMEOUT_CHECK_ATTEMPTS, MAX_TIMEOUT_LATENESS, TimeoutCheck};
 pub use wire::{MessageCounts, WireCounter};
 

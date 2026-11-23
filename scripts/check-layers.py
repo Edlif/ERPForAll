@@ -26,6 +26,10 @@ Rules enforced today (a later release):
 
 7. ``erp-pdf`` (L1 amendment 1 decision 8) has no workspace dependency,
    including dev/build dependencies.
+8. Domain integration test suites (L13, ``crates/erp-suite-*`` / ``erp-suite-*``)
+   are test-only leaves: no workspace crate may depend on an ``erp-suite-*`` crate in any section,
+   and an ``erp-suite-*`` crate may not depend on L12 CLI binaries (``erp-cli``,
+   ``erp-ui-compiler-cli``). Every ``crates/erp-suite-*/Cargo.toml`` must be a workspace member.
 
 Reads ``cargo metadata --no-deps`` (or ``--metadata FILE`` for tests). Exit status 1 and
 one line per violation when a rule fails.
@@ -122,6 +126,18 @@ def is_addon(package, root):
     return under_addons or package["name"].startswith("erp-addon-")
 
 
+SUITE_FORBIDDEN_DEPS = {"erp-cli", "erp-ui-compiler-cli"}
+
+
+def is_suite(package, root):
+    manifest = Path(package["manifest_path"]).resolve()
+    under_suite_dir = (
+        manifest.parent.parent == (root / "crates").resolve()
+        and manifest.parent.name.startswith("erp-suite-")
+    )
+    return under_suite_dir or package["name"].startswith("erp-suite-")
+
+
 def check(metadata, root):
     """Return the violations as sorted strings."""
     root = Path(root).resolve()
@@ -129,6 +145,7 @@ def check(metadata, root):
     members = set(metadata.get("workspace_members", []))
     packages = [p for p in metadata["packages"] if p["id"] in members]
     addon_names = {p["name"] for p in packages if is_addon(p, root)}
+    suite_names = {p["name"] for p in packages if is_suite(p, root)}
     workspace_names = {p["name"] for p in packages}
     for package in packages:
         if package["name"] not in addon_names:
@@ -204,10 +221,38 @@ def check(metadata, root):
                 f"{package['name']} depends on {dep['name']} in [{SECTIONS.get(kind, kind)}]: "
                 f"only {', '.join(sorted(allowed))} may"
             )
+    for package in packages:
+        for dep in package.get("dependencies", []):
+            name = dep["name"]
+            kind = dep.get("kind") or "normal"
+            if name in suite_names or name.startswith("erp-suite-"):
+                errors.append(
+                    f"{package['name']} depends on domain suite crate {name} in "
+                    f"[{SECTIONS.get(kind, kind)}]: erp-suite-* crates are L13 test-only "
+                    f"suites and cannot be depended on"
+                )
+        if package["name"] in suite_names:
+            for dep in package.get("dependencies", []):
+                name = dep["name"]
+                kind = dep.get("kind") or "normal"
+                if name in SUITE_FORBIDDEN_DEPS:
+                    errors.append(
+                        f"domain suite crate {package['name']} depends on {name} in "
+                        f"[{SECTIONS.get(kind, kind)}]: L13 erp-suite-* crates must not "
+                        f"depend on L12 CLI composition roots"
+                    )
     member_manifests = {Path(p["manifest_path"]).resolve() for p in packages}
     addons_dir = root / "addons"
     if addons_dir.is_dir():
         for manifest in sorted(addons_dir.glob("*/Cargo.toml")):
+            if manifest.resolve() not in member_manifests:
+                errors.append(
+                    f"{manifest.relative_to(root)} is not a workspace member: list "
+                    f"\"{manifest.parent.relative_to(root)}\" in the root Cargo.toml members"
+                )
+    crates_dir = root / "crates"
+    if crates_dir.is_dir():
+        for manifest in sorted(crates_dir.glob("erp-suite-*/Cargo.toml")):
             if manifest.resolve() not in member_manifests:
                 errors.append(
                     f"{manifest.relative_to(root)} is not a workspace member: list "

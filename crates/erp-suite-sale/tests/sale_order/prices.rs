@@ -124,8 +124,7 @@ pub(super) async fn add_line(tx: &mut Transaction, order: &Records, vals: RawVal
 #[test]
 fn line_prices_come_from_the_pricelist_or_the_product_and_a_manual_price_stays() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let dozen = xmlid(&mut tx, "uom", "product_uom_dozen").await;
@@ -214,8 +213,7 @@ fn line_prices_come_from_the_pricelist_or_the_product_and_a_manual_price_stays()
 #[test]
 fn taxes_line_amounts_and_order_totals() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         // taxes belong to the company's country
@@ -402,8 +400,7 @@ pub(super) async fn foreign_pricelist(tx: &mut Transaction, world: &World) -> (i
 #[test]
 fn currency_follows_the_pricelist_and_a_confirmed_pricelist_is_kept() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let (home, foreign, pricelist) = foreign_pricelist(&mut tx, &world).await;
@@ -503,8 +500,7 @@ fn currency_follows_the_pricelist_and_a_confirmed_pricelist_is_kept() {
 #[test]
 fn derived_amounts_are_never_written_by_a_client() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let desk = product(&mut tx, "Desk", "100", &[]).await;
@@ -592,8 +588,7 @@ fn derived_amounts_are_never_written_by_a_client() {
 #[test]
 fn a_line_from_the_form_is_priced_and_a_given_price_wins() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let chair = product(&mut tx, "Chair", "100", &[]).await;
@@ -705,8 +700,7 @@ pub(super) async fn company_country(tx: &mut Transaction, company: i64) {
 #[test]
 fn a_line_made_by_the_form_takes_description_and_taxes_from_the_product() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         company_country(&mut tx, world.company).await;
@@ -774,8 +768,7 @@ fn a_line_made_by_the_form_takes_description_and_taxes_from_the_product() {
 #[test]
 fn a_quantity_in_dozens_crosses_a_pricelist_minimum_in_units() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let dozen = xmlid(&mut tx, "uom", "product_uom_dozen").await;
@@ -832,8 +825,7 @@ fn a_quantity_in_dozens_crosses_a_pricelist_minimum_in_units() {
 #[test]
 fn an_order_created_with_lines_and_its_copy_keep_prices_and_amounts() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         company_country(&mut tx, world.company).await;
@@ -868,8 +860,7 @@ fn an_order_created_with_lines_and_its_copy_keep_prices_and_amounts() {
 #[test]
 fn the_read_only_rules_of_the_form_are_server_rules() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let quotation = new_order(&mut tx, &world).await;
@@ -926,8 +917,7 @@ fn the_read_only_rules_of_the_form_are_server_rules() {
 #[test]
 fn a_pricelist_in_another_currency_is_refused_on_a_quotation_with_lines() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let company = tx
@@ -1020,8 +1010,7 @@ fn a_pricelist_in_another_currency_is_refused_on_a_quotation_with_lines() {
 #[test]
 fn a_quotation_does_not_reopen_its_invoicing() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let quotation = new_order(&mut tx, &world).await;
@@ -1038,8 +1027,7 @@ fn a_quotation_does_not_reopen_its_invoicing() {
 #[test]
 fn a_new_quotation_starts_with_the_company_and_create_checks_access_first() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let defaults: erp_sdk::ValueMap = tx
@@ -1174,8 +1162,7 @@ fn sale_installs_on_a_database_that_already_has_products() {
 #[test]
 fn a_new_product_takes_the_company_policy_unless_the_context_gives_one() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         tx.env()
@@ -1227,8 +1214,7 @@ fn a_new_product_takes_the_company_policy_unless_the_context_gives_one() {
 #[test]
 fn a_line_in_a_unit_that_does_not_divide_the_product_unit_is_priced() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let unit = xmlid(&mut tx, "uom", "product_uom_unit").await;
@@ -1280,8 +1266,7 @@ fn a_line_in_a_unit_that_does_not_divide_the_product_unit_is_priced() {
 #[test]
 fn a_quantity_or_pricelist_change_prices_the_lines_again_except_hand_set_ones() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let chair = product(&mut tx, "Reprice chair", "100", &[]).await;

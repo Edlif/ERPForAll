@@ -478,6 +478,12 @@ const ENTRY_POINTS: &[(&str, Class)] = &[
             "the job_wake of a settings edit: called by the settings write (base ir_config_setting.rs) after a `base.jobs.*` value was stored under that write's own checks, it pokes the runners after the commit and sends one payload-free NOTIFY with the new policy's notify interval; reads and writes no record and grants nothing",
         ),
     ),
+    (
+        "jobs::schedule::sync_addon_schedules",
+        Unchecked(
+            "keeps the one erp_job row of each scheduled job kind of an installed, upgraded or uninstalled addon (core table erp_job, no record of a model) inside the module operation's transaction; refuses every principal but the system one, and only resolves the schedule's `run_as` user by external id (active internal `res.users`), never runs as the system",
+        ),
+    ),
     ("RecordSet::exists", Unchecked(PARITY_EXISTS)),
     ("RecordSet::try_lock_for_update", Unchecked(PARITY_LOCK)),
     ("RecordSet::new_record", Unchecked(NEW_RECORD)),
@@ -518,6 +524,12 @@ const ENTRY_POINTS: &[(&str, Class)] = &[
         "Transaction::require_transaction_retry",
         Unchecked(
             "transaction control for the caller's own transaction: keeps the first whole-transaction retry reason after an operation savepoint rolls back, so commit refuses with that reason; no record access or elevation",
+        ),
+    ),
+    (
+        "Transaction::bind_idempotency_key",
+        Unchecked(
+            "transaction state: stores the Idempotency-Key the RPC service already claimed for this call on the caller's own transaction, after checking its canonical UUID form and that none is bound; reads and writes no record and grants nothing",
         ),
     ),
     ("Super::call", Unchecked(DISPATCH)),
@@ -1248,6 +1260,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "finds the caller's own `res.users.settings` row by `tx.env().uid()`, never by an argument: the row is selected by that user id alone, so a portal user outside `base.group_user` (who has no `ir.access` row on the model; the public user, whom every anonymous visitor shares, is refused by the caller before this) still reads the settings that are theirs; generic `read`/`search` stay under the `ir.access` rows",
     ),
     (
+        "base/res_users_settings.rs::_check_active_company_config",
+        1,
+        "a constraint, not a read for the caller: reads the written rows' `user_id` (writable and readable by `base.group_system` only) and stored active companies to check that every stored company is one of the owner's allowed companies; nothing read is returned, a failure is the validation error that refuses the write",
+    ),
+    (
         "base/res_users_settings.rs::set_res_users_settings",
         1,
         "after refusing the public user and unknown keys and taking the per-user advisory lock, creates the caller's own settings row with `user_id` set from `tx.env().uid()`: `user_id` is writable by `base.group_system` only, so that a user cannot hand a row to another user through generic `write`/`create`, and the method sets it as superuser for the caller alone",
@@ -1961,6 +1978,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "erp-server/web/password_change.rs::execute",
         1,
         "opening the password reset wizard creates its lines in superuser mode, after the actor's manager authority and every target were checked: the line model refuses every other creation, and `create_uid` stays the actor",
+    ),
+    (
+        "erp-test-models/test_rpc.rs::client_address",
+        1,
+        "test-model probe `test_rpc.effects.client_address`: derives a superuser environment only to show that `sudo()` keeps the request's client address; it reads nothing and writes nothing through it",
     ),
 ];
 

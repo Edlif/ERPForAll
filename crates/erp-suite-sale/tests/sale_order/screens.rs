@@ -28,8 +28,7 @@ async fn menu(tx: &mut Transaction, module: &str, name: &str) -> (bool, Vec<Stri
 #[test]
 fn the_sales_application_shows_the_sales_menu() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let (system, orm) = install_system(&db).await;
+        let (_db, system, orm) = cloned_sale_system().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let (active, children) = menu(&mut tx, "sale", "sale_menu_root").await;
         assert!(!active, "sale alone keeps its root menu hidden");
@@ -73,8 +72,7 @@ fn the_sales_application_shows_the_sales_menu() {
 #[test]
 fn quotations_and_orders_open_without_a_fixed_state_domain() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         for name in ["action_quotations", "action_orders"] {
             let action = xmlid(&mut tx, "sale", name).await;

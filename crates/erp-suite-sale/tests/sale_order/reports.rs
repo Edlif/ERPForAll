@@ -77,8 +77,7 @@ async fn partner_at(
 #[test]
 fn the_sales_documents_print_a_quotation_an_order_and_a_pro_forma() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm
             .begin_with(SUPERUSER_ID, Context::new().with_company_id(1))
             .await
@@ -510,8 +509,7 @@ fn the_sales_documents_print_a_quotation_an_order_and_a_pro_forma() {
 #[test]
 fn a_salesperson_prints_own_quotations_only() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (db, orm) = cloned_sale().await;
         // a second company and its quotation, made outside a company session: the work the commit
         // does for them needs a caller who may act for that company
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();

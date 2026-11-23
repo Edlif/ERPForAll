@@ -56,6 +56,8 @@ pub const BRAND_ICON_PATH: &str = "/erp/brand/icon.svg";
 pub const BRAND_LOGO_PATH: &str = "/erp/brand/logo.svg";
 /// Brand logo for dark backgrounds.
 pub const BRAND_LOGO_DARK_PATH: &str = "/erp/brand/logo-dark.svg";
+/// Login stylesheet of the installed brand addon (404 when none ships one).
+pub const BRAND_LOGIN_CSS_PATH: &str = "/erp/brand/login.css";
 /// Prefix of published web client assets.
 pub const ASSETS_PREFIX: &str = "/erp/assets/";
 /// Prefix of the JSON-2 RPC surface.
@@ -99,6 +101,7 @@ pub const ROUTES: &[RouteMatch] = &[
     RouteMatch::Exact("/erp/brand/icon.svg"),
     RouteMatch::Exact("/erp/brand/logo.svg"),
     RouteMatch::Exact("/erp/brand/logo-dark.svg"),
+    RouteMatch::Exact("/erp/brand/login.css"),
     RouteMatch::Prefix("/erp/assets/"),
     RouteMatch::Prefix("/erp/json/2/"),
     RouteMatch::Prefix("/erp/content/"),
@@ -164,6 +167,7 @@ mod tests {
         BRAND_ICON_PATH,
         BRAND_LOGO_PATH,
         BRAND_LOGO_DARK_PATH,
+        BRAND_LOGIN_CSS_PATH,
     ];
 
     #[test]

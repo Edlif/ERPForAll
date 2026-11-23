@@ -87,8 +87,7 @@ fn browse(tx: &Transaction, model: &str, ids: &[i64], companies: &[i64]) -> Reco
 #[test]
 fn a_line_never_moves_to_another_order() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         admin(&mut tx).await;
@@ -225,8 +224,7 @@ fn a_line_never_moves_to_another_order() {
 #[test]
 fn the_company_of_a_confirmed_order_or_of_a_quotation_with_lines_is_kept() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let main = tx

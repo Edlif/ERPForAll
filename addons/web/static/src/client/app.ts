@@ -9,7 +9,7 @@ import { createHotkeyController, type HotkeyBinding } from "@erpforall/elang";
 import { reportHotkeyError } from "../../../../../web/src/runtime/hotkeys.js";
 import { dropAbsentDashboardFilters, mountDashboard } from "./dashboard.js";
 import { admitRequestContext } from "./dashboard-card.js";
-import { SearchModel, createSearchBar, readSearchArch, applySearchDefaults, splitSearchDefaults, namesViewFilter, SEARCH_DEFAULT_PREFIX, type SearchArch } from "./search/index.js";
+import { SearchModel, createSearchBar, readSearchArch, applySearchDefaults, splitSearchDefaults, namesViewFilter, namesFavorite, favoriteStore, SEARCH_DEFAULT_PREFIX, type SearchArch, type FavoriteItem } from "./search/index.js";
 import { readMenuModule, readSettingsTarget } from "./settings-items.js";
 import { icon, menuIcon } from "./icons.js";
 import { MessageServices } from "./messages.js";
@@ -42,7 +42,7 @@ import { askButtonPrompt } from "./button-prompt.js";
 import { viewButton, ButtonDebouncer, ButtonHotkeys } from "./view-button.js";
 import { runUrlButton } from "./button-url.js";
 import { CurrencyDisplayCache } from "./field-currency.js";
-import { fieldWidgets, resolveFieldWidget, type ActionRequest, type RecordEvent } from "./registry.js";
+import { fieldWidgets, resolveFieldWidget, type ActionRequest, type RecordEvent, type ShellNavigation } from "./registry.js";
 import { ListGroupModel, type ListGroupNode } from "./list-group-model.js";
 import type { ListGroupState } from "./list-group-state.js";
 import type { NumericLocale } from "./numeric-values.js";
@@ -56,6 +56,7 @@ import { clientActions, listHeaderExtensions, serviceControllers, type ClientAct
 import { mountControlPanel } from "./control-panel.js";
 import { printDropdown, printRecords } from "./report-print.js";
 import { requestLoading } from "./loading.js";
+import { RefusedAction, isActionRefusal, mountRefusedActionPage } from "./refused-action.js";
 import { actionResult } from "./actions.js";
 import { CompanySelector, type CompanyItem } from "./company-selector.js";
 import { reorderApps } from "./reorder-apps.js";
@@ -79,6 +80,7 @@ import { renderDebugMenu, createDebugCommandProvider, type DebugEnvironment } fr
 import { createChoiceDropdown } from "./choice-dropdown.js";
 import { attachMenuDropdown } from "./menu-dropdown.js";
 import { navOverflowCount } from "./navbar-overflow.js";
+import { productName } from "./product-name.js";
 
 import type { Company } from "../generated/human-ui.js";
 
@@ -154,6 +156,21 @@ export function isFalsy(value: unknown): boolean {
   return false;
 }
 
+/** An `openAction` request from addon code, checked before anything is read: an XML id, a view mode, a domain list
+ *  and a context of `default_<field>` keys only (as a dashboard card's). */
+function admitAddonActionRequest(request: ActionRequest): ActionRequest {
+  const refuse = (path: string, problem: string): never => { throw new ClientError("validation", `openAction: ${path} ${problem}.`); };
+  if (typeof request !== "object" || request === null) return refuse("the request", "must be an object");
+  if (typeof request.xmlId !== "string" || request.xmlId.length > 128 || !/^[a-z0-9_]+\.[A-Za-z0-9_]+$/.test(request.xmlId)) return refuse("the XML id", "must be module.name");
+  if (request.viewMode !== "list" && request.viewMode !== "form" && request.viewMode !== null) return refuse("the view mode", "must be list, form or null");
+  if (!Array.isArray(request.domain)) return refuse("the domain", "must be a list");
+  const context = admitRequestContext(request.context, "the context", refuse);
+  for (const key of Object.keys(context)) {
+    if (key.startsWith("search_default_")) refuse(`the context[${JSON.stringify(key.slice(0, 64))}]`, "is not admitted: only default_<field> keys are");
+  }
+  return { xmlId: request.xmlId, viewMode: request.viewMode, domain: [...request.domain], context };
+}
+
 export class HumanApp {
   private readonly errors: ErrorDialog;
   readonly messages: MessageServices;
@@ -197,6 +214,8 @@ export class HumanApp {
   private readonly systrayContext: Record<string, unknown>;
   private currentUrl = window.location.pathname + window.location.search;
   private generation = 0;
+  /** The navigation generation whose page is on screen (`current`); a later one may still be staging. */
+  private shownGeneration = 0;
   /** Number of the latest action a dashboard card asked to open (`openActionRequest`). */
   private actionRequest = 0;
   /** Settles when the navigation now running ends, whether it committed, was superseded or failed. */
@@ -541,11 +560,12 @@ export class HumanApp {
     this.header.replaceChildren();
 
     const brand = button("", () => this.run(() => this.navigate({})), "brand");
-    brand.setAttribute("aria-label", "ERPForAll home");
+    const product = productName();
+    brand.setAttribute("aria-label", `${product} home`);
     // Both variants ship; the theme tokens in client.css show the one that fits the top bar.
     for (const [src, variant] of [["/erp/brand/logo.svg", "light"], ["/erp/brand/logo-dark.svg", "dark"]] as const) {
       const logo = el("img", undefined, `brand-logo brand-logo-${variant}`);
-      logo.src = src; logo.alt = variant === "light" ? "ERPForAll" : ""; logo.width = 120; logo.height = 32;
+      logo.src = src; logo.alt = variant === "light" ? product : ""; logo.width = 120; logo.height = 32;
       brand.append(logo);
     }
     this.header.append(brand);
@@ -570,6 +590,9 @@ export class HumanApp {
 
     const systray = el("div", undefined, "systray");
     const customSystrayContainer = el("div", undefined, "systray-custom-items");
+    // A handle that arrives after this header was replaced is disposed, not added to the newer header's disposers.
+    const headerStops = this.disposeHeader;
+    const systrayNavigation = this.shellWideNavigation(() => this.disposeHeader === headerStops);
     const systrayEnv: SystrayEnvironment = {
       userId: this.userId,
       csrfToken: text(object(bootstrap["csrf"])["logout"], "session token"),
@@ -579,10 +602,10 @@ export class HumanApp {
       run: job => this.run(job),
       report: err => this.reportError(err),
       messages: this.messages,
-      openActivities: action => this.openActivities(action)
+      openActivities: action => this.openActivities(action),
+      navigate: systrayNavigation.navigate,
+      openAction: systrayNavigation.openAction
     };
-    // A handle that arrives after this header was replaced is disposed, not added to the newer header's disposers.
-    const headerStops = this.disposeHeader;
     renderSystray(customSystrayContainer, systrayItems.entries(), systrayEnv).then(handle => {
       if (this.disposeHeader === headerStops) headerStops.push(() => handle.dispose());
       else handle.dispose();
@@ -772,6 +795,8 @@ export class HumanApp {
               const targetCids = companySelector.selectedCompanyIds.length
                 ? companySelector.selectedCompanyIds
                 : [entry.company.id];
+              try { await this.rememberCompanies(targetCids); }
+              catch (error) { companySelector.reset(); renderTreeAndActions(); throw error; }
               const route = { ...this.current, cids: targetCids.map(String) };
               this.navigateLocation(routeUrl(route));
             }));
@@ -821,7 +846,10 @@ export class HumanApp {
                 renderTreeAndActions();
                 return;
               }
-              const route = { ...this.current, cids: companySelector.selectedCompanyIds.map(String) };
+              const chosen = [...companySelector.selectedCompanyIds];
+              try { await this.rememberCompanies(chosen); }
+              catch (error) { companySelector.reset(); renderTreeAndActions(); throw error; }
+              const route = { ...this.current, cids: chosen.map(String) };
               this.navigateLocation(routeUrl(route));
             }));
 
@@ -1191,6 +1219,8 @@ export class HumanApp {
     this.headerMenuSearchReady?.();
 
     const initialRoute = parseRoute(new URL(window.location.href));
+    if (initialRoute.action === undefined && await this.openHomeAction(initialRoute)) return;
+    if (this.lifetime.signal.aborted) return;
     try { await this.navigate(initialRoute, true); }
     catch (error) {
       if (error instanceof ExpiredMethodAction) {
@@ -1201,6 +1231,25 @@ export class HumanApp {
         this.content.replaceChildren(recovery);
       }
       throw error;
+    }
+  }
+
+  /** The user's home action (`res.users.action_id`) in place of the app grid, on a first load whose address names no
+   *  action. Answers whether it opened. The action loads through the usual access checks; one the user may not open,
+   *  or a failed read, leaves the grid with a notice that says why. The logo and Back still reach the grid. */
+  private async openHomeAction(initial: Route): Promise<boolean> {
+    try {
+      const rows = array(await this.rpc.call("res.users", "web_read", { ids: [this.userId], specification: { action_id: {} }, context: this.context }, { signal: this.lifetime.signal }), "user rows");
+      if (rows.length !== 1) throw new ClientError("server", "Invalid home action response.");
+      const value = object(rows[0], "user row")["action_id"];
+      if (value === false) return false;
+      const action = String(integer(value, "home action"));
+      await this.navigate({ action, ...(initial.cids === undefined ? {} : { cids: initial.cids }) }, true, false, undefined, { showRefusedPage: false });
+      return this.current.action === action;
+    } catch (error) {
+      if (this.lifetime.signal.aborted) return false;
+      this.messages.notifications.add(`Your home action could not be opened, so the apps are shown instead: ${errorMessage(error)}`, { level: "warning" });
+      return false;
     }
   }
 
@@ -1255,8 +1304,53 @@ export class HumanApp {
     return context;
   }
 
-  /** Opens a window action named by its XML id (dashboard cards): its list, or a new record in its form, filtered by
-   *  the action's domain and the request's, with the request's context and the way back to `origin`. */
+  /** The `ShellNavigation` handed to addon code. `live` says whether the owner that received it is still the one on
+   *  screen (after that both do nothing); `origin` is the page `openAction` leads back to, read when it is called. */
+  private shellNavigation(live: () => boolean, origin: () => { route: Route; label: string }): ShellNavigation {
+    const usable = (): boolean => live() && !this.expired && !this.lifetime.signal.aborted;
+    return {
+      navigate: async requested => {
+        if (!usable()) return;
+        const route: Route = { ...requested };
+        routeUrl(route); // a malformed route fails here, before any guard runs
+        if (route.method_action !== undefined) throw new ClientError("validation", "Addon navigation cannot name a method action: open the action with openAction instead.");
+        const active = new Set(this.activeCompanyIds.map(String));
+        if (route.cids !== undefined && (route.cids.length !== active.size || route.cids.some(id => !active.has(id)))) {
+          // Other companies are a new company context: the page loads again with them, as the company switcher does.
+          if (await this.canLeave()) this.navigateLocation(routeUrl(route));
+          return;
+        }
+        await this.navigate(route);
+      },
+      openAction: async request => {
+        if (!usable()) return;
+        const admitted = admitAddonActionRequest(request);
+        const from = origin();
+        await this.openActionRequest(admitted, from.route, from.label);
+      }
+    };
+  }
+
+  /** `ShellNavigation` for code that lives as long as the shell (systray items): it leads back to the page open at the
+   *  time of the call. */
+  private shellWideNavigation(live: () => boolean): ShellNavigation {
+    return this.shellNavigation(live, () => {
+      const menu = this.current.menu === undefined ? undefined : this.menus.get(Number(this.current.menu));
+      return { route: { ...this.current }, label: this.breadcrumbs.current?.title ?? menu?.label ?? "Back" };
+    });
+  }
+
+  /** `ShellNavigation` for code that belongs to the page of navigation `generation` (a service, a client action, a
+   *  field widget): it stops when that page is left and leads back to that page as it is at the time of the call (its
+   *  address keeps search and record changes), or to `route` while the page is still being built; titled `label`. */
+  private pageNavigation(generation: number, route: Route, label: () => string): ShellNavigation {
+    return this.shellNavigation(() => generation === this.generation,
+      () => ({ route: this.shownGeneration === generation ? { ...this.current } : { ...route }, label: label() }));
+  }
+
+  /** Opens a window action named by its XML id (dashboard cards, addon code): its list, or a new record in its form,
+   *  filtered by the action's domain and the request's, with the request's context and the way back to `origin`.
+   *  From a page without an action (the app grid), the way back is the opened action's own list. */
   private async openActionRequest(request: ActionRequest, origin: Route, originLabel: string): Promise<void> {
     // The list's stale-answer guard: request number, route generation, expiry. The read does not block the page, so
     // the user may go elsewhere or activate a control again before it answers; only the latest request of the page
@@ -1277,8 +1371,11 @@ export class HumanApp {
       domain: [...this.actionDomain(action, context), ...request.domain], context: {},
       views: [{ id: list[0] ?? null, type: "list" }, ...(form ? [{ id: form[0] ?? null, type: "form" }] : [])] } });
     if (result.kind !== "current_window") throw new ClientError("server", "The dashboard action did not open as a list.");
-    const id = this.methodActions.add({ result, context, origin: { ...origin }, originLabel });
-    try { await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: id, model: result.model, view_type: request.viewMode === "form" ? "form" : "list" }); }
+    // A method action lives under an action route; the app grid has none, so the opened action anchors itself.
+    const anchor: Route = origin.action !== undefined ? { ...origin } : { action: String(integer(action["id"], "action id")), ...(origin.cids === undefined ? {} : { cids: origin.cids }) };
+    const label = origin.action !== undefined ? originLabel : result.name;
+    const id = this.methodActions.add({ result, context, origin: anchor, originLabel: label });
+    try { await this.navigate({ action: anchor.action, menu: anchor.menu, cids: anchor.cids, method_action: id, model: result.model, view_type: request.viewMode === "form" ? "form" : "list" }); }
     catch (error) { this.methodActions.remove(id); throw error; }
     // A navigation that did not arrive (the page may not be left) keeps no entry behind.
     if (this.current.method_action !== id) this.methodActions.remove(id);
@@ -1453,6 +1550,17 @@ export class HumanApp {
       overlay.replaceChildren();
     }
     this.coverContent(false);
+  }
+
+  /**
+   * Stores the companies the user chose in the switcher (current first) in `res.users.settings`,
+   * so a later load without `cids` in its address starts with them. A refused or failed save
+   * stops the switch: the error is reported and the user stays where they are.
+   */
+  private async rememberCompanies(companyIds: readonly number[]): Promise<void> {
+    await this.rpc.call("res.users.settings", "set_res_users_settings", {
+      new_settings: { active_company_ids: [...companyIds] },
+    }, { write: true });
   }
 
   /** Reorders home menu root applications and persists the preference to `res.users.settings`. */
@@ -1886,7 +1994,7 @@ export class HumanApp {
       mobileDrawer.setAttribute("aria-labelledby", "mobile-navigation-title");
 
       const drawerHeader = el("div", undefined, "mobile-drawer-header");
-      const drawerTitle = el("strong", activeRoot ? activeRoot.label : "ERPForAll");
+      const drawerTitle = el("strong", activeRoot ? activeRoot.label : productName());
       drawerTitle.id = "mobile-navigation-title";
       drawerHeader.append(drawerTitle);
       const drawerClose = button("", () => this.closeMobileDrawer(), "drawer-close-btn");
@@ -2010,8 +2118,11 @@ export class HumanApp {
     }
   }
 
-  private async navigate(route: Route, initial = false, fromHistory = false, invocation?: { caller: RecordState; generation: number }, options?: { autosave?: boolean; target?: "current" | "main" | "new" }): Promise<void> {
+  private async navigate(route: Route, initial = false, fromHistory = false, invocation?: { caller: RecordState; generation: number }, options?: { autosave?: boolean; target?: "current" | "main" | "new"; showRefusedPage?: boolean }): Promise<void> {
     if(this.debug)route={...route,debug:"1"};
+    // The page's companies stay in the address: a route that names none (a menu, a breadcrumb, addon code) keeps
+    // them, so a reload or a copied link opens the same companies. A history entry is restored as it was recorded.
+    if (route.cids === undefined && this.current.cids !== undefined && !fromHistory) route = { ...route, cids: [...this.current.cids] };
     if (invocation) {
       // A completed object call already saved/validated its record. Do not weaken canLeave's
       // global pending guard: only the exact active invocation can consume this handoff once.
@@ -2064,7 +2175,7 @@ export class HumanApp {
         if (entry && entry.origin.action !== route.action) throw new ClientError("validation", "Related action does not belong to this route.");
         const action: Record<string, unknown> = entry
           ? { ...entry.result, wire_major: 1, target: "current", id: rpcId(route.action) }
-          : await this.windowAction(actionId);
+          : await this.windowAction(actionId).catch((error: unknown) => { throw options?.showRefusedPage !== false && isActionRefusal(error) ? new RefusedAction() : error; });
         if (action["wire_major"] !== 1 || action["target"] !== "current" || action["id"] !== rpcId(route.action)) {
           throw new ClientError("unsupported", "Unsupported or mismatched window action.");
         }
@@ -2098,6 +2209,7 @@ export class HumanApp {
           const widget = widgets[0]!;
           if (widget.widget === "web.settings") mountedPanel.update({ title: "Settings", model });
           nextService = await serviceControllers.get(widget.widget).create({
+            ...this.pageNavigation(generation, route, () => actionTitle),
             host: staging,
             panel,
             controls,
@@ -2122,9 +2234,9 @@ export class HumanApp {
                 if (target.kind === "menu") {
                   const action = this.defaultActionForMenu(target.id);
                   if (!action) throw new ClientError("permission", "This Settings menu is unavailable or has no action. Reload Settings or contact your administrator.");
-                  await this.navigate({ action: String(action.action), menu: String(action.menu) });
+                  await this.navigate({ action: String(action.action), menu: String(action.menu) }, false, false, undefined, { showRefusedPage: false });
                 } else {
-                  await this.navigate({ action: String(target.id), ...(target.res_id === null ? {} : { id: String(target.res_id), view_type: "form" as const }) });
+                  await this.navigate({ action: String(target.id), ...(target.res_id === null ? {} : { id: String(target.res_id), view_type: "form" as const }) }, false, false, undefined, { showRefusedPage: false });
                 }
               }
             }
@@ -2190,6 +2302,7 @@ export class HumanApp {
       this.record = nextRecord;
       this.service = nextService;
       this.current = route;
+      this.shownGeneration = generation;
       committed = true;
       // The mounted record changed (a form loaded, or a list/service left no record open): the
       // systray context must carry the new open-record identity for the assistant's session panel.
@@ -2212,6 +2325,11 @@ export class HumanApp {
       this.content.focus({ preventScroll: true });
       documentScroller().scrollTop = 0;
       nextRestore?.();
+    } catch (error) {
+      if (!(error instanceof RefusedAction)) throw error;
+      if (generation !== this.generation || this.expired) return;
+      this.showRefusedAction(route, initial, fromHistory);
+      committed = true;
     } finally {
       for (const dispose of stagedDisposers) dispose();
       if (!committed && generation === this.generation) {
@@ -2224,6 +2342,38 @@ export class HumanApp {
       if (this.navigationInFlight === inFlight) this.navigationInFlight = undefined;
       settle();
     }
+  }
+
+  /**
+   * Commit the refused-action page in place of the previous content: the shell stays, no menu entry is current, and the
+   * address becomes the home route (same companies), replacing a first load or a history step so Back does not return to
+   * the refusal. Nothing the server said about the action is shown.
+   */
+  private showRefusedAction(route: Route, initial: boolean, fromHistory: boolean): void {
+    const home: Route = { cids: route.cids, debug: route.debug };
+    const page = mountRefusedActionPage({
+      rpc: this.rpc,
+      navigate: next => this.navigate(next),
+      goHome: () => this.run(() => this.navigate(home)),
+      report: error => this.reportError(error),
+    });
+    this.captureClientState();
+    this.clientMounted = undefined;
+    for (const dispose of this.disposeWidgets) dispose();
+    this.disposeWidgets = [() => page.dispose()];
+    this.record = undefined;
+    this.service = undefined;
+    this.breadcrumbs.clear();
+    this.current = home;
+    this.renderNavigation(home);
+    this.content.replaceChildren(page.element);
+    this.currentUrl = routeUrl(home);
+    if (initial || fromHistory) history.replaceState({ erpIndex: this.historyIndex }, "", this.currentUrl);
+    else history.pushState({ erpIndex: ++this.historyIndex }, "", this.currentUrl);
+    this.notice("");
+    this.messages.navigation();
+    this.content.setAttribute("data-navigation-focus", "");
+    this.content.focus({ preventScroll: true });
   }
 
   /** The bounds of the pivot table, from Settings (`web.pivot_*`): each has a default, a floor and a hard bound declared by the web addon. */
@@ -2680,6 +2830,7 @@ export class HumanApp {
   private async kanbanView(staging: HTMLElement, panel: HTMLElement, actionTitle: string, description: Description, view: View, route: Route, generation: number, availableViews: [number | null, string][], scope: { baseDomain: unknown[]; context: Record<string, unknown>; hasForm: boolean; searchDefaults?: ReadonlyMap<string, unknown> }): Promise<{ dispose: () => void; restore: () => void }> {
     const { context, baseDomain, hasForm } = scope;
     if (route.id !== undefined) throw new ClientError("validation", "The kanban view shows many records; the address cannot name one record.");
+    const cardNavigation = this.pageNavigation(generation, route, () => actionTitle);
     const root = kanbanRoot(view), layout = kanbanLayout(view);
     const resume = this.kanbanResume?.url === routeUrl(route) ? this.kanbanResume : undefined;
     this.kanbanResume = undefined;
@@ -2778,7 +2929,7 @@ export class HumanApp {
           rpc: this.rpc, context, currencies, numericLocale: this.numericLocale, editorLocale: this.editorLocale,
           messages: this.messages, run: this.run, report: error => this.reportError(error), signal: this.lifetime.signal,
           openRecord: (model, related) => this.openRelatedRecord(model, related), change: () => { throw new ClientError("validation", "Kanban card fields cannot be edited here."); },
-          openAction: request => this.openActionRequest(request, route, actionTitle),
+          ...cardNavigation,
         });
       } });
       body.replaceChildren(cards.node);
@@ -2866,11 +3017,32 @@ export class HumanApp {
     let arch: Promise<SearchArch> | undefined;
     const readArch = (): Promise<SearchArch> => arch ??= this.searchViewNodes(model, context).then(nodes => readSearchArch(nodes, this.searchExpression(context)), error => { arch = undefined; throw error; });
     searchModel.declareViewFilters(readArch);
+    // A list of a saved action keeps its favorites in `ir.filters`; a related list (opened by a button) has none.
+    const actionId = route.method_action === undefined && route.action !== undefined ? rpcId(route.action) : undefined;
+    if (actionId !== undefined) searchModel.declareFavorites(favoriteStore(this.rpc, model, actionId, context));
     const restored = await params();
-    // An address that names one of the view's filters needs them before it can be restored.
+    // An address that names one of the view's filters or a favorite needs them before it can be restored.
     if (defaults.size || namesViewFilter(restored)) await searchModel.loadViewFilters();
-    if (defaults.size) searchModel.keepEmptySearch();
-    if (searchModel.loadFromUrlParams(restored) || route.search || !defaults.size) return restored;
+    if (namesFavorite(restored)) await searchModel.loadFavorites();
+    if (searchModel.loadFromUrlParams(restored) || route.search) { if (defaults.size) searchModel.keepEmptySearch(); return restored; }
+    // A first open: the caller's default favorite wins over the action's search defaults, as in the reference ERP.
+    let favorite: FavoriteItem | undefined;
+    if (searchModel.hasFavorites()) {
+      try { await searchModel.loadFavorites(); favorite = searchModel.defaultFavorite(); }
+      catch (error) {
+        if (!(error instanceof ClientError) || error.kind === "session") throw error;
+        if (generation === this.generation && !this.expired) this.messages.notifications.add(`Your default favorite could not be applied: ${error.message}`, { level: "warning" });
+      }
+    }
+    if (favorite || defaults.size) searchModel.keepEmptySearch();
+    if (favorite) {
+      try { searchModel.toggleFavorite(favorite.id); return restored; }
+      catch (error) {
+        if (!(error instanceof ClientError) || (error.kind !== "validation" && error.kind !== "unsupported")) throw error;
+        if (generation === this.generation && !this.expired) this.messages.notifications.add(`Your default favorite could not be applied: ${error.message}`, { level: "warning" });
+      }
+    }
+    if (!defaults.size) return restored;
     const unapplied = await applySearchDefaults(searchModel, await readArch(), defaults, async (relation, id) => {
       const rows = array(await this.rpc.call(relation, "web_read", { ids: [id], specification: { display_name: {} }, context }), "default record");
       if (rows.length !== 1) throw new ClientError("validation", `Record ${id} of ${relation} is not available.`);
@@ -2884,6 +3056,7 @@ export class HumanApp {
 
   private async listView(staging: HTMLElement, panel: HTMLElement, actionTitle: string, description: Description, view: View, route: Route, generation: number, actionHelp?: string, availableViews?: [number | null, string][], scope?: {baseDomain: unknown[]; context: Record<string, unknown>; hasForm: boolean; canCreate: boolean; searchDefaults?: ReadonlyMap<string, unknown>}): Promise<{ dispose: () => void; settle: () => void }> {
     const context = scope?.context ?? this.context, baseDomain = scope?.baseDomain ?? [], hasForm = scope?.hasForm ?? true, canCreate = scope?.canCreate ?? hasForm;
+    const cellNavigation = this.pageNavigation(generation, route, () => actionTitle);
     const fieldStops: (() => void)[] = [];
     let groupedModel: ListGroupModel | undefined;
     const currencies = new CurrencyDisplayCache();
@@ -3492,6 +3665,7 @@ export class HumanApp {
             rpc: this.rpc, context, currencies, numericLocale: this.numericLocale, editorLocale: this.editorLocale,
             messages: this.messages, run: this.run, report: error => this.reportError(error), signal: this.lifetime.signal,
             openRecord: (model, related) => this.openRelatedRecord(model, related), change: () => { throw new ClientError("validation", "List display fields cannot be edited."); },
+            ...cellNavigation,
           });
           stops.push(handle.dispose);
           const widget = field.widget ?? field.kind;
@@ -3716,6 +3890,7 @@ export class HumanApp {
     const mounted = await mountControlPanel(staging, { title: result.name, model: "" }, error => this.reportError(error));
     stagedDisposers.push(mounted.dispose);
     const handle = await factory.create({
+      ...this.pageNavigation(generation, route, () => result.name),
       host: staging, panel: mounted.panel, controls: mounted.actions, rpc: this.rpc, companies: this.companies, run: this.run,
       notice: this.notice, messages: this.messages, editorLocale: this.editorLocale,
       // ORM company context and the assistant dock both use the first selected company.
@@ -4098,6 +4273,11 @@ export class HumanApp {
 
   private formView(staging: HTMLElement, controls: HTMLElement, panel: HTMLElement, actionTitle: string, state: RecordState, view: View, route: Route, availableViews?: [number | null, string][], context = this.context): () => void {
     const titleField = view.fields.find(f => f.name === "name" && f.kind === "char") || view.fields.find(f => f.kind === "char");
+    // Built while its navigation stages, so the current generation is this form's.
+    const fieldNavigation = this.pageNavigation(this.generation, route, () => {
+      const title = titleField ? state.values[titleField.name] : undefined;
+      return typeof title === "string" && title.trim() ? title : actionTitle;
+    });
     let surface: RecordForm | undefined;
     let headingObserver: MutationObserver | undefined;
     let formHotkeys: ReturnType<typeof createHotkeyController> | undefined;
@@ -4618,7 +4798,7 @@ export class HumanApp {
       messagingStore: this.getMessagingStore(), uid: this.userId, userName: this.userName,
       run: this.run, report: error => this.reportError(error), messages: this.messages, editorLocale: this.editorLocale,
       notify: message => this.messages.notifications.add(message, { level: "warning" }),
-      openRecord: (model, id) => this.openRelatedRecord(model, id), button: renderButton,
+      openRecord: (model, id) => this.openRelatedRecord(model, id), button: renderButton, navigation: fieldNavigation,
       changeValues: (changes, focus) => this.run(async () => {
         if (this.uncertainMethod || this.expired) throw new ClientError("ambiguous", uncertainMethodMessage);
         const changeGeneration = this.generation;

@@ -12,7 +12,7 @@ use erp_fields::{Cell, DateTime, ErrorKind, RecId};
 use erp_modules::{AddonIndex, InitOptions, ModuleName, ModuleSystem};
 use erp_orm::{Command, Context, Orm, RawVals, Records, SUPERUSER_ID, Transaction};
 use erp_sdk::Value;
-use erp_testkit::TestDb;
+use erp_testkit::{TemplateDb, TestDb};
 
 #[path = "support/install_defaults.rs"]
 mod install_defaults;
@@ -44,6 +44,10 @@ fn system(db: &TestDb) -> ModuleSystem {
 }
 
 fn system_with_stock(db: &TestDb, stock: bool) -> ModuleSystem {
+    system_for_pool(db.pool().clone(), stock)
+}
+
+fn system_for_pool(pool: erp_testkit::deadpool_postgres::Pool, stock: bool) -> ModuleSystem {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -64,18 +68,45 @@ fn system_with_stock(db: &TestDb, stock: bool) -> ModuleSystem {
             (name, snapshot.digest().to_owned())
         })
         .collect();
-    let builder = ModuleSystem::builder(db.pool().clone(), index)
+    let builder = ModuleSystem::builder(pool, index)
         .native_artifact_identities(identities)
         .view_types(erp_addon_web::view_type_contributions())
         .require_core_tables(erp_security::auth::core_tables())
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables());
     if stock {
         builder
-            .code(erp_cli::native_addons::DESCRIPTORS.iter().copied())
-            .require_sql_objects(erp_cli::native_addons::SQL_MANIFESTS.iter().copied())
-            .require_sql_uninstall_guards(
-                erp_cli::native_addons::UNINSTALL_MANIFESTS.iter().copied(),
-            )
+            .code([
+                &erp_addon_base::ADDON,
+                &erp_addon_barcodes::ADDON,
+                &erp_addon_barcodes_gs1_nomenclature::ADDON,
+                &erp_addon_uom::ADDON,
+                &erp_addon_mail::ADDON,
+                &erp_addon_product::ADDON,
+                &erp_addon_product_mail::ADDON,
+                &erp_addon_web::ADDON,
+                &erp_addon_analytic::ADDON,
+                &erp_addon_account::ADDON,
+                &erp_addon_account_mail::ADDON,
+                &erp_addon_reporting::ADDON,
+                &erp_addon_stock::ADDON,
+                &erp_addon_stock_account::ADDON,
+                &erp_addon_valuation::ADDON,
+                &erp_addon_stock_mail::ADDON,
+                &erp_addon_sales_team::ADDON,
+                &erp_addon_sale::ADDON,
+                &erp_addon_sale_stock::ADDON,
+            ])
+            .require_sql_objects([
+                &erp_addon_account::reconcile::history_guard::MANIFEST,
+                &erp_addon_stock::schema_guards::MANIFEST,
+                &erp_addon_stock_account::history_guards::MANIFEST,
+                &erp_addon_valuation::MANIFEST,
+            ])
+            .require_sql_uninstall_guards([
+                &erp_addon_account::reconcile::history_guard::UNINSTALL,
+                &erp_addon_stock_account::uninstall_guard::MANIFEST,
+                &erp_addon_valuation::lifecycle::MANIFEST,
+            ])
     } else {
         builder
             .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
@@ -140,6 +171,45 @@ async fn install_system(db: &TestDb) -> (ModuleSystem, Orm) {
     );
     let orm = installed.orm;
     (system, orm)
+}
+
+/// Clone a cached `sale`-installed template database and load its [`ModuleSystem`] and [`Orm`].
+async fn cloned_sale_system() -> (TestDb, ModuleSystem, Orm) {
+    let db = TemplateDb::clone_or_init("erp-suite-sale:sale:v1", |pool| async move {
+        let system = system_for_pool(pool, false);
+        let initialized = Box::pin(system.initialize(InitOptions::new()))
+            .await
+            .map_err(|e| e.to_string())?;
+        if !initialized.post_commit.is_clean() {
+            return Err(format!(
+                "initialize post_commit not clean: {:?}",
+                initialized.post_commit
+            ));
+        }
+        let installed = Box::pin(system.button_immediate_install(
+            &system.system_env(Context::new()),
+            &[ModuleName::new("sale").unwrap()],
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+        if !installed.post_commit.is_clean() {
+            return Err(format!(
+                "install post_commit not clean: {:?}",
+                installed.post_commit
+            ));
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .unwrap();
+    let system = system(&db);
+    let loaded = Box::pin(system.load()).await.unwrap();
+    (db, system, loaded.orm)
+}
+
+async fn cloned_sale() -> (TestDb, Orm) {
+    let (db, _system, orm) = cloned_sale_system().await;
+    (db, orm)
 }
 
 /// The installed ORM with the database's compiled access policy, as a served node builds it: a
@@ -408,8 +478,7 @@ fn sale_installs_its_sequence_and_access_row() {
 #[test]
 fn a_new_quotation_is_a_numbered_draft() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let row = tx
@@ -459,8 +528,7 @@ fn a_new_quotation_is_a_numbered_draft() {
 #[test]
 fn an_order_without_a_sequence_is_refused() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let sequence = xmlid(&mut tx, "sale", "seq_sale_order").await;
@@ -504,8 +572,7 @@ fn an_order_without_a_sequence_is_refused() {
 #[test]
 fn send_and_confirm_follow_the_transition_table() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let quotation = new_order(&mut tx, &world).await;
@@ -556,8 +623,7 @@ fn send_and_confirm_follow_the_transition_table() {
 #[test]
 fn the_lock_setting_locks_confirmed_orders() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         set_setting(&mut tx, erp_addon_sale::LOCK_CONFIRMED, Value::Bool(true)).await;
@@ -572,8 +638,7 @@ fn the_lock_setting_locks_confirmed_orders() {
 #[test]
 fn late_confirmation_refusal_rolls_back_the_batch_for_an_orm_caller() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let draft = new_order(&mut tx, &world).await;
@@ -637,8 +702,7 @@ fn late_confirmation_refusal_rolls_back_the_batch_for_an_orm_caller() {
 #[test]
 fn cancel_reset_lock_and_unlock() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let confirmed = new_order(&mut tx, &world).await;
@@ -681,8 +745,7 @@ fn cancel_reset_lock_and_unlock() {
 #[test]
 fn only_a_sales_administrator_locks_and_unlocks() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         admin(&mut tx).await;
@@ -721,8 +784,7 @@ fn only_a_sales_administrator_locks_and_unlocks() {
 #[test]
 fn only_quotations_and_cancelled_orders_are_deleted() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let sent = new_order(&mut tx, &world).await;
@@ -748,8 +810,7 @@ fn only_quotations_and_cancelled_orders_are_deleted() {
 #[test]
 fn client_writes_follow_the_header_rules() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let other = partner(
@@ -851,8 +912,7 @@ fn client_writes_follow_the_header_rules() {
 #[test]
 fn addresses_come_from_the_customers_contacts() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let mut world = world(&mut tx).await;
         let company = partner(
@@ -887,8 +947,7 @@ fn addresses_come_from_the_customers_contacts() {
 #[test]
 fn salesperson_and_team_follow_the_customer_and_the_salesperson() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let mut world = world(&mut tx).await;
         admin(&mut tx).await;
@@ -921,8 +980,7 @@ fn salesperson_and_team_follow_the_customer_and_the_salesperson() {
 #[test]
 fn committed_orders_draw_distinct_numbers() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut names = Vec::new();
         for _ in 0..2 {
             let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
@@ -939,8 +997,7 @@ fn committed_orders_draw_distinct_numbers() {
 #[test]
 fn an_edited_order_sequence_survives_the_upgrade() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let (system, orm) = install_system(&db).await;
+        let (_db, system, orm) = cloned_sale_system().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let sequence = xmlid(&mut tx, "sale", "seq_sale_order").await;
         let sequences = tx
@@ -983,8 +1040,7 @@ fn an_edited_order_sequence_survives_the_upgrade() {
 #[test]
 fn status_fields_and_context_defaults_are_refused_on_orders() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let quotation = new_order(&mut tx, &world).await;
@@ -1066,8 +1122,7 @@ async fn partner_user_column(client: &erp_testkit::tokio_postgres::Client) -> i6
 #[test]
 fn the_base_upgrade_adds_the_partner_salesperson_column() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let (system, orm) = install_system(&db).await;
+        let (db, system, orm) = cloned_sale_system().await;
         let client = db.client().await.unwrap();
         assert_eq!(partner_user_column(&client).await, 1);
         // the shape before base 1.15, in this test's own database
@@ -1111,8 +1166,7 @@ fn the_base_upgrade_adds_the_partner_salesperson_column() {
 #[test]
 fn sale_order_form_offers_inline_line_entry_like_purchase_orders() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (db, orm) = cloned_sale().await;
         let mut setup = orm.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut setup).await;
         let salesman = user(&mut setup, "inline-salesman", "group_sale_salesman").await;

@@ -60,6 +60,15 @@ impl User {
             .unwrap_or_else(|_| panic!("Websocket upgrade failed (headers redacted)"))
             .0
     }
+    /// The shell bootstrap this subject gets for `path` (`/erp`, optionally with a query).
+    pub fn bootstrap(&self, port: u16, path: &str) -> Value {
+        let reply = native_http::request(port, "GET", path, &[("cookie", &self.cookies)], "");
+        assert_eq!(
+            reply.status, 200,
+            "authenticated bootstrap failed (body redacted)"
+        );
+        native_http::embedded(&reply, "erp-bootstrap")
+    }
     /// Dispatch with this real session to a fixture-owned primary or peer. No cookie getter.
     pub fn rpc_on(&self, port: u16, model: &str, method: &str, body: Value) -> Reply {
         native_http::json_post(
@@ -68,6 +77,10 @@ impl User {
             &format!("/erp/json/2/{model}/{method}"),
             &body.to_string(),
         )
+    }
+    /// `GET path` (a shell address such as `/erp?cids=1`) with this real session. No cookie getter.
+    pub fn page_on(&self, port: u16, path: &str) -> Reply {
+        native_http::request(port, "GET", path, &[("cookie", &self.cookies)], "")
     }
 }
 

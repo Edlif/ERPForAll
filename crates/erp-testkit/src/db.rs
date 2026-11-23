@@ -20,13 +20,13 @@ use crate::tag::{RUN_ID_ENV, Tag, TestDbName, unix_now, validate_run_id, validat
 const NAME_ATTEMPTS: u32 = 32;
 
 /// Default pool size; tests rarely need more.
-const DEFAULT_POOL_SIZE: usize = 4;
+pub(crate) const DEFAULT_POOL_SIZE: usize = 4;
 
 /// TCP connect timeout for every connection the testkit opens.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Pool timeouts: a test waiting longer than this for a connection has a bug (a leaked client).
-const POOL_TIMEOUTS: Timeouts = Timeouts {
+pub(crate) const POOL_TIMEOUTS: Timeouts = Timeouts {
     wait: Some(Duration::from_secs(30)),
     create: Some(Duration::from_secs(10)),
     recycle: Some(Duration::from_secs(5)),
@@ -429,7 +429,7 @@ impl TestDbBuilder {
 }
 
 /// Create a uniquely named database and tag it with the creator's pid and run id.
-async fn create_tagged(
+pub(crate) async fn create_tagged(
     client: &Client,
     template: Option<&str>,
     run_id: Option<String>,
@@ -505,6 +505,16 @@ impl fmt::Debug for TestDb {
 }
 
 impl TestDb {
+    /// Construct a [`TestDb`] from an already-created database and live connection pool.
+    pub(crate) fn from_parts(name: String, pool: Pool, cluster: Cluster) -> Self {
+        Self {
+            name,
+            pool,
+            cluster,
+            cleaned: false,
+        }
+    }
+
     /// Create a database on the server in `DATABASE_URL` with default options.
     pub async fn create() -> Result<Self> {
         TestDbBuilder::default().create().await

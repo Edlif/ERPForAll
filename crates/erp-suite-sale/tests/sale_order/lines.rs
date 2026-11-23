@@ -66,8 +66,7 @@ async fn maybe_text(tx: &mut Transaction, records: &Records, field: &str) -> Opt
 #[test]
 fn the_delivered_quantity_is_manual_in_sale() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let desk = product(&mut tx, "Desk", "consu", "order").await;
@@ -114,8 +113,7 @@ fn the_delivered_quantity_is_manual_in_sale() {
 #[test]
 fn the_quantity_to_invoice_follows_the_policy() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let hours = product(&mut tx, "Consulting", "service", "order").await;
@@ -155,8 +153,7 @@ fn the_quantity_to_invoice_follows_the_policy() {
 #[test]
 fn the_invoice_status_follows_the_lines_and_the_close_flag() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let hours = product(&mut tx, "Consulting", "service", "order").await;
@@ -198,8 +195,7 @@ fn the_invoice_status_follows_the_lines_and_the_close_flag() {
 #[test]
 fn the_delivery_status_follows_the_goods_lines() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let desk = product(&mut tx, "Desk", "consu", "order").await;
@@ -252,8 +248,7 @@ fn the_delivery_status_follows_the_goods_lines() {
 #[test]
 fn a_line_offers_the_units_of_its_product() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         // the shipped Dozens unit is archived; an archived unit is never offered
@@ -342,8 +337,7 @@ fn a_line_offers_the_units_of_its_product() {
 #[test]
 fn a_locked_order_keeps_its_line_prices() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let desk = product(&mut tx, "Desk", "consu", "order").await;
@@ -381,8 +375,7 @@ fn a_locked_order_keeps_its_line_prices() {
 #[test]
 fn line_guards_on_kind_product_and_delete() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let desk = product(&mut tx, "Desk", "consu", "order").await;
@@ -471,8 +464,7 @@ fn line_guards_on_kind_product_and_delete() {
 #[test]
 fn the_least_values_create_a_product_an_order_and_a_line() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let lamp = tx
@@ -524,8 +516,7 @@ fn the_least_values_create_a_product_an_order_and_a_line() {
 #[test]
 fn derived_line_fields_are_refused() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let desk = product(&mut tx, "Desk", "consu", "order").await;
@@ -647,8 +638,7 @@ fn derived_line_fields_are_refused() {
 #[test]
 fn lines_of_cancelled_and_locked_orders_do_not_change() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (_db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let hours = product(&mut tx, "Consulting", "service", "order").await;
@@ -744,8 +734,7 @@ fn lines_of_cancelled_and_locked_orders_do_not_change() {
 #[test]
 fn customer_invoice_and_credit_line_quantities_follow_the_document() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         admin(&mut tx).await;
@@ -979,8 +968,7 @@ pub(super) async fn invoice_chart(
 #[test]
 fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let orm = install(&db).await;
+        let (db, orm) = cloned_sale().await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let world = world(&mut tx).await;
         let env = tx.env().with_company(world.company).unwrap();

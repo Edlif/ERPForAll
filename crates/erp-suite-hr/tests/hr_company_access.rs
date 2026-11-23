@@ -14,7 +14,7 @@ use erp_orm::{Command, Context, Orm, RawVals, SUPERUSER_ID};
 use erp_rpc::{Caller, RpcCall, RpcConfig, RpcService};
 use erp_security::auth::{Auth, ClientAddr, CredentialOptions, HashPool, LoginRequest};
 use erp_security::{resolver::Resolver, source::PolicySource};
-use erp_testkit::TestDb;
+use erp_testkit::{TemplateDb, TestDb};
 use serde_json::{Value, json};
 
 const STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -38,7 +38,7 @@ impl erp_rpc::RpcHost for Host {
     }
 }
 
-fn system(db: &TestDb) -> ModuleSystem {
+fn system_for_pool(pool: erp_testkit::deadpool_postgres::Pool) -> ModuleSystem {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -59,7 +59,7 @@ fn system(db: &TestDb) -> ModuleSystem {
             (name, snapshot.digest().to_owned())
         })
         .collect();
-    ModuleSystem::builder(db.pool().clone(), index)
+    ModuleSystem::builder(pool, index)
         .native_artifact_identities(identities)
         .view_types(erp_addon_web::view_type_contributions())
         .require_core_tables(erp_security::auth::core_tables())
@@ -75,24 +75,34 @@ fn system(db: &TestDb) -> ModuleSystem {
         .unwrap()
 }
 
-/// Installs `hr` and returns an Orm that enforces the installed access rows and memberships,
-/// as a serving node does (the module system's own Orm acts as the superuser only).
-async fn installed(db: &TestDb) -> Orm {
-    let system = system(db);
-    let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
-        .await
-        .unwrap();
-    let env = init.orm.env(SUPERUSER_ID, Context::new());
-    let outcome =
-        Box::pin(system.button_immediate_install(&env, &[ModuleName::new("hr").unwrap()]))
+/// Clones a cached `hr` template database and returns an Orm that enforces the installed access
+/// rows and memberships, as a serving node does (the module system's own Orm acts as the superuser
+/// only).
+async fn cloned_installed() -> (TestDb, Orm) {
+    let db = TemplateDb::clone_or_init("erp-suite-hr:hr:v1", |pool| async move {
+        let system = system_for_pool(pool);
+        let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
             .await
-            .unwrap();
-    assert!(outcome.post_commit.is_clean());
-    let registry = Arc::clone(outcome.orm.registry());
+            .map_err(|e| e.to_string())?;
+        let env = init.orm.env(SUPERUSER_ID, Context::new());
+        let outcome =
+            Box::pin(system.button_immediate_install(&env, &[ModuleName::new("hr").unwrap()]))
+                .await
+                .map_err(|e| e.to_string())?;
+        if !outcome.post_commit.is_clean() {
+            return Err(format!("post_commit not clean: {:?}", outcome.post_commit));
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .unwrap();
+    let system = system_for_pool(db.pool().clone());
+    let loaded = Box::pin(system.load()).await.unwrap();
+    let registry = Arc::clone(loaded.orm.registry());
     let source = PolicySource::build(Arc::clone(&registry), db.pool().clone())
         .await
         .unwrap();
-    Orm::builder(Arc::clone(&registry), db.pool().clone())
+    let orm = Orm::builder(Arc::clone(&registry), db.pool().clone())
         .require_core_tables(erp_security::auth::core_tables())
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
         .resolver(Resolver::for_registry(&registry).unwrap())
@@ -100,7 +110,8 @@ async fn installed(db: &TestDb) -> Orm {
         .impls(erp_modules::base_models::IMPLS.iter().copied())
         .constraints(erp_modules::base_models::CONSTRAINTS.iter().copied())
         .build()
-        .unwrap()
+        .unwrap();
+    (db, orm)
 }
 
 async fn base_xid(db: &TestDb, name: &str) -> i64 {
@@ -280,8 +291,7 @@ struct Case {
 }
 
 async fn scenario(case: impl Fn(&Seed) -> Case) {
-    let db = TestDb::create().await.unwrap();
-    let orm = installed(&db).await;
+    let (db, orm) = cloned_installed().await;
     let seed = seed(&db, &orm).await;
     let case = case(&seed);
     let auth = Auth::new(

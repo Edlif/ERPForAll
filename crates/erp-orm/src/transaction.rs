@@ -866,6 +866,8 @@ impl OrmBuilder {
             return Err(refused);
         }
         crate::principal::validate_capabilities(crate::principal::CAPABILITIES.iter())?;
+        // a node that cannot open its encrypted fields does not start
+        crate::field_encryption::validate(&self.registry)?;
         for model in self.registry.models() {
             for field in &model.fields {
                 if field.translate && (field.compute.is_some() || field.related.is_some()) {
@@ -1504,6 +1506,7 @@ impl Orm {
             on_primary,
             credential: _,
             operation_identity,
+            request,
             #[cfg(feature = "test-faults")]
             import_snapshot,
             #[cfg(feature = "test-faults")]
@@ -1554,6 +1557,7 @@ impl Orm {
             env: Env::new(Arc::clone(&self.shared.registry), principal, context)
                 .with_lineage(Arc::clone(&self.shared.database.lineage))
                 .with_operation_identity(operation_identity)
+                .with_request(request)
                 .with_generation_attachments(Arc::clone(&self.shared.generation_attachments)),
             policy: self.shared.policy.current(),
             access: crate::access::AccessState::default(),
@@ -1561,6 +1565,7 @@ impl Orm {
             private_texts: Mutex::new(FxHashMap::default()),
             intent,
             read_audit_owner,
+            idempotency_key: None,
             isolation,
             raw_statements_only: false,
             method_effects: None,
@@ -1974,6 +1979,8 @@ impl ReadAuditOwner {
 #[must_use = "pass it to Orm::begin_opts"]
 pub struct BeginOptions {
     operation_identity: Option<Arc<crate::OperationIdentity>>,
+    /// [`BeginOptions::request`].
+    request: Option<Arc<crate::RequestInfo>>,
     principal: Principal,
     /// What to resolve at the start (with an installed resolver), when built from a hint.
     hint: Option<PrincipalHint>,
@@ -2028,6 +2035,7 @@ impl BeginOptions {
     pub fn for_principal(principal: Principal) -> Self {
         Self {
             operation_identity: None,
+            request: None,
             principal,
             hint: None,
             context: Context::new(),
@@ -2053,6 +2061,15 @@ impl BeginOptions {
     /// a new execution. This grants no access and changes no idempotency binding.
     pub fn operation_identity(mut self, identity: crate::OperationIdentity) -> Self {
         self.operation_identity = Some(Arc::new(identity));
+        self
+    }
+
+    /// The request the transaction serves, as the server's transport resolved it
+    /// ([`crate::Env::request`]). Only the transport sets it, from what it trusts (the peer, or
+    /// the forwarded client of a trusted proxy); it grants no access and changes no idempotency
+    /// binding.
+    pub fn request(mut self, request: crate::RequestInfo) -> Self {
+        self.request = Some(Arc::new(request));
         self
     }
 
@@ -2208,6 +2225,11 @@ impl CredentialOptions {
     /// Attach the server's correlation/execution metadata to the credential transaction.
     pub fn operation_identity(self, identity: crate::OperationIdentity) -> Self {
         Self(self.0.operation_identity(identity))
+    }
+
+    /// The request the transaction serves ([`BeginOptions::request`]).
+    pub fn request(self, request: crate::RequestInfo) -> Self {
+        Self(self.0.request(request))
     }
 
     /// These limits instead of [`OrmConfig::timeouts`].
@@ -2517,6 +2539,16 @@ macro_rules! behind_closes {
 }
 pub(crate) use behind_closes;
 
+/// `8-4-4-4-12` lower-case hex digits: the canonical text of a UUID of any version.
+fn canonical_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => *b == b'-',
+            _ => b.is_ascii_digit() || (b'a'..=b'f').contains(b),
+        })
+}
+
 /// A database transaction with its record cache.
 pub struct Transaction {
     pub(crate) search_state: crate::search_method::SearchState,
@@ -2536,6 +2568,9 @@ pub struct Transaction {
     /// the transaction value, so a replica-to-primary reroute (same value, new connection) keeps
     /// it.
     read_audit_owner: Option<ReadAuditOwner>,
+    /// The `Idempotency-Key` the RPC service claimed for this attempt
+    /// ([`Transaction::idempotency_key`]); set once, never carried to another transaction.
+    idempotency_key: Option<Box<str>>,
     /// The isolation level of `BEGIN` ([`BeginOptions::isolation`]).
     isolation: Isolation,
     /// Scoped refusal of record operations, independent of database isolation.
@@ -3629,6 +3664,7 @@ impl Transaction {
     /// The transaction's environment with `principal` (the resolver's at the start).
     pub(crate) fn replace_principal(&mut self, principal: Principal) {
         let identity = self.env.operation_identity().cloned().map(Arc::new);
+        let request = self.env.request().cloned().map(Arc::new);
         self.env = Env::new(
             Arc::clone(&self.shared.registry),
             principal,
@@ -3636,6 +3672,7 @@ impl Transaction {
         )
         .with_lineage(Arc::clone(&self.shared.database.lineage))
         .with_operation_identity(identity)
+        .with_request(request)
         .with_generation_attachments(Arc::clone(&self.shared.generation_attachments));
     }
 
@@ -3814,6 +3851,40 @@ impl Transaction {
     /// one opened without an owner.
     pub fn read_audit_owner(&self) -> Option<&ReadAuditOwner> {
         self.read_audit_owner.as_ref()
+    }
+
+    /// The `Idempotency-Key` of the JSON-2 call this transaction executes, in canonical lower
+    /// case, once the RPC service has claimed it for this attempt; `None` for a call without the
+    /// header and for every transaction the RPC service did not open (a job, a cron run, a
+    /// script). A retried attempt of the same call sees the same key; a replay does not run the
+    /// method at all.
+    ///
+    /// A method may store it on the record it creates, to show where a submission came from or
+    /// to recognise a retry that arrives after `rpc.idempotency_ttl_secs`.
+    pub fn idempotency_key(&self) -> Option<&str> {
+        self.idempotency_key.as_deref()
+    }
+
+    /// Bind the claimed `Idempotency-Key` to this transaction ([`Transaction::idempotency_key`]).
+    /// The RPC service calls this right after its claim succeeded; addon code has no reason to.
+    ///
+    /// # Errors
+    ///
+    /// `Programming` when a key is already bound, or when `key` is not a UUID in canonical
+    /// lower-case `8-4-4-4-12` form.
+    pub fn bind_idempotency_key(&mut self, key: &str) -> Result<()> {
+        if self.idempotency_key.is_some() {
+            return Err(Error::programming(
+                "this transaction already has an Idempotency-Key bound",
+            ));
+        }
+        if !canonical_uuid(key) {
+            return Err(Error::programming(
+                "an Idempotency-Key must be bound as a canonical lower-case UUID",
+            ));
+        }
+        self.idempotency_key = Some(key.into());
+        Ok(())
     }
 
     /// Refuse `op` on `model` in a read-only transaction (design note §5.3).

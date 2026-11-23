@@ -52,6 +52,8 @@ pub mod compute;
 mod context;
 mod correlation;
 pub use correlation::{CorrelationId, OperationId, OperationIdentity};
+mod request;
+pub use request::RequestInfo;
 pub(crate) mod copy;
 mod core_ddl;
 mod database_generated;
@@ -84,6 +86,8 @@ mod external_modified;
 mod field_access;
 pub mod field_chain;
 mod field_check;
+/// Encryption of field values at rest (`encrypted = true`).
+pub mod field_encryption;
 mod grantee;
 mod graph;
 mod group_check;

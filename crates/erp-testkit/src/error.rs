@@ -239,6 +239,15 @@ pub enum TestkitError {
     /// A configuration error occurred (e.g. invalid pool size or base install failure).
     #[error("configuration error: {0}")]
     Configuration(String),
+
+    /// Initialising a shared template database failed.
+    #[error("template database initialisation failed for key {key:?}: {message}")]
+    TemplateInit {
+        /// Logical template key supplied by the caller.
+        key: String,
+        /// Error text returned by the template initialiser.
+        message: String,
+    },
 }
 
 impl From<deadpool_postgres::PoolError> for TestkitError {

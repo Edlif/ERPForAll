@@ -2304,7 +2304,7 @@ try {
   await call("Input.dispatchMouseEvent", {type:"mouseMoved",x:0,y:0});
   await evaluate('document.querySelector(".erp-search-toggle-form-btn").click()');
   const searchSections = await evaluate('[...document.querySelector(".erp-search-menu-sections").children].map(e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width};})');
-  assert.equal(searchSections.length, 2, "the search menu shows Filters and Group By, the sections that do something");
+  assert.equal(searchSections.length, 3, "the search menu shows Filters, Group By, and Favorites, the sections that do something");
   assert.equal(await evaluate('/M[0-9]\\.[A-Z]|not available until/.test(document.querySelector(".erp-search-menu-panel").textContent)'), false, "no internal task id reaches the filter panel");
   for (const width of [800, 900]) {
     await shot(`fixture-search-menu-${width}`, width, 900);
@@ -2329,15 +2329,17 @@ try {
   await shot("fixture-settings-desktop", 1440, 900); await shot("fixture-settings-tablet", 768, 1024); await shot("fixture-settings-mobile", 375, 812);
   rejectNextAction = true;
   // Use an unopened action: previously visited descriptors can legitimately be cached.
+  // A 403 action refusal keeps the shell and renders the plain refused-action page without leaking the server's text.
   await evaluate('[...document.querySelectorAll("[data-client-navigation] button")].find(button=>button.textContent==="Restricted").click()');
-  await wait('document.querySelector(".client-error-dialog")?.open === true');
-  assert.equal(await evaluate('document.querySelector("#client-error-message")?.textContent'), permissionMessage);
+  await wait('document.querySelector(".refused-action-home") !== null');
+  assert.equal(await evaluate('document.querySelector("[data-client-content]")?.textContent.includes("This screen is not open to your account.")'), true);
+  assert.equal(await evaluate('document.querySelector("[data-client-content]")?.textContent.includes(JSON.parse(' + JSON.stringify(JSON.stringify(permissionMessage)) + '))'), false);
+  assert.equal(await evaluate('document.querySelector(".client-error-dialog") === null'), true);
   assert.ok(deniedActions.length >= 1, "the denied action was requested instead of using a cached descriptor");
   assert.ok(deniedActions.every(call => call.ids.length === 1 && call.ids[0] === 23), "only the intended Restricted action is denied");
-  assert.equal(await evaluate('document.querySelector(".settings-toggle input") !== null'), true, "permission failure preserves the current Settings view");
   await shot("fixture-permission-dialog-mobile",375,812);
-  await evaluate('document.querySelector("[data-error-close]").click()');
-  await wait('document.querySelector(".client-error-dialog") === null');
+  await evaluate('[...document.querySelectorAll("[data-client-navigation] button")].find(button=>button.textContent==="Settings").click()');
+  await wait('document.querySelector(".settings-toggle input") !== null');
   assert.equal(await evaluate(`[...document.querySelectorAll('.settings-toolbar-actions button,.settings-scope-option:first-child')].every(node=>{const box=node.getBoundingClientRect();return document.elementFromPoint(box.x+box.width/2,box.y+box.height/2)===node})`), true);
   assert.equal(await evaluate('document.querySelector(".client-loading").hidden'), true);
   await shot("fixture-settings-recovered-mobile", 375, 812);

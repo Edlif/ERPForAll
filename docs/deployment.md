@@ -56,10 +56,67 @@ role, and a `NOLOGIN` maintenance role. Notes for a real deployment:
 | `assets_manifest` | yes | Path of the client `manifest.json`. |
 | `shutdown_deadline_secs` | no | Time running requests get to finish on shutdown; 5 to 3600, default 45. |
 | `http_header_deadline_secs`, `http_keep_alive_idle_secs`, `http_max_connection_age_secs` | no | HTTP/1 connection limits; defaults 5, 30 and 120. |
+| `field_key_file` | when addons declare encrypted fields | File with the keys of encrypted fields (see [Encrypted fields](#encrypted-fields)). |
 | `[startup_limits]` | no | Optional tables of memory and size limits; invalid or inconsistent values stop the start with an error. Defaults apply when absent. |
 
 Secret files must be regular files with mode 600, not symbolic links. In `direct` mode `bind` must be a loopback
 address and the proxy keys must be absent.
+
+## Encrypted fields
+
+A `char` or `text` field declared `encrypted = true` (`#[field(char, encrypted = true)]`) is stored encrypted: its
+column is `bytea` and holds an envelope sealed with XChaCha20-Poly1305 (RustCrypto `chacha20poly1305`) with a new
+random nonce on every write, bound to its model and field. The application reads and writes the clear value; the
+database, its dumps and replicas, and any role that reads the table see only the envelope.
+
+The keys come from `field_key_file`, never from the database. The file is mode 600, one key per line, the key that
+encrypts new values first:
+
+```sh
+umask 077
+printf 'k2026a %s\n' "$(openssl rand -base64 32)" > /srv/erp/private/field-keys
+```
+
+A key id is 1 to 32 letters, digits, `.`, `_` or `-`; at most 16 keys; lines starting with `#` are ignored. Every node
+of a database needs the same file: the node settings check refuses a node whose key set differs.
+
+- **Missing key:** when the linked addons declare an encrypted field and `field_key_file` is not set, every command
+  that builds the ORM (the server, `erp db init`, `erp module upgrade`, …) stops with an error naming the field.
+- **Lost key:** values sealed with it cannot be read again. Back the key file up separately from the database dumps;
+  a dump without its key file is unreadable for these fields, which is the point.
+- **Rotation:** put a new key on the first line and keep the old ones below it. New and changed values are sealed
+  with the new key; values sealed with an old key still open. Remove an old key only when no value uses it: a
+  re-encryption job that rewrites old values is not built yet, so for now keep old keys.
+- **Existing data:** when a field becomes encrypted, the schema synchronization of the module upgrade converts its
+  column and encrypts every existing value in the same transaction (in batches of 1,000 rows; on a large table this
+  lengthens the upgrade). Declaring an encrypted field plain again is refused: decrypting a column is not built yet.
+- **Searching:** conditions, sorting, grouping and aggregates on an encrypted field are refused with an error naming
+  the field (the database cannot compare encrypted values). Keys, indexes and exclusion constraints on such a field
+  are refused when the registry is built; an addon's SQL must not read the column directly.
+- **Audit:** the call digest of the audit trail replaces an encrypted field's value with `{"$redacted":"encrypted"}`;
+  tracking an encrypted field is refused.
+### Request throttling (`[auth]`)
+
+Three per-process token buckets screen requests before the database is asked; a value outside its bounds stops
+the start with an error naming the key. Each bucket table holds `throttle.table_entries` keys (default 4096).
+
+| Key | Default | Bounds | What it limits |
+|---|---|---|---|
+| `throttle.login_burst`, `throttle.login_rate_per_sec` | 20, 2.0 | 5 – 1000, 0.1 – 1000 | Password logins per source address. A JSON-2 request whose API key is refused also spends a token here, and an address with an empty bucket is refused before its key is read, so guessing keys is screened like guessing passwords. |
+| `throttle.bearer_burst`, `throttle.bearer_rate_per_sec` | 120, 30.0 | 5 – 10000, 0.1 – 10000 | JSON-2 requests with `Authorization: Bearer` per source address, one token per request. |
+| `throttle.api_key_burst`, `throttle.api_key_rate_per_sec` | 60, 10.0 | 5 – 10000, 0.1 – 10000 | Requests per verified API key, from any address, one token per request. |
+
+A JSON-2 request refused by a bucket gets 429 `erp.rate_limited` with `Retry-After` set to the seconds one token
+takes to refill.
+Many devices behind one address (an office NAT) share the Bearer bucket of that address, but each key has its own
+budget, so one busy device does not slow its neighbours. Failed keys also count towards the address cooldown stored
+in the database, as failed passwords do.
+
+```toml
+[auth]
+"throttle.bearer_burst" = 240
+"throttle.api_key_rate_per_sec" = 20.0
+```
 
 ## Run it as a service
 
@@ -161,6 +218,11 @@ server {
 The proxy checks themselves were run without nginx, with `curl` from the listed address: with the token the sign-in
 page is served (HTTP 200); without the token or with a wrong one, HTTP 403; with the token and a `Forwarded` header,
 HTTP 400. The health route answers without the token, so a supervisor can probe it directly.
+
+`X-Forwarded-For` must carry exactly one address, the client's (`$remote_addr` above, not
+`$proxy_add_x_forwarded_for`, which appends to what the client sent). The server uses it for the sign-in and API key
+throttles and hands it to model methods as the request's client address (`env.request()`), so a proxy that passes
+on a client-supplied value would let clients choose the address business rules see.
 
 ## Health
 

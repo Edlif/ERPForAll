@@ -42,7 +42,9 @@ pnpm --dir web install --frozen-lockfile
 (cd web && pnpm run typecheck && pnpm run test)
 ```
 
-`scripts/check.sh` runs the formatting, lint and build steps in one go; `scripts/check.sh --tests` adds the test suites.
+`scripts/check.sh --affected --tests` runs formatting, layer checks, clippy, and tests for only the packages affected
+by your diff against `origin/main` (fast default for pull requests); pass `-p <crate>` to target specific packages, or
+`scripts/check.sh --tests` to run the full workspace.
 
 ## Pull requests
 

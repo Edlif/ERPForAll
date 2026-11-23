@@ -1,4 +1,4 @@
-//! `erp-testkit sweep`: drop leftover `erpforall_test_*` databases.
+//! `erp-testkit sweep`: drop leftover `erpforall_test_*` and `erpforall_tpl_*` databases.
 //! `erp-testkit probe`: report whether each configured test cluster is reachable.
 
 use std::convert::Infallible;

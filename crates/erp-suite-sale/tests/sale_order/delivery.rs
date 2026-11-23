@@ -15,31 +15,56 @@ fn refused_exact(result: erp_fields::Result<()>, kind: ErrorKind, message: &str)
     assert_eq!(error.message(), message);
 }
 
-async fn install_sales(db: &TestDb, stock: bool) -> Orm {
-    let system = system_with_stock(db, true);
-    let initialized = Box::pin(system.initialize(InitOptions::new()))
+async fn cloned_sales_with_pool(pool_size: usize, stock: bool) -> (TestDb, Orm) {
+    let key = if stock {
+        "erp-suite-sale:sale_stock_account:v1"
+    } else {
+        "erp-suite-sale:sale_with_stock_code:v1"
+    };
+    let db = TemplateDb::builder(key)
+        .pool_size(pool_size)
+        .clone_or_init(move |pool| async move {
+            let system = system_for_pool(pool, true);
+            let initialized = Box::pin(system.initialize(InitOptions::new()))
+                .await
+                .map_err(|e| e.to_string())?;
+            if !initialized.post_commit.is_clean() {
+                return Err(format!(
+                    "initialize post_commit not clean: {:?}",
+                    initialized.post_commit
+                ));
+            }
+            let modules: &[&str] = if stock {
+                &["sale", "stock_account"]
+            } else {
+                &["sale"]
+            };
+            let modules = modules
+                .iter()
+                .map(|name| ModuleName::new(*name).unwrap())
+                .collect::<Vec<_>>();
+            let installed = Box::pin(
+                system.button_immediate_install(&system.system_env(Context::new()), &modules),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            if !installed.post_commit.is_clean() {
+                return Err(format!(
+                    "install post_commit not clean: {:?}",
+                    installed.post_commit
+                ));
+            }
+            Ok::<(), String>(())
+        })
         .await
         .unwrap();
-    assert!(initialized.post_commit.is_clean());
-    let modules: &[&str] = if stock {
-        &["sale", "stock_account"]
-    } else {
-        &["sale"]
-    };
-    let modules = modules
-        .iter()
-        .map(|name| ModuleName::new(*name).unwrap())
-        .collect::<Vec<_>>();
-    let installed =
-        Box::pin(system.button_immediate_install(&system.system_env(Context::new()), &modules))
-            .await
-            .unwrap();
-    assert!(
-        installed.post_commit.is_clean(),
-        "{:?}",
-        installed.post_commit
-    );
-    installed.orm
+    let system = system_with_stock(&db, true);
+    let loaded = Box::pin(system.load()).await.unwrap();
+    (db, loaded.orm)
+}
+
+async fn cloned_sales(stock: bool) -> (TestDb, Orm) {
+    cloned_sales_with_pool(4, stock).await
 }
 
 async fn product(tx: &mut Transaction, name: &str, kind: &str) -> i64 {
@@ -109,8 +134,7 @@ async fn transfers(tx: &mut Transaction, origin: &str) -> i64 {
 #[test]
 fn direct_delivery_confirms_saved_order_as_salesperson() {
     run(async {
-        let db = TestDb::builder().pool_size(8).create().await.unwrap();
-        let installed = install_sales(&db, true).await;
+        let (db, installed) = cloned_sales_with_pool(8, true).await;
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let salesperson = user(&mut tx, "delivery-sales", "group_sale_salesman").await;
@@ -310,8 +334,7 @@ fn direct_delivery_confirms_saved_order_as_salesperson() {
 #[test]
 fn direct_delivery_rolls_back_after_the_final_sales_step_refuses() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let installed = install_sales(&db, true).await;
+        let (db, installed) = cloned_sales(true).await;
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let manager = user(&mut tx, "delivery-manager", "group_sale_manager").await;
@@ -363,8 +386,7 @@ fn direct_delivery_rolls_back_after_the_final_sales_step_refuses() {
 #[test]
 fn direct_delivery_refuses_hidden_demand_and_a_foreign_warehouse() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let installed = install_sales(&db, true).await;
+        let (db, installed) = cloned_sales(true).await;
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let salesperson = user(&mut tx, "restricted-delivery-sales", "group_sale_salesman").await;
@@ -464,8 +486,7 @@ fn direct_delivery_refuses_hidden_demand_and_a_foreign_warehouse() {
 fn service_only_and_sales_without_stock_bridge_keep_base_confirmation() {
     run(async {
         for (stock, kind) in [(false, "consu"), (true, "service"), (true, "consu")] {
-            let db = TestDb::create().await.unwrap();
-            let installed = install_sales(&db, stock).await;
+            let (db, installed) = cloned_sales(stock).await;
             let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
             admin(&mut tx).await;
             let salesperson = user(&mut tx, "plain-order-sales", "group_sale_salesman").await;
@@ -523,8 +544,7 @@ fn service_only_and_sales_without_stock_bridge_keep_base_confirmation() {
 #[test]
 fn upgrading_installed_sales_and_stock_leaves_bridge_for_explicit_install() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let installed = install_sales(&db, true).await;
+        let (db, installed) = cloned_sales(true).await;
         assert!(
             installed
                 .registry()
@@ -626,8 +646,7 @@ fn upgrading_installed_sales_and_stock_leaves_bridge_for_explicit_install() {
 #[test]
 fn salesperson_selects_the_warehouse_when_configured_routes_are_ambiguous() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let installed = install_sales(&db, true).await;
+        let (db, installed) = cloned_sales(true).await;
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let salesperson = user(&mut tx, "delivery-warehouse-sales", "group_sale_salesman").await;
@@ -728,8 +747,7 @@ fn salesperson_selects_the_warehouse_when_configured_routes_are_ambiguous() {
 #[test]
 fn generated_shipments_ignore_saved_inventory_defaults() {
     run(async {
-        let db = TestDb::create().await.unwrap();
-        let installed = install_sales(&db, true).await;
+        let (db, installed) = cloned_sales(true).await;
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let salesperson = user(&mut tx, "delivery-default-sales", "group_sale_salesman").await;
@@ -956,8 +974,7 @@ fn ask_can_close_the_remainder_without_a_backorder() {
 
 fn short_sales_delivery(always: bool, ask: bool) {
     run(async move {
-        let db = TestDb::builder().pool_size(8).create().await.unwrap();
-        let orm = install_sales(&db, true).await;
+        let (db, orm) = cloned_sales_with_pool(8, true).await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let world = world(&mut tx).await;
