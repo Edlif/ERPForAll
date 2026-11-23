@@ -484,7 +484,7 @@ fn barcode_permissions_and_every_view_served_to_manager() {
                 assert_eq!(error.kind(), erp_fields::ErrorKind::Access);
                 assert_eq!(
                     error.message(),
-                    "Your access rights do not let you access 'Barcode Nomenclature' (barcode.nomenclature) records.\n\nGroups that may do this:\n\t- Access Administration\n\t- Internal User\n\t- Regular User\n\t- Settings Administration\n\nAsk an administrator if you need this access."
+                    "Your access rights do not let you access 'Barcode Nomenclature' (barcode.nomenclature) records.\n\nGroups that may do this:\n\t- Access Administration\n\t- Export Records\n\t- Internal User\n\t- Regular User\n\t- Settings Administration\n\nAsk an administrator if you need this access."
                 );
             }
             let error = model

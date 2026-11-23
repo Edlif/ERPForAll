@@ -186,6 +186,7 @@ fn base_registers_its_policy_and_membership_models() {
         BTreeMap::from([
             ("ir.access", SourceKind::Policy),
             ("ir.capability", SourceKind::Policy),
+            ("ir.field.access", SourceKind::Policy),
             ("ir.model", SourceKind::Policy),
             ("ir.model.fields", SourceKind::Policy),
             ("res.company", SourceKind::Membership),

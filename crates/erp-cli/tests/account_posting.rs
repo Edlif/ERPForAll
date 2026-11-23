@@ -22,7 +22,7 @@ use erp_modules::system::{InitOptions, ModuleSystem};
 use erp_modules::{AddonIndex, ModuleName};
 use erp_sdk::prelude::*;
 use erp_sdk::{BeginOptions, Command, Context, ErrorKind, Orm, SUPERUSER_ID};
-use erp_testkit::TestDb;
+use erp_testkit::{TemplateDb, TestDb};
 
 /// Run a test future on a thread with a 16 MiB stack (the install overflows the default one).
 fn big_stack<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
@@ -55,9 +55,7 @@ async fn install() -> (TestDb, Orm) {
     (db, orm)
 }
 
-/// [`install`] with the module system, for an upgrade.
-async fn install_system() -> (TestDb, Orm, ModuleSystem) {
-    let db = TestDb::create().await.unwrap();
+fn build_system(pool: erp_testkit::deadpool_postgres::Pool) -> ModuleSystem {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(addons_dir());
     let identities = index
@@ -73,7 +71,7 @@ async fn install_system() -> (TestDb, Orm, ModuleSystem) {
             (name, snapshot.digest().to_owned())
         })
         .collect();
-    let system = ModuleSystem::builder(db.pool().clone(), index)
+    ModuleSystem::builder(pool, index)
         .require_sql_objects([&erp_addon_account::reconcile::history_guard::MANIFEST])
         .require_sql_uninstall_guards([&erp_addon_account::reconcile::history_guard::UNINSTALL])
         .view_types(erp_addon_web::view_type_contributions())
@@ -89,16 +87,45 @@ async fn install_system() -> (TestDb, Orm, ModuleSystem) {
         .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
         .require_core_tables(erp_security::auth::core_tables())
         .build()
-        .unwrap();
-    let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
-        .await
-        .unwrap();
-    let env = init.orm.env(SUPERUSER_ID, Context::new());
-    let outcome =
-        Box::pin(system.button_immediate_install(&env, &[ModuleName::new("account").unwrap()]))
+        .unwrap()
+}
+
+/// [`install`] with the module system, for an upgrade.
+async fn install_system() -> (TestDb, Orm, ModuleSystem) {
+    let db = TemplateDb::clone_or_init("erp-cli:account_posting:v1", |pool| async move {
+        let system = build_system(pool);
+        let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
             .await
-            .unwrap();
-    (db, outcome.orm, system)
+            .map_err(|e| e.to_string())?;
+        if !init.post_commit.is_clean() {
+            return Err(format!(
+                "initialize post_commit not clean: {:?}",
+                init.post_commit
+            ));
+        }
+        let env = init.orm.env(SUPERUSER_ID, Context::new());
+        let installed =
+            Box::pin(system.button_immediate_install(&env, &[ModuleName::new("account").unwrap()]))
+                .await
+                .map_err(|e| e.to_string())?;
+        if !installed.post_commit.is_clean() {
+            return Err(format!(
+                "install post_commit not clean: {:?}",
+                installed.post_commit
+            ));
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .unwrap();
+    let system = build_system(db.pool().clone());
+    let loaded = Box::pin(system.load()).await.unwrap();
+    assert!(
+        loaded.post_commit_pending.is_empty(),
+        "{:?}",
+        loaded.post_commit_pending
+    );
+    (db, loaded.orm, system)
 }
 
 /// A second ORM on the same database, as another server node.

@@ -3,7 +3,10 @@
 //! compiled once into [`GroupSpec`]s, and the [`FieldMask`] a principal's groups give a model.
 //!
 //! A field with registry groups *and* an overlay row must satisfy both (denying more is the safe
-//! direction when an addon takes over the name of a custom field). A spec that does not compile
+//! direction when an addon takes over the name of a custom field). An administrator's override
+//! (`ir.field.access`) either adds its groups the same way (`extend`) or takes the place of the
+//! declared groups (`replace`); a `replace` override of a field declared for nobody (`.`) is
+//! ignored and reported. A spec that does not compile
 //! (an unknown group) denies its field to everyone outside superuser mode and is listed in the
 //! build report; in debug mode the denial error names the broken spec.
 
@@ -12,10 +15,10 @@ use erp_orm::{FieldDenialDetail, FieldMask, FieldOp, GroupId, GroupSet};
 use erp_registry::{FieldId, ModelId, ModelSpec, Registry};
 use rustc_hash::FxHashMap;
 
-use crate::group_spec::{GroupSpec, GroupSpecError};
+use crate::group_spec::{GroupSpec, GroupSpecError, NEVER};
 use crate::groups::GroupGraph;
 use crate::report::{FieldGroupsIssue, FieldGroupsProblem, GroupsSource};
-use crate::rows::FieldGroupsRow;
+use crate::rows::{FieldGroupsMode, FieldGroupsRow};
 
 #[derive(Debug)]
 struct Part {
@@ -62,12 +65,44 @@ impl FieldRules {
                 );
             }
         }
+        // Build reverse map from root (parent_model_id, parent_field_id) to every `_inherits`
+        // child (child_model_id, child_field_id) so parent `ir.field.access` overrides apply
+        // uniformly on child search, `fields_get`, and view evaluation.
+        let mut inherited_children: FxHashMap<(ModelId, FieldId), Vec<(ModelId, FieldId)>> =
+            FxHashMap::default();
+        for model in registry.models() {
+            for field in &model.fields {
+                if field.inherited.is_some() {
+                    let mut cur_model = model.id;
+                    let mut cur_field = field.id;
+                    while let Some(inh) = registry
+                        .model_by_id(cur_model)
+                        .field_by_id(cur_field)
+                        .inherited
+                    {
+                        cur_model = inh.parent;
+                        cur_field = inh.parent_field;
+                    }
+                    inherited_children
+                        .entry((cur_model, cur_field))
+                        .or_default()
+                        .push((model.id, field.id));
+                }
+            }
+        }
+        // rows sort by model, field and mode, after every registry part is in: a `replace`
+        // override finds the declared part it takes the place of
         for row in rows {
+            let source = if row.mode().is_override() {
+                GroupsSource::Override
+            } else {
+                GroupsSource::Overlay
+            };
             let Some(model) = registry.model(row.model()) else {
                 issues.push(FieldGroupsIssue::new(
                     row.model(),
                     row.field(),
-                    GroupsSource::Overlay,
+                    source,
                     FieldGroupsProblem::UnknownModel,
                 ));
                 continue;
@@ -76,21 +111,55 @@ impl FieldRules {
                 issues.push(FieldGroupsIssue::new(
                     row.model(),
                     row.field(),
-                    GroupsSource::Overlay,
+                    source,
                     FieldGroupsProblem::UnknownField,
                 ));
                 continue;
             };
-            let spec = GroupSpec::any_of(row.groups().iter().copied(), graph);
-            push(
-                &mut models,
-                &mut issues,
-                model,
-                field.id,
-                field.name,
-                GroupsSource::Overlay,
-                spec,
-            );
+            let mut targets = vec![(model.id, field.id)];
+            if row.mode().is_override()
+                && let Some(children) = inherited_children.get(&(model.id, field.id))
+            {
+                targets.extend_from_slice(children);
+            }
+            for (target_model_id, target_field_id) in targets {
+                let target_model = registry.model_by_id(target_model_id);
+                let target_field = target_model.field_by_id(target_field_id);
+                if row.mode() == FieldGroupsMode::Replace {
+                    // a field declared for nobody holds secrets (key digests, encrypted material): no
+                    // stored row may open it, whoever wrote the row and however
+                    if target_field.groups.is_some_and(|text| text.trim() == NEVER)
+                        || (target_field.encrypted && row.groups().is_empty())
+                    {
+                        issues.push(FieldGroupsIssue::new(
+                            target_model.name,
+                            target_field.name,
+                            source,
+                            FieldGroupsProblem::Protected,
+                        ));
+                        continue;
+                    }
+                    drop_registry_part(&mut models, target_model.id, target_field.id);
+                    if row.groups().is_empty() {
+                        continue;
+                    }
+                }
+                let spec = if row.mode() == FieldGroupsMode::Extend && row.groups().is_empty() {
+                    // Fail closed if an `extend` override somehow lost all groups in the database.
+                    Err(GroupSpecError::Empty)
+                } else {
+                    GroupSpec::any_of(row.groups().iter().copied(), graph)
+                };
+                push(
+                    &mut models,
+                    &mut issues,
+                    target_model,
+                    target_field.id,
+                    target_field.name,
+                    source,
+                    spec,
+                );
+            }
         }
         for entries in models.values_mut() {
             entries.sort_by_key(|e| e.field);
@@ -178,6 +247,25 @@ impl FieldRules {
             names.push(format!("!{}", graph.display_name(group)?));
         }
         Ok(FieldDenialDetail::Groups(names))
+    }
+}
+
+/// Remove the declared part of `field` (a `replace` override takes its place), and the field's
+/// entry when nothing else restricts it.
+fn drop_registry_part(
+    models: &mut FxHashMap<ModelId, Vec<FieldEntry>>,
+    model: ModelId,
+    field: FieldId,
+) {
+    let Some(entries) = models.get_mut(&model) else {
+        return;
+    };
+    for entry in entries.iter_mut().filter(|e| e.field == field) {
+        entry.parts.retain(|p| p.source != GroupsSource::Registry);
+    }
+    entries.retain(|e| !e.parts.is_empty());
+    if entries.is_empty() {
+        models.remove(&model);
     }
 }
 

@@ -138,7 +138,7 @@ test("header selection named name remains a statusbar while the character title 
     view: { type: "form", mode: "record", fields: [selection, caption], nodes: [{ kind: "root", children: [
       { kind: "header", children: [{ kind: "field", field: selection, label: selection.label, widget: "statusbar" }] },
       { kind: "sheet", children: [{ kind: "field", field: caption, label: caption.label, widget: "char" },
-        { kind: "notebook", children: [{ kind: "page", name: "details", label: "Details", children: [] }] }
+        { kind: "notebook", children: [{ kind: "page", name: "details", label: "Details", invisible: null, children: [] }] }
       ] }
     ] }] }, run: job => { void job(); }, report: error => { throw error; }, openRecord: async () => {}, change: () => {}, button: () => {} });
   surface.render();

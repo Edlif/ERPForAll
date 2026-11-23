@@ -755,8 +755,8 @@ try {
     const at = `${label} at ${width}: ${JSON.stringify(g)}`;
     assert.ok(Math.abs(g.newButton.left - g.surface.left) <= 1, `New starts on the table surface's left edge (${at})`);
     assert.ok(Math.abs(g.switcher.right - g.surface.right) <= 1, `the last tool (pager, after the view switcher) ends on the table surface's right edge (${at})`);
-    // The control row: one height for every control (44 px for New and the filter trigger on a phone, a touch target; the search box around that trigger is its 44 px plus its 1 px borders).
-    for (const control of g.controls) assert.ok(Math.abs(control.height - (control.name === 'choice-dropdown-trigger' ? (width <= 768 ? 44 : 26) : control.name === 'primary' && width <= 768 ? 44 : /^(search-form|erp-search-view)$/.test(control.name) && width <= 768 && g.controls.some(other => other.name === 'choice-dropdown-trigger') ? 46 : 32)) <= 0.5, `control ${control.name} has its one control height (${at})`);
+    // The control row: one height for every control (44 px for control-action buttons and the filter trigger on a phone, a touch target; the search box around that trigger is its 44 px plus its 1 px borders).
+    for (const control of g.controls) assert.ok(Math.abs(control.height - (control.name === 'choice-dropdown-trigger' ? (width <= 768 ? 44 : 26) : (control.name === 'primary' || control.name === 'list-data-toggle-btn') && width <= 768 ? 44 : /^(search-form|erp-search-view)$/.test(control.name) && width <= 768 && g.controls.some(other => other.name === 'choice-dropdown-trigger') ? 46 : 32)) <= 0.5, `control ${control.name} has its one control height (${at})`);
     assert.equal(new Set(g.head).size, 1, `one header row height (${at})`);
     assert.equal(new Set(g.body).size, 1, `one body row height (${at})`);
     assert.equal(g.head[0], g.body[0], `header and body rows are as tall as each other (${at})`);

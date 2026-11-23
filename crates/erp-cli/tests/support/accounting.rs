@@ -16,7 +16,7 @@ use erp_modules::system::{InitOptions, ModuleSystem};
 use erp_modules::{AddonIndex, ModuleName};
 use erp_sdk::prelude::*;
 use erp_sdk::{BeginOptions, Command, Context, Orm, SUPERUSER_ID};
-use erp_testkit::TestDb;
+use erp_testkit::{TemplateDb, TestDb};
 
 /// Run a test future on a thread with a 16 MiB stack (the install overflows the default one).
 pub fn big_stack<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
@@ -76,9 +76,17 @@ pub fn system_with_signal(
     previous: Option<std::collections::BTreeMap<ModuleName, String>>,
     signal: Option<erp_orm::Signal>,
 ) -> ModuleSystem {
+    system_for_pool(db.pool().clone(), previous, signal)
+}
+
+fn system_for_pool(
+    pool: erp_testkit::deadpool_postgres::Pool,
+    previous: Option<std::collections::BTreeMap<ModuleName, String>>,
+    signal: Option<erp_orm::Signal>,
+) -> ModuleSystem {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(addons_dir());
-    let mut builder = ModuleSystem::builder(db.pool().clone(), index)
+    let mut builder = ModuleSystem::builder(pool, index)
         .view_types(erp_addon_web::view_type_contributions())
         .native_artifact_identities(identities())
         .code([
@@ -114,24 +122,55 @@ pub async fn install() -> (TestDb, Orm) {
 
 /// A fresh database with `account` installed, with or without demo data.
 pub async fn install_with_demo(demo: bool) -> (TestDb, Orm) {
+    let key = if demo {
+        "erp-cli:support_accounting:demo:v1"
+    } else {
+        "erp-cli:support_accounting:nodemo:v1"
+    };
     // room for two units at once next to the connections the access policy keeps
-    let db = TestDb::builder().pool_size(8).create().await.unwrap();
-    let system = system(&db, None);
-    let init = Box::pin(
-        system.initialize(
-            InitOptions::new()
-                .with_skip_auto_install(true)
-                .with_demo(demo),
-        ),
-    )
-    .await
-    .unwrap();
-    let env = init.orm.env(SUPERUSER_ID, Context::new());
-    let outcome =
-        Box::pin(system.button_immediate_install(&env, &[ModuleName::new("account").unwrap()]))
+    let db = TemplateDb::builder(key)
+        .pool_size(8)
+        .clone_or_init(move |pool| async move {
+            let system = system_for_pool(pool, None, None);
+            let init = Box::pin(
+                system.initialize(
+                    InitOptions::new()
+                        .with_skip_auto_install(true)
+                        .with_demo(demo),
+                ),
+            )
             .await
-            .unwrap();
-    (db, outcome.orm)
+            .map_err(|e| e.to_string())?;
+            if !init.post_commit.is_clean() {
+                return Err(format!(
+                    "initialize post_commit not clean: {:?}",
+                    init.post_commit
+                ));
+            }
+            let env = init.orm.env(SUPERUSER_ID, Context::new());
+            let installed = Box::pin(
+                system.button_immediate_install(&env, &[ModuleName::new("account").unwrap()]),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            if !installed.post_commit.is_clean() {
+                return Err(format!(
+                    "install post_commit not clean: {:?}",
+                    installed.post_commit
+                ));
+            }
+            Ok::<(), String>(())
+        })
+        .await
+        .unwrap();
+    let system = system(&db, None);
+    let loaded = Box::pin(system.load()).await.unwrap();
+    assert!(
+        loaded.post_commit_pending.is_empty(),
+        "{:?}",
+        loaded.post_commit_pending
+    );
+    (db, loaded.orm)
 }
 
 /// An ORM on the same database that asks the installed access policy, so a test can act as a

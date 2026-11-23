@@ -805,6 +805,81 @@ test("list view header and row selection with count and delete action", async ()
   expect(unlinkCalls[0]!.sort()).toEqual([5, 6]);
 });
 
+/** A list with a many2one column, in either position; `paths` collects every request. */
+async function startRelationList(relationFirst: boolean): Promise<{ root: HTMLElement; paths: string[] }> {
+  history.replaceState(null, "", "/erp/action-20");
+  const paths: string[] = [];
+  const relationField = { type: "many2one", label: "Owner", required: false, readonly: false, relation: "res.partner", relation_field: null, selection: null };
+  const relationNode = { kind: "field", force_save: false, field: { model: "test.note", name: "owner_id" }, widget: "many2one", options: {}, modifiers: { readonly: null, required: null, invisible: null }, label: "Owner" };
+  const listed = {
+    ...description, fields: { "test.note": { ...description.fields["test.note"], owner_id: relationField } },
+    views: description.views.map(view => view.type !== "list" ? view : {
+      ...view, nodes: relationFirst ? [{ kind: "list", children: [1, 2] }, relationNode, view.nodes[1]] : [{ kind: "list", children: [1, 2] }, view.nodes[1], relationNode]
+    })
+  };
+  const records = [{ id: 5, name: "First note", owner_id: { id: 77, display_name: "Alice" } }];
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    paths.push(path);
+    const value = path.endsWith("erp_load_web_menus") ? { wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: "Notes", action_id: 20, children: [], icon: null }] }
+      : (path.endsWith("erp_load_web_action") || path.endsWith("erp_load_web_action_views")) ? actionMetadata(path, { wire_major: 1, id: 20, name: "Notes", model: "test.note", target: "current", views: [{ id: 2, type: "list" }, { id: 1, type: "form" }], domain: null, context: null }, listed)
+      : path.endsWith("get_views") ? listed
+      : path.endsWith("web_search_read") ? { length: records.length, records }
+      : path.endsWith("web_read") ? [{ id: 5, name: "First note" }]
+      : [];
+    return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+  }));
+  const root = host();
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  await vi.waitFor(() => expect(root.querySelector("table.list-table tbody tr")).not.toBeNull());
+  return { root, paths };
+}
+
+test("clicking a related record's name in a list row opens that row's record, not the related one", async () => {
+  const { root, paths } = await startRelationList(false);
+  const cell = [...root.querySelectorAll<HTMLElement>("table.list-table tbody td")].find(td => td.textContent?.includes("Alice"))!;
+  expect(cell.querySelector("button, a")).toBeNull(); // shown as text, not as a link to the partner
+  cell.querySelector<HTMLElement>(".many2one-value")!.click();
+  await vi.waitFor(() => expect(location.search).toContain("id=5"));
+  expect(location.search).toContain("view_type=form");
+  expect(paths.some(path => path.includes("/res.partner/"))).toBe(false);
+});
+
+test("a many2one in the first list column is the row's open button", async () => {
+  const { root, paths } = await startRelationList(true);
+  const open = root.querySelector<HTMLButtonElement>("table.list-table tbody [data-record-open='5']")!;
+  expect(open.textContent).toContain("Alice");
+  expect(open.querySelector(".many2one-value")).not.toBeNull();
+  open.click();
+  await vi.waitFor(() => expect(location.search).toContain("id=5"));
+  expect(paths.some(path => path.includes("/res.partner/"))).toBe(false);
+});
+
+test("the list control row offers Import / Export and reads its rights only when opened", async () => {
+  history.replaceState(null, "", "/erp/action-20");
+  const paths: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    paths.push(path);
+    const value = path.endsWith("erp_load_web_menus") ? { wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: "Notes", action_id: 20, children: [], icon: null }] }
+      : (path.endsWith("erp_load_web_action") || path.endsWith("erp_load_web_action_views")) ? actionMetadata(path, { wire_major: 1, id: 20, name: "Notes", model: "test.note", target: "current", views: [{ id: 2, type: "list" }, { id: 1, type: "form" }], domain: null, context: null }, description)
+      : path.endsWith("get_views") ? description
+      : path.endsWith("web_search_read") ? { length: 1, records: [{ id: 5, name: "First note" }] }
+      : path.endsWith("erp_impex_rights") ? { export: true, import: true }
+      : [];
+    return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+  }));
+  const root = host();
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  await vi.waitFor(() => expect(root.querySelector("table.list-table")).not.toBeNull());
+  const toggle = root.querySelector<HTMLButtonElement>("[data-control-actions] .list-data-toggle-btn")!;
+  expect(toggle.textContent).toBe("Import / Export");
+  expect(paths.some(path => path.endsWith("erp_impex_rights"))).toBe(false);
+  toggle.click();
+  await vi.waitFor(() => expect([...root.querySelectorAll(".list-data-menu button")].map(item => item.textContent)).toEqual(["Import records", "Export"]));
+  expect(paths.filter(path => path.endsWith("/test.note/erp_impex_rights"))).toHaveLength(1);
+});
+
 test("list columns settle synchronously on initial load and reload (no auto-layout frame)", async () => {
   history.replaceState(null, "", "/erp/action-20");
   const records = [{ id: 5, name: "Note A" }, { id: 6, name: "Note B" }];
@@ -3466,14 +3541,14 @@ test("the command palette lists authorized menus, finds Notes from 'No', and hin
 
 
 /** An existing, archivable record in the default theme; `writes` collects every write-method call. */
-async function startArchivableForm(): Promise<{ root: HTMLElement; writes: string[] }> {
+async function startArchivableForm(rootFlags: Record<string, boolean> = {}): Promise<{ root: HTMLElement; writes: string[] }> {
   history.replaceState(null, "", "/erp/action-20?id=5&view_type=form");
   const writes: string[] = [];
   const note = description.fields["test.note"];
   const archivable = {
     ...description, fields: { "test.note": { ...note, active: { type: "boolean", label: "Active", required: false, readonly: false, relation: null, relation_field: null, selection: null } } },
     views: description.views.map(view => view.type !== "form" ? view : {
-      ...view, nodes: [{ kind: "form", record_mode: "record", children: [1, 2] }, view.nodes[1],
+      ...view, nodes: [{ kind: "form", record_mode: "record", children: [1, 2], ...rootFlags }, view.nodes[1],
         { kind: "field", force_save: false, field: { model: "test.note", name: "active" }, widget: "boolean_toggle", options: {}, modifiers: { readonly: null, required: null, invisible: null }, label: "Active" }]
     })
   };
@@ -3508,6 +3583,31 @@ test("an unknown action outcome disables the record menu writes and their jobs r
   for (const entry of entries()) { entry.disabled = false; entry.click(); }
   await new Promise(done => setTimeout(done, 20));
   expect(writes).toEqual([]);
+});
+
+/// The server narrows create/edit/delete to the caller's model rights (`get_views`); the form then offers none of the
+/// record commands those rights refuse.
+test("a form whose caller may not create, write or delete offers no New, Duplicate, Archive or Delete", async () => {
+  const { root } = await startArchivableForm({ create: false, edit: false, delete: false });
+  const content = root.querySelector<HTMLElement>("[data-client-content]")!;
+  expect([...content.querySelectorAll("button")].some(button => button.textContent === "New")).toBe(false);
+  root.querySelector<HTMLButtonElement>(".record-menu-btn")!.click();
+  expect(root.querySelector<HTMLElement>(".form-duplicate-btn")!.hidden).toBe(true);
+  expect(root.querySelector<HTMLElement>(".form-archive-btn")!.hidden).toBe(true);
+  expect(root.querySelector(".form-delete-btn")).toBeNull();
+  expect(root.querySelector<HTMLElement>(".form-reload-btn")!.hidden).toBe(false);
+  // without the write right the record is shown read-only
+  expect([...content.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("form input, form textarea")].every(control => control.disabled || control.readOnly)).toBe(true);
+});
+
+test("a form whose caller has every right offers New, Duplicate, Archive and Delete", async () => {
+  const { root } = await startArchivableForm();
+  const content = root.querySelector<HTMLElement>("[data-client-content]")!;
+  expect([...content.querySelectorAll("button")].some(button => button.textContent === "New")).toBe(true);
+  root.querySelector<HTMLButtonElement>(".record-menu-btn")!.click();
+  expect(root.querySelector<HTMLElement>(".form-duplicate-btn")!.hidden).toBe(false);
+  expect(root.querySelector<HTMLElement>(".form-archive-btn")!.hidden).toBe(false);
+  expect(root.querySelector(".form-delete-btn")).not.toBeNull();
 });
 
 /// CYCLE3 SHOULD 5: the record menu is the shared dropdown (roles, aria-expanded, roving focus, Escape).
@@ -3708,6 +3808,24 @@ test("form Print button lists the reports, Actions holds none, and printing save
   await vi.waitFor(() => expect(root.querySelector(".status-badge")?.textContent).toBe("Unsaved changes"));
   entry.click();
   await vi.waitFor(() => expect(order).toEqual(["web_save", "erp_print"]));
+});
+
+test("a form of a model without a report has no Print button, and the reports are read once per model", async () => {
+  history.replaceState(null, "", "/erp/action-20?id=5&view_type=form");
+  const order: string[] = [];
+  const fetcher = printFormFetch(order, { reports: [] });
+  vi.stubGlobal("fetch", fetcher);
+  const root = host();
+  app = new HumanApp(root, bootstrap);
+  await app.start();
+  await vi.waitFor(() => expect(root.querySelector(".form-actions-dropdown")).not.toBeNull());
+  const reads = (): number => (fetcher as unknown as { mock: { calls: [string][] } }).mock.calls.filter(([path]) => path.endsWith("erp_print_reports")).length;
+  await vi.waitFor(() => expect(reads()).toBe(1));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(root.querySelector<HTMLElement>(".form-record-menus .print-dropdown")!.hidden).toBe(true);
+  root.querySelector<HTMLButtonElement>(".form-reload-btn")!.click();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(reads()).toBe(1);
 });
 
 test("form Print on a new record with no edits saves it first, then prints it", async () => {

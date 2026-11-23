@@ -1,4 +1,5 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+import { setClientLanguage, t } from "./translate.js";
 import { clearProtectedTabState } from "./session-boundary.js";
 import { PanelCompatibilityError, PanelRecoverySafety, attemptPanelRecovery } from "./panel-recovery.js";
 import { unavailablePanelMessage } from "./panel-metadata.js";
@@ -54,7 +55,8 @@ import "./services.js";
 import { type ServiceController } from "./services.js";
 import { clientActions, listHeaderExtensions, serviceControllers, type ClientActionHandle, type ListHeaderHandle } from "./registry.js";
 import { mountControlPanel } from "./control-panel.js";
-import { printDropdown, printRecords } from "./report-print.js";
+import { loadPrintReports, printDropdown, printRecords, type PrintableReport } from "./report-print.js";
+import { listDataMenu, MAX_EXPORT_RECORDS } from "./list-data-menu.js";
 import { requestLoading } from "./loading.js";
 import { RefusedAction, isActionRefusal, mountRefusedActionPage } from "./refused-action.js";
 import { actionResult } from "./actions.js";
@@ -222,6 +224,8 @@ export class HumanApp {
   private navigationInFlight: Promise<void> | undefined;
   /** Records of `edit="0"` views: once they have an id they are never written back. */
   private readonly lockedRecords = new WeakSet<RecordState>();
+  /** The Print reports of each model, read once per page: a list and its forms share one answer; a failed read is not kept. */
+  private readonly printReports = new Map<string, Promise<PrintableReport[]>>();
   private keyboardPending: "save" | "discard" | undefined;
   private historyIndex = 0;
   private restoringHistory: number | undefined;
@@ -291,6 +295,8 @@ export class HumanApp {
     this.userId = integer(identity["uid"], "user id");
     this.companyId = integer(bootstrap["current_company_id"], "current company id");
     this.editorLocale = readEditorLocale(locale);
+    // The client's own texts follow the user's language (translate.ts).
+    setClientLanguage(this.editorLocale.lang);
     // Numeric capabilities are validated by the consuming codec, preserving unrelated shell/editor usability.
     this.numericLocale = { decimal_point: locale["decimal_point"], thousands_sep: locale["thousands_sep"], grouping: locale["grouping"] } as NumericLocale;
     this.companies = array(bootstrap["companies"], "companies").map(raw => {
@@ -1379,6 +1385,16 @@ export class HumanApp {
     catch (error) { this.methodActions.remove(id); throw error; }
     // A navigation that did not arrive (the page may not be left) keeps no entry behind.
     if (this.current.method_action !== id) this.methodActions.remove(id);
+  }
+
+  /** The reports the Print button offers for `model`, shared for the page's lifetime; a failed read is tried again next time. */
+  private reportsOf(model: string): Promise<PrintableReport[]> {
+    const known = this.printReports.get(model);
+    if (known) return known;
+    const loading = loadPrintReports(this.rpc, model, { background: true });
+    this.printReports.set(model, loading);
+    loading.catch(() => { if (this.printReports.get(model) === loading) this.printReports.delete(model); });
+    return loading;
   }
 
   /** Navigation and prefetch share one caller-bound action/view metadata producer. */
@@ -2918,7 +2934,7 @@ export class HumanApp {
       if (!page.records.length) {
         cards = undefined;
         const empty = noContentHelp();
-        empty.replaceChildren(...(searchModel.getFacets().length ? [el("h2", "No matching records"), el("p", "Try another search or clear the filter.")] : [el("h2", "No records yet"), el("p", hasForm ? "Create a record to begin working here." : "Records appear here once they exist.")]));
+        empty.replaceChildren(...(searchModel.getFacets().length ? [el("h2", t("No matching records")), el("p", t("Try another search or clear the filter."))] : [el("h2", t("No records yet")), el("p", hasForm ? t("Create a record to begin working here.") : t("Records appear here once they exist."))]));
         body.replaceChildren(empty);
         return;
       }
@@ -3312,7 +3328,7 @@ export class HumanApp {
       const print = printDropdown(this.rpc, description.model, report => this.run(async () => {
         if (!selectedIds.size) return;
         await printRecords({ rpc: this.rpc, dialogs: this.messages.dialogs }, report, description.model, Array.from(selectedIds));
-      }), error => this.reportError(error));
+      }), error => this.reportError(error), () => this.reportsOf(description.model));
       const dropdown = attachMenuDropdown({ trigger: actionToggle, menu: actionMenu, mode: "class-open" });
       disposeActionMenu = () => { print.dispose(); dropdown.dispose(); };
       if (canDelete) {
@@ -3339,6 +3355,27 @@ export class HumanApp {
     }
     // Beside the title, not before it: the summary appears without moving the title in every appearance.
     (breadcrumbs ?? controls).append(selectionBox);
+
+    // Import and Export beside New: the menu reads the caller's import and export rights when first opened.
+    const dataMenu = listDataMenu({
+      rpc: this.rpc, model: description.model, context, dialogs: this.messages.dialogs,
+      canImport: canCreate && view.canEdit !== false && !isFalsy(context["edit"]),
+      fields: view.fields.filter(field => !field.invisible && field.name !== "id" && !["one2many", "many2many", "binary", "json"].includes(field.kind)).map(field => ({ name: field.name, label: field.label })),
+      exportIds: async () => {
+        if (selectedIds.size) return Array.from(selectedIds);
+        const base = searchModel.getDomain();
+        const found = await this.rpc.call(description.model, "search", { domain: tabs ? tabs.rowDomain(base) : base, limit: MAX_EXPORT_RECORDS + 1, order, context });
+        if (!Array.isArray(found) || found.some(id => !Number.isSafeInteger(id))) throw new ClientError("server", "The server did not answer the search with record ids.");
+        if (found.length > MAX_EXPORT_RECORDS) throw new ClientError("validation", `More than ${MAX_EXPORT_RECORDS} records match. Narrow the search or select the records to export.`);
+        return found as number[];
+      },
+      imported: async () => { await load(true); },
+      notice: message => this.notice(message),
+      report: error => this.reportError(error),
+    });
+    controls.append(dataMenu.node);
+    const disposeSelectionMenu = disposeActionMenu;
+    disposeActionMenu = () => { disposeSelectionMenu(); dataMenu.dispose(); };
 
     const pager = el("div", undefined, "pager");
     const count = el("span", "", "pager-count muted");
@@ -3664,7 +3701,9 @@ export class HumanApp {
             field: { ...field, readonly: true }, value: record[field.name], values: record, model: description.model, fields: view.fields.map(field => ({ ...field, readonly: true })), viewContext: "list",
             rpc: this.rpc, context, currencies, numericLocale: this.numericLocale, editorLocale: this.editorLocale,
             messages: this.messages, run: this.run, report: error => this.reportError(error), signal: this.lifetime.signal,
-            openRecord: (model, related) => this.openRelatedRecord(model, related), change: () => { throw new ClientError("validation", "List display fields cannot be edited."); },
+            // No openRecord: a list cell shows a related record as text and a click anywhere on the row opens the row's own
+            // record, as in the reference client; the related record is one click further, in the form.
+            change: () => { throw new ClientError("validation", "List display fields cannot be edited."); },
             ...cellNavigation,
           });
           stops.push(handle.dispose);
@@ -3677,7 +3716,7 @@ export class HumanApp {
           if (index === 0 && hasForm) {
             const open = button("", () => this.run(() => this.navigate({ ...route, id: String(id), view_type: "form" })), "link");
             open.dataset["recordOpen"] = String(id); open.title = `Open record ${id}`;
-            const plainBuiltin = ["char", "text", "integer", "float", "monetary", "date", "datetime", "daterange", "boolean", "boolean_checkbox", "boolean_toggle", "selection", "badge", "label_selection", "badges_selection", "filterable_selection", "radio", "priority", "percentage"].includes(widget) && adapter === fieldWidgets.get(widget);
+            const plainBuiltin = ["char", "text", "integer", "float", "monetary", "date", "datetime", "daterange", "boolean", "boolean_checkbox", "boolean_toggle", "selection", "badge", "label_selection", "badges_selection", "filterable_selection", "radio", "priority", "percentage", "many2one"].includes(widget) && adapter === fieldWidgets.get(widget);
             const interactive = "input,select,textarea,button,a[href],[tabindex]";
             // Only known read adapters may be a primary value button. Links, reveals and trusted
             // custom/async action widgets retain a separate root-record action beside their output.
@@ -3822,20 +3861,20 @@ export class HumanApp {
         empty.replaceChildren();
         if (searchModel.getFacets().length > 0) {
           empty.append(
-            el("h2", "No matching records"),
-            el("p", "Try another search or clear the filter.")
+            el("h2", t("No matching records")),
+            el("p", t("Try another search or clear the filter."))
           );
         } else if (actionHelp) {
           const helpDiv = el("div", undefined, "action-help-text");
           helpDiv.textContent = actionHelp;
           empty.append(
-            el("h2", `No ${actionTitle} records yet`),
+            el("h2", t("No {name} records yet", { name: actionTitle })),
             helpDiv
           );
         } else {
           empty.append(
-            el("h2", `No ${actionTitle} records yet`),
-            el("p", canCreate ? `Create your first ${actionTitle} record with New.` : "There is nothing to show here yet.")
+            el("h2", t("No {name} records yet", { name: actionTitle })),
+            el("p", canCreate ? t("Create your first {name} record with New.", { name: actionTitle }) : t("There is nothing to show here yet."))
           );
         }
         results.append(empty);
@@ -4338,7 +4377,7 @@ export class HumanApp {
     const discardBtn = actionButton("Discard", () => runFormAction(discard), "status-btn-discard");
     statusActions.append(saveBtn, discardBtn);
     // A read-first form (`edit_mode="read"`) shows its saved record as read values with Edit; Save or Discard return to it.
-    const editBtn = button("Edit", () => runFormAction(edit), "primary status-btn-edit");
+    const editBtn = button(t("Edit"), () => runFormAction(edit), "primary status-btn-edit");
     editBtn.hidden = true; editBtn.title = "Edit (E)";
     const statusIndicator = el("div", undefined, "form-status-indicator");
     statusIndicator.append(statusBadge, archivedBadge, editBtn, statusActions);
@@ -4771,14 +4810,13 @@ export class HumanApp {
     for (const item of actionMenu.querySelectorAll<HTMLElement>("button")) item.setAttribute("role", "menuitem");
     // Print is its own button before Actions (not mixed with record actions). A dirty or new record is saved first,
     // as the reference client does before a menu item runs.
-    // shortcut: Print shows on every form (a model without a report says so when opened); hiding it needs the print
-    // bindings in get_views' toolbar, task.
+    // A model without a report has no Print button.
     const print = printDropdown(this.rpc, state.model, report => runFormAction(async () => {
       refuseUncertain();
       if ((state.dirty || !state.id) && !await trySave()) return;
       if (!state.id) throw new ClientError("validation", "Save the record before printing it.");
       await printRecords({ rpc: this.rpc, dialogs: this.messages.dialogs }, report, state.model, [state.id]);
-    }), error => this.reportError(error));
+    }), error => this.reportError(error), () => this.reportsOf(state.model));
     const recordMenus = el("div", undefined, "form-record-menus");
     recordMenus.append(print.node, actionDropdown);
     const actionMenuDropdown = attachMenuDropdown({ trigger: actionToggle, menu: actionMenu, mode: "class-open", onOpen: () => { duplicateBtn.hidden = !state.id || !canCreate; } });

@@ -1568,6 +1568,407 @@ fn result(response: &erp_rpc::RpcResponse) -> serde_json::Value {
     serde_json::from_slice(response.body()).unwrap()
 }
 
+// The view root's create/edit/delete follow the caller's model rights: an internal user may only read
+// currencies, so New, Edit, Archive and Delete are not offered; an administrator keeps the view's own.
+async fn assert_view_commands_follow_model_rights(
+    orm: &Orm,
+    service: &RpcService,
+    admin: erp_orm::Principal,
+    ordinary: erp_orm::Principal,
+) {
+    let mut setup = orm.begin(SUPERUSER_ID).await.unwrap();
+    let view = |kind: &str, arch: &str| {
+        [
+            (
+                "name".to_owned(),
+                erp_sdk::Value::str(format!("Model rights fixture {kind}")),
+            ),
+            ("model".to_owned(), erp_sdk::Value::str("res.currency")),
+            ("arch_db".to_owned(), erp_sdk::Value::str(arch)),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeMap<String, erp_sdk::Value>>()
+    };
+    let rows = [
+        view("list", "<list><field name='name'/></list>"),
+        view(
+            "form",
+            "<form edit_mode='read'><sheet><field name='name'/></sheet></form>",
+        ),
+    ];
+    let ids = setup
+        .env()
+        .records("ir.ui.view")
+        .unwrap()
+        .create_values(&mut setup, &rows)
+        .await
+        .unwrap()
+        .ids();
+    setup.commit().await.unwrap();
+    drop(setup);
+    let roots = |principal: erp_orm::Principal| {
+        let request = serde_json::json!({
+            "views": [[ids[0], "list"], [ids[1], "form"]],
+            "wire_major": 1,
+            "options": {"mobile": false},
+        });
+        async move {
+            let response = service
+                .call(RpcCall::json2(
+                    "/json/2/res.currency/get_views",
+                    serde_json::to_vec(&request).unwrap(),
+                    Caller::Principal(principal),
+                ))
+                .await;
+            assert_eq!(
+                response.status(),
+                200,
+                "{}",
+                String::from_utf8_lossy(response.body())
+            );
+            let body = result(&response);
+            let root = |index: usize| {
+                let view = &body["views"][index];
+                view["nodes"][view["root"].as_u64().unwrap() as usize].clone()
+            };
+            (root(0), root(1))
+        }
+    };
+    let (list, form) = roots(ordinary).await;
+    assert_eq!(list["kind"], "list");
+    assert_eq!(
+        (&list["create"], &list["edit"], &list["delete"]),
+        (
+            &serde_json::json!(false),
+            &serde_json::json!(false),
+            &serde_json::json!(false)
+        )
+    );
+    assert_eq!(form["kind"], "form");
+    assert_eq!(
+        (&form["create"], &form["edit"], &form["delete"]),
+        (
+            &serde_json::json!(false),
+            &serde_json::json!(false),
+            &serde_json::json!(false)
+        )
+    );
+    // a read-only form has no Edit command, so the read-first mode is dropped with the right
+    assert!(form.get("edit_mode").is_none(), "{form}");
+    let (list, form) = roots(admin).await;
+    for key in ["create", "edit", "delete"] {
+        assert!(list.get(key).is_none(), "{list}");
+        assert!(form.get(key).is_none(), "{form}");
+    }
+    assert_eq!(form["edit_mode"], "read");
+}
+
+async fn ir_field_id(tx: &mut erp_orm::Transaction, model: &str, name: &str) -> i64 {
+    tx.query(
+        "SELECT id FROM ir_model_fields WHERE model = $1 AND name = $2",
+        &[&model, &name],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+fn field_access(
+    field: i64,
+    mode: &str,
+    groups: &[i64],
+) -> std::collections::BTreeMap<String, erp_sdk::Value> {
+    let mut values: std::collections::BTreeMap<String, erp_sdk::Value> = [
+        ("field_id".to_owned(), erp_sdk::Value::Int(field)),
+        ("mode".to_owned(), erp_sdk::Value::str(mode)),
+    ]
+    .into_iter()
+    .collect();
+    values.insert(
+        "group_ids".to_owned(),
+        erp_sdk::Value::List(
+            vec![erp_sdk::Value::List(
+                vec![
+                    erp_sdk::Value::Int(6),
+                    erp_sdk::Value::Int(0),
+                    erp_sdk::Value::List(groups.iter().map(|g| erp_sdk::Value::Int(*g)).collect()),
+                ]
+                .into(),
+            )]
+            .into(),
+        ),
+    );
+    values
+}
+
+/// The field names of the stored form `form` that `principal`'s `get_views` describes.
+async fn described_form(
+    service: &RpcService,
+    form: i64,
+    principal: erp_orm::Principal,
+) -> Vec<String> {
+    let response = service
+        .call(RpcCall::json2(
+            "/json/2/acceptance_notes.note/get_views",
+            serde_json::to_vec(&serde_json::json!({
+                "views": [[form, "form"]], "wire_major": 1, "options": {"mobile": false}
+            }))
+            .unwrap(),
+            Caller::Principal(principal),
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        200,
+        "{}",
+        String::from_utf8_lossy(response.body())
+    );
+    described_fields(&result(&response))
+}
+
+async fn search_notes(
+    service: &RpcService,
+    principal: erp_orm::Principal,
+    domain: serde_json::Value,
+) -> erp_rpc::RpcResponse {
+    service
+        .call(RpcCall::json2(
+            "/json/2/acceptance_notes.note/search_read",
+            serde_json::to_vec(&serde_json::json!({"domain": domain, "fields": ["name"]})).unwrap(),
+            Caller::Principal(principal),
+        ))
+        .await
+}
+
+/// The field names of the form a caller's `get_views` describes.
+fn described_fields(body: &serde_json::Value) -> Vec<String> {
+    body["views"][0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["kind"] == "field")
+        .map(|node| node["field"]["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+// An administrator's field access override (`ir.field.access`) applies where declared groups do:
+// `replace` opens `internal_memo` (declared for administrators) to internal users, `extend` closes
+// `body` to them; reads, searches and the described form follow. A field declared for nobody
+// cannot be overridden, and an `extend` override needs a group.
+async fn assert_field_access_overrides(orm: &Orm, db: &TestDb, ordinary: erp_orm::Principal) {
+    let mut setup = orm.begin(SUPERUSER_ID).await.unwrap();
+    let form = setup
+        .env()
+        .records("ir.ui.view")
+        .unwrap()
+        .create_values(
+            &mut setup,
+            &[[
+                (
+                    "name".to_owned(),
+                    erp_sdk::Value::str("Field access override fixture"),
+                ),
+                (
+                    "model".to_owned(),
+                    erp_sdk::Value::str("acceptance_notes.note"),
+                ),
+                (
+                    "arch_db".to_owned(),
+                    erp_sdk::Value::str(
+                        "<form><sheet><field name='name'/><field name='body'/>\
+                         <field name='internal_memo'/></sheet></form>",
+                    ),
+                ),
+            ]
+            .into_iter()
+            .collect()],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    let note = setup
+        .env()
+        .records("acceptance_notes.note")
+        .unwrap()
+        .create_values(
+            &mut setup,
+            &[[
+                (
+                    "name".to_owned(),
+                    erp_sdk::Value::str("Field access override note"),
+                ),
+                ("body".to_owned(), erp_sdk::Value::str("visible body")),
+                ("internal_memo".to_owned(), erp_sdk::Value::str("memo")),
+                (
+                    "company_id".to_owned(),
+                    erp_sdk::Value::Int(ordinary.companies().current().unwrap().get()),
+                ),
+                (
+                    "owner_id".to_owned(),
+                    erp_sdk::Value::Int(ordinary.subject().get()),
+                ),
+            ]
+            .into_iter()
+            .collect()],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    setup.commit().await.unwrap();
+    drop(setup);
+    let before = fresh_metadata_policy_orm(orm, db).await;
+    let fields = described_form(
+        &RpcService::new(before.clone(), Host, RpcConfig::default()),
+        form,
+        ordinary.clone(),
+    )
+    .await;
+    assert!(fields.contains(&"body".to_owned()), "{fields:?}");
+    assert!(!fields.contains(&"internal_memo".to_owned()), "{fields:?}");
+
+    let mut admin = orm.begin(SUPERUSER_ID).await.unwrap();
+    let user_group = relation_id(&mut admin, "group_user", "res.groups").await;
+    let system_group = relation_id(&mut admin, "group_system", "res.groups").await;
+    let memo = ir_field_id(&mut admin, "acceptance_notes.note", "internal_memo").await;
+    let body = ir_field_id(&mut admin, "acceptance_notes.note", "body").await;
+    let created = admin
+        .env()
+        .records("ir.field.access")
+        .unwrap()
+        .create_values(
+            &mut admin,
+            &[
+                field_access(memo, "replace", &[user_group]),
+                field_access(body, "extend", &[system_group]),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids();
+    admin.commit().await.unwrap();
+    drop(admin);
+
+    // one override per field
+    let mut refused = orm.begin(SUPERUSER_ID).await.unwrap();
+    let twice = refused
+        .env()
+        .records("ir.field.access")
+        .unwrap()
+        .create_values(
+            &mut refused,
+            &[field_access(memo, "extend", &[system_group])],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(twice.kind(), erp_sdk::ErrorKind::Validation, "{twice}");
+    refused.rollback().await.unwrap();
+    // a field declared for nobody cannot be overridden, and `extend` needs a group
+    let mut refused = orm.begin(SUPERUSER_ID).await.unwrap();
+    let secret = ir_field_id(&mut refused, "res.users.apikeys", "legacy_hash").await;
+    let error = refused
+        .env()
+        .records("ir.field.access")
+        .unwrap()
+        .create_values(&mut refused, &[field_access(secret, "replace", &[])])
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation, "{error}");
+    assert!(error.message().contains("cannot be overridden"), "{error}");
+    refused.rollback().await.unwrap();
+    let mut refused = orm.begin(SUPERUSER_ID).await.unwrap();
+    let name = ir_field_id(&mut refused, "acceptance_notes.note", "name").await;
+    let error = refused
+        .env()
+        .records("ir.field.access")
+        .unwrap()
+        .create_values(&mut refused, &[field_access(name, "extend", &[])])
+        .await
+        .unwrap_err();
+    assert!(error.message().contains("at least one group"), "{error}");
+    refused.rollback().await.unwrap();
+    drop(refused);
+
+    let after = fresh_metadata_policy_orm(orm, db).await;
+    let mut tx = after.begin(ordinary.subject()).await.unwrap();
+    let records = tx
+        .env()
+        .records("acceptance_notes.note")
+        .unwrap()
+        .browse([note])
+        .unwrap();
+    let rows = records.read(&mut tx, &["internal_memo"]).await.unwrap();
+    assert_eq!(rows[0]["internal_memo"], erp_sdk::Value::str("memo"));
+    let error = records.read(&mut tx, &["body"]).await.unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Access, "{error}");
+    tx.rollback().await.unwrap();
+    drop(tx);
+    let service = RpcService::new(after.clone(), Host, RpcConfig::default());
+    let opened = search_notes(
+        &service,
+        ordinary.clone(),
+        serde_json::json!([["internal_memo", "=", "memo"]]),
+    )
+    .await;
+    assert_eq!(
+        opened.status(),
+        200,
+        "{}",
+        String::from_utf8_lossy(opened.body())
+    );
+    assert_eq!(result(&opened).as_array().unwrap().len(), 1);
+    let closed = search_notes(
+        &service,
+        ordinary.clone(),
+        serde_json::json!([["body", "=", "visible body"]]),
+    )
+    .await;
+    assert_eq!(
+        closed.status(),
+        403,
+        "{}",
+        String::from_utf8_lossy(closed.body())
+    );
+    let fields = described_form(&service, form, ordinary.clone()).await;
+    assert!(fields.contains(&"internal_memo".to_owned()), "{fields:?}");
+    assert!(!fields.contains(&"body".to_owned()), "{fields:?}");
+
+    // removing the overrides restores the declared groups
+    let mut cleanup = orm.begin(SUPERUSER_ID).await.unwrap();
+    cleanup
+        .env()
+        .records("ir.field.access")
+        .unwrap()
+        .browse(created)
+        .unwrap()
+        .unlink(&mut cleanup)
+        .await
+        .unwrap();
+    cleanup.commit().await.unwrap();
+    drop(cleanup);
+    let restored = fresh_metadata_policy_orm(orm, db).await;
+    let fields = described_form(
+        &RpcService::new(restored, Host, RpcConfig::default()),
+        form,
+        ordinary,
+    )
+    .await;
+    assert!(fields.contains(&"body".to_owned()), "{fields:?}");
+    assert!(!fields.contains(&"internal_memo".to_owned()), "{fields:?}");
+
+    // the fixture form must not become the model's default form for the checks that follow
+    let mut drop_form = orm.begin(SUPERUSER_ID).await.unwrap();
+    drop_form
+        .env()
+        .records("ir.ui.view")
+        .unwrap()
+        .browse([form])
+        .unwrap()
+        .unlink(&mut drop_form)
+        .await
+        .unwrap();
+    drop_form.commit().await.unwrap();
+}
+
 async fn stored_form(
     orm: &Orm,
     service: &RpcService,
@@ -2777,6 +3178,89 @@ async fn assert_current_list_scope(
     );
 }
 
+// `export_data` and `erp_impex_rights` name `base.group_allow_export`: base defines it, so an internal
+// user outside it is refused export (not a programming error) and a member may export what they may read.
+async fn assert_export_follows_the_base_export_group(
+    orm: &Orm,
+    auth: &Auth,
+    service: &RpcService,
+    ordinary: erp_orm::Principal,
+    company: i64,
+) {
+    let mut setup = orm.begin(SUPERUSER_ID).await.unwrap();
+    let user_group = relation_id(&mut setup, "group_user", "res.groups").await;
+    let export_group = relation_id(&mut setup, "group_allow_export", "res.groups").await;
+    create_user(
+        &mut setup,
+        "metadata-exporter",
+        "metadata-exporter-password",
+        company,
+        &[user_group, export_group],
+    )
+    .await;
+    let currency = setup
+        .query(
+            "SELECT id FROM res_currency WHERE active ORDER BY id LIMIT 1",
+            &[],
+        )
+        .await
+        .unwrap()[0]
+        .get::<_, i64>(0);
+    setup.commit().await.unwrap();
+    drop(setup);
+    let exporter = principal(auth, "metadata-exporter", "metadata-exporter-password").await;
+    let call = |principal: erp_orm::Principal, method: &str, body: serde_json::Value| {
+        service.call(RpcCall::json2(
+            &format!("/json/2/res.currency/{method}"),
+            serde_json::to_vec(&body).unwrap(),
+            Caller::Principal(principal),
+        ))
+    };
+    let rights = call(ordinary.clone(), "erp_impex_rights", serde_json::json!({})).await;
+    assert_eq!(
+        rights.status(),
+        200,
+        "{}",
+        String::from_utf8_lossy(rights.body())
+    );
+    assert_eq!(
+        result(&rights),
+        serde_json::json!({"export": false, "import": false})
+    );
+    let rights = call(exporter.clone(), "erp_impex_rights", serde_json::json!({})).await;
+    assert_eq!(
+        rights.status(),
+        200,
+        "{}",
+        String::from_utf8_lossy(rights.body())
+    );
+    assert_eq!(
+        result(&rights),
+        serde_json::json!({"export": true, "import": false})
+    );
+
+    let export = serde_json::json!({"ids": [currency], "fields_to_export": ["name"]});
+    let refused = call(ordinary, "export_data", export.clone()).await;
+    assert_eq!(
+        refused.status(),
+        422,
+        "{}",
+        String::from_utf8_lossy(refused.body())
+    );
+    assert_eq!(
+        result(&refused)["message"],
+        "You don't have the rights to export data. Please contact an Administrator."
+    );
+    let exported = call(exporter, "export_data", export).await;
+    assert_eq!(
+        exported.status(),
+        200,
+        "{}",
+        String::from_utf8_lossy(exported.body())
+    );
+    assert_eq!(result(&exported)["datas"].as_array().map(Vec::len), Some(1));
+}
+
 #[test]
 fn installed_metadata_rpc_uses_authenticated_acl_and_field_groups() {
     thread::Builder::new()
@@ -3634,6 +4118,8 @@ async fn installed_metadata_rpc_uses_authenticated_acl_and_field_groups_async() 
     )
     .await;
     assert_list_count_rpc_scope(&orm, &service, ordinary.clone(), company).await;
+    assert_view_commands_follow_model_rights(&orm, &service, admin.clone(), ordinary.clone()).await;
+    assert_field_access_overrides(&orm, &db, ordinary.clone()).await;
     assert_list_filter_metadata(&orm, &service, ordinary.clone(), list_view, search_view).await;
     panel_contract_custom::run(&orm, &db, ordinary.clone(), admin.clone(), search_view).await;
     assert_action_list_presentation(
@@ -3647,6 +4133,8 @@ async fn installed_metadata_rpc_uses_authenticated_acl_and_field_groups_async() 
     .await;
 
     assert_action_result_contract(&orm, &service, admin.clone(), ordinary.clone()).await;
+    assert_export_follows_the_base_export_group(&orm, &auth, &service, ordinary.clone(), company)
+        .await;
     assert_action_bundle(
         &orm,
         &service,

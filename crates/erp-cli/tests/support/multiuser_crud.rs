@@ -882,6 +882,14 @@ pub const MANIFEST: &[ModelCase] = &[
         Rows::Absent,
         &[],
     ),
+    base(
+        "ir.field.access",
+        "Field Access",
+        GRANT_BASIS,
+        ADMIN_ALL,
+        Rows::Created,
+        &[],
+    ),
     owned("ir.filters", "Filter", FILTER_BASIS, Policy::OwnRecords),
     base(
         "ir.job",
@@ -1557,6 +1565,7 @@ impl Marker {
             "ir.config.setting.audit" => Marker::Char("setting_key"),
             "ir.config_parameter" | "ir.dated.parameter" => Marker::Char("value"),
             "ir.default" => Marker::Char("condition"),
+            "ir.field.access" => Marker::Char("note"),
             "ir.job" | "ir.job.run" => Marker::Char("kind"),
             "ir.model" => Marker::Char("info"),
             "ir.model.data" | "ir.model.relation" => Marker::Char("module"),
@@ -2188,6 +2197,32 @@ impl<'a, 'f> Crud<'a, 'f> {
             "ir.default" => json!({
                 "field_id": self.field_id("res.partner", "ref"), "json_value": "\"crud\""
             }),
+            "ir.field.access" => {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                static NEXT_FIELD: AtomicUsize = AtomicUsize::new(0);
+                const CANDIDATES: &[&str] = &[
+                    "ref",
+                    "street",
+                    "street2",
+                    "city",
+                    "zip",
+                    "vat",
+                    "website",
+                    "phone",
+                    "color",
+                    "tz_offset",
+                    "country_code",
+                    "email_formatted",
+                ];
+                let field_name =
+                    CANDIDATES[NEXT_FIELD.fetch_add(1, Ordering::Relaxed) % CANDIDATES.len()];
+                json!({
+                    "field_id": self.field_id("res.partner", field_name),
+                    "mode": "extend",
+                    "group_ids": [[6, 0, [self.fx.group("group_system")]]],
+                    "note": tag,
+                })
+            }
             "ir.filters" => {
                 let users: Vec<i64> = co
                     .owner()

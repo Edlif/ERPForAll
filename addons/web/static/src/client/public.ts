@@ -112,3 +112,5 @@ export type { BurgerUser, BurgerCompany, BurgerUserMenuItem, MobileBurgerMenuOpt
 
 export { activitySystrayItem, renderActivityMenu, parseActivityMenuData, isUnknownActivityModel, getModelIconName } from "./activity-menu.js";
 export type { ActivityGroupData, ActivityMenuData, ActivityMenuEnvironment, ActivityMenuHandle } from "./activity-menu.js";
+export { registerTranslations, t, clientLanguage } from "./translate.js";
+export type { TranslationValues } from "./translate.js";

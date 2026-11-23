@@ -497,7 +497,7 @@ export class RecordForm {
     let note = host.querySelector<HTMLElement>(":scope > .field-error");
     if (!note) { note = el("div", undefined, "field-error"); note.setAttribute("role", "status"); if (host === root) root.append(note); else root.after(note); }
     if (!note.id) note.id = `field-note-${++nextFieldNote}`;
-    if (note.hidden || !note.textContent) { note.textContent = message; note.hidden = false; }
+    note.textContent = message; note.hidden = false;
     const control = root.matches("input,select,textarea,button") ? root : root.querySelector<HTMLElement>("input,select,textarea,button") ?? root;
     control.setAttribute("aria-invalid", "true");
     const described = (control.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
@@ -514,9 +514,10 @@ export class RecordForm {
   /** A save the server refused for naming fields (`Missing required field 'name'`) is shown on those fields, not in a dialog. */
   flagServerError(error: unknown): boolean {
     if (this.dead || !(error instanceof ClientError) || error.kind !== "validation" || error.status < 400 || error.status >= 500) return false;
-    const names = new Set([...error.message.matchAll(/\bfields? '([a-z_][a-z0-9_]*)'/g)].map(match => match[1]));
+    // The server names the fields in the error context; an older message names them in its text.
+    const names = new Set(error.fields.length ? error.fields : [...error.message.matchAll(/\bfields? '([a-z_][a-z0-9_]*)'/g)].map(match => match[1]));
     const found: { root: HTMLElement; focus(): void; missing: boolean }[] = [];
-    const missing = /\brequired\b/i.test(error.message);
+    const missing = /^Missing required field\b/i.test(error.message);
     for (const item of this.validators) {
       if (!names.has(item.name) || found.some(entry => entry.root === item.node)) continue;
       this.flag(item.node, missing ? "This field needs a value." : error.message);

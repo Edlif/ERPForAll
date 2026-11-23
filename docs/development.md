@@ -111,6 +111,18 @@ application) answer with its images; an image it does not ship keeps the built-i
 `ETag` and `Cache-Control: no-cache`, and SVG is sent with a sandboxing `Content-Security-Policy`. Only one
 installed addon may ship brand images: installing a second one fails.
 
+A field's `groups` (`#[field(..., groups = "base.group_system")]`) say who may read and write it. An administrator
+can change that without changing the addon, in Settings › Technical › Security › Field Access (`ir.field.access`,
+one override per field): **Also require these groups** (`extend`) requires one of its groups as well as one of the
+declared ones, so it only narrows; **Replace the declared groups** (`replace`) puts its groups in their place (no
+group: everyone who may access the model). The groups of a custom `x_` field stay in both cases. An override applies
+wherever declared groups do: reads, writes, searches, `fields_get`, and the fields a view description shows (a
+replaced field's view node takes no guard from the declaration; the description leaves the field out for a caller
+who may not read it). A field declared for nobody (`groups = "."`, such as key digests) cannot be overridden, and
+the policy ignores and reports a stored `replace` row for one. An override names one field: a related or delegated
+(`_inherits`) copy keeps its own groups and needs its own override. Overrides are policy rows: a write rebuilds the
+policy (the `policy` generation) and is audited like every write.
+
 A form view opens a saved record editable. `<form edit_mode="read">` opens it read-first instead: the fields show as
 read values with an Edit button (or the E key outside a field); a successful Save or a Discard return to read mode,
 a refused save stays in edit mode with its errors, and a new record opens editable. A form with `edit="0"` is always
@@ -252,6 +264,47 @@ async fn submit(
 }
 ```
 
+The `create`, `edit` and `delete` a list, form, kanban or calendar view describes are narrowed to the caller's
+model rights by `get_views`: without the create right a view answers `create: false` (no New, no Duplicate, no
+quick create), without the write right `edit: false` (a read-only form without read mode, no Archive, no dragging
+cards), without the unlink right `delete: false` (no Delete). A view's own `create="0"` stays off for every caller.
+Only the model-level rights are used; a record rule can still refuse one record when the command runs.
+
+A refusal can name the fields of the record it is about: `Error::validation("…").with_fields(["date_end"])` puts
+`fields: ["date_end"]` in the JSON-2 error body's `context` (other context keys are kept). The ORM names them itself for
+a missing required value, an inverted period of a typed exclusion and a `#[constrains(...)]` method that names none
+(the constrained fields this write changed). The web client also accepts `context.field` with one name. A form shows such
+a refusal on those fields, with the server's message, instead of an error dialog; a validation or user error that names
+no shown field gets a dialog with its message only, without the Error ID and technical details (kept when the server
+granted debug details).
+
+A list's control row has an Import / Export menu beside New. When first opened it asks the model's
+`erp_impex_rights` (`{export, import}`): export needs the read right and the export right `export_data` checks (a member
+of `base.group_allow_export` (Export Records, defined by base) or `base.group_erp_manager`), import needs the create and write rights. Import is also
+offered only when the list allows creating and editing. Export writes the chosen columns of the selected records, or of
+every record of the current search (at most 10,000), as CSV with a byte order mark; text that a spreadsheet could read as
+a formula gets a leading apostrophe. Import reads a CSV file (at most 10 MB and 10,000 rows) whose first line names the
+columns by field label or field name (`partner_id/id` paths included) and sends it to `load`; an unknown or repeated
+column is refused before the call, and the messages `load` returns are shown with their file lines.
+
+An import screen reads the user's file with `read_import_file` (on any model, like `load`): `file` (base64),
+`file_type` (`csv` or `xlsx`), and optionally `sheet` (the worksheet; required when a workbook has more than one) or
+`separator` (`,`, `;` or a tab, CSV only). It answers `{header, rows, sheet}`: the first row as column titles and the
+data rows as strings, squared to the titles, without entirely empty rows. The screen previews them and passes the
+same matrix to `load`, so a workbook is checked exactly like a CSV file. Workbook cells are read as text `load`
+understands: numbers as stored, booleans as `1`/`0`, date-formatted cells as `YYYY-MM-DD` (with ` HH:MM:SS` when
+they have a time), formulas as their saved value. An error value, a formula saved without its value, a date before
+1 March 1900 or a value beyond the titled columns is refused with the cell's reference. A file is at most 16 MiB,
+100 000 data rows and 1 000 columns, and each workbook part is bounded when it is unpacked; the request itself is
+also bounded by `limits.rpc_body_bytes` (2 MiB by default).
+
+A notebook `<page>` may hide per record: `<page name="history" string="History" invisible="state == 'draft'">`. The
+expression reads fields this view shows (names, literals, comparisons, `not`/`and`/`or`, arithmetic and conditionals,
+as for button `invisible`), and the client evaluates it on the record's current values: while it is true the page has
+no tab and its content is not rendered, and a selected page that hides gives way to the nearest shown page before it.
+`invisible="1"` still removes the page from the description. A page is not a security boundary: use `groups` to keep
+its fields from users who may not read them.
+
 ## The web client
 
 The client is TypeScript, compiled ahead of time:
@@ -323,6 +376,23 @@ so a reload or a copied link opens the same companies.
 A user's home action (`res.users.action_id`, a window action the user may set on their own record) opens in place of
 the app grid when the address names no action. It loads through the usual access checks: an action the user may not
 open leaves the grid with a notice. The logo still opens the grid.
+The client's own texts (empty states, the New, Save, Discard and Edit buttons, the built-in commands, one2many
+lines) are written in English and passed through `t()` (`addons/web/static/src/client/translate.ts`, exported by
+`@erpforall/client`): `t("No records yet")`, or `t("No {name} records yet", { name })` with named placeholders. They
+follow the user's language, the `lang` of the bootstrap locale: a text is shown from the catalog of that language,
+else of its base language (`id` for `id_ID`), else in English. An addon ships a catalog, an object from English text
+to translation, and registers it from its client entry:
+
+```ts
+import { registerTranslations } from "@erpforall/client";
+registerTranslations("id_ID", { "No records yet": "…", "No {name} records yet": "… {name} …" });
+```
+
+A catalog that is not such an object, an empty translation, a translation that drops or adds a placeholder, and a
+text two catalogs translate differently are refused with the text named, and nothing of the refused catalog is
+kept. `node scripts/extract-client-strings.mjs [addon]` (in `web/`, default `web`) prints every `t()` text of an
+addon's client sources as a catalog skeleton; a `t()` call whose text is not one plain string literal is refused,
+so every text stays extractable. This repository ships the English sources only.
 
 Checks (after `eval "$(scripts/web-toolchain.sh env)"` and `pnpm --dir web install --frozen-lockfile`):
 

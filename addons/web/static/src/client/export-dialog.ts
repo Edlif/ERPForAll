@@ -44,7 +44,7 @@ export function exportDialog(options: ExportDialogOptions): DialogHandle {
   const operation = button("Download", () => {
     if (pending || dead) return;
     const selection = inputs.filter(input => input.checked).map(input => input.value);
-    if (!selection.length) { options.notice("Choose at least one field to export.", { level: "danger" }); return; }
+    if (!selection.length) { const msg = "Choose at least one field to export."; status.textContent = msg; options.notice(msg, { level: "danger" }); return; }
     pending = true; status.textContent = ""; disable();
     void (async () => { await options.download(selection, format.value); })().catch(error => {
       if (dead) return;
