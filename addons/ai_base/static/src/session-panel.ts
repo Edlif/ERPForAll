@@ -7,6 +7,13 @@
  * sessions, and shows the sessions anchored to the open record with the
  * "Anchor not available" state when the anchor is no longer readable.
  *
+ * The "About this record" group is the server's own `about={model, res_id}` result (a second
+ * `search_sessions` call), never a client-side filter of the main list, so the list limit can
+ * never hide an about-session; it is hoisted above the general group, which is the deliberate
+ * session never appears in both groups. The open-record anchor comes from the live systray
+ * context (`active_model` + `active_id`): the panel re-reads it on every load and whenever the
+ * panel is shown again.
+ *
  * Every call goes through session-contract.ts; the display path never calls a provider
  * (4, plan §5.2). Rendering the message thread itself is AI1.ASSIST-TURN's pair
  * slice and stays out of scope.
@@ -19,7 +26,11 @@ import {
 
 export interface SessionPanelOptions {
   rpc: RpcLike;
-  /** The shell context; `active_model` + `active_id` anchor the "About this record" section. */
+  /**
+   * The shell's assistant context; `active_model` + `active_id` anchor the "About this record"
+   * section. The object is live: the shell updates those keys as the mounted record changes, and
+   * the panel re-reads them on every load and whenever it is shown again.
+   */
   context?: Record<string, unknown>;
   /** Called after a successful resume, with the session and the sequence the next turn continues. */
   onResume?: (session: SessionSummary, resume: ResumeSessionResult) => void;
@@ -52,10 +63,31 @@ function formatActivity(value: string): string {
   return Number.isFinite(time) ? activityFormatter.format(time) : value;
 }
 
+/** A `erp.ai.<code>` code the server can refuse with, mapped to user copy (house rule: no codes, no jargon). */
+const AI_REFUSALS: Record<string, string> = {
+  session_delete_pending: "Deleting sessions isn't available yet.",
+};
+
+/**
+ * The one place a failure becomes user copy: a known `erp.ai.<code>` refusal is mapped to its
+ * friendly sentence; any other `erp.ai.<code>` reads as the generic refusal instead of echoing
+ * internal codes and ADR names; other errors keep their already user-safe wording.
+ */
+function describeSessionError(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    const code = /^erp\.ai\.([a-z0-9_]+)(?::|$)/.exec(error.message)?.[1];
+    if (code !== undefined) return AI_REFUSALS[code] ?? "The session store refused the request.";
+    return error.message;
+  }
+  return "The session store refused the request.";
+}
+
 /** The one place a session row is drawn; a row is rebuilt wholesale on every list render. */
 export function sessionPanel(options: SessionPanelOptions): SessionPanelHandle {
   const rpc = options.rpc;
   let sessions: SessionSummary[] = [];
+  let aboutSessions: SessionSummary[] = [];
+  let anchor: OpenRecordAnchor | null = null;
   let query = "";
   let includeArchived = false;
   let activeId: number | null = null;
@@ -267,24 +299,13 @@ export function sessionPanel(options: SessionPanelOptions): SessionPanelHandle {
     const marker = keepFocus ? focusMarker() : null;
     body.replaceChildren();
     if (error) { body.append(errorBlock()); return; }
-    if (sessions.length === 0) { body.append(emptyBlock()); return; }
-    let anchor: OpenRecordAnchor | null = null;
-    try { anchor = anchorFromContext(options.context); }
-    catch (contextError) {
-      error = contextError instanceof Error ? contextError.message : "Invalid record context.";
-      body.append(errorBlock());
-      return;
-    }
-    if (anchor) {
-      const record = anchor;
-      const isAbout = (s: SessionSummary): boolean => s.anchor !== null && s.anchor.model === record.model && s.anchor.res_id === record.res_id;
-      const about = sessions.filter(isAbout);
-      const rest = sessions.filter(s => !isAbout(s));
-      if (about.length) body.append(group("About this record", about));
-      if (rest.length) body.append(group("Sessions", rest));
-    } else if (sessions.length) {
-      body.append(group("Sessions", sessions));
-    }
+    if (aboutSessions.length === 0 && sessions.length === 0) { body.append(emptyBlock()); return; }
+    // The about group is the server's own `about`-filtered answer and is hoisted
+    // above the general group; a session never appears in both groups.
+    const aboutIds = new Set(aboutSessions.map(session => session.id));
+    const rest = sessions.filter(session => !aboutIds.has(session.id));
+    if (aboutSessions.length) body.append(group("About this record", aboutSessions));
+    if (rest.length) body.append(group("Sessions", rest));
     if (marker) {
       const target = body.querySelector<HTMLElement>(`.ai-session-row[data-session-id="${marker.id}"] [data-session-action="${marker.action}"]`);
       (target ?? search).focus();
@@ -294,17 +315,35 @@ export function sessionPanel(options: SessionPanelOptions): SessionPanelHandle {
   async function load(keepFocus = false): Promise<void> {
     const seq = ++requestSeq;
     error = null;
-    if (sessions.length === 0) { loading = true; renderBody(keepFocus); }
+    // The anchor comes from the live systray context: read it fresh on every load. One half of
+    // the pair present without the other, or a malformed value, is a wiring bug: fail loudly.
     try {
-      const result = await searchSessions(rpc, { search: query, include_archived: includeArchived });
+      anchor = anchorFromContext(options.context);
+    } catch (contextError) {
+      anchor = null;
       if (closed || seq !== requestSeq) return;
-      sessions = result;
+      error = describeSessionError(contextError);
+      loading = false;
+      renderBody(keepFocus);
+      return;
+    }
+    if (sessions.length === 0 && aboutSessions.length === 0) { loading = true; renderBody(keepFocus); }
+    try {
+      // list limit never hides an about-session; the general list is the ordinary call.
+      const [about, main] = await Promise.all([
+        anchor ? searchSessions(rpc, { search: query, include_archived: includeArchived, about: anchor }) : Promise.resolve(null),
+        searchSessions(rpc, { search: query, include_archived: includeArchived }),
+      ]);
+      if (closed || seq !== requestSeq) return;
+      aboutSessions = about ?? [];
+      sessions = main;
       confirmingDelete = null;
     } catch (loadError) {
       if (closed || seq !== requestSeq) return;
       sessions = [];
+      aboutSessions = [];
       confirmingDelete = null;
-      error = loadError instanceof Error ? loadError.message : "Could not load sessions.";
+      error = describeSessionError(loadError);
     } finally {
       if (!closed && seq === requestSeq) { loading = false; renderBody(keepFocus); }
     }
@@ -320,7 +359,15 @@ export function sessionPanel(options: SessionPanelOptions): SessionPanelHandle {
       renderStatus();
     } catch (actError) {
       if (closed) return;
-      statusText = actError instanceof Error ? actError.message : "The session store refused the request.";
+      statusText = describeSessionError(actError);
+      // An action failed while another row's delete confirm was armed: the confirm pose goes away
+      // with the failure, next to the status line that explains it. (The delete action's own
+      // failure rebuilds the row inside `deleteOne`, because its confirm state is cleared on the
+      // confirming click.)
+      if (confirmingDelete !== null) {
+        confirmingDelete = null;
+        renderBody(true);
+      }
       renderStatus();
     }
   }
@@ -361,7 +408,15 @@ export function sessionPanel(options: SessionPanelOptions): SessionPanelHandle {
 
   function deleteOne(session: SessionSummary): void {
     void act(async () => {
-      await deleteSession(rpc, session.id);
+      try {
+        await deleteSession(rpc, session.id);
+      } catch (deleteError) {
+        // The click that armed the delete already cleared the confirm state, so the row would
+        // keep its stale "Confirm delete" pose: rebuild it out of that pose here, so the status
+        // line that follows sits next to the normal delete control.
+        if (!closed) renderBody(true);
+        throw deleteError;
+      }
       confirmingDelete = null;
       await load(true);
       return { message: "Session deleted." };
@@ -413,6 +468,14 @@ export function sessionPanel(options: SessionPanelOptions): SessionPanelHandle {
     options.onClose?.();
   });
 
+  // The systray context is live: the record behind the panel can change while the dock stays
+  // open. Reload when the panel is shown again, so the About this record section always reads
+  // the record that is open now.
+  const shown = new MutationObserver(() => {
+    if (!closed && !panel.hidden) void load();
+  });
+  shown.observe(panel, { attributes: true, attributeFilter: ["hidden"] });
+
   void load();
 
   return {
@@ -421,6 +484,7 @@ export function sessionPanel(options: SessionPanelOptions): SessionPanelHandle {
     dispose() {
       closed = true;
       clearTimeout(debounce);
+      shown.disconnect();
       panel.remove();
     },
   };

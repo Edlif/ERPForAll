@@ -1634,6 +1634,7 @@ impl Orm {
             image_policy: None,
             notices: Vec::new(),
             savepoint_notices: Vec::new(),
+            savepoint_after_commit: Vec::new(),
             notices_overflowed: 0,
             active_langs: None,
             langs_dirty: false,
@@ -2672,6 +2673,8 @@ pub struct Transaction {
     pub(crate) image_policy: Option<crate::image::ImagePolicy>,
     /// Notice counts at the start of open savepoints, for rollback truncation.
     savepoint_notices: Vec<usize>,
+    /// `after_commit` hook counts at the start of open savepoints, for rollback truncation.
+    savepoint_after_commit: Vec<usize>,
     /// Notices refused because the channel was full, this attempt.
     notices_overflowed: u64,
     /// Active language state memo.
@@ -5544,8 +5547,9 @@ impl Transaction {
     /// Roll back whatever is open; a failed `ROLLBACK` releases the connection (closing it rolls
     /// back on the server), is logged at WARN and returned.
     async fn discard_reporting(&mut self) -> Option<Error> {
-        self.after_commit.clear();
         // Nothing of the transaction persists: the old ORMs' caches stay valid.
+        // `self.after_commit` is cleared by `reset()` / `release()` AFTER `ROLLBACK` (or
+        // connection close) finishes so drop guards inside hooks observe a completed rollback.
         self.switched_from.clear();
         match self.state {
             State::Idle | State::Released => {
@@ -5639,6 +5643,7 @@ impl Transaction {
         self.image_policy = None;
         self.notices.clear();
         self.savepoint_notices.clear();
+        self.savepoint_after_commit.clear();
         self.notices_overflowed = 0;
         self.active_langs = None;
         self.translated_baselines.clear();
@@ -5966,6 +5971,7 @@ impl Transaction {
         }
         self.savepoints.push(name.clone());
         self.savepoint_notices.push(self.notices.len());
+        self.savepoint_after_commit.push(self.after_commit.len());
         self.html_reports.mark();
         self.engine.ormcache.push();
         // expectations recorded inside a rolled back savepoint go with it (review SF-S6)
@@ -5984,8 +5990,10 @@ impl Transaction {
                 Ok(()) => {
                     self.savepoints.retain(|n| *n != name);
                     self.savepoint_notices.truncate(self.savepoints.len());
+                    self.savepoint_after_commit.truncate(self.savepoints.len());
                     self.html_reports.release(self.savepoints.len());
                     debug_assert_eq!(self.savepoint_notices.len(), self.savepoints.len());
+                    debug_assert_eq!(self.savepoint_after_commit.len(), self.savepoints.len());
                     self.signal_state.released_to(self.savepoints.len());
                     self.outbox.released_to(self.savepoints.len());
                     self.audit.released_to(self.savepoints.len());
@@ -6068,12 +6076,18 @@ impl Transaction {
     /// `ROLLBACK TO SAVEPOINT` alone (the cache is left to the caller). A failure releases the
     /// connection.
     async fn rollback_to_savepoint_sql(&mut self, name: &str) -> Result<()> {
+        let mut keep_after_commit = None;
         if let Some(pos) = self.savepoints.iter().position(|n| n == name) {
             self.savepoints.truncate(pos);
             if let Some(&keep_len) = self.savepoint_notices.get(pos) {
                 self.notices.truncate(keep_len);
                 self.savepoint_notices.truncate(pos);
                 debug_assert_eq!(self.savepoint_notices.len(), self.savepoints.len());
+            }
+            if let Some(&keep_len) = self.savepoint_after_commit.get(pos) {
+                keep_after_commit = Some(keep_len);
+                self.savepoint_after_commit.truncate(pos);
+                debug_assert_eq!(self.savepoint_after_commit.len(), self.savepoints.len());
             }
             self.html_reports.rollback(pos);
             self.signal_state.rolled_back_to(pos);
@@ -6102,6 +6116,11 @@ impl Transaction {
                     // set until the transaction ends.
                     self.forget_rolled_back_schema();
                     self.state = State::Open;
+                    // Truncate after_commit hooks strictly AFTER `ROLLBACK TO SAVEPOINT` succeeded
+                    // so drop guards inside rolled-back hooks observe a completed rollback.
+                    if let Some(keep_len) = keep_after_commit {
+                        self.after_commit.truncate(keep_len);
+                    }
                 }
                 Err(e) => {
                     let error = map_pg_error(&self.shared.registry, e);
@@ -6117,6 +6136,9 @@ impl Transaction {
                 }
             }
         } else {
+            if let Some(keep_len) = keep_after_commit {
+                self.after_commit.truncate(keep_len);
+            }
             return Err(released_error());
         }
         Ok(())
@@ -6221,8 +6243,9 @@ impl Transaction {
             self.control(&format!("SAVEPOINT \"{name}\"")).await?;
             self.isolated[i].opened = true;
             self.savepoints.push(name);
-            // one notice mark per savepoint, so positions stay aligned (D-S2)
+            // one notice and after_commit mark per savepoint, so positions stay aligned (D-S2)
             self.savepoint_notices.push(self.notices.len());
+            self.savepoint_after_commit.push(self.after_commit.len());
             self.html_reports.mark();
         }
         Ok(())

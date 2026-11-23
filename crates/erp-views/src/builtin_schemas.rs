@@ -117,6 +117,7 @@ static FIELD_OPTIONS: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::optional("convert_to_webp", &BOOL),
     SchemaProperty::optional("zoom_delay", &INT),
     SchemaProperty::optional("preview_image", &FIELD_REF),
+    SchemaProperty::optional("filename", &FIELD_REF),
     // Relation criterion LHS paths are authorized against the occurrence comodel by H18.
     // This visitor still derives every root-record RHS expression dependency.
     SchemaProperty::optional("domain", &VALUE_EXPR),
@@ -223,6 +224,7 @@ static FORM_NODE: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::optional("create", &BOOL),
     SchemaProperty::optional("edit", &BOOL),
     SchemaProperty::optional("delete", &BOOL),
+    SchemaProperty::optional("edit_mode", &SHORT),
 ]);
 static HEADING_NODE: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("level", &INT),
@@ -233,6 +235,21 @@ static BUTTON_CLASSES: SchemaNode = SchemaNode::Array {
     item: &CLASS_TOKEN,
     max_items: 8,
 };
+static PROMPT_CHOICE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("value", &SHORT),
+    SchemaProperty::required("label", &LABEL),
+]);
+static PROMPT_CHOICES: SchemaNode = SchemaNode::Array {
+    item: &PROMPT_CHOICE,
+    max_items: 64,
+};
+static BUTTON_PROMPT: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("kind", &SHORT),
+    SchemaProperty::required("label", &LABEL),
+    SchemaProperty::required("required", &BOOL),
+    SchemaProperty::optional("max_length", &INT),
+    SchemaProperty::optional("choices", &PROMPT_CHOICES),
+]);
 static BUTTON_DETAILS: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("size", &SHORT),
     SchemaProperty::required("circle", &BOOL),
@@ -247,6 +264,7 @@ static BUTTON_DETAILS: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::optional("confirm_label", &LABEL),
     SchemaProperty::optional("cancel_label", &LABEL),
     SchemaProperty::optional("context", &CONTEXT_EXPR),
+    SchemaProperty::optional("prompt", &BUTTON_PROMPT),
 ]);
 static ACTION_TARGET: SchemaNode = SchemaNode::Object(&[SchemaProperty::required("id", &INT)]);
 static URL_TARGET: SchemaNode = SchemaNode::Object(&[SchemaProperty::required("href", &LABEL)]);

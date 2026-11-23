@@ -2,19 +2,19 @@
 /**
  * Client contract for the assistant session panel (board tasks AI1.SESSION-VIEW and
  * AI1.SESSION-LIST.WEB, one bundled slice). Every RPC model name, method name and payload the
- * panel needs lives in this one module: when AI1.SESSION-STORE lands, the lead reconciles the
- * whole client surface against the real server in one diff. No other ai_base client module may
+ * panel needs lives in this one module. No other ai_base client module may
  * call an `ai.session` method directly, and no field name appears in a call without being
  * declared here.
  *
- * contract choices to reconcile:
+ * contract choices (reconciled against `session_rpc.rs` in this branch):
  * - model `ai.session` (1), snake_case methods: `search_sessions`, `resume_session`,
  *   `fork_session`, `archive_session`, `session_delete`, `session_export`. `session_events`
  *   (thread rendering) is deliberately absent: the message thread is AI1.ASSIST-TURN's pair slice.
- * - `search_sessions({ search, include_archived })` returns summaries ordered by last activity;
- *   the server matches `search` against the title and the owner's own message text (
- *   D1.2). The panel never reorders the response. Both keys are always sent;
- *   `search` is "" when the box is empty.
+ * - `search_sessions({ search, include_archived, about? })` returns summaries ordered by last
+ *   activity; the server matches `search` against the title and the owner's own message text (ADR
+ *   0189 D1.2). `about` is the server's own `{model, res_id}` filter,
+ *   sent only when the shell context carries an open record; the panel never reorders a response.
+ *   `search` and `include_archived` are always sent; `search` is "" when the box is empty.
  * - `resume_session({ id })` returns `{ id, last_seq, anchor }`; `last_seq` is the sequence the
  *   next turn continues (resuming continues its sequence). The payload carries the
  *   id and nothing else: no anchor value ever travels with it.
@@ -23,7 +23,9 @@
  * - `archive_session({ id, state })` with state `open` | `archived`; restore reuses the same
  *   call. The archived session stays listed and readable.
  * - `session_delete({ id })` removes the session through the owner deletion path (2)
- *   and returns `{ id }`.
+ *   and returns `{ id }`. Until AI1.SESSION-RETENTION lands, the server answers every delete with
+ *   `erp.ai.session_delete_pending`; the panel maps that to user copy, so this validator stays
+ *   unreachable for now (fail-loud, which is correct).
  * - `session_export({ id })` returns `{ format: "json", filename, content }`: the events with
  *   tool results re-read under current rights and model-written text filtered.4;
  *   the panel turns it into a file download.
@@ -32,9 +34,9 @@
  *   The panel renders the model and id only when `available` is true, otherwise exactly
  *   "Anchor not available".
  * - the open-record anchor is read from the systray environment context keys `active_model` and
- *   `active_id` (the client's established context key names). The shell does not publish those
- *   keys into the systray context yet: the lead wires that (or renames the source) when the
- *   store lands.
+ *   `active_id` (the client's established context key names). The shell publishes them into the
+ *   systray context as the mounted record changes (AI1.ANCHOR-CONTEXT.WEB); the object stays live
+ *   for the dock's lifetime, and the panel re-reads it whenever it loads or is shown again.
  * - the panel displays only title, state, last activity and anchor; event and turn counts are
  *   not needed by this slice and are not declared.
  */
@@ -61,6 +63,8 @@ export interface SessionSummary {
 export interface SearchSessionsArgs {
   readonly search?: string;
   readonly include_archived?: boolean;
+  /** The open record, as `{model, res_id}`: the server filters to the reader's own sessions anchored there. */
+  readonly about?: OpenRecordAnchor;
 }
 
 export interface ResumeSessionResult {
@@ -130,9 +134,21 @@ export function anchorFromContext(context: Record<string, unknown> | undefined):
 }
 
 export async function searchSessions(rpc: RpcLike, args: SearchSessionsArgs): Promise<SessionSummary[]> {
+  // The `about` filter travels only as identifiers and is refused here when malformed, so the
+  // server's `erp.ai.about_invalid` never fires from this module.
+  let about: OpenRecordAnchor | undefined;
+  if (args.about !== undefined) {
+    const candidate: unknown = args.about;
+    if (!record(candidate)) throw new Error("The open record anchor is malformed.");
+    const model: unknown = candidate["model"];
+    const resId: unknown = candidate["res_id"];
+    if (!text(model) || !id(resId)) throw new Error("The open record anchor is malformed.");
+    about = { model, res_id: resId };
+  }
   const result = await rpc.call("ai.session", "search_sessions", {
     search: args.search ?? "",
     include_archived: args.include_archived ?? false,
+    ...(about === undefined ? {} : { about }),
   });
   if (!Array.isArray(result) || !result.every(sessionSummary)) {
     throw new Error("The session store returned an invalid session list.");

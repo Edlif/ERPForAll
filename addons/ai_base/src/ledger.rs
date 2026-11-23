@@ -129,6 +129,12 @@ fn parameters() -> Result<Vec<ParameterDecl>> {
             2,
             (1, 8),
         )?,
+        ParameterDecl::integer(
+            "ai_base.answer_correction_rounds",
+            "Assistant retries when a final reply is unusable",
+            1,
+            (1, 3),
+        )?,
     ])
 }
 erp_sdk::system_parameters!(parameters);

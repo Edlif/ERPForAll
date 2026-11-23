@@ -10,6 +10,12 @@ export interface SystrayEnvironment {
   csrfToken?: string;
   rpc?: RpcClient;
   context?: Record<string, unknown>;
+  /**
+   * The open record identity (`active_model`, `active_id`, `active_ids`) for the assistant's
+   * "About this record" section, live-updated by the shell. Kept separate from `context` so the
+   * record keys never widen other items' RPC contexts.
+   */
+  assistantContext?: Record<string, unknown>;
   run?: (job: () => Promise<void>) => void;
   report?: (error: unknown) => void;
   messages?: MessageServices;

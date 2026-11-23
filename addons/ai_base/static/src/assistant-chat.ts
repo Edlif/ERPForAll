@@ -165,7 +165,7 @@ export function assistantChat(env: SystrayEnvironment, request: typeof fetch = (
     if (!panel) {
       panel = sessionPanel({
         rpc: env.rpc,
-        context: env.context,
+        context: env.assistantContext,
         onResume: () => closePanel(),
         onClose: () => closePanel(),
       });

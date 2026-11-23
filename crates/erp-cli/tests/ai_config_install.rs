@@ -22,6 +22,8 @@ fn addons() -> PathBuf {
 }
 #[path = "ai_config_install/aggregate_turn.rs"]
 mod aggregate_turn;
+#[path = "ai_config_install/correction_turn.rs"]
+mod correction_turn;
 #[path = "ai_config_install/find_models.rs"]
 mod find_models;
 #[path = "ai_config_install/history_turn.rs"]

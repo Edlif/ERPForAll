@@ -6,3 +6,7 @@ access_ai_route_user,Read AI routes in allowed companies,model_ai_route,base.gro
 access_ai_budget_admin,Manage assistant budgets,model_ai_budget,base.group_system,crud,
 access_ai_usage_admin,Read assistant usage,model_ai_usage,base.group_system,r,
 access_ai_session_user,Own assistant sessions,model_ai_session,base.group_user,cru,"[('owner_user_id', '=', user.id)]"
+access_ai_memory_user,Own assistant memory,model_ai_memory,base.group_user,crud,"[('scope', '=', 'user'), ('owner_user_id', '=', user.id)]"
+access_ai_memory_company_user,Read company assistant memory,model_ai_memory,base.group_user,r,"[('scope', '=', 'company'), ('company_id', 'in', company_ids)]"
+access_ai_memory_addon_user,Read addon assistant memory,model_ai_memory,base.group_user,r,"[('scope', '=', 'addon')]"
+access_ai_memory_company_admin,Manage company assistant memory,model_ai_memory,base.group_system,crud,"[('scope', '=', 'company')]"

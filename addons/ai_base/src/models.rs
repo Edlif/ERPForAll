@@ -50,8 +50,9 @@ pub struct AiRoute {
         ondelete = "cascade"
     )]
     pub company_id: Option<RecId>,
-    /// Only the interactive assistant is implemented; later tasks extend the selection.
-    #[field(selection, required = true, default = "assistant", selection = [("assistant", "Assistant")])]
+    /// The interactive task this route serves: the assistant chat, the in-turn rolling summary
+    /// (5) or the in-turn title (D4.6); later tasks extend the selection.
+    #[field(selection, required = true, default = "assistant", selection = [("assistant", "Assistant"), ("summarize", "Summarize"), ("title", "Title")])]
     pub task_kind: Option<Arc<str>>,
     /// The only provider this route may select; deletion is refused while routed.
     #[field(

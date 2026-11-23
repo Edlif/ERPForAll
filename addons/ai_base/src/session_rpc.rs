@@ -290,7 +290,8 @@ fn about_filter(about: &Option<ValueMap>) -> Result<Option<(String, i64)>> {
     Ok(Some((model, res_id)))
 }
 
-/// Escape `%`, `_` and `\` of a user search word for `ILIKE ... ESCAPE '\'`.
+/// Escape `%`, `_` and `\` of a user search word for `ILIKE ... ESCAPE E'\\'` (the runtime SQL is
+/// an E-string holding one literal backslash).
 fn escape_like(search: &str) -> String {
     let mut out = String::with_capacity(search.len());
     for ch in search.chars() {
@@ -539,16 +540,16 @@ impl AiSession {
             .query(
                 "SELECT s.id::int8, s.title::text, s.state::text, s.last_event_at, \
                  s.anchor_model::text, s.anchor_res_id, s.title_sources::text, \
-                 COALESCE(s.title ILIKE '%' || $3 || '%' ESCAPE '\\', false) AS title_matched, \
+                 COALESCE(s.title ILIKE '%' || $3 || '%' ESCAPE E'\\\\', false) AS title_matched, \
                  EXISTS (SELECT 1 FROM ai_session_event e WHERE e.session_id = s.id \
                  AND e.kind = 'user_message' \
-                 AND e.user_text ILIKE '%' || $3 || '%' ESCAPE '\\') AS text_matched \
+                 AND e.user_text ILIKE '%' || $3 || '%' ESCAPE E'\\\\') AS text_matched \
                  FROM ai_session s \
                  WHERE s.owner_user_id = $1 AND ($2 OR s.state = 'open') \
-                 AND (($3 = '') OR s.title ILIKE '%' || $3 || '%' ESCAPE '\\' OR EXISTS (\
+                 AND (($3 = '') OR s.title ILIKE '%' || $3 || '%' ESCAPE E'\\\\' OR EXISTS (\
                  SELECT 1 FROM ai_session_event e WHERE e.session_id = s.id \
                  AND e.kind = 'user_message' \
-                 AND e.user_text ILIKE '%' || $3 || '%' ESCAPE '\\')) \
+                 AND e.user_text ILIKE '%' || $3 || '%' ESCAPE E'\\\\')) \
                  AND ($4::text IS NULL OR (s.anchor_model = $4 AND s.anchor_res_id = $5)) \
                  ORDER BY s.last_event_at DESC, s.id DESC LIMIT $6",
                 &[

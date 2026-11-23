@@ -312,6 +312,7 @@ pub async fn sweep_remove(
         ));
     }
     require_maintenance(tx, env).await?;
+    super::upload::drain_outcomes().await;
     super::cleanup::start(tx).await?;
     if ids.is_empty() || held(tx).await? {
         return Ok(SweepReport::default());
@@ -420,6 +421,7 @@ pub async fn clean_staging(tx: &mut Transaction, env: &Env, limit: i64) -> Resul
         ));
     }
     require_maintenance(tx, env).await?;
+    super::upload::drain_outcomes().await;
     super::cleanup::start(tx).await?;
     if held(tx).await? {
         return Ok(CleanReport {
@@ -571,6 +573,7 @@ pub async fn reconcile_chunk(
         ));
     }
     require_maintenance(tx, env).await?;
+    super::upload::drain_outcomes().await;
     super::cleanup::start(tx).await?;
     if held(tx).await? {
         return Ok(ReconcileReport {

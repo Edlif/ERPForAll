@@ -256,6 +256,7 @@ object!(/// Optional validated expression documents, never evaluation strings.
 object!(/// Empty options for the currently supported basic fields and Addons service.
     EmptyOptions {});
 choice!(RecordMode { Record, Service });
+choice!(EditMode { Read, Edit });
 choice!(PivotRole { Row, Col, Measure });
 choice!(KanbanRegion {
     Main,
@@ -302,6 +303,29 @@ choice!(RibbonBackground {
     Warning,
     Danger
 });
+choice!(PromptKind {
+    Text,
+    Date,
+    Selection
+});
+/// A selection prompt choice value: 1 to 64 ASCII lowercase letters, digits or `_`, starting with a letter.
+pub fn valid_prompt_choice_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.starts_with(|c: char| c.is_ascii_lowercase())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+object!(/// One choice of a selection prompt: the value sent and its caption.
+    PromptChoice { value: String, label: String });
+object!(/// A short answer the client asks for before an object button calls its method. The answer is the method's
+/// `prompt_value` keyword argument: text, an ISO date or a choice value, and `null` when an optional answer is empty.
+ButtonPrompt {
+    kind: PromptKind, label: String, required: bool,
+    #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(optional))] max_length: Option<u32>,
+    #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(optional))] choices: Option<Vec<PromptChoice>>
+});
 object!(/// Optional, bounded button presentation and execution declarations.
 ButtonDetails {
     size: ButtonSize, circle: bool, classes: Vec<String>, debounce_ms: u32, block_ui: bool,
@@ -312,7 +336,8 @@ ButtonDetails {
     #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(optional))] confirm_title: Option<String>,
     #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(optional))] confirm_label: Option<String>,
     #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(optional))] cancel_label: Option<String>,
-    #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(optional))] context: Option<WireDocument>
+    #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(optional))] context: Option<WireDocument>,
+    #[serde(default, deserialize_with="present_optional", skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(optional))] prompt: Option<ButtonPrompt>
 });
 /// Explicit non-object execution identity; captions never select an action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -466,6 +491,7 @@ object!(/// Closed optional presentation members; widget identity admission rest
         #[serde(default, skip_serializing_if="Option::is_none")] whitelist_fname: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] color_field: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] preview_image: Option<FieldRef>,
+        #[serde(default, skip_serializing_if="Option::is_none")] filename: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] whitelisted_values: Option<Vec<String>>,
         #[serde(default, skip_serializing_if="Option::is_none")] blacklisted_values: Option<Vec<String>>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number[] | null"))] digits: Option<Vec<i64>>,
@@ -525,6 +551,7 @@ impl FieldPresentationOptions {
             whitelist_fname: None,
             color_field: None,
             preview_image: None,
+            filename: None,
             whitelisted_values: None,
             blacklisted_values: None,
             digits: None,
@@ -761,6 +788,10 @@ pub enum ViewNode {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "schema-gen", ts(optional))]
         delete: Option<bool>,
+        /// `read`: a saved record opens read-first, with an Edit command; absent means `edit` (always editable).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        edit_mode: Option<EditMode>,
     },
     /// Record-form sheet.
     Sheet {
@@ -1883,7 +1914,9 @@ pub fn field_option_kind(widget: &str, key: &str) -> Option<FieldOptionKind> {
         }
         "text" => widget == "url",
         "alt" | "img_class" | "zoom" | "zoom_delay" | "size" | "reload" => image,
-        "accepted_file_extensions" | "convert_to_webp" | "preview_image" => widget == "image",
+        "accepted_file_extensions" => matches!(widget, "image" | "binary"),
+        "convert_to_webp" | "preview_image" => widget == "image",
+        "filename" => widget == "binary",
         _ => false,
     };
     if !admitted {
@@ -1938,7 +1971,7 @@ pub fn field_option_kind(widget: &str, key: &str) -> Option<FieldOptionKind> {
         "alt" | "img_class" | "accepted_file_extensions" => FieldOptionKind::Text,
         "zoom" | "reload" | "convert_to_webp" => FieldOptionKind::Bool,
         "zoom_delay" => FieldOptionKind::Integer,
-        "preview_image" => FieldOptionKind::Field,
+        "preview_image" | "filename" => FieldOptionKind::Field,
         "domain" | "context" => FieldOptionKind::Expression,
         _ => return None,
     })

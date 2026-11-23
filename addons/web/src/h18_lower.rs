@@ -552,7 +552,14 @@ fn classify<'a, N: Node<'a>>(
         attrs(
             node,
             match key {
-                "form" => &["record_mode", "string", "create", "edit", "delete"],
+                "form" => &[
+                    "record_mode",
+                    "string",
+                    "create",
+                    "edit",
+                    "delete",
+                    "edit_mode",
+                ],
                 "list" => &["string", "limit", "create", "edit", "delete"],
                 "search" => &["string"],
                 "pivot" => &[
@@ -798,6 +805,7 @@ fn classify<'a, N: Node<'a>>(
                     "help",
                     "autocomplete",
                     "alt",
+                    "filename",
                     "password",
                     "domain",
                     "context",
@@ -1124,8 +1132,14 @@ fn validate_button<'a>(node: impl Node<'a>, parent: impl Node<'a>) -> ViewResult
             "confirm-label",
             "cancel-label",
             "context",
+            "prompt",
+            "prompt-label",
+            "prompt-required",
+            "prompt-max",
+            "prompt-options",
         ],
     )?;
+    button_prompt(node)?;
     if node.attr("special").is_some() {
         if parent.tag() != "footer" || node.attr("special") != Some("cancel") {
             return Err(layout_error(
@@ -1241,6 +1255,114 @@ fn validate_button<'a>(node: impl Node<'a>, parent: impl Node<'a>) -> ViewResult
     button_label(node)?;
     button_variant(node)?;
     Ok(())
+}
+/// The declared answer of a prompting object button, `None` without `prompt`.
+struct PromptDecl<'a> {
+    kind: &'a str,
+    label: &'a str,
+    required: bool,
+    max_length: Option<i64>,
+    choices: Vec<(&'a str, &'a str)>,
+}
+/// `prompt="text|date|selection"` with `prompt-label`, optional `prompt-required`, `prompt-max` (text) and
+/// `prompt-options` (selection: `value:Label` entries separated by commas). Only a plain object button prompts,
+/// and never together with `confirm`: the prompt is already the question before the call.
+fn button_prompt<'a>(node: impl Node<'a>) -> ViewResult<Option<PromptDecl<'a>>> {
+    let Some(kind) = node.attr("prompt") else {
+        for key in [
+            "prompt-label",
+            "prompt-required",
+            "prompt-max",
+            "prompt-options",
+        ] {
+            if node.attr(key).is_some() {
+                return Err(invalid(format!("Button '{key}' requires prompt.")));
+            }
+        }
+        return Ok(None);
+    };
+    if !matches!(kind, "text" | "date" | "selection") {
+        return Err(invalid(format!(
+            "Unsupported button prompt '{kind}'; use text, date or selection."
+        )));
+    }
+    if node.attr("type") != Some("object") || has_button_class(node, "oe_stat_button") {
+        return Err(invalid("Only an object button can declare a prompt."));
+    }
+    if node.attr("confirm").is_some() {
+        return Err(invalid(
+            "A button prompt already asks before the call; it cannot combine with confirm.",
+        ));
+    }
+    let label = node
+        .attr("prompt-label")
+        .filter(|label| !label.trim().is_empty())
+        .ok_or_else(|| invalid("A button prompt requires a nonempty prompt-label."))?;
+    if label.len() > MAX_LABEL {
+        return Err(invalid(
+            "Button 'prompt-label' exceeds the 4096-byte limit.",
+        ));
+    }
+    let required = boolean(node, "prompt-required", false)?;
+    let max_length = match node.attr("prompt-max") {
+        None => None,
+        Some(_) if kind != "text" => {
+            return Err(invalid("Button 'prompt-max' requires prompt='text'."));
+        }
+        Some(raw) => Some(
+            raw.parse::<u32>()
+                .ok()
+                .filter(|max| (1..=4096).contains(max))
+                .map(i64::from)
+                .ok_or_else(|| invalid("Button 'prompt-max' must be an integer from 1 to 4096."))?,
+        ),
+    };
+    let choices = match node.attr("prompt-options") {
+        None if kind == "selection" => {
+            return Err(invalid("A selection prompt requires prompt-options."));
+        }
+        None => Vec::new(),
+        Some(_) if kind != "selection" => {
+            return Err(invalid(
+                "Button 'prompt-options' requires prompt='selection'.",
+            ));
+        }
+        Some(raw) => {
+            let mut choices: Vec<(&str, &str)> = Vec::new();
+            for entry in raw.split(',') {
+                let (value, caption) = entry.split_once(':').ok_or_else(|| {
+                    invalid("Button 'prompt-options' entries are written value:Label.")
+                })?;
+                let (value, caption) = (value.trim(), caption.trim());
+                if !erp_sdk::views::wire::valid_prompt_choice_value(value)
+                    || caption.is_empty()
+                    || caption.len() > MAX_LABEL
+                {
+                    return Err(invalid(format!(
+                        "Invalid button prompt option '{}'.",
+                        entry.trim()
+                    )));
+                }
+                if choices.iter().any(|(prior, _)| *prior == value) {
+                    return Err(invalid(format!(
+                        "Duplicate button prompt option '{value}'."
+                    )));
+                }
+                choices.push((value, caption));
+            }
+            if choices.len() > 64 {
+                return Err(invalid("A button prompt offers at most 64 options."));
+            }
+            choices
+        }
+    };
+    Ok(Some(PromptDecl {
+        kind,
+        label,
+        required,
+        max_length,
+        choices,
+    }))
 }
 fn button_action_id<'a>(node: impl Node<'a>) -> ViewResult<i64> {
     node.attr("name")
@@ -1892,6 +2014,31 @@ pub(super) fn build_panel_description(
     })
 }
 
+/// `edit_mode="read"` opens a saved record read-first with an Edit command; `edit_mode="edit"` (the default) keeps it
+/// editable. Read mode belongs to an editable record form: a service form or `edit="0"` cannot declare it.
+fn form_edit_mode<'a>(node: impl Node<'a>) -> ViewResult<Option<&'static str>> {
+    let Some(mode) = node.attr("edit_mode") else {
+        return Ok(None);
+    };
+    let mode = match mode {
+        "read" => "read",
+        "edit" => "edit",
+        other => {
+            return Err(invalid(format!(
+                "Unknown form edit_mode '{other}'; use read or edit."
+            )));
+        }
+    };
+    if mode == "read" && node.attr("record_mode") == Some("service") {
+        return Err(invalid("A service form cannot declare edit_mode='read'."));
+    }
+    if mode == "read" && !boolean(node, "edit", true)? {
+        return Err(invalid(
+            "A form with edit='0' is always read-only; edit_mode='read' needs an editable form.",
+        ));
+    }
+    Ok(Some(mode))
+}
 fn set_view_actions<'a, N: Node<'a>>(
     object: &mut erp_sdk::views::DescriptionObjectBuilder<'_>,
     node: N,
@@ -1925,6 +2072,9 @@ fn build_entry<'a, N: Node<'a>>(
                     })?;
                     set_children(object, plan, index)?;
                     set_view_actions(object, node)?;
+                    if let Some(mode) = form_edit_mode(node)? {
+                        object.set("edit_mode", |value| value.text(mode))?;
+                    }
                 }
                 "dashboard" => dashboard::build(node, spec, object, budget)?,
                 "list" => {
@@ -2257,6 +2407,15 @@ fn set_field_options<'a, N: Node<'a>>(
                 object.set(key, |slot| slot.text(value))?;
             }
         }
+        if let Some(name) = node.attr("filename") {
+            if erp_sdk::views::wire::field_option_kind(widget, "filename").is_none() {
+                return Err(invalid(format!("Field option 'filename' is not supported by widget '{widget}'.")));
+            }
+            if entries.iter().any(|(key, _)| matches!(key, Expr::Literal(Literal::Str(key)) if key == "filename")) {
+                return Err(invalid("Set the file name field once: the 'filename' attribute or the 'filename' option."));
+            }
+            object.set("filename", |value| file_name_field(spec, field(spec, node)?, name, value))?;
+        }
         if node.attr("password").is_some() {
             if !matches!(widget, "char" | "text" | "password") { return Err(invalid("password requires a text widget.")); }
             object.set("password", |value| value.boolean(boolean(node, "password", false)?))?;
@@ -2287,6 +2446,28 @@ fn set_field_options<'a, N: Node<'a>>(
         }
         Ok(())
     })
+}
+/// The `filename` of a binary widget: a char field of the same record, other than the file itself, that holds the
+/// file's name.
+fn file_name_field(
+    spec: &ModelSpec,
+    occurrence: &FieldSpec,
+    name: &str,
+    output: DescriptionValueBuilder<'_>,
+) -> ViewResult<DescriptionValue> {
+    let field = spec.field(name).ok_or_else(|| {
+        invalid(format!(
+            "The file name field '{name}' of '{}.{}' does not exist.",
+            spec.name, occurrence.name
+        ))
+    })?;
+    if !matches!(field.ty, FieldType::Char { .. }) || field.name == occurrence.name {
+        return Err(invalid(format!(
+            "The file name field '{name}' of '{}.{}' must be a char field.",
+            spec.name, occurrence.name
+        )));
+    }
+    output.field_handle(spec.name, field.name)
 }
 fn field_option_value(
     spec: &ModelSpec,
@@ -2340,6 +2521,9 @@ fn field_option_value(
             }
             if key == "preview_image" && field.ty.type_name() != "binary" {
                 return Err(wrong());
+            }
+            if key == "filename" {
+                return file_name_field(spec, occurrence, value, output);
             }
             if key == "currency_field"
                 && !matches!(&field.ty, FieldType::Many2one { comodel, .. } if comodel == "res.currency")
@@ -2400,6 +2584,7 @@ fn set_button_details<'a>(
         "confirm-label",
         "cancel-label",
         "context",
+        "prompt",
     ]
     .iter()
     .any(|key| node.attr(key).is_some())
@@ -2448,6 +2633,33 @@ fn set_button_details<'a>(
             if let Some(source) = node.attr("context") {
                 details.set("context", |value| {
                     source_expression(source, value, |_| Ok(()))
+                })?;
+            }
+            if let Some(prompt) = button_prompt(node)? {
+                details.set("prompt", |value| {
+                    value.object(|object| {
+                        object.set("kind", |value| value.text(prompt.kind))?;
+                        object.set("label", |value| value.text(prompt.label))?;
+                        object.set("required", |value| value.boolean(prompt.required))?;
+                        if let Some(max) = prompt.max_length {
+                            object.set("max_length", |value| value.integer(max))?;
+                        }
+                        if !prompt.choices.is_empty() {
+                            object.set("choices", |value| {
+                                value.array(prompt.choices.len(), |index, value| {
+                                    let (choice, caption) =
+                                        prompt.choices.get(index).copied().ok_or_else(|| {
+                                            invalid("Button prompt option index changed.")
+                                        })?;
+                                    value.object(|object| {
+                                        object.set("value", |value| value.text(choice))?;
+                                        object.set("label", |value| value.text(caption))
+                                    })
+                                })
+                            })?;
+                        }
+                        Ok(())
+                    })
                 })?;
             }
             Ok(())
@@ -2602,6 +2814,12 @@ mod tests {
         FieldDecl::float("ratio"),
     ]);
 
+    static FILES: ModelDecl = ModelDecl::new("base", "h18.files").fields(&[
+        FieldDecl::binary("document"),
+        FieldDecl::char("document_name"),
+        FieldDecl::integer("count"),
+    ]);
+
     // Fixture-only mixins: no registered model inherits mail.thread until.
     static THREAD: ModelDecl =
         ModelDecl::new("base", "mail.thread").kind(erp_sdk::ModelKind::Abstract);
@@ -2633,7 +2851,7 @@ mod tests {
         budget: &DescriptionBudget,
     ) -> Result<Value, ViewError> {
         let registry = RegistryBuilder::new([&erp_addon_base::ADDON, &crate::ADDON])
-            .with_decls([&MODEL, &THREAD, &ACTIVITY, &THREADED, &SCHEDULED])
+            .with_decls([&MODEL, &THREAD, &ACTIVITY, &THREADED, &SCHEDULED, &FILES])
             .build()
             .unwrap();
         let spec = registry.model(model).unwrap();
@@ -3266,6 +3484,244 @@ mod tests {
                 matches!(error, ViewError::InvalidDescription(_)),
                 "{option}"
             );
+        }
+    }
+
+    /// `edit_mode` opens a saved record read-first (`read`) or editable (`edit`); read needs an editable record form.
+    #[test]
+    fn form_edit_mode() {
+        let value = fixture(
+            r#"<form edit_mode="read"><field name="name"/></form>"#,
+            "form",
+        )
+        .unwrap();
+        assert_eq!(value["nodes"][0]["edit_mode"], "read");
+        let value = fixture(
+            r#"<form edit_mode="edit"><field name="name"/></form>"#,
+            "form",
+        )
+        .unwrap();
+        assert_eq!(value["nodes"][0]["edit_mode"], "edit");
+        let value = fixture(r#"<form><field name="name"/></form>"#, "form").unwrap();
+        assert!(value["nodes"][0].get("edit_mode").is_none());
+        for (xml, message) in [
+            (
+                r#"<form edit_mode="view"><field name="name"/></form>"#,
+                "Unknown form edit_mode 'view'; use read or edit.",
+            ),
+            (
+                r#"<form edit_mode="read" edit="0"><field name="name"/></form>"#,
+                "A form with edit='0' is always read-only; edit_mode='read' needs an editable form.",
+            ),
+            (
+                r#"<form edit_mode="read" record_mode="service"><widget name='web.addons'/></form>"#,
+                "A service form cannot declare edit_mode='read'.",
+            ),
+            (r#"<list edit_mode="read"><field name="name"/></list>"#, ""),
+        ] {
+            let kind = if xml.starts_with("<list") {
+                "list"
+            } else {
+                "form"
+            };
+            match fixture(xml, kind).unwrap_err() {
+                ViewError::InvalidDescription(actual) if message.is_empty() => {
+                    assert!(actual.contains("edit_mode"), "{xml}: {actual}")
+                }
+                ViewError::InvalidDescription(actual) => assert_eq!(actual, message, "{xml}"),
+                other => panic!("Unexpected error kind for {xml}: {other:?}"),
+            }
+        }
+    }
+
+    fn prompt_button(attrs: &str) -> Result<Value, ViewError> {
+        fixture(
+            &format!(
+                "<form><header><button name='action_refuse' type='object' string='Refuse' {attrs}/></header><field name='name'/></form>"
+            ),
+            "form",
+        )
+    }
+
+    /// An object button may ask for one short answer before its method is called.
+    #[test]
+    fn button_prompt_is_described() {
+        let value = prompt_button(
+            "prompt='text' prompt-label='Reason' prompt-required='1' prompt-max='500'",
+        )
+        .unwrap();
+        assert_eq!(
+            value["nodes"][2]["details"]["prompt"],
+            serde_json::json!({"kind": "text", "label": "Reason", "required": true, "max_length": 500})
+        );
+        let value = prompt_button("prompt='date' prompt-label='Run for date'").unwrap();
+        assert_eq!(
+            value["nodes"][2]["details"]["prompt"],
+            serde_json::json!({"kind": "date", "label": "Run for date", "required": false})
+        );
+        let value = prompt_button(
+            "prompt='selection' prompt-label='Outcome' prompt-options='lost:Lost, won:Won the deal'",
+        )
+        .unwrap();
+        assert_eq!(
+            value["nodes"][2]["details"]["prompt"]["choices"],
+            serde_json::json!([{"value": "lost", "label": "Lost"}, {"value": "won", "label": "Won the deal"}])
+        );
+    }
+
+    #[test]
+    fn button_prompt_grammar_is_closed() {
+        for (attrs, message) in [
+            (
+                "prompt='number' prompt-label='N'",
+                "Unsupported button prompt 'number'; use text, date or selection.",
+            ),
+            (
+                "prompt='text'",
+                "A button prompt requires a nonempty prompt-label.",
+            ),
+            (
+                "prompt='text' prompt-label=' '",
+                "A button prompt requires a nonempty prompt-label.",
+            ),
+            (
+                "prompt-label='Reason'",
+                "Button 'prompt-label' requires prompt.",
+            ),
+            (
+                "prompt='date' prompt-label='D' prompt-max='5'",
+                "Button 'prompt-max' requires prompt='text'.",
+            ),
+            (
+                "prompt='text' prompt-label='R' prompt-max='0'",
+                "Button 'prompt-max' must be an integer from 1 to 4096.",
+            ),
+            (
+                "prompt='text' prompt-label='R' prompt-options='a:A'",
+                "Button 'prompt-options' requires prompt='selection'.",
+            ),
+            (
+                "prompt='selection' prompt-label='O'",
+                "A selection prompt requires prompt-options.",
+            ),
+            (
+                "prompt='selection' prompt-label='O' prompt-options='won'",
+                "Button 'prompt-options' entries are written value:Label.",
+            ),
+            (
+                "prompt='selection' prompt-label='O' prompt-options='Won:Won'",
+                "Invalid button prompt option 'Won:Won'.",
+            ),
+            (
+                "prompt='selection' prompt-label='O' prompt-options='won:Won,won:Again'",
+                "Duplicate button prompt option 'won'.",
+            ),
+            (
+                "prompt='text' prompt-label='R' prompt-required='maybe'",
+                "Dynamic 'prompt-required' modifier is unsupported by the current human UI contract.",
+            ),
+            (
+                "prompt='text' prompt-label='R' confirm='Sure?'",
+                "A button prompt already asks before the call; it cannot combine with confirm.",
+            ),
+        ] {
+            match prompt_button(attrs).unwrap_err() {
+                ViewError::InvalidDescription(actual) => assert_eq!(actual, message, "{attrs}"),
+                other => panic!("Unexpected error kind for {attrs}: {other:?}"),
+            }
+        }
+        let error = fixture(
+            "<form><header><button name='12' type='action' string='Open' prompt='text' prompt-label='R'/></header><field name='name'/></form>",
+            "form",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, ViewError::InvalidDescription(message) if message == "Only an object button can declare a prompt."),
+            "{error:?}"
+        );
+    }
+
+    fn files(xml: &str, kind: &str) -> Result<Value, ViewError> {
+        fixture_model("h18.files", xml, kind, &DescriptionBudget::new())
+    }
+
+    fn files_refused(xml: &str) -> String {
+        match files(xml, "form").unwrap_err() {
+            ViewError::InvalidDescription(message) => message,
+            other => panic!("Unexpected error kind: {other:?}"),
+        }
+    }
+
+    /// A binary field without a widget gets the `binary` widget, in a form and in a list.
+    #[test]
+    fn binary_field_defaults_to_binary_widget() {
+        for kind in ["form", "list"] {
+            let value = files(
+                &format!(r#"<{kind}><field name="document"/></{kind}>"#),
+                kind,
+            )
+            .unwrap();
+            assert_eq!(value["nodes"][1]["widget"], "binary", "{kind}");
+        }
+        let value = files(
+            r#"<form><field name="document" widget="binary"/></form>"#,
+            "form",
+        )
+        .unwrap();
+        assert_eq!(value["nodes"][1]["widget"], "binary");
+        assert_eq!(
+            files_refused(r#"<form><field name="count" widget="binary"/></form>"#),
+            "Field widget 'binary' does not support type 'integer'."
+        );
+    }
+
+    /// `filename` names the char field holding the file's name, as an attribute or an option; anything else is refused.
+    #[test]
+    fn binary_widget_filename_and_accept() {
+        for xml in [
+            r#"<form><field name="document" filename="document_name" options="{'accepted_file_extensions': '.pdf'}"/></form>"#,
+            r#"<form><field name="document" widget="binary" options="{'filename': 'document_name', 'accepted_file_extensions': '.pdf'}"/></form>"#,
+        ] {
+            let value = files(xml, "form").unwrap();
+            let options = &value["nodes"][1]["options"];
+            assert_eq!(
+                options["filename"],
+                serde_json::json!({"model": "h18.files", "name": "document_name"}),
+                "{xml}"
+            );
+            assert_eq!(options["accepted_file_extensions"], ".pdf", "{xml}");
+        }
+        for (xml, message) in [
+            (
+                r#"<form><field name="document" filename="missing"/></form>"#,
+                "The file name field 'missing' of 'h18.files.document' does not exist.",
+            ),
+            (
+                r#"<form><field name="document" filename="count"/></form>"#,
+                "The file name field 'count' of 'h18.files.document' must be a char field.",
+            ),
+            (
+                r#"<form><field name="document" filename="document"/></form>"#,
+                "The file name field 'document' of 'h18.files.document' must be a char field.",
+            ),
+            (
+                r#"<form><field name="document" options="{'filename': 'count'}"/></form>"#,
+                "The file name field 'count' of 'h18.files.document' must be a char field.",
+            ),
+            (
+                r#"<form><field name="document" filename="document_name" options="{'filename': 'document_name'}"/></form>"#,
+                "Set the file name field once: the 'filename' attribute or the 'filename' option.",
+            ),
+            (
+                r#"<form><field name="document" widget="image" filename="document_name"/></form>"#,
+                "Field option 'filename' is not supported by widget 'image'.",
+            ),
+            (
+                r#"<form><field name="document" options="{'convert_to_webp': True}"/></form>"#,
+                "Field option 'convert_to_webp' is not supported by widget 'binary'.",
+            ),
+        ] {
+            assert_eq!(files_refused(xml), message, "{xml}");
         }
     }
 

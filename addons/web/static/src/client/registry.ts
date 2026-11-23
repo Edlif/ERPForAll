@@ -32,6 +32,11 @@ export class Registry<T> {
   remove(key: string): boolean { return this.values.delete(key); }
 }
 export interface FieldWidgetProps { field: Field; value: unknown; change: (value: unknown) => void }
+/**
+ * What happened to the record a form shows, told to its widgets after the form has settled (rendered again):
+ * a save that succeeded (with the record id) or failed, a discard, and a switch between read and edit mode.
+ */
+export type RecordEvent = { readonly type: "saved"; readonly id: number } | { readonly type: "saveFailed" } | { readonly type: "discarded" } | { readonly type: "modeChanged"; readonly mode: "read" | "edit" };
 /** A window action named by its XML id, opened as its list (or a new record in its form) with a concrete domain and context. */
 export interface ActionRequest { xmlId: string; viewMode: "form" | "list" | null; domain: unknown[]; context: Record<string, unknown> }
 export interface WidgetEnvironment extends FieldWidgetProps {
@@ -47,6 +52,14 @@ export interface WidgetEnvironment extends FieldWidgetProps {
   fields?: readonly Field[];
   changeValues?(changes: Readonly<Record<string, unknown>>): void;
   viewContext?: "form" | "list" | "card";
+  /** The record form's mode: `read` while a read-first form (`edit_mode="read"`) shows a saved record. */
+  mode?: "read" | "edit";
+  /**
+   * Listen to the record's save, save failure, discard and mode changes (main record forms only). Returns the
+   * unsubscribe function; the form also unsubscribes when the widget is disposed. A throwing listener is reported
+   * and never stops the save or the other listeners.
+   */
+  onRecordEvent?(listener: (event: RecordEvent) => void): () => void;
   /** Draft editors stage synchronously; their owner commits onchange on blur or Save. */
   draft?: { stage(value: unknown): void; commit(): void };
   messages?: MessageServices;
@@ -104,6 +117,15 @@ export function registerClientAction(tag: string, factory: ClientActionFactory):
   clientActions.add(tag, factory);
 }
 export interface ControlPanelExtension { model: string; component: ComponentClass }
+/** What a list header may use: the list's own data access, read as the signed-in user. */
+export interface ListHeaderEnvironment { model: string; title: string; rpc: RpcClient; context: Record<string, unknown> }
+/** A header above an action's list view (not kanban, pivot or other views). `refresh` runs on every load with its own
+ * copy of the domain the rows were read with; `signal` aborts when a newer load starts or the list closes, and a
+ * failure after that is not reported. */
+export interface ListHeaderHandle { element: HTMLElement; refresh(domain: unknown[], options: { signal: AbortSignal }): Promise<void>; dispose(): void }
+export interface ListHeaderExtension { model: string; create(environment: ListHeaderEnvironment): ListHeaderHandle }
+export const listHeaderExtensions = new Registry<ListHeaderExtension>("list header extension");
+export function registerListHeaderExtension(key: string, extension: ListHeaderExtension): void { listHeaderExtensions.add(key, extension); }
 export const controlPanelExtensions = new Registry<ControlPanelExtension>("control panel extension");
 export function registerControlPanelExtension(key: string, extension: ControlPanelExtension): void { controlPanelExtensions.add(key, extension); }
 export const fieldWidgets = new Registry<FieldWidget>("field widget");

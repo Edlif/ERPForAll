@@ -1387,6 +1387,7 @@ struct RuntimeAuthConfig<'a> {
     loaded: &'a Orm,
     node: AuthConfig,
     job_policy_pool: deadpool_postgres::Pool,
+    report_upload_pool: deadpool_postgres::Pool,
     run_jobs: bool,
 }
 
@@ -1410,6 +1411,20 @@ async fn runtime_auth(
     let source = PolicySource::build(Arc::clone(registry), policy_pool).await?;
     let resolver = Resolver::for_registry(registry)?;
     let provider: Arc<dyn erp_orm::PolicyProvider> = Arc::new(source.clone());
+    let upload_orm = erp_orm::Orm::builder(Arc::clone(registry), configuration.report_upload_pool)
+        .policy(Arc::clone(&provider))
+        .resolver(resolver.clone())
+        // The registry holds the installed packages' computed fields, so every ORM built from it
+        // needs the package computes and wasm methods; the upload ORM is used
+        // only for print uploads and never runs a package method.
+        .wasm_methods(wasm_methods.clone())
+        .computes(checks.computes.iter().copied())
+        .constraints(checks.constraints.iter().copied())
+        .generation_attachment(erp_orm::GenerationAttachment::new(
+            Arc::clone(registry),
+            Arc::clone(&attachments),
+        ))
+        .build()?;
     let orm = server_request_orm_builder(loaded, runtime_pool, wasm_methods, checks, attachments)?
         .job_settings(
             erp_orm::jobs::JobSettings::builder()
@@ -1427,7 +1442,7 @@ async fn runtime_auth(
         .signal(Signal::new(baseline).with_refresh(NativeRefresh { source }))
         .build()?;
     orm.job_settings_snapshot().await?;
-    crate::report_print::serve_with(&orm);
+    crate::report_print::serve_with(&upload_orm);
     let auth =
         Auth::with_membership(orm, configuration.node, HashPool::global(), admission).await?;
     // Resource settings only: no credentials, signing keys or database secrets.
@@ -1488,6 +1503,10 @@ pub(crate) fn serve(args: &ServerArgs) -> Result<()> {
                 audit_reader,
                 policy_pool: pool_with_size(config.runtime_connection(), 2)?,
                 job_policy_pool: pool_with_size(
+                    config.runtime_connection(),
+                    erp_orm::jobs::JobSettings::default().workers_per_db() as usize,
+                )?,
+                report_upload_pool: pool_with_size(
                     config.runtime_connection(),
                     erp_orm::jobs::JobSettings::default().workers_per_db() as usize,
                 )?,
@@ -1582,6 +1601,7 @@ struct NativeLifecycle {
     audit_reader: Option<erp_orm::audit::AuditReaderConnection>,
     policy_pool: deadpool_postgres::Pool,
     job_policy_pool: deadpool_postgres::Pool,
+    report_upload_pool: deadpool_postgres::Pool,
     publication_pool: deadpool_postgres::Pool,
     installing: tokio::sync::Mutex<()>,
     /// Spaces out the rebuilds of the registry after one failed (review r1 M3).
@@ -1872,6 +1892,7 @@ impl NativeLifecycle {
                 loaded: &loaded.orm,
                 node: self.config.auth(),
                 job_policy_pool: self.job_policy_pool.clone(),
+                report_upload_pool: self.report_upload_pool.clone(),
                 run_jobs: self.config.jobs_run_in_app(),
             },
             baseline,

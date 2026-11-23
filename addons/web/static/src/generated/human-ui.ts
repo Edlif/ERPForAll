@@ -363,6 +363,8 @@ whitelist_fname?: FieldRef | null,
 color_field?: FieldRef | null,
 /** Wire member `preview_image`. */
 preview_image?: FieldRef | null,
+/** Wire member `filename`. */
+filename?: FieldRef | null,
 /** Wire member `whitelisted_values`. */
 whitelisted_values?: Array<string> | null,
 /** Wire member `blacklisted_values`. */
@@ -377,6 +379,7 @@ domain?: WireDocument | null,
 context?: WireDocument | null, };
 export type FieldOptions = CodeOptions | FieldPresentationOptions | StatusbarOptions | EmptyOptions;
 export type RecordMode = "record" | "service";
+export type EditMode = "read" | "edit";
 export type PivotRole = "row" | "col" | "measure";
 export type KanbanRegion = "main" | "aside" | "footer";
 export type ProgressTone = "success" | "warning" | "danger" | "info" | "muted";
@@ -417,7 +420,26 @@ confirm_label?: string,
 /** Wire member `cancel_label`. */
 cancel_label?: string,
 /** Wire member `context`. */
-context?: WireDocument, };
+context?: WireDocument,
+/** Wire member `prompt`. */
+prompt?: ButtonPrompt, };
+export type PromptKind = "text" | "date" | "selection";
+export type PromptChoice = {
+/** Wire member `value`. */
+value: string,
+/** Wire member `label`. */
+label: string, };
+export type ButtonPrompt = {
+/** Wire member `kind`. */
+kind: PromptKind,
+/** Wire member `label`. */
+label: string,
+/** Wire member `required`. */
+required: boolean,
+/** Wire member `max_length`. */
+max_length?: number,
+/** Wire member `choices`. */
+choices?: Array<PromptChoice>, };
 export type ButtonSize = "small" | "normal" | "large";
 export type ButtonTarget = { "kind": "action",
 /**
@@ -603,7 +625,11 @@ record_mode: RecordMode,
 children: Array<number>,
 create?: boolean,
 edit?: boolean,
-delete?: boolean, } | { "kind": "sheet",
+delete?: boolean,
+/**
+ * `read`: a saved record opens read-first, with an Edit command; absent means `edit` (always editable).
+ */
+edit_mode?: EditMode, } | { "kind": "sheet",
 /**
  * Child arena indexes.
  */

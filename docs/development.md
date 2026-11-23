@@ -101,6 +101,20 @@ To add a native addon to this repository, put the crate under `addons/`, list it
 
 To try an addon: install it into a database as shown in the [installation guide](install.md#install-an-addon-from-a-folder).
 
+An addon can rebrand the server by shipping `static/brand/icon.svg`, `logo.svg` and `logo-dark.svg` and listing
+them under `static_files` in its asset manifest (`static/dist/manifest.json`). Once it is installed, `/favicon.ico`
+and `/erp/brand/icon.svg`, `logo.svg` and `logo-dark.svg` (used by the login page, the error page and the
+application) answer with its images; an image it does not ship keeps the built-in one. The responses carry an
+`ETag` and `Cache-Control: no-cache`, and SVG is sent with a sandboxing `Content-Security-Policy`. Only one
+installed addon may ship brand images: installing a second one fails.
+
+A form view opens a saved record editable. `<form edit_mode="read">` opens it read-first instead: the fields show as
+read values with an Edit button (or the E key outside a field); a successful Save or a Discard return to read mode,
+a refused save stays in edit mode with its errors, and a new record opens editable. A form with `edit="0"` is always
+read-only and cannot declare read mode. A field widget of the record form receives `mode` (`read` or `edit`) and
+`onRecordEvent(listener)`, which returns an unsubscribe function and reports `saved` (with the record id),
+`saveFailed`, `discarded` and `modeChanged` after the form has shown the outcome; subscriptions end with the widget.
+
 ## The web client
 
 The client is TypeScript, compiled ahead of time:
@@ -110,6 +124,23 @@ The client is TypeScript, compiled ahead of time:
 - The views, widgets and shell of the application are in the `web` addon: `addons/web/static/`.
 - XML templates are compiled by `erp-ui-compile` and bundled by `web/scripts/build-human-ui.mjs`, as shown in the
   installation guide.
+- A binary field shows as a file (the `binary` widget, also used when the view names no widget): its name, its size
+  and Download, plus Upload or Replace and Clear when editable. `filename="document_name"` (or the `filename` option)
+  names the char field of the same record that holds the file's name; Upload writes both. The
+  `accepted_file_extensions` option (`'.pdf,image/*'`) is a hint for the file chooser; the server stays the
+  authority. Use `widget="image"` for pictures.
+
+A menu's icon (`web_icon` on `<menuitem>` or `ir.ui.menu`) is one of:
+
+- `lucide:<name>`, a glyph the client ships (the menu icon picker lists them);
+- `<addon>,static/<path>.svg` or `.png`, an image of the addon: list `static/<path>` under `static_files` in the
+  addon's asset manifest (`static/dist/manifest.json`) so the server publishes it at `/<addon>/static/<path>`.
+  The client draws it as `<img>` (an SVG there runs no script, and the server sends SVG files with a sandboxing
+  `Content-Security-Policy`); a file that is not published shows the default glyph;
+- a `data:image/svg+xml` or `data:image/png` URL of at most 2048 bytes.
+
+The same icon is drawn on the home screen, in the navigation and in Settings. Any other value fails the write that
+stores it, so an addon with a mistyped icon fails to install.
 
 Checks (after `eval "$(scripts/web-toolchain.sh env)"` and `pnpm --dir web install --frozen-lockfile`):
 
@@ -118,6 +149,22 @@ cd web
 pnpm run typecheck
 pnpm run test
 ```
+
+An object button in a form can ask for one short answer before its method runs, instead of a one-field wizard:
+
+```xml
+<button name="action_refuse" type="object" string="Refuse"
+        prompt="text" prompt-label="Reason" prompt-required="1" prompt-max="500"/>
+<button name="action_run" type="object" string="Run" prompt="date" prompt-label="Run for date"/>
+<button name="action_close" type="object" string="Close"
+        prompt="selection" prompt-label="Outcome" prompt-options="won:Won,lost:Lost"/>
+```
+
+The answer arrives as the `prompt_value` keyword argument: text, an ISO date or the chosen value, and `null` for an
+empty optional answer. The method must take `prompt_value: String` (or `Option<String>` when the prompt is not
+required); the view is refused otherwise. The client checks required, length, date and choice before calling, but the
+method can be called directly over RPC, so it validates its argument like any other. A prompt cannot combine with
+`confirm`, and a wizard stays the way for several fields.
 
 ## Pull request rules
 

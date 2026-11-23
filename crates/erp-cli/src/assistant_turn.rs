@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native assistant composition with multi-turn tool calling, live data aggregation, and canvas staging.
 use crate::assistant_read;
-use erp_addon_ai_base::{canvas, catalog, config::Credentials, context_cache, ledger, routing};
+use erp_addon_ai_base::{
+    canvas, catalog, compact, config::Credentials, context_cache, ledger, routing,
+};
 use erp_fields::{Error, Result, Value};
 use erp_orm::{BoxFuture, CompanyId, Context, CredentialOptions};
 use erp_rpc::RpcService;
@@ -36,7 +38,8 @@ CRITICAL EXECUTION RULES:\n\
    - 'chart': Bar, line, or donut chart. Provide series: [{\"label\": \"...\", \"value\": 100}].\n\
    - 'table': Tabular view with columns and rows.\n\
    - 'flow': Process workflow diagram.\n\
-5. Language: Always respond in the language used by the user (Indonesian if asked in Indonesian). In your final response after calling tools, provide a concise, professional summary highlighting key insights.";
+5. Language: Always respond in the language used by the user (Indonesian if asked in Indonesian). In your final response after calling tools, provide a concise, professional summary highlighting key insights.\n\
+6. If the server sends you a notice that your previous reply could not be rendered, immediately produce the complete, valid answer. Never mention the notice, never apologize, and never repeat the unusable reply.";
 
 struct AssistantFallbackHost;
 impl erp_rpc::RpcHost for AssistantFallbackHost {
@@ -122,6 +125,16 @@ impl WebAssistant for TextAssistant {
                     "erp.ai.message_invalid: enter a message within the configured length limit.",
                 ));
             }
+            let correction_rounds = usize::try_from(
+                erp_sdk::params::get_int(
+                    &mut begun.tx,
+                    &erp_addon_ai_base::ADDON,
+                    "ai_base.answer_correction_rounds",
+                )
+                .await
+                .map_err(|_| Error::validation("Invalid assistant correction limit."))?,
+            )
+            .map_err(|_| Error::validation("Invalid assistant correction limit."))?;
             let (history_turns, history_bytes, history_message_bytes) =
                 ledger::history_bounds(&mut begun.tx).await?;
             if let Err(reason) = validate_history(
@@ -279,194 +292,411 @@ impl WebAssistant for TextAssistant {
             };
 
             const MAX_TURNS: usize = 6;
-            for _turn_idx in 0..MAX_TURNS {
-                let req = ToolTurnRequest::new(route.model(), messages.clone(), tools.clone())
-                    .map_err(invalid)?
-                    .with_max_tokens(max_tokens);
+            // An unusable final reply (no text, no canvas) is sent back once per correction round
+            // so the model can fix its own answer before anything reaches the user; the rounds are
+            // a declared setting. Only when they are exhausted does the turn refuse loudly.
+            const CORRECTION_TEMPLATE: &str = "\
+Your previous reply could not be rendered: it contained no readable text and no valid canvas. \
+Answer the user's question again now with a complete plain-text answer, or call \
+render_canvas with a valid payload. Do not apologize, do not mention this notice, and do not repeat the mistake.";
+            let max_attempts = correction_rounds.saturating_add(1);
+            let mut rounds_used: usize = 0;
+            'attempts: for _attempt in 0..max_attempts {
+                'rounds: for _turn_idx in 0..MAX_TURNS {
+                    let req = ToolTurnRequest::new(route.model(), messages.clone(), tools.clone())
+                        .map_err(invalid)?
+                        .with_max_tokens(max_tokens);
 
-                let result = transport.complete_turn(&req).await;
-                let reply = match result {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let _ = auth
-                            .orm()
-                            .run(user, Context::new(), async move |tx| {
-                                reserved.settle(tx, None).await
-                            })
-                            .await;
-                        return Err(Error::user(format!("erp.ai.provider_failed: {e}")));
-                    }
-                };
-
-                total_prompt_tokens =
-                    total_prompt_tokens.saturating_add(u64::from(reply.usage().prompt_tokens));
-                total_completion_tokens = total_completion_tokens
-                    .saturating_add(u64::from(reply.usage().completion_tokens));
-                last_model = reply.usage().model.clone();
-
-                // AI1.CONTEXT-CACHE (1): record this exchange's bytes and prefix
-                // hash for the session. The request is re-encoded with the same deterministic
-                // inputs the transport sent; the turn carries no labelled data yet, so the
-                // bytes are identical to what the provider received. The stable prefix is the
-                // instruction template today; the assembled prefix (template, tool list, skill
-                // index, memory,.2) replaces these bytes with AI1.ASSIST-TURN. The
-                // raw response body is not exposed by the transport yet and is recorded when
-                // the turn wiring lands.
-                if let (Some(session_id), Some(turn_id)) = (ai_session, turn_id) {
-                    let request_bytes = route
-                        .request_encoder()
-                        .ok()
-                        .and_then(|encoder| encoder.encode(&req).ok())
-                        .and_then(|value| serde_json::to_vec(&value).ok());
-                    if let Some(request_bytes) = request_bytes {
-                        let round = i32::try_from(_turn_idx)
-                            .ok()
-                            .and_then(|index| index.checked_add(1))
-                            .ok_or_else(|| {
-                                Error::programming("assistant round index cannot be represented")
-                            })?;
-                        let prefix = ASSISTANT_SYSTEM_PROMPT.as_bytes().to_vec();
-                        let input_tokens = i64::from(reply.usage().prompt_tokens);
-                        let output_tokens = i64::from(reply.usage().completion_tokens);
-                        let recorded = auth
-                            .orm()
-                            .run(user, Context::new(), async move |tx| {
-                                let exchange = context_cache::Exchange {
-                                    turn_id,
-                                    round,
-                                    prefix: &prefix,
-                                    request: &request_bytes,
-                                    response: None,
-                                    input_tokens: Some(input_tokens),
-                                    output_tokens: Some(output_tokens),
-                                };
-                                context_cache::record_exchange(tx, session_id, &exchange).await
-                            })
-                            .await;
-                        if let Err(error) = recorded {
-                            tracing::warn!(
-                                %error, session_id, round,
-                                "assistant context cache refused this exchange"
-                            );
-                        }
-                    } else {
-                        tracing::warn!(
-                            "assistant context cache could not re-encode the sent request"
-                        );
-                    }
-                }
-
-                messages.push(
-                    TurnMessage::new(TurnRole::Assistant, reply.parts().to_vec())
-                        .map_err(invalid)?,
-                );
-
-                let mut current_turn_text = String::new();
-                let mut tool_calls = Vec::new();
-                for part in reply.parts() {
-                    match part {
-                        ContentPart::AssistantText(chunk) => {
-                            if !current_turn_text.is_empty()
-                                && !current_turn_text.ends_with('\n')
-                                && !current_turn_text.ends_with(' ')
-                            {
-                                current_turn_text.push('\n');
+                    let result = transport.complete_turn(&req).await;
+                    let reply = match result {
+                        Ok(r) => r,
+                        Err(error) => {
+                            // An unrepresentable provider reply (empty or malformed) is a render
+                            // failure the model can fix: it takes the correction path below instead
+                            // of failing the turn. Transport and server failures still fail the
+                            // turn at once.
+                            if matches!(error, erp_sdk::ai::ProviderError::InvalidResponse { .. }) {
+                                break 'rounds;
                             }
-                            current_turn_text.push_str(chunk);
-                            if current_turn_text.len() > 65536 {
-                                current_turn_text.truncate(65536);
-                            }
+                            let _ = auth
+                                .orm()
+                                .run(user, Context::new(), async move |tx| {
+                                    reserved.settle(tx, None).await
+                                })
+                                .await;
+                            return Err(Error::user(format!("erp.ai.provider_failed: {error}")));
                         }
-                        ContentPart::ToolCall(call) => {
-                            tool_calls.push(call.clone());
-                        }
-                        _ => {}
-                    }
-                }
-
-                if tool_calls.is_empty() {
-                    if !current_turn_text.trim().is_empty() {
-                        final_text = current_turn_text;
-                    }
-                    break;
-                } else if !current_turn_text.trim().is_empty() {
-                    text = current_turn_text;
-                }
-
-                const MAX_TOOL_CALLS_PER_TURN: usize = 8;
-                if tool_calls.len() > MAX_TOOL_CALLS_PER_TURN {
-                    tool_calls.truncate(MAX_TOOL_CALLS_PER_TURN);
-                }
-
-                let mut tool_results = Vec::new();
-                for call in tool_calls {
-                    let tool_result = match call.name() {
-                        "find_models" => {
-                            let mut tx = auth.begin_session(secret, options()).await?.tx;
-                            let r = catalog::find_models(&mut tx, &call).await;
-                            tx.rollback().await.ok();
-                            r
-                        }
-                        "search_records" => {
-                            assistant_read::search_records(
-                                &service,
-                                auth.clone(),
-                                secret_arc.clone(),
-                                company,
-                                &call,
-                            )
-                            .await
-                        }
-                        "aggregate_records" => {
-                            assistant_read::aggregate_records(
-                                &service,
-                                auth.clone(),
-                                secret_arc.clone(),
-                                company,
-                                &call,
-                            )
-                            .await
-                        }
-                        "render_canvas" => {
-                            let res = canvas::render_canvas(&call);
-                            if res.is_ok()
-                                && let Ok(payload) = canvas::extract_canvas_payload(&call)
-                            {
-                                staged_canvas = Some(payload);
-                            }
-                            res
-                        }
-                        other => Err(Error::validation(format!(
-                            "Unknown assistant tool '{other}'."
-                        ))),
                     };
 
-                    match tool_result {
-                        Ok(result) => {
-                            tool_results.push(ContentPart::ToolResult(result));
-                        }
-                        Err(err) => {
-                            let tool_name = ToolName::new(call.name())
-                                .or_else(|_| ToolName::new("unknown"))
-                                .map_err(|e| Error::programming(e.to_string()))?;
-                            let source = DataSource::new(tool_name, None, Vec::new())
-                                .map_err(|e| Error::programming(e.to_string()))?;
-                            let err_result = ToolResult::new(
-                                call.id().clone(),
-                                LabelledData::new(
-                                    source,
-                                    json!({
-                                        "error": err.message()
-                                    }),
-                                ),
-                                true,
+                    total_prompt_tokens =
+                        total_prompt_tokens.saturating_add(u64::from(reply.usage().prompt_tokens));
+                    total_completion_tokens = total_completion_tokens
+                        .saturating_add(u64::from(reply.usage().completion_tokens));
+                    last_model = reply.usage().model.clone();
+                    rounds_used = rounds_used.saturating_add(1);
+
+                    // AI1.CONTEXT-CACHE (1): record this exchange's bytes and prefix
+                    // hash for the session. The request is re-encoded with the same deterministic
+                    // inputs the transport sent; the turn carries no labelled data yet, so the
+                    // bytes are identical to what the provider received. The stable prefix is the
+                    // instruction template today; the assembled prefix (template, tool list, skill
+                    // index, memory,.2) replaces these bytes with AI1.ASSIST-TURN. The
+                    // raw response body is not exposed by the transport yet and is recorded when
+                    // the turn wiring lands.
+                    if let (Some(session_id), Some(turn_id)) = (ai_session, turn_id) {
+                        let request_bytes = route
+                            .request_encoder()
+                            .ok()
+                            .and_then(|encoder| encoder.encode(&req).ok())
+                            .and_then(|value| serde_json::to_vec(&value).ok());
+                        if let Some(request_bytes) = request_bytes {
+                            let round = i32::try_from(_turn_idx)
+                                .ok()
+                                .and_then(|index| index.checked_add(1))
+                                .ok_or_else(|| {
+                                    Error::programming(
+                                        "assistant round index cannot be represented",
+                                    )
+                                })?;
+                            let prefix = ASSISTANT_SYSTEM_PROMPT.as_bytes().to_vec();
+                            let input_tokens = i64::from(reply.usage().prompt_tokens);
+                            let output_tokens = i64::from(reply.usage().completion_tokens);
+                            let recorded = auth
+                                .orm()
+                                .run(user, Context::new(), async move |tx| {
+                                    let exchange = context_cache::Exchange {
+                                        turn_id,
+                                        round,
+                                        prefix: &prefix,
+                                        request: &request_bytes,
+                                        response: None,
+                                        input_tokens: Some(input_tokens),
+                                        output_tokens: Some(output_tokens),
+                                    };
+                                    context_cache::record_exchange(tx, session_id, &exchange).await
+                                })
+                                .await;
+                            if let Err(error) = recorded {
+                                tracing::warn!(
+                                    %error, session_id, round,
+                                    "assistant context cache refused this exchange"
+                                );
+                            }
+                        } else {
+                            tracing::warn!(
+                                "assistant context cache could not re-encode the sent request"
                             );
-                            tool_results.push(ContentPart::ToolResult(err_result));
                         }
                     }
-                }
 
-                messages.push(TurnMessage::new(TurnRole::User, tool_results).map_err(invalid)?);
+                    messages.push(
+                        TurnMessage::new(TurnRole::Assistant, reply.parts().to_vec())
+                            .map_err(invalid)?,
+                    );
+
+                    let mut current_turn_text = String::new();
+                    let mut tool_calls = Vec::new();
+                    for part in reply.parts() {
+                        match part {
+                            ContentPart::AssistantText(chunk) => {
+                                if !current_turn_text.is_empty()
+                                    && !current_turn_text.ends_with('\n')
+                                    && !current_turn_text.ends_with(' ')
+                                {
+                                    current_turn_text.push('\n');
+                                }
+                                current_turn_text.push_str(chunk);
+                                if current_turn_text.len() > 65536 {
+                                    current_turn_text.truncate(65536);
+                                }
+                            }
+                            ContentPart::ToolCall(call) => {
+                                tool_calls.push(call.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if tool_calls.is_empty() {
+                        if !current_turn_text.trim().is_empty() {
+                            final_text = current_turn_text;
+                        }
+                        break;
+                    } else if !current_turn_text.trim().is_empty() {
+                        text = current_turn_text;
+                    }
+
+                    const MAX_TOOL_CALLS_PER_TURN: usize = 8;
+                    if tool_calls.len() > MAX_TOOL_CALLS_PER_TURN {
+                        tool_calls.truncate(MAX_TOOL_CALLS_PER_TURN);
+                    }
+
+                    let mut tool_results = Vec::new();
+                    for call in tool_calls {
+                        let tool_result = match call.name() {
+                            "find_models" => {
+                                let mut tx = auth.begin_session(secret, options()).await?.tx;
+                                let r = catalog::find_models(&mut tx, &call).await;
+                                tx.rollback().await.ok();
+                                r
+                            }
+                            "search_records" => {
+                                assistant_read::search_records(
+                                    &service,
+                                    auth.clone(),
+                                    secret_arc.clone(),
+                                    company,
+                                    &call,
+                                )
+                                .await
+                            }
+                            "aggregate_records" => {
+                                assistant_read::aggregate_records(
+                                    &service,
+                                    auth.clone(),
+                                    secret_arc.clone(),
+                                    company,
+                                    &call,
+                                )
+                                .await
+                            }
+                            "render_canvas" => {
+                                let res = canvas::render_canvas(&call);
+                                if res.is_ok()
+                                    && let Ok(payload) = canvas::extract_canvas_payload(&call)
+                                {
+                                    staged_canvas = Some(payload);
+                                }
+                                res
+                            }
+                            other => Err(Error::validation(format!(
+                                "Unknown assistant tool '{other}'."
+                            ))),
+                        };
+
+                        match tool_result {
+                            Ok(result) => {
+                                tool_results.push(ContentPart::ToolResult(result));
+                            }
+                            Err(err) => {
+                                let tool_name = ToolName::new(call.name())
+                                    .or_else(|_| ToolName::new("unknown"))
+                                    .map_err(|e| Error::programming(e.to_string()))?;
+                                let source = DataSource::new(tool_name, None, Vec::new())
+                                    .map_err(|e| Error::programming(e.to_string()))?;
+                                let err_result = ToolResult::new(
+                                    call.id().clone(),
+                                    LabelledData::new(
+                                        source,
+                                        json!({
+                                            "error": err.message()
+                                        }),
+                                    ),
+                                    true,
+                                );
+                                tool_results.push(ContentPart::ToolResult(err_result));
+                            }
+                        }
+                    }
+
+                    messages.push(TurnMessage::new(TurnRole::User, tool_results).map_err(invalid)?);
+                }
+                if !final_text.trim().is_empty()
+                    || !text.trim().is_empty()
+                    || staged_canvas.is_some()
+                {
+                    break 'attempts;
+                }
+                // The final reply of this attempt is unusable: tell the model what is wrong and
+                // give it one more round, within the declared correction budget.
+                messages.push(
+                    TurnMessage::new(
+                        TurnRole::User,
+                        vec![ContentPart::UserText(UserText::new(
+                            CORRECTION_TEMPLATE.to_string(),
+                        ))],
+                    )
+                    .map_err(invalid)?,
+                );
+            }
+
+            // AI1.SESSION-COMPACT (5, D4.6): after the turn's events are appended,
+            // compaction runs when the session is past its threshold — one summarize call inside
+            // the turn's remaining caps, folded into the single reservation settle below so it
+            // stays inside the turn's budget — and the session title is made on the same in-turn
+            // path, each on its own route (routing::resolve_task; a missing route logs and keeps
+            // the answer). The turn-to-session wiring (the session id, the turn id
+            // and the event appends) is AI1.ASSIST-TURN; until it lands, ai_session stays None
+            // and this call site is inert.
+            if let (Some(session_id), Some(in_turn)) =
+                (ai_session, turn_id.map(compact::InTurn::begin))
+            {
+                let caps = compact::TurnCaps {
+                    round_trips_left: MAX_TURNS.saturating_sub(rounds_used),
+                };
+                // Compaction: one summarize exchange within the turn's remaining caps, then the
+                // title on its own route (D4.6); the usage of each is folded into the settle
+                // below so both stay inside the turn's budget.
+                match auth.begin_session(secret, options()).await {
+                    Ok(mut begun) => {
+                        let summarize_route = routing::resolve_task(
+                            &begun.tx.env(),
+                            &mut begun.tx,
+                            &self.credentials,
+                            "summarize",
+                        )
+                        .await;
+                        match summarize_route {
+                            Ok(route) => match route.transport(&self.credentials) {
+                                Ok(transport) => {
+                                    let summarizer =
+                                        compact::RouteTransport::new(&route, transport);
+                                    match compact::compact_in_turn(
+                                        &mut begun.tx,
+                                        session_id,
+                                        Some(&in_turn),
+                                        &caps,
+                                        &summarizer,
+                                    )
+                                    .await
+                                    {
+                                        Ok(compact::CompactOutcome::Compacted {
+                                            from_seq,
+                                            to_seq,
+                                            input_tokens,
+                                            output_tokens,
+                                        }) => {
+                                            tracing::info!(
+                                                session_id,
+                                                from_seq,
+                                                to_seq,
+                                                "assistant session compacted"
+                                            );
+                                            total_prompt_tokens = total_prompt_tokens
+                                                .saturating_add(
+                                                    u64::try_from(input_tokens.unwrap_or(0))
+                                                        .unwrap_or(0),
+                                                );
+                                            total_completion_tokens = total_completion_tokens
+                                                .saturating_add(
+                                                    u64::try_from(output_tokens.unwrap_or(0))
+                                                        .unwrap_or(0),
+                                                );
+                                            if let Err(error) = begun.tx.commit().await {
+                                                tracing::warn!(%error, session_id, "assistant compaction commit failed");
+                                            }
+                                        }
+                                        Ok(compact::CompactOutcome::Pending) => {
+                                            tracing::debug!(
+                                                session_id,
+                                                "assistant compaction deferred to the next turn"
+                                            );
+                                            begun.tx.rollback().await.ok();
+                                        }
+                                        Ok(compact::CompactOutcome::NotNeeded) => {
+                                            begun.tx.rollback().await.ok();
+                                        }
+                                        Err(error) => {
+                                            tracing::warn!(%error, session_id, "assistant compaction refused");
+                                            begun.tx.rollback().await.ok();
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "assistant summarize transport unavailable");
+                                    begun.tx.rollback().await.ok();
+                                }
+                            },
+                            Err(error) => {
+                                tracing::warn!(%error, "assistant summarize route missing");
+                                begun.tx.rollback().await.ok();
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "assistant summarize route could not be resolved");
+                    }
+                }
+                // The title uses the same in-turn path on the title route (D4.6) and shares the
+                // turn's remaining round trips with compaction: it sees one fewer so both calls
+                // together never exceed the caps.
+                let title_caps = compact::TurnCaps {
+                    round_trips_left: caps.round_trips_left.saturating_sub(1),
+                };
+                match auth.begin_session(secret, options()).await {
+                    Ok(mut begun) => {
+                        let title_route = routing::resolve_task(
+                            &begun.tx.env(),
+                            &mut begun.tx,
+                            &self.credentials,
+                            "title",
+                        )
+                        .await;
+                        match title_route {
+                            Ok(route) => match route.transport(&self.credentials) {
+                                Ok(transport) => {
+                                    let summarizer =
+                                        compact::RouteTransport::new(&route, transport);
+                                    match compact::title_in_turn(
+                                        &mut begun.tx,
+                                        session_id,
+                                        Some(&in_turn),
+                                        &title_caps,
+                                        &summarizer,
+                                    )
+                                    .await
+                                    {
+                                        Ok(compact::TitleOutcome::Titled {
+                                            title: _,
+                                            input_tokens,
+                                            output_tokens,
+                                        }) => {
+                                            tracing::info!(session_id, "assistant session titled");
+                                            total_prompt_tokens = total_prompt_tokens
+                                                .saturating_add(
+                                                    u64::try_from(input_tokens.unwrap_or(0))
+                                                        .unwrap_or(0),
+                                                );
+                                            total_completion_tokens = total_completion_tokens
+                                                .saturating_add(
+                                                    u64::try_from(output_tokens.unwrap_or(0))
+                                                        .unwrap_or(0),
+                                                );
+                                            if let Err(error) = begun.tx.commit().await {
+                                                tracing::warn!(%error, session_id, "assistant compaction commit failed");
+                                            }
+                                        }
+                                        Ok(compact::TitleOutcome::Pending) => {
+                                            tracing::debug!(
+                                                session_id,
+                                                "assistant title deferred to the next turn"
+                                            );
+                                            begun.tx.rollback().await.ok();
+                                        }
+                                        Ok(compact::TitleOutcome::NotNeeded) => {
+                                            begun.tx.rollback().await.ok();
+                                        }
+                                        Err(error) => {
+                                            tracing::warn!(%error, session_id, "assistant title refused");
+                                            begun.tx.rollback().await.ok();
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "assistant title transport unavailable");
+                                    begun.tx.rollback().await.ok();
+                                }
+                            },
+                            Err(error) => {
+                                tracing::warn!(%error, "assistant title route missing");
+                                begun.tx.rollback().await.ok();
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "assistant title route could not be resolved");
+                    }
+                }
             }
 
             let usage = Some((

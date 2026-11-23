@@ -9,7 +9,7 @@ import type { MessageLevel } from "./message-widgets.js";
 import { codeEditorMode } from "./code-editor-session.js";
 import { validateSelectionTabField } from "./list-tabs.js";
 import { readFieldOptions, type FieldPresentationOptions } from "./field-options.js";
-import type { FieldDescription, ButtonDetails as WireButtonDetails, ButtonTarget as WireButtonTarget } from "../generated/human-ui.js";
+import type { FieldDescription, ButtonDetails as WireButtonDetails, ButtonPrompt, ButtonTarget as WireButtonTarget } from "../generated/human-ui.js";
 import { fieldWidgets, serviceControllers } from "./registry.js";
 import { ClientError } from "./transport.js";
 import { decodeAst, parseBoundedJson, type ValidatedAst } from "../../../../../web/packages/expr/src/index.js";
@@ -143,6 +143,8 @@ export interface View {
   canCreate?: boolean;
   canEdit?: boolean;
   canDelete?: boolean;
+  /** `read`: a saved record opens read-first with an Edit command (`<form edit_mode="read">`). */
+  editMode?: "read" | "edit";
 }
 export interface Description { model: string; fields: Map<string, Field>; views: Map<string, View> }
 /** The combined record policy for repeated field occurrences in one view. */
@@ -160,6 +162,7 @@ export function combineFields(fields: readonly Field[]): Field[] {
 /** Admitted client behavior derived from the Rust-owned details DTO. */
 export interface ButtonDetails extends Omit<WireButtonDetails,"context"> { context?: ValidatedAst }
 export type ButtonTarget = WireButtonTarget;
+export type { ButtonPrompt };
 const buttonRanks: readonly string[] = ["primary","secondary","link","success","info","warning","danger","unstyled"];
 function buttonRank(value: unknown): ButtonRank {
   if(typeof value !== "string" || !buttonRanks.includes(value)) unsupported("Unsupported button variant.");
@@ -177,7 +180,7 @@ function buttonConfirmation(value: unknown): string | null {
   return result;
 }
 function buttonDetails(value: unknown, admitContext: (raw:unknown)=>ValidatedAst): ButtonDetails {
-  const details=object(value,"button details"), optional=["icon","title","help","hotkey","confirm_title","confirm_label","cancel_label","context"];
+  const details=object(value,"button details"), optional=["icon","title","help","hotkey","confirm_title","confirm_label","cancel_label","context","prompt"];
   closed(details,["size","circle","classes","debounce_ms","block_ui",...optional.filter(key=>Object.hasOwn(details,key))],"button details");
   if(typeof details["size"]!=="string" || !["small","normal","large"].includes(details["size"])) throw new ClientError("server","Invalid button size.");
   if(typeof details["circle"]!=="boolean") throw new ClientError("server","Button circle must be boolean.");
@@ -197,6 +200,36 @@ function buttonDetails(value: unknown, admitContext: (raw:unknown)=>ValidatedAst
   if(result.icon!==undefined && knownMenuIcon(result.icon)===null) throw new ClientError("server",`Unknown button icon: ${result.icon}.`);
   if(result.hotkey!==undefined && !/^(?:shift\+)?[a-z0-9]$/.test(result.hotkey)) throw new ClientError("server","Invalid button hotkey.");
   if(Object.hasOwn(details,"context")) result.context=admitContext(details["context"]);
+  if(Object.hasOwn(details,"prompt")) result.prompt=buttonPrompt(details["prompt"]);
+  return result;
+}
+/** A prompting button's question: the same closed rules the server admits (`h18_lower::button_prompt`). */
+function buttonPrompt(value: unknown): ButtonPrompt {
+  const prompt=object(value,"button prompt");
+  closed(prompt,["kind","label","required",...["max_length","choices"].filter(key=>Object.hasOwn(prompt,key))],"button prompt");
+  const kind=prompt["kind"];
+  if(kind!=="text" && kind!=="date" && kind!=="selection") throw new ClientError("server","Invalid button prompt kind.");
+  const label=boundedButtonText(prompt["label"],"prompt label");
+  if(!label.trim()) throw new ClientError("server","Button prompt label must be nonempty.");
+  if(typeof prompt["required"]!=="boolean") throw new ClientError("server","Button prompt required must be boolean.");
+  const result:ButtonPrompt={kind,label,required:prompt["required"]};
+  if(Object.hasOwn(prompt,"max_length")) {
+    const max=prompt["max_length"];
+    if(kind!=="text" || typeof max!=="number" || !Number.isSafeInteger(max) || max<1 || max>4096) throw new ClientError("server","Invalid button prompt max_length.");
+    result.max_length=max;
+  }
+  if(Object.hasOwn(prompt,"choices")!==(kind==="selection")) throw new ClientError("server","Button prompt choices belong to a selection prompt.");
+  if(kind==="selection") {
+    const choices=array(prompt["choices"],"button prompt choices");
+    if(choices.length<1 || choices.length>64) throw new ClientError("server","A selection prompt offers 1 to 64 choices.");
+    result.choices=choices.map(item=>{
+      const choice=object(item,"button prompt choice"); closed(choice,["value","label"],"button prompt choice");
+      const value=text(choice["value"],"prompt choice value"), caption=boundedButtonText(choice["label"],"prompt choice label");
+      if(!/^[a-z][a-z0-9_]{0,63}$/.test(value) || !caption.trim()) throw new ClientError("server","Invalid button prompt choice.");
+      return {value,label:caption};
+    });
+    if(new Set(result.choices.map(choice=>choice.value)).size!==result.choices.length) throw new ClientError("server","Duplicate button prompt choice.");
+  }
   return result;
 }
 
@@ -282,7 +315,7 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
       if (depth > 32) throw new ClientError("server", "View nesting limit exceeded.");
       seen.add(index);
       const node = object(arena[index], "view node"), kind = node["kind"];
-      if (kind === "form") closed(node, ["kind", "record_mode", "children", ...(Object.hasOwn(node, "create") ? ["create"] : []), ...(Object.hasOwn(node, "edit") ? ["edit"] : []), ...(Object.hasOwn(node, "delete") ? ["delete"] : [])], "view node");
+      if (kind === "form") closed(node, ["kind", "record_mode", "children", ...["create", "edit", "delete", "edit_mode"].filter(key => Object.hasOwn(node, key))], "view node");
       else if (kind === "list") closed(node, ["kind", "children", ...(Object.hasOwn(node, "search_panel") ? ["search_panel"] : []), ...(Object.hasOwn(node, "page_limit") ? ["page_limit"] : []), ...(Object.hasOwn(node, "create") ? ["create"] : []), ...(Object.hasOwn(node, "edit") ? ["edit"] : []), ...(Object.hasOwn(node, "delete") ? ["delete"] : [])], "view node");
       else if (kind === "dashboard") closed(node,["kind","version","revision","items"],"dashboard node");
       else if (kind === "field") closed(node, ["kind", "field", "widget", "options", "modifiers", "label", "force_save", ...(Object.hasOwn(node, "width") ? ["width"] : [])], "view node");
@@ -402,13 +435,13 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
         // The count provider calls COUNT; loading this O2M into state would materialize ids.
         // An ordinary occurrence of the same relation is still selected by its own node.
         if (!relationCount) selected.push(occurrence);
-        for (const key of ["placeholder_field", "currency_field", "start_date_field", "end_date_field", "whitelist_fname", "color_field", "preview_image"] as const) {
+        for (const key of ["placeholder_field", "currency_field", "start_date_field", "end_date_field", "whitelist_fname", "color_field", "preview_image", "filename"] as const) {
           const reference = occurrence.options?.[key];
           if (reference && reference.model === model) {
             const dependency = fields.get(reference.name);
             if (!dependency) throw new ClientError("server", `Missing field dependency: ${reference.name}.`);
-            // Range endpoints are editable participants. Other dependencies are read inputs only.
-            selected.push({ ...dependency, readonly: key === "start_date_field" || key === "end_date_field" ? dependency.readonly : true, invisible: true, forceSave: false });
+            // Range endpoints and a file's name field are editable participants. Other dependencies are read inputs only.
+            selected.push({ ...dependency, readonly: key === "start_date_field" || key === "end_date_field" || key === "filename" ? dependency.readonly : true, invisible: true, forceSave: false });
           }
         }
 
@@ -655,6 +688,9 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
     const canCreate = (type === "list" || type === "form" || type === "kanban") && Object.hasOwn(rootNode, "create") ? boolean(rootNode["create"], "view create") : undefined;
     const canEdit = (type === "list" || type === "form" || type === "kanban") && Object.hasOwn(rootNode, "edit") ? boolean(rootNode["edit"], "view edit") : undefined;
     const canDelete = (type === "list" || type === "form" || type === "kanban") && Object.hasOwn(rootNode, "delete") ? boolean(rootNode["delete"], "view delete") : undefined;
+    const editMode = type === "form" && Object.hasOwn(rootNode, "edit_mode") ? rootNode["edit_mode"] : undefined;
+    if (editMode !== undefined && editMode !== "read" && editMode !== "edit") throw new ClientError("server", "Invalid form edit mode.");
+    if (editMode === "read" && (canEdit === false || mode === "service")) throw new ClientError("server", "Read mode requires an editable record form.");
     const tree = visit(root, 1);
     if (seen.size !== arena.length) throw new ClientError("server", "View contains unreachable nodes.");
     // Context references are host-authorized metadata, even when no field occurrence is rendered.
@@ -674,6 +710,7 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
       ...(canCreate === undefined ? {} : { canCreate }),
       ...(canEdit === undefined ? {} : { canEdit }),
       ...(canDelete === undefined ? {} : { canDelete }),
+      ...(editMode === undefined ? {} : { editMode }),
     });
   }
   if (!views.size) throw new ClientError("server", "No supported views were returned.");

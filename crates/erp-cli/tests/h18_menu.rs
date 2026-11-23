@@ -452,10 +452,7 @@ async fn assert_producer_admission(tx: &mut Transaction) {
         RawVals::new()
             .set_cell("name", Cell::Str("M".repeat(4096).into()))
             .set_cell("active", Cell::Bool(true))
-            .set_cell(
-                "web_icon",
-                Cell::Str(format!("lucide:{}", "i".repeat(512)).into()),
-            )
+            .set_cell("web_icon", Cell::Str("lucide:box".into()))
             .set_cell(
                 "action",
                 Cell::Str(format!("ir.actions.act_window,{action}").into()),

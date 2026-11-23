@@ -55,25 +55,28 @@ impl ConfiguredRoute {
         &self.base_url
     }
 }
-/// Resolve the assistant for the caller's current company under ordinary model/record access.
-/// Every resolution revalidates current provider activation, model allowance and node credentials.
+/// Resolve the route for `task_kind` in the caller's current company under ordinary
+/// model/record access. Every resolution revalidates current provider activation, model
+/// allowance and node credentials.
 /// # Errors
-/// Refuses a missing/ambiguous company route, unreadable records, invalidated models and inactive
-/// or unconfigured providers. Never tries another company, provider or model.
-pub async fn resolve(
+/// Refuses a missing/ambiguous company route naming the task kind, unreadable
+/// records, invalidated models and inactive or unconfigured providers. Never tries another
+/// company, provider or model.
+pub async fn resolve_task(
     env: &Env,
     tx: &mut Transaction,
     credentials: &Credentials,
+    task_kind: &str,
 ) -> Result<ConfiguredRoute> {
     let company = env
         .company_id()?
         .ok_or_else(|| Error::validation("erp.ai.route_missing: current company is required"))?;
     let domain = Domain::condition("company_id", Operator::Eq, company)?
-        & Domain::condition("task_kind", Operator::Eq, "assistant")?;
+        & Domain::condition("task_kind", Operator::Eq, task_kind)?;
     let routes = env.records("ai.route")?.search(tx, &domain).await?;
     if routes.len() != 1 {
         return Err(Error::validation(format!(
-            "erp.ai.route_missing: task 'assistant' company {company}"
+            "erp.ai.route_missing: task '{task_kind}' company {company}"
         )));
     }
     let provider_id = id(
@@ -104,6 +107,18 @@ pub async fn resolve(
         request_bytes: credentials.request_bytes(),
         interactive: crate::ordinary_user(env),
     })
+}
+
+/// Resolve the interactive assistant route; see [`resolve_task`].
+///
+/// # Errors
+/// As [`resolve_task`], for the `assistant` task kind.
+pub async fn resolve(
+    env: &Env,
+    tx: &mut Transaction,
+    credentials: &Credentials,
+) -> Result<ConfiguredRoute> {
+    resolve_task(env, tx, credentials, "assistant").await
 }
 
 #[cfg(test)]

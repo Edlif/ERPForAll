@@ -955,3 +955,167 @@ async fn metadata_maintenance_refuses_repeatable_read_before_mutation() {
     }
     f.h.cleanup().await.unwrap();
 }
+
+/// Content attached with `Uploader::create` in a transaction that then rolls back: the bytes were
+/// promoted, and the upload row (left to the cleaner by `create`) is the marker the cleaner
+/// adopts, so the sweep removes the key. A committed one is left alone.
+#[tokio::test]
+async fn uploader_create_in_a_rolled_back_transaction_is_adopted_and_swept() {
+    let f = fixture(external_limits()).await;
+    admit_cleanup(f.h.orm()).await;
+    let uploader = erp_addon_base::attachments::Uploader::new(f.h.orm());
+    // (the write store is registered by admit_cleanup, as by earlier files of a database)
+    let mut tx = f.h.begin().await.unwrap();
+    assert_eq!(count(&mut tx, "SELECT count(*) FROM ir_blob").await, 0);
+    let mut kept = &b"kept by a committed print"[..];
+    uploader
+        .create(
+            &mut tx,
+            NewAttachment::new("kept.txt", AttachmentContent::Empty),
+            &mut kept,
+            None,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut tx = f.h.begin().await.unwrap();
+    assert_eq!(count(&mut tx, "SELECT count(*) FROM ir_blob").await, 1);
+    let mut lost = &b"orphaned by a failed print"[..];
+    uploader
+        .create(
+            &mut tx,
+            NewAttachment::new("lost.txt", AttachmentContent::Empty),
+            &mut lost,
+            None,
+        )
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    drop(tx);
+    assert_eq!(f.store.content_keys().len(), 2, "both promoted");
+    assert_eq!(blobs(&f).await, 1);
+    let mut tx = rc(&f).await;
+    let env = tx.env();
+    let report = clean_staging(&mut tx, &env, 100).await.unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+    // committed upload transitioned to state = 2 (consumed), rolled-back upload to state = 3 (expired + adopted)
+    assert_eq!((report.consumed, report.expired, report.adopted), (1, 1, 1));
+    assert!(f.store.staging_keys().is_empty());
+    let ids = mark(&f).await;
+    assert_eq!(ids.len(), 1);
+    remove(&f, &ids).await.unwrap();
+    assert_eq!(
+        f.store.content_keys().len(),
+        1,
+        "the committed content stays"
+    );
+    assert_eq!(blobs(&f).await, 1);
+    assert_eq!(scalar(&f.h, "SELECT count(*) FROM ir_blob_upload").await, 0);
+}
+
+/// While a transaction that called `Uploader::create` is still open, its upload row stays in
+/// `state = 1` (unexpired) so concurrent `clean_staging` does not touch or block on its
+/// uncommitted `ir_blob` row; only after commit (`state = 2`) or rollback (`state = 3`) does
+/// `clean_staging` collect it.
+#[tokio::test]
+async fn uploader_create_does_not_expose_open_tx_to_clean_staging() {
+    let f = fixture(external_limits()).await;
+    admit_cleanup(f.h.orm()).await;
+    let uploader = erp_addon_base::attachments::Uploader::new(f.h.orm());
+    let mut open_tx = f.h.begin().await.unwrap();
+    let mut body = &b"in-flight print chunk"[..];
+    uploader
+        .create(
+            &mut open_tx,
+            NewAttachment::new("inflight.pdf", AttachmentContent::Empty),
+            &mut body,
+            None,
+        )
+        .await
+        .unwrap();
+    // Run clean_staging concurrently while `open_tx` is still open: must finish without blocking
+    // and must leave the in-flight upload row untouched.
+    let mut clean_tx = rc(&f).await;
+    let clean_env = clean_tx.env();
+    let mid = clean_staging(&mut clean_tx, &clean_env, 100).await.unwrap();
+    clean_tx.commit().await.unwrap();
+    drop(clean_tx);
+    assert_eq!((mid.consumed, mid.expired, mid.adopted), (0, 0, 0));
+    assert_eq!(
+        scalar(&f.h, "SELECT count(*) FROM ir_blob_upload WHERE state = 1").await,
+        1
+    );
+    open_tx.commit().await.unwrap();
+    drop(open_tx);
+    // Now that `open_tx` committed, the upload is `state = 2` (consumed) and clean_staging sweeps it.
+    let mut clean_tx = rc(&f).await;
+    let clean_env = clean_tx.env();
+    let after = clean_staging(&mut clean_tx, &clean_env, 100).await.unwrap();
+    clean_tx.commit().await.unwrap();
+    drop(clean_tx);
+    assert_eq!((after.consumed, after.expired, after.adopted), (1, 0, 0));
+    assert_eq!(scalar(&f.h, "SELECT count(*) FROM ir_blob_upload").await, 0);
+}
+
+/// Content attached with `Uploader::create` inside a savepoint that rolls back while the outer
+/// transaction commits (as in `report.job` when `merge` fails after `keep`): the savepoint
+/// rollback truncates the upload's `after_commit` guard, transitioning the upload to `state = 3`
+/// so `clean_staging` adopts and `sweep_remove` removes the orphaned external content key.
+#[tokio::test]
+async fn uploader_create_in_a_rolled_back_savepoint_with_committed_outer_tx_is_adopted_and_swept() {
+    let f = fixture(external_limits()).await;
+    admit_cleanup(f.h.orm()).await;
+    let uploader = erp_addon_base::attachments::Uploader::new(f.h.orm());
+    let mut tx = f.h.begin().await.unwrap();
+    let sp_err: erp_fields::Result<()> = tx
+        .savepoint(async |tx| {
+            let mut lost = &b"orphaned by a rolled-back savepoint"[..];
+            uploader
+                .create(
+                    tx,
+                    NewAttachment::new("sp-lost.pdf", AttachmentContent::Empty),
+                    &mut lost,
+                    None,
+                )
+                .await?;
+            Err(erp_fields::Error::user("simulated failure after keep"))
+        })
+        .await;
+    assert!(sp_err.is_err());
+    // Outer transaction commits (e.g. recording the failed job row).
+    tx.commit().await.unwrap();
+    drop(tx);
+    erp_addon_base::attachments::Uploader::flush_outcomes().await;
+    assert_eq!(
+        scalar(&f.h, "SELECT count(*) FROM ir_blob_upload WHERE state = 3").await,
+        1,
+        "rolled-back savepoint must mark upload state = 3 even when outer tx commits"
+    );
+    assert_eq!(
+        f.store.content_keys().len(),
+        1,
+        "external bytes were promoted"
+    );
+    assert_eq!(
+        blobs(&f).await,
+        0,
+        "ir_blob insert rolled back with savepoint"
+    );
+    let mut clean_tx = rc(&f).await;
+    let clean_env = clean_tx.env();
+    let report = clean_staging(&mut clean_tx, &clean_env, 100).await.unwrap();
+    clean_tx.commit().await.unwrap();
+    drop(clean_tx);
+    assert_eq!((report.consumed, report.expired, report.adopted), (0, 1, 1));
+    assert!(f.store.staging_keys().is_empty());
+    let ids = mark(&f).await;
+    assert_eq!(ids.len(), 1);
+    remove(&f, &ids).await.unwrap();
+    assert!(
+        f.store.content_keys().is_empty(),
+        "promoted content key from rolled-back savepoint must be swept"
+    );
+    assert_eq!(blobs(&f).await, 0);
+}

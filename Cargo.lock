@@ -1545,6 +1545,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "erp-addon-hr"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-base",
+ "erp-sdk",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "erp-addon-mail"
 version = "0.1.0"
 dependencies = [
@@ -1996,6 +2005,7 @@ dependencies = [
  "erp-addon-barcodes",
  "erp-addon-barcodes_gs1_nomenclature",
  "erp-addon-base",
+ "erp-addon-hr",
  "erp-addon-mail",
  "erp-addon-product",
  "erp-addon-product-mail",
@@ -2461,6 +2471,7 @@ dependencies = [
  "erp-addon-account",
  "erp-addon-analytic",
  "erp-addon-base",
+ "erp-addon-hr",
  "erp-addon-mail",
  "erp-addon-product",
  "erp-addon-test_addon_a",

@@ -47,7 +47,8 @@ test("sessions render in the server's last-activity order and resume hands the s
   const view = panel(call, { onResume: (session, resume) => resumes.push([session, resume]) });
   await vi.waitFor(() => expect(document.querySelectorAll(".ai-session-row").length).toBe(2));
   expect(call).toHaveBeenCalledWith("ai.session", "search_sessions", { search: "", include_archived: false });
-  // The panel keeps the server's last-activity order; it never reorders.
+  // Without an open record the panel renders the server's order verbatim; the only reordering it
+  // ever does is the deliberate hoist of the about group (covered separately).
   expect(rows()).toEqual(["5", "3"]);
   expect(Array.from(document.querySelectorAll(".ai-session-time"), node => node.textContent)).toEqual(["Nov 21", "Nov 19"]);
   view.node.querySelector<HTMLButtonElement>('[data-session-id="3"] .ai-session-title')!.click();
@@ -131,16 +132,25 @@ test("an unreadable anchor shows only the unavailable state and no anchor value 
   expect(call).toHaveBeenLastCalledWith("ai.session", "resume_session", { id: 7 });
 });
 
-/// (partial: the panel groups only the open record's own anchored sessions from the server's owner-filtered response)
-test("about this record lists only the reader's own session anchored to the open record", async () => {
-  const call = vi.fn().mockResolvedValueOnce([
-    summary({ id: 11, title: "Partner A follow-up", anchor: { model: "res.partner", res_id: 12, available: true } }),
-    summary({ id: 12, title: "Order review", anchor: { model: "sale.order", res_id: 99, available: true } }),
-  ]);
+/// (partial: the panel asks the server for the open record's sessions with the `about` filter instead of filtering client-side; the owner scoping itself is the server's)
+test("about this record is the server's about-filtered answer, and the general group never repeats it", async () => {
+  const call = vi.fn()
+    // The about call: only the sessions the server matched for the open record.
+    .mockResolvedValueOnce([
+      summary({ id: 11, title: "Partner A follow-up", anchor: { model: "res.partner", res_id: 12, available: true } }),
+    ])
+    // The general call: the same session appears again plus an unrelated one; the panel never repeats it.
+    .mockResolvedValueOnce([
+      summary({ id: 11, title: "Partner A follow-up", anchor: { model: "res.partner", res_id: 12, available: true } }),
+      summary({ id: 12, title: "Order review", anchor: { model: "sale.order", res_id: 99, available: true } }),
+    ]);
   const view = panel(call, { context: { active_model: "res.partner", active_id: 12 } });
   await vi.waitFor(() => expect(document.querySelectorAll(".ai-session-row").length).toBe(2));
-  // The listing payload carries the search and archive state only, never the anchor.
-  expect(call).toHaveBeenCalledWith("ai.session", "search_sessions", { search: "", include_archived: false });
+  // The about section is its own server call with the identifier filter, never a client-side scan.
+  expect(call).toHaveBeenNthCalledWith(1, "ai.session", "search_sessions", {
+    search: "", include_archived: false, about: { model: "res.partner", res_id: 12 },
+  });
+  expect(call).toHaveBeenNthCalledWith(2, "ai.session", "search_sessions", { search: "", include_archived: false });
   const groups = Array.from(view.node.querySelectorAll(".ai-session-group"));
   const about = groups.find(group => group.querySelector("h3")?.textContent === "About this record")!;
   expect(about.querySelectorAll(".ai-session-row").length).toBe(1);
@@ -192,6 +202,68 @@ test("fork, delete with an inline confirmation and export go through the contrac
   document.querySelector<HTMLButtonElement>('[data-session-id="9"] [aria-label="Export session"]')!.click();
   await vi.waitFor(() => expect(call).toHaveBeenLastCalledWith("ai.session", "session_export", { id: 9 }));
   await vi.waitFor(() => expect(downloads).toEqual(["assistant-session-9.json"]));
+});
+
+/// (partial: the client surfaces the retention slice's always-on refusal with user copy and leaves the confirm pose; the deletion path itself is the server slice's)
+test("the delete refusal shows friendly copy and the row leaves the confirm pose", async () => {
+  const call = vi.fn()
+    .mockResolvedValueOnce([summary({ id: 1, title: "Source" })])
+    .mockRejectedValueOnce(new Error(
+      "erp.ai.session_delete_pending: deleting a session arrives with AI1.SESSION-RETENTION; the session stays until that slice lands.",
+    ));
+  const view = panel(call);
+  await vi.waitFor(() => expect(document.querySelectorAll(".ai-session-row").length).toBe(1));
+  document.querySelector<HTMLButtonElement>('[data-session-id="1"] [aria-label="Delete session"]')!.click();
+  expect(document.querySelector('[data-session-id="1"] [aria-label="Confirm delete"]')).not.toBeNull();
+  expect(call).not.toHaveBeenCalledWith("ai.session", "session_delete", expect.anything());
+  document.querySelector<HTMLButtonElement>('[data-session-id="1"] [aria-label="Confirm delete"]')!.click();
+  await vi.waitFor(() => expect(call).toHaveBeenCalledWith("ai.session", "session_delete", { id: 1 }));
+  // Friendly copy on the status line, never the code or the ADR jargon.
+  await vi.waitFor(() => expect(view.node.querySelector(".ai-session-status")?.textContent).toContain("Deleting sessions isn't available yet."));
+  expect(document.body.textContent).not.toContain("erp.ai.session_delete_pending");
+  expect(document.body.textContent).not.toContain("");
+  // The row left the confirm pose and the session is still listed.
+  expect(document.querySelector('[data-session-id="1"] [aria-label="Confirm delete"]')).toBeNull();
+  expect(document.querySelector('[data-session-id="1"] [aria-label="Delete session"]')).not.toBeNull();
+  expect(document.querySelectorAll(".ai-session-row").length).toBe(1);
+});
+
+test("a mid-list action failure shows the friendly error and keeps the list", async () => {
+  const call = vi.fn()
+    .mockResolvedValueOnce([summary({ id: 1, title: "Source" })])
+    .mockRejectedValueOnce(new Error("erp.ai.about_invalid: the about filter is exactly {model: string, res_id: positive integer}."));
+  const view = panel(call);
+  await vi.waitFor(() => expect(document.querySelectorAll(".ai-session-row").length).toBe(1));
+  document.querySelector<HTMLButtonElement>('[data-session-id="1"] [aria-label="Fork session"]')!.click();
+  await vi.waitFor(() => expect(call).toHaveBeenCalledWith("ai.session", "fork_session", { id: 1 }));
+  // The unknown `erp.ai.*` code never reaches the user; the generic refusal does.
+  await vi.waitFor(() => expect(view.node.querySelector(".ai-session-status")?.textContent).toContain("The session store refused the request."));
+  expect(document.body.textContent).not.toContain("erp.ai.about_invalid");
+  expect(document.querySelectorAll(".ai-session-row").length).toBe(1);
+});
+
+test("the about section re-reads the live record identity when the panel is shown again", async () => {
+  // The systray context object is live: navigation mutates the same object the panel was given.
+  const context: Record<string, unknown> = { active_model: "res.partner", active_id: 12 };
+  const call = vi.fn()
+    .mockResolvedValueOnce([summary({ id: 11, title: "Partner follow-up", anchor: { model: "res.partner", res_id: 12, available: true } })])
+    .mockResolvedValueOnce([summary({ id: 11, title: "Partner follow-up", anchor: { model: "res.partner", res_id: 12, available: true } })])
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([summary({ id: 20, title: "Order thread", anchor: { model: "sale.order", res_id: 99, available: true } })]);
+  const view = panel(call, { context });
+  await vi.waitFor(() => expect(view.node.querySelector(".ai-session-title")?.textContent).toBe("Partner follow-up"));
+  expect(call).toHaveBeenCalledTimes(2);
+  // The record behind the panel changed: the shell updates the same context object.
+  context["active_model"] = "sale.order";
+  context["active_id"] = 99;
+  view.node.hidden = true;
+  view.node.hidden = false;
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(4));
+  expect(call).toHaveBeenNthCalledWith(3, "ai.session", "search_sessions", {
+    search: "", include_archived: false, about: { model: "sale.order", res_id: 99 },
+  });
+  expect(call).toHaveBeenNthCalledWith(4, "ai.session", "search_sessions", { search: "", include_archived: false });
+  await vi.waitFor(() => expect(view.node.querySelector(".ai-session-title")?.textContent).toBe("Order thread"));
 });
 
 test("the dock header opens the panel and Escape returns to the chat", async () => {

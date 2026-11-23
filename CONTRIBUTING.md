@@ -51,6 +51,7 @@ pnpm --dir web install --frozen-lockfile
 - Errors fail loudly: no swallowed errors, no silent defaults; an unsupported case returns a clear error.
 - Keep the core small: business domains are addons, not core.
 - Run the formatting, lint and test commands above before you push.
+- Accepted pull requests are reviewed here, integrated through our release pipeline (keeping your authorship and DCO sign-off), and closed with a link to the commit once published to `main`.
 
 ## Names
 
