@@ -20,21 +20,27 @@ export function actionResult(raw: unknown): ActionResult {
   const value = object(envelope["result"], "action result");
   switch (value["kind"]) {
     case "current_window": {
-      closed(value, ["kind", "name", "model", "views", "domain", "context"]);
+      // `res_id` (one record opened as its form) is the only optional member.
+      const single = Object.hasOwn(value, "res_id");
+      closed(value, ["kind", "name", "model", "views", "domain", "context", ...single ? ["res_id"] : []]);
       const name = bounded(value["name"], "current-window title", 256), model = bounded(value["model"], "current-window model", 256);
       if (!name || !/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/.test(model)) throw new ClientError("server", "Invalid current-window title or model.");
+      const res_id = single ? integer(value["res_id"], "current-window record id") : undefined;
+      if (res_id === 0) throw new ClientError("server", "Invalid current-window record id.");
       const rawViews = array(value["views"], "current-window views");
-      if (rawViews.length < 1 || rawViews.length > 2) throw new ClientError("unsupported", "A current window requires list, optionally followed by form.");
+      const shape = single ? "A current window that opens one record requires exactly one form view." : "A current window requires list, optionally followed by form.";
+      if (rawViews.length < 1 || rawViews.length > (single ? 1 : 2)) throw new ClientError("unsupported", shape);
       const views = rawViews.map((rawView, index): ActionView => {
         const view = object(rawView, "current-window view"); closed(view, ["id", "type"]);
         const type = view["type"];
-        if (!(index === 0 && type === "list" || index === 1 && type === "form")) throw new ClientError("unsupported", "A current window requires list, optionally followed by form.");
+        if (single ? type !== "form" : !(index === 0 && type === "list" || index === 1 && type === "form")) throw new ClientError("unsupported", shape);
         const id = view["id"] === null ? null : integer(view["id"], "current-window view id");
         if (id === 0) throw new ClientError("server", "Invalid current-window view id.");
         return { id, type };
       });
       const domain = value["domain"];
       if (!Array.isArray(domain)) throw new ClientError("server", "Invalid current-window domain.");
+      if (single && JSON.stringify(domain) !== JSON.stringify([["id", "=", res_id]])) throw new ClientError("server", "A current window that opens one record must be scoped to that record.");
       let terms = 0;
       for (const token of [...domain].reverse()) {
         if (token === "!" || token === "&" || token === "|") {
@@ -75,7 +81,7 @@ export function actionResult(raw: unknown): ActionResult {
         for (const child of Object.values(object(item, "current-window literal"))) check(child, depth + 1);
       };
       check(domain, 0); check(context, 0);
-      return { kind: "current_window", name, model, views, domain, context };
+      return { kind: "current_window", name, model, views, domain, context, ...res_id === undefined ? {} : { res_id } };
     }
     case "none": case "close": closed(value, ["kind"]); return { kind: value["kind"] };
     case "window": {

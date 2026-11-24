@@ -1179,8 +1179,11 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
         };
         assert_eq!(shown["result"]["kind"], "current_window");
         assert_eq!(shown["result"]["model"], "account.move");
-        assert_eq!(shown["result"]["views"].as_array().unwrap().len(), 2);
-        assert_eq!(shown["result"]["domain"][0][2][0], invoice);
+        // One invoice: the button opens its form (the invoice form view), not a list.
+        assert_eq!(shown["result"]["res_id"], invoice);
+        assert_eq!(shown["result"]["views"].as_array().unwrap().len(), 1);
+        assert_eq!(shown["result"]["views"][0]["type"], "form");
+        assert!(shown["result"]["views"][0]["id"].is_i64());
         let back: Value = doc
             .with_env(env.with_user(clerk).with_company(world.company).unwrap())
             .call(&mut tx, "action_view_sale_orders", ())
@@ -1194,6 +1197,8 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
             panic!("a web action envelope")
         };
         assert_eq!(back["result"]["model"], "sale.order");
+        assert_eq!(back["result"]["views"][0]["type"], "form");
+        assert!(back["result"]["res_id"].is_i64());
         // A second invoice for added quantity makes the count two, still one order.
         write(
             &mut tx,
@@ -1214,6 +1219,21 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
             order.cell(&mut tx, "invoice_count").await.unwrap(),
             Cell::Int(2)
         );
+        // Two invoices open the list again.
+        let shown: Value = order
+            .call(&mut tx, "action_view_invoice", ())
+            .await
+            .unwrap();
+        let shown: Value = order
+            .call(&mut tx, "erp_normalize_action_result", (1_u64, shown))
+            .await
+            .expect("the web action normalizer accepts the invoices list");
+        let Value::Json(shown) = shown else {
+            panic!("a web action envelope")
+        };
+        assert_eq!(shown["result"]["views"].as_array().unwrap().len(), 2);
+        assert!(shown["result"].get("res_id").is_none());
+        assert_eq!(shown["result"]["domain"][0][2].as_array().unwrap().len(), 2);
         tx.rollback().await.unwrap();
     });
 }

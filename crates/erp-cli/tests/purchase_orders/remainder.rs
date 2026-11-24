@@ -193,8 +193,11 @@ fn short_receipt(always: bool) {
             let Value::Json(back) = back else {
                 panic!("a web action envelope")
             };
+            // One order: the button opens its form directly.
             assert_eq!(back["result"]["model"], "purchase.order");
-            assert_eq!(back["result"]["domain"][0][2][0], parent);
+            assert_eq!(back["result"]["res_id"], parent);
+            assert_eq!(back["result"]["views"].as_array().unwrap().len(), 1);
+            assert_eq!(back["result"]["views"][0]["type"], "form");
             returns::validate(&mut tx, child).await.unwrap();
             let retry = returns::validate(&mut tx, receipt).await.unwrap_err();
             assert!(retry.message().contains("validated earlier"), "{retry}");
@@ -242,6 +245,8 @@ fn short_receipt(always: bool) {
                 panic!("a web action envelope")
             };
             assert_eq!(back["result"]["model"], "purchase.order");
+            assert_eq!(back["result"]["res_id"], parent);
+            assert_eq!(back["result"]["views"][0]["type"], "form");
             tx.commit().await.unwrap();
             drop(tx);
             let mut tx = orm.begin(buyer).await.unwrap();

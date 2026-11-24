@@ -1157,7 +1157,10 @@ fn short_sales_delivery(always: bool, ask: bool) {
         };
         assert_eq!(shown["result"]["kind"], "current_window");
         assert_eq!(shown["result"]["model"], "stock.picking");
-        assert_eq!(shown["result"]["domain"][0][2][0], picking_id);
+        // One transfer, one order: each button opens the form directly.
+        assert_eq!(shown["result"]["res_id"], picking_id);
+        assert_eq!(shown["result"]["views"].as_array().unwrap().len(), 1);
+        assert_eq!(shown["result"]["views"][0]["type"], "form");
         let back: Value = picking
             .call(&mut tx, "action_view_sale_order", ())
             .await
@@ -1170,7 +1173,8 @@ fn short_sales_delivery(always: bool, ask: bool) {
             panic!("a web action envelope")
         };
         assert_eq!(back["result"]["model"], "sale.order");
-        assert_eq!(back["result"]["domain"][0][2][0], order_id);
+        assert_eq!(back["result"]["res_id"], order_id);
+        assert_eq!(back["result"]["views"][0]["type"], "form");
         picking
             .call::<(), ()>(&mut tx, "action_assign", ())
             .await

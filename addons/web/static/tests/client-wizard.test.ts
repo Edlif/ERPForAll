@@ -616,6 +616,28 @@ test("current-list result saves once, carries literal scope through pages/forms/
   expect(calls.filter(call=>call.path.endsWith("/lend"))).toHaveLength(1);
 });
 
+test("a current-window result of a dialog's button closes the dialog and opens on the page under it", async () => {
+  const { root, calls } = await setup(related, undefined, (path, body) => {
+    if (path.includes("test.loan/get_views")) return json(relatedDescription());
+    if (path.includes("test.loan/web_search_read")) return json({ length: 1, records: [{ id: 31, name: "Visible" }] });
+    if (path.includes("test.loan/web_read")) return json([{ id: (body["ids"] as number[])[0], name: "Visible" }]);
+    return undefined;
+  });
+  dialogButton("Confirm loan").click();
+  await vi.waitFor(() => expect(root.querySelector(".list-table tbody tr[data-id='31']")).not.toBeNull());
+  expect(document.querySelector(".wizard-dialog")).toBeNull();
+  expect(calls.filter(c => c.path.endsWith("confirm_loan"))).toHaveLength(1);
+  expect(new URL(location.href).searchParams.get("method_action")).not.toBeNull();
+  expect(calls.find(c => c.path.includes("test.loan/web_search_read"))!.body["domain"]).toEqual(related.domain);
+  // The list goes on top of the record under the dialog, and its crumb leads back there.
+  const crumbs = root.querySelector("[data-control-breadcrumbs]")!;
+  expect(crumbs.querySelector(".breadcrumb-current")?.textContent).toBe("Related loans");
+  expect(crumbs.querySelector(".breadcrumb-previous .breadcrumb-back")?.textContent).toBe("Dune");
+  crumbs.querySelector<HTMLButtonElement>(".breadcrumb-previous .breadcrumb-back")!.click();
+  await vi.waitFor(() => expect(root.querySelector<HTMLInputElement>('input[name="name"]')?.value).toBe("Dune"));
+  expect(new URL(location.href).searchParams.get("method_action")).toBeNull();
+});
+
 /// (partial: a fresh page refuses a copied or reloaded identity)
 test("a copied method-action URL in a fresh page fails loudly without opening an unfiltered destination", async () => {
   const {root,calls}=await relatedSetup();

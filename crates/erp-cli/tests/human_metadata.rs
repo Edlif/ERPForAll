@@ -2693,6 +2693,31 @@ async fn assert_related_record_resolve(
         )
         .is_null()
     );
+    // A domain that reads the context cannot be checked against one record: the action is still
+    // taken when no checkable one holds the record, for that record only, and never for a record
+    // that does not exist.
+    set_action(
+        RawVals::new().set_cell(
+            "domain",
+            Cell::Str("[('name', '=', context.get('missing_name'))]".into()),
+        ),
+    )
+    .await;
+    let found = answer(
+        service
+            .call(resolve(&admin, "acceptance_notes.note", note))
+            .await,
+    );
+    assert_eq!(found["action"]["id"], action, "{found}");
+    assert_eq!(found["any_record"], false);
+    assert!(
+        answer(
+            service
+                .call(resolve(&admin, "acceptance_notes.note", note + 1_000_000))
+                .await
+        )
+        .is_null()
+    );
     set_action(RawVals::new().set_cell("domain", Cell::Null)).await;
 
     // An action the caller may not read and an unknown model answer the same null as no match.
@@ -3295,6 +3320,62 @@ async fn assert_current_list_scope(
             .collect();
         assert_eq!(actual, expected);
         assert_eq!(rows["length"].as_u64().unwrap(), expected.len() as u64);
+    }
+    // One record opened as a form: admitted for a record the caller reads, refused alike for one
+    // it may not read (another owner, another company) and for one that does not exist.
+    let single = |id: i64| {
+        json!({"type":"ir.actions.act_window","name":"Scoped note","res_model":"acceptance_notes.note","target":"current",
+            "res_id":id,"views":[[false,"form"]],"context":{"create":false}})
+    };
+    let accepted = service
+        .call(normalize(ordinary.clone(), single(ids[0]), vec![company]))
+        .await;
+    assert_eq!(
+        accepted.status(),
+        200,
+        "{}",
+        String::from_utf8_lossy(accepted.body())
+    );
+    let accepted = result(&accepted);
+    assert_eq!(accepted["result"]["kind"], "current_window");
+    assert_eq!(accepted["result"]["res_id"], ids[0]);
+    assert_eq!(accepted["result"]["views"], json!([{"id":null,"type":"form"}]));
+    assert_eq!(accepted["result"]["domain"], json!([["id", "=", ids[0]]]));
+    let missing = ids.iter().max().unwrap() + 1_000_000;
+    for id in [ids[1], ids[2], missing] {
+        let refused = service
+            .call(normalize(ordinary.clone(), single(id), vec![company]))
+            .await;
+        assert_eq!(
+            refused.status(),
+            403,
+            "{}",
+            String::from_utf8_lossy(refused.body())
+        );
+        assert_eq!(result(&refused)["name"], "erp.exceptions.AccessError");
+        assert_eq!(
+            result(&refused)["message"],
+            "The acceptance_notes.note record to open does not exist or you may not read it."
+        );
+    }
+    for (key, bad, message) in [
+        ("domain", json!([["id","=",ids[0]]]), "A current window that opens one record (res_id) takes no domain."),
+        ("views", json!([[false,"list"],[false,"form"]]), "A current window that opens one record (res_id) requires exactly one [id|false, 'form'] view."),
+        ("res_id", json!(-3), "Current-window res_id must be a positive JSON-safe integer."),
+    ] {
+        let mut malformed = single(ids[0]);
+        malformed[key] = bad;
+        let refused = service
+            .call(normalize(ordinary.clone(), malformed, vec![company]))
+            .await;
+        assert_eq!(
+            refused.status(),
+            422,
+            "{}",
+            String::from_utf8_lossy(refused.body())
+        );
+        assert_eq!(result(&refused)["name"], "erp.exceptions.ValidationError");
+        assert_eq!(result(&refused)["message"], message);
     }
     let accepted_before_change = service
         .call(normalize(ordinary.clone(), current.clone(), vec![company]))

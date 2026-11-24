@@ -3542,6 +3542,7 @@ async fn resolve_record_action(
         models.insert(*id, text_value(row, "res_model")? == model);
     }
     let mut passed_over = false;
+    let mut fallback = None;
     for (menu, action_id) in order {
         if !models.get(&action_id).copied().unwrap_or(false) {
             continue;
@@ -3561,8 +3562,19 @@ async fn resolve_record_action(
             continue;
         }
         if let Some(document) = action.domain.as_ref() {
-            let domain =
-                crate::dashboard::literal_domain(Some(document), env.uid(), "Window action")?;
+            // A domain that reads the context cannot be checked against one record here. The
+            // action stays a fallback for when no checkable action holds the record: the form
+            // loads the record under the caller's own access either way, and the related record
+            // opens in its model's form as it does when no action is consulted at all.
+            let Some(domain) =
+                crate::dashboard::literal_domain(Some(document), env.uid(), "Window action")?
+            else {
+                passed_over = true;
+                if fallback.is_none() {
+                    fallback = Some((menu, records, action));
+                }
+                continue;
+            };
             let scoped = Domain::from_json(&serde_json::json!([["id", "=", record_id]]))
                 .map_err(Error::from)?
                 & domain;
@@ -3589,7 +3601,27 @@ async fn resolve_record_action(
             views: bundle.views,
         }));
     }
-    Ok(None)
+    let Some((menu, records, action)) = fallback else {
+        return Ok(None);
+    };
+    // The same answer as no match for a record the caller may not read.
+    let own = Domain::from_json(&serde_json::json!([["id", "=", record_id]])).map_err(Error::from)?;
+    if require_model_read(env, tx, model)
+        .await?
+        .search_count(tx, &own, Some(1))
+        .await?
+        == 0
+    {
+        return Ok(None);
+    }
+    let bundle =
+        describe_action_views(&records, tx, action, wire_major, options, admission).await?;
+    Ok(Some(RecordAction {
+        menu: wire_id(menu)?,
+        any_record: false,
+        action: bundle.action,
+        views: bundle.views,
+    }))
 }
 
 #[methods(IrActionsActWindow, addon = "web")]
@@ -3614,7 +3646,8 @@ impl WebIrActionsActWindow {
     /// view descriptions, in one call: the first action of the caller's visible menus (in menu order) of that model
     /// with a form view, targeting the current page, whose domain holds the record. Each action passes the checks of
     /// `erp_load_web_action`, a domain is checked against the record under the caller (an action without one
-    /// answers the same for every id), and anything the caller may not see answers `null`, the same as no match.
+    /// answers the same for every id; one whose domain reads the context is taken only when no checkable action
+    /// holds the record), and anything the caller may not see answers `null`, the same as no match.
     #[method]
     #[rpc(effect = read, model)]
     async fn erp_resolve_record_action(
@@ -3788,6 +3821,29 @@ async fn normalize_action_result(
             .records(model)?
             .search_query(tx, &domain, &SearchOptions::new())
             .await?;
+    }
+    if let wire::ActionResult::CurrentWindow {
+        model,
+        res_id: Some(id),
+        ..
+    } = &normalized
+    {
+        // The one record a result opens must exist and be readable by this caller now; a
+        // refusal reads the same for both, so it tells nothing about records the caller cannot see.
+        let id = i64::try_from(u64::from(*id))
+            .map_err(|_| Error::invariant("a wire id does not fit an i64"))?;
+        let found = env
+            .records(model)?
+            .browse([id])?
+            .exists(tx)
+            .await?
+            .filtered_access(tx, Operation::Read)
+            .await?;
+        if found.is_empty() {
+            return Err(Error::access(format!(
+                "The {model} record to open does not exist or you may not read it."
+            )));
+        }
     }
     Ok(wire::ActionResultEnvelope::new(normalized))
 }

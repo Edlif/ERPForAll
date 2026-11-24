@@ -29,8 +29,9 @@ const noteViews = {
   views: [
     { identity: { kind: "stored", id: 1 }, type: "form", schema_major: 1, renderer: "web.form", root: 0,
       nodes: [{ kind: "form", record_mode: "record", children: [3, 1, 2] }, char("test.note"), link("company_id", "Company", "test.note"),
-        { kind: "header", children: [4] },
-        { kind: "button", name: "action_view_companies", button_type: "object", label: "Note companies", variant: "secondary", confirm: null, modifiers, details }] },
+        { kind: "header", children: [4, 5] },
+        { kind: "button", name: "action_view_companies", button_type: "object", label: "Note companies", variant: "secondary", confirm: null, modifiers, details },
+        { kind: "button", name: "action_view_company", button_type: "object", label: "Open company", variant: "secondary", confirm: null, modifiers, details }] },
     { identity: { kind: "stored", id: 2 }, type: "list", schema_major: 1, renderer: "web.list", root: 0, nodes: [{ kind: "list", children: [1] }, char("test.note")] }
   ]
 };
@@ -57,6 +58,8 @@ let refused: Set<number>;
 /** Whether the server refuses to admit a related list again. */
 let refuseList: boolean;
 const calls: string[] = [];
+/** The results sent to the server's admission, in order. */
+const admitted: unknown[] = [];
 const showModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "showModal");
 const closeDialog = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "close");
 
@@ -66,6 +69,7 @@ beforeEach(() => {
   refused = new Set();
   refuseList = false;
   calls.length = 0;
+  admitted.length = 0;
   configureClientTemplates([{
     name: "web.HumanControlPanel",
     render: () => {
@@ -92,7 +96,17 @@ beforeEach(() => {
       : { menu: 10, any_record: true, action: notesAction, views: noteViews };
     else if (call.endsWith("erp_load_web_action_views")) value = (body["ids"] as number[])[0] === 21 ? { action: companiesAction, views: companyViews } : { action: notesAction, views: noteViews };
     else if (call === "test.note/action_view_companies") value = { type: "ir.actions.act_window", name: "Note companies", res_model: "res.company", target: "current", views: [[false, "list"], [false, "form"]], domain: [["id", "=", 9]] };
+    else if (call === "test.note/action_view_company") value = { type: "ir.actions.act_window", name: "Company", res_model: "res.company", target: "current", res_id: 9, views: [[3, "form"]], context: { create: false } };
     else if (call.endsWith("erp_normalize_action_result")) {
+      admitted.push(body["result"]);
+      const one = (body["result"] as { res_id?: number }).res_id;
+      if (one !== undefined) {
+        // The server's check of one record: it must exist and the user must read it.
+        if (refused.has(one)) return new Response(JSON.stringify({ name: "erp.exceptions.AccessError", message: "The res.company record to open does not exist or you may not read it." }), { status: 403, headers: { "Content-Type": "application/json" } });
+        const result = body["result"] as { name: string; res_model: string; views: [number | false, string][] };
+        value = { wire_major: 1, result: { kind: "current_window", name: result.name, model: result.res_model, views: result.views.map(([id, type]) => ({ id: id === false ? null : id, type })), domain: [["id", "=", one]], res_id: one, context: { create: false } } };
+        return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+      }
       if (refuseList) return new Response(JSON.stringify({ name: "erp.exceptions.AccessError", message: "You may not read these records." }), { status: 403, headers: { "Content-Type": "application/json" } });
       // The server's admission of a window result, reduced to what these cases send.
       const result = body["result"] as { name: string; res_model: string; views: [number | false, string][]; domain?: unknown[] };
@@ -330,5 +344,75 @@ test("a kept related list the server refuses, or one this client did not write, 
     await recovery();
     expect(calls.filter(call => call.endsWith("erp_normalize_action_result"))).toEqual([]);
     expect(root.querySelector("tbody tr[data-id='9']")).toBeNull();
+  }
+});
+
+/** Notes list › Source record › the one company its button opened, as a form. */
+async function relatedRecord(): Promise<void> {
+  history.replaceState(null, "", "/erp/action-20");
+  await load();
+  root.querySelector<HTMLElement>("tbody tr[data-id='5']")!.click();
+  await opened("Source record");
+  await vi.waitFor(() => expect(headerButton("Open company").disabled).toBe(false));
+  headerButton("Open company").click();
+  await opened("Company record");
+}
+
+test("a button that returns one record opens its form on top of the page, and a reload keeps it", async () => {
+  await relatedRecord();
+  const params = new URLSearchParams(location.search);
+  expect([params.get("id"), params.get("view_type"), params.get("model")]).toEqual(["9", "form", "res.company"]);
+  expect(params.get("method_action")).not.toBeNull();
+  // No list in between: the form opens straight away.
+  expect(calls).not.toContain("res.company/web_search_read");
+  expect(trail()).toEqual(["Notes", "Source record", "Company record"]);
+  admitted.length = 0;
+  await load();
+  await opened("Company record");
+  expect(trail()).toEqual(["Notes", "Source record", "Company record"]);
+  // The kept result went to the server again as that record, never as a list domain.
+  expect(admitted).toEqual([{ type: "ir.actions.act_window", name: "Company", res_model: "res.company", target: "current", views: [[3, "form"]], res_id: 9, context: { create: false } }]);
+  back();
+  await opened("Source record");
+  expect(trail()).toEqual(["Notes", "Source record"]);
+});
+
+test("a one-record result the server refuses opens nothing, and a kept one this client did not write is not sent", async () => {
+  history.replaceState(null, "", "/erp/action-20");
+  await load();
+  root.querySelector<HTMLElement>("tbody tr[data-id='5']")!.click();
+  await opened("Source record");
+  await vi.waitFor(() => expect(headerButton("Open company").disabled).toBe(false));
+  refused.add(9);
+  headerButton("Open company").click();
+  await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")?.textContent).toContain("does not exist or you may not read it"));
+  expect(new URLSearchParams(location.search).get("id")).toBe("5");
+  expect(trail()).toEqual(["Notes", "Source record"]);
+  document.querySelector<HTMLButtonElement>("dialog.client-error-dialog [data-error-close]")!.click();
+  await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")).toBeNull());
+
+  // Admitted once, refused when a reload sends it again: the form does not open.
+  refused.delete(9);
+  await vi.waitFor(() => expect(headerButton("Open company").disabled).toBe(false));
+  headerButton("Open company").click();
+  await opened("Company record");
+  const related = new URLSearchParams(location.search).get("method_action")!;
+  refused.add(9);
+  await expect(load()).rejects.toThrow("does not exist or you may not read it");
+  await recovery();
+  expect(root.querySelector('input[name="name"]')).toBeNull();
+
+  // A kept one-record result the decoder does not admit never reaches the server.
+  refused.delete(9);
+  const data = JSON.parse(sessionStorage.getItem(NAVIGATION_KEY)!) as { actions: [string, { result: Record<string, unknown> }][] };
+  const kept = data.actions.find(([id]) => id === related)!;
+  const original = kept[1].result;
+  for (const result of [{ ...original, views: [{ id: 4, type: "list" }, { id: 3, type: "form" }] }, { ...original, domain: [["id", "=", 10]] }, { ...original, res_id: 0 }]) {
+    kept[1].result = result;
+    sessionStorage.setItem(NAVIGATION_KEY, JSON.stringify(data));
+    calls.length = 0;
+    await expect(load()).rejects.toThrow("This related action has expired. Open its originating menu again.");
+    await recovery();
+    expect(calls.filter(call => call.endsWith("erp_normalize_action_result"))).toEqual([]);
   }
 });
