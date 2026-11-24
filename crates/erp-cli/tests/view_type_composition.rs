@@ -37,3 +37,23 @@ async fn native_serving_root_publishes_web_view_types() {
         ));
     }
 }
+
+/// Opening a native composition outside `serve` binds the Settings addon catalogue, so a module toggle naming an
+/// addon the install route does not know is refused on this load path too.
+#[tokio::test]
+async fn native_composition_binds_the_settings_addon_catalogue() {
+    let pool = erp_orm::pool::create_pool(tokio_postgres::Config::new(), 1).unwrap();
+    let addons = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("addons");
+    let _node = Node::open(pool, &[addons], None).unwrap();
+    let catalogue = erp_sdk::settings::addon_catalogue()
+        .await
+        .unwrap()
+        .expect("opening the native composition binds the catalogue");
+    assert!(catalogue.offered.contains("stock"));
+    assert!(!catalogue.knows("no_such_addon"));
+}

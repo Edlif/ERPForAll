@@ -9,13 +9,22 @@ use std::path::PathBuf;
 pub mod chart_defaults;
 
 /// Bind `system`'s browser install catalogue as the one Settings module toggles resolve against
-/// ([`erp_sdk::settings::bind_addon_catalogue`]): the same names the install route accepts or refuses.
+/// ([`erp_sdk::settings::bind_addon_catalogue`]): the same names the install route accepts or refuses. Every
+/// native composition of the CLI calls it, so a mistyped addon is refused on every load path. The first system
+/// bound in a process is kept; a later call is a no-op (one CLI process serves one addon directory).
 ///
 /// # Errors
-/// `Programming` when this process already bound a catalogue.
+/// `Programming` when something other than this function already bound a catalogue in this process.
 pub fn bind_settings_catalogue(
     system: std::sync::Arc<erp_modules::system::ModuleSystem>,
 ) -> erp_sdk::Result<()> {
+    static BOUND: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+    let mut bound = BOUND
+        .lock()
+        .map_err(|_| erp_sdk::Error::internal("The Settings catalogue binding lock is poisoned."))?;
+    if *bound {
+        return Ok(());
+    }
     erp_sdk::settings::bind_addon_catalogue(Box::new(move || {
         let system = std::sync::Arc::clone(&system);
         Box::pin(async move {
@@ -38,7 +47,9 @@ pub fn bind_settings_catalogue(
                     .collect(),
             ))
         })
-    }))
+    }))?;
+    *bound = true;
+    Ok(())
 }
 
 /// Dedicated operation enum representing module lifecycle commands.

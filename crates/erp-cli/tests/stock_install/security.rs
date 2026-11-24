@@ -2711,7 +2711,7 @@ fn stock_security_stored_defaults_never_fill_derived_or_generated_fields() {
     });
 }
 
-struct Host;
+pub(super) struct Host;
 impl erp_rpc::RpcHost for Host {
     fn language_active(&self, code: &str) -> erp_fields::Result<bool> {
         Ok(code == "en_US")

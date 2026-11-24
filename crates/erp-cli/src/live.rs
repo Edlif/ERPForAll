@@ -120,6 +120,8 @@ async fn run(
         None => builder,
     };
     let system = Arc::new(builder.build().map_err(operation_error)?);
+    // Settings module toggles resolve against this composition's install catalogue, as when serving.
+    crate::module::bind_settings_catalogue(Arc::clone(&system))?;
     // A load of the stored packages and the installed set first: it refuses an uninitialized
     // database and finishes operations a crashed run left pending; its ORM is the
     // caller of the operation. It runs no `_register_hook`: the operation runs them on its final

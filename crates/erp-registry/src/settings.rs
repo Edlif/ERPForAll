@@ -484,16 +484,17 @@ impl AddonCatalogue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ModuleToggleState {
-    /// The addon is installed in the current database.
+    /// The caller's installed set names the addon.
     Installed,
-    /// The install route offers the addon.
+    /// The installed set does not name the addon, and the catalogue offers it.
     NotInstalled,
-    /// The addon is in the addon directory, but the install route refuses it.
+    /// The installed set does not name the addon, and the catalogue lists it as refused.
     NotAvailable,
 }
 impl ModuleToggleState {
-    /// Resolve `addon` against the installed database addons and the install route's catalogue; `None` when
-    /// the addon is not installed and the catalogue is missing or does not know it (the truth is unknown).
+    /// Resolve `addon` against `installed` (the caller passes the addons its database records as installed) and
+    /// the install route's catalogue; `None` when the addon is not installed and the catalogue is missing or does
+    /// not know it (the truth is unknown).
     #[must_use]
     pub fn resolve(
         addon: &str,

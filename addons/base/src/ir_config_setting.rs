@@ -495,12 +495,13 @@ pub async fn resolve_link(
     link_available(env, &rows, addon, target).ok_or_else(|| Error::validation(UNAVAILABLE_LINK))
 }
 
-/// The settings registry with its panel items, each item's resolver, link row ids, and addon sets.
+/// The settings registry with its panel items, each item's resolver, link row ids, module states and toggle groups.
 struct Published {
     registry: SettingsRegistry,
     resolvers: BTreeMap<String, PanelResolver>,
     links: LinkRows,
-    installed: BTreeSet<String>,
+    // The recorded `ir_module_module` state of each module toggle's addon that has a row.
+    modules: BTreeMap<String, String>,
     // The install route's catalogue, read only when a module toggle's addon is not installed.
     catalogue: Option<erp_sdk::settings::AddonCatalogue>,
     toggles: ToggleGroups,
@@ -586,27 +587,68 @@ async fn published(env: &Env, tx: &mut Transaction) -> Result<Published> {
     crate::jobs_settings::require(&registry)?;
     crate::approval_settings::require(&registry)?;
     crate::report_settings::require(&registry)?;
-    let catalogue = addon_catalogue(&registry, &installed).await?;
+    let modules = module_states(tx, &registry).await?;
+    let catalogue = addon_catalogue(&registry, &modules).await?;
     let toggles = ToggleGroups::load(env, tx, &registry).await?;
     Ok(Published {
         registry,
         resolvers,
         links,
-        installed,
+        modules,
         catalogue,
         toggles,
     })
+}
+// The recorded lifecycle state of each module toggle's addon, as the Addons directory reads it.
+async fn module_states(
+    tx: &mut Transaction,
+    registry: &SettingsRegistry,
+) -> Result<BTreeMap<String, String>> {
+    let addons: Vec<String> = registry
+        .items()
+        .filter_map(|item| match item.kind() {
+            PanelItemKind::Module { addon, .. } => Some(addon.clone()),
+            _ => None,
+        })
+        .collect();
+    if addons.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut states = BTreeMap::new();
+    for row in tx
+        .query(
+            "SELECT name::text, state::text FROM ir_module_module WHERE name = ANY($1)",
+            &[&addons],
+        )
+        .await?
+    {
+        let unreadable = |_| Error::internal("Unreadable module state row.");
+        states.insert(
+            row.try_get(0).map_err(unreadable)?,
+            row.try_get(1).map_err(unreadable)?,
+        );
+    }
+    Ok(states)
+}
+// Whether the database records `addon` as installed (`Some(true)`), not installed (`Some(false)`), or between
+// states (`None`: an install, upgrade or removal is under way).
+fn recorded_state(modules: &BTreeMap<String, String>, addon: &str) -> Option<bool> {
+    match modules.get(addon).map(String::as_str) {
+        Some("installed") => Some(true),
+        None | Some("uninstalled" | "uninstallable") => Some(false),
+        Some(_) => None,
+    }
 }
 // A module toggle whose addon is not installed must name an addon of the install route's catalogue. A process
 // that binds no catalogue serves no install route; its descriptions refuse such a row instead (`describe_item`).
 async fn addon_catalogue(
     registry: &SettingsRegistry,
-    installed: &BTreeSet<String>,
+    modules: &BTreeMap<String, String>,
 ) -> Result<Option<erp_sdk::settings::AddonCatalogue>> {
     let toggles: Vec<(&str, &str)> = registry
         .items()
         .filter_map(|item| match item.kind() {
-            PanelItemKind::Module { addon, .. } if !installed.contains(addon) => {
+            PanelItemKind::Module { addon, .. } if recorded_state(modules, addon) == Some(false) => {
                 Some((item.key(), addon.as_str()))
             }
             _ => None,
@@ -880,13 +922,17 @@ async fn resolve_item(
     }
 }
 /// The rows of the groups the published group toggles name: the internal-user group with the groups it implies
-/// (itself included, transitively), and each toggled group's id. Loading checks every group toggle's
-/// declaration: the group exists, is not the internal-user group, and is and implies only light groups, so
-/// turning it on for every internal user grants no administrative or other regular rights.
+/// (itself included, transitively), and each toggled group's id.
+///
+/// Loading refuses a declaration whose group is the internal-user, portal or public group, or is not a light
+/// feature group, so turning it on for every internal user grants no administrative or other regular rights.
+/// What an administrator can change in the Groups form (the group deleted, or made to imply a group that is not
+/// light) only makes that row unavailable, with the reason; every other row and the page keep working.
 #[derive(Default)]
 struct ToggleGroups {
     internal: Option<(i64, BTreeSet<i64>)>,
-    groups: BTreeMap<String, i64>,
+    // Each toggled group's id, or the refusal that makes its row unavailable.
+    groups: BTreeMap<String, std::result::Result<i64, String>>,
 }
 impl ToggleGroups {
     async fn load(env: &Env, tx: &mut Transaction, registry: &SettingsRegistry) -> Result<Self> {
@@ -917,42 +963,57 @@ impl ToggleGroups {
             .flatten()
             .collect();
         let graph = crate::group_graph::Graph::load(tx).await?;
+        const NOT_LIGHT: &str = "it is or implies a group that is not a light feature group";
         let mut groups = BTreeMap::new();
         for ((key, group), id) in toggled.into_iter().zip(ids.into_iter().skip(1)) {
-            let refused = |why: &str| {
-                Error::validation(format!(
-                    "Setting item {key} cannot toggle the group {group}: {why}."
-                ))
+            let refused =
+                |why: &str| format!("Setting item {key} cannot toggle the group {group}: {why}.");
+            // What the addon declares: publication refuses it.
+            if group == crate::group_graph::GROUP_USER {
+                return Err(Error::validation(refused(
+                    "it is the internal-user group itself",
+                )));
+            }
+            if [crate::group_graph::GROUP_PORTAL, crate::group_graph::GROUP_PUBLIC].contains(&group) {
+                return Err(Error::validation(refused("it is the portal or public group")));
+            }
+            if !light_xmlids.iter().any(|light| light == group) {
+                return Err(Error::validation(refused(NOT_LIGHT)));
+            }
+            // What the database holds now: only this row is unavailable.
+            let row = match id {
+                None => Err(refused("it does not exist")),
+                Some(id) if id == internal => Err(refused("it is the internal-user group itself")),
+                Some(id) if graph.up([id]).iter().any(|implied| !light.contains(implied)) => {
+                    Err(refused(NOT_LIGHT))
+                }
+                Some(id) => Ok(id),
             };
-            let id = id.ok_or_else(|| refused("it does not exist"))?;
-            if id == internal {
-                return Err(refused("it is the internal-user group itself"));
-            }
-            if graph
-                .up([id])
-                .iter()
-                .any(|implied| !light.contains(implied))
-            {
-                return Err(refused(
-                    "it is or implies a group that is not a light feature group",
-                ));
-            }
-            groups.insert(group.to_owned(), id);
+            groups.insert(group.to_owned(), row);
         }
         Ok(Self {
             internal: Some((internal, graph.up([internal]))),
             groups,
         })
     }
-    /// The toggled group's id and the internal-user group's id with what it implies.
+    /// The toggled group's id and the internal-user group's id with what it implies; `Validation` with the reason
+    /// when the row is unavailable.
     fn rows(&self, group: &str) -> Result<(i64, i64, &BTreeSet<i64>)> {
-        let id = self.groups.get(group).copied();
-        match (id, &self.internal) {
-            (Some(id), Some((internal, implied))) => Ok((id, *internal, implied)),
+        match (self.groups.get(group), &self.internal) {
+            (Some(Ok(id)), Some((internal, implied))) => Ok((*id, *internal, implied)),
+            (Some(Err(reason)), _) => Err(Error::validation(reason.clone())),
             _ => Err(Error::invariant(format!(
                 "The group toggle of {group} was not loaded with the published registry."
             ))),
         }
+    }
+    /// The row's state and, for an unavailable row, why.
+    fn state(&self, group: &str) -> Result<(wire::GroupToggleState, Option<String>)> {
+        if let Some(Err(reason)) = self.groups.get(group) {
+            return Ok((wire::GroupToggleState::NotAvailable, Some(reason.clone())));
+        }
+        let (id, _, implied) = self.rows(group)?;
+        Ok((toggle_state(implied.contains(&id)), None))
     }
 }
 async fn describe_item(
@@ -1025,9 +1086,20 @@ async fn describe_item(
             }))
         }
         PanelItemKind::Module { addon, .. } => {
+            // Installed or not as the database records it; between states, the same answer as the Addons directory.
+            let installed: BTreeSet<String> = match recorded_state(&published.modules, addon) {
+                Some(true) => BTreeSet::from([addon.clone()]),
+                Some(false) => BTreeSet::new(),
+                None => {
+                    return Err(Error::new(
+                        erp_sdk::ErrorKind::Concurrency,
+                        "Addon catalogue is in a transitional state; retry after lifecycle recovery",
+                    ));
+                }
+            };
             let state = match erp_sdk::settings::ModuleToggleState::resolve(
                 addon,
-                &published.installed,
+                &installed,
                 published.catalogue.as_ref(),
             )
             .ok_or_else(|| {
@@ -1058,7 +1130,7 @@ async fn describe_item(
             }))
         }
         PanelItemKind::Group { group, .. } => {
-            let (id, _, implied) = published.toggles.rows(group)?;
+            let (state, reason) = published.toggles.state(group)?;
             Ok(Some(wire::SettingsItem::Group {
                 key: key.into(),
                 label: item.label().into(),
@@ -1066,7 +1138,8 @@ async fn describe_item(
                 block: item.block_title().into(),
                 sequence: item.display_sequence(),
                 group: group.clone(),
-                state: toggle_state(implied.contains(&id)),
+                state,
+                reason,
             }))
         }
         _ => Err(unsupported_item()),
@@ -1387,8 +1460,9 @@ fn toggle_state(enabled: bool) -> wire::GroupToggleState {
 /// group (off would not be true). Members of other groups that imply the feature group, and users granted it
 /// directly, keep it.
 /// # Errors
-/// `Access` for a caller without `base.group_system`; `Validation` for a key that is not a group toggle, a
-/// declaration the rules refuse, or an off that another implication would contradict; database failures.
+/// `Access` for a caller without `base.group_system`; `Validation` for a key longer than 128 bytes or that is not
+/// a group toggle, a declaration the rules refuse, a row the database made unavailable (its reason), or an off
+/// that another implication would contradict; database failures.
 pub async fn toggle_group(
     env: &Env,
     tx: &mut Transaction,
@@ -1400,20 +1474,27 @@ pub async fn toggle_group(
             "Only Settings administrators may turn a feature on or off for every user.",
         ));
     }
+    // Every declared key fits; a longer one is refused before it is repeated in any message.
+    if key.len() > 128 {
+        return Err(Error::validation("A setting key is at most 128 bytes."));
+    }
     tx.savepoint(async |tx| {
-        // The global scope lock serializes the change with Settings saves and other toggles.
-        tx.execute("INSERT INTO ir_config_setting_scope(identity,company_id,revision) VALUES ('global',NULL,'0') ON CONFLICT(identity) DO NOTHING", &[]).await.map_err(scope_lock_error)?;
-        let row = tx.query("SELECT id::int8, revision FROM ir_config_setting_scope WHERE identity='global' FOR UPDATE", &[]).await.map_err(scope_lock_error)?;
-        let row = row.first().ok_or_else(corrupt)?;
-        let scope_id: i64 = row.try_get(0).map_err(|_| corrupt())?;
-        let current: String = row.try_get(1).map_err(|_| corrupt())?;
+        // Publication may read the install catalogue; that happens before the scope lock is taken.
         let published = published(env, tx).await?;
         let not_toggle = || Error::validation(format!("Setting {key} is not a feature toggle."));
         let item = published.registry.item(key).ok_or_else(not_toggle)?;
         let PanelItemKind::Group { group, .. } = item.kind() else {
             return Err(not_toggle());
         };
-        let (id, internal, implied) = published.toggles.rows(group)?;
+        // The global scope lock serializes the change with Settings saves and other toggles.
+        tx.execute("INSERT INTO ir_config_setting_scope(identity,company_id,revision) VALUES ('global',NULL,'0') ON CONFLICT(identity) DO NOTHING", &[]).await.map_err(scope_lock_error)?;
+        let row = tx.query("SELECT id::int8, revision FROM ir_config_setting_scope WHERE identity='global' FOR UPDATE", &[]).await.map_err(scope_lock_error)?;
+        let row = row.first().ok_or_else(corrupt)?;
+        let scope_id: i64 = row.try_get(0).map_err(|_| corrupt())?;
+        let current: String = row.try_get(1).map_err(|_| corrupt())?;
+        // The group rows are read again under the lock: another toggle may have changed them meanwhile.
+        let toggles = ToggleGroups::load(env, tx, &published.registry).await?;
+        let (id, internal, implied) = toggles.rows(group)?;
         let was = implied.contains(&id);
         if was == enabled {
             return Ok(toggle_state(was));
@@ -1429,12 +1510,21 @@ pub async fn toggle_group(
                 .filter(|other| *other != internal && *other != id && graph.direct(*other).contains(&id))
                 .collect();
             if !others.is_empty() {
-                let names: Vec<String> = tx
-                    .query("SELECT module || '.' || name FROM ir_model_data WHERE model = 'res.groups' AND res_id::int8 = ANY($1) ORDER BY 1", &[&others])
+                // By external identity, or by display name for a group created in the Groups form.
+                let mut named: BTreeMap<i64, String> = BTreeMap::new();
+                for row in tx
+                    .query("SELECT res_id::int8, module || '.' || name FROM ir_model_data WHERE model = 'res.groups' AND res_id::int8 = ANY($1) ORDER BY 2", &[&others])
                     .await?
-                    .iter()
-                    .map(|row| row.get::<_, String>(0))
-                    .collect();
+                {
+                    let unreadable = |_| Error::internal("Unreadable group identity row.");
+                    named.entry(row.try_get(0).map_err(unreadable)?).or_insert(row.try_get(1).map_err(unreadable)?);
+                }
+                let unnamed: Vec<i64> = others.iter().copied().filter(|other| !named.contains_key(other)).collect();
+                if !unnamed.is_empty() {
+                    named.extend(crate::group_graph::display_names(tx, &unnamed).await?);
+                }
+                let mut names: Vec<String> = named.into_values().collect();
+                names.sort();
                 return Err(Error::validation(format!(
                     "{} stays on for every internal user through the group {}; change that group instead.",
                     item.label(),

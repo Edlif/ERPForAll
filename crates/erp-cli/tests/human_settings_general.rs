@@ -46,7 +46,7 @@ const PROBE_RECORD_LINK_WRONG_KIND: u8 = 4;
 const PROBE_TOGGLE_KEYS: [&str; 2] = ["base.test_mod_not_available", "base.test_mod_uom"];
 // A toggle declaration that publication must refuse, switched on for one check at a time.
 static PROBE_BAD_TOGGLE: AtomicU8 = AtomicU8::new(0);
-const BAD_TOGGLES: [(&str, &str); 6] = [
+const BAD_TOGGLES: [(&str, &str); 8] = [
     (
         "base.test_mod_unknown",
         "Setting item base.test_mod_unknown toggles the addon no_such_addon, which is neither installed nor in \
@@ -58,7 +58,8 @@ const BAD_TOGGLES: [(&str, &str); 6] = [
     ),
     (
         "base.test_group_missing",
-        "Setting item base.test_group_missing cannot toggle the group base.no_such_group: it does not exist.",
+        "Setting item base.test_group_missing cannot toggle the group base.no_such_group: it is or implies a \
+         group that is not a light feature group.",
     ),
     (
         "base.test_group_user",
@@ -75,6 +76,16 @@ const BAD_TOGGLES: [(&str, &str); 6] = [
         "Setting item base.test_group_export cannot toggle the group base.group_allow_export: it is or \
          implies a group that is not a light feature group.",
     ),
+    (
+        "base.test_group_portal",
+        "Setting item base.test_group_portal cannot toggle the group base.group_portal: it is the portal or \
+         public group.",
+    ),
+    (
+        "base.test_group_public",
+        "Setting item base.test_group_public cannot toggle the group base.group_public: it is the portal or \
+         public group.",
+    ),
 ];
 fn bad_toggle(index: u8) -> erp_sdk::Result<Option<PanelItemDecl>> {
     let item = match index {
@@ -90,6 +101,8 @@ fn bad_toggle(index: u8) -> erp_sdk::Result<Option<PanelItemDecl>> {
             "Export",
             "base.group_allow_export",
         )?,
+        7 => PanelItemDecl::group_toggle("base.test_group_portal", "Portal", "base.group_portal")?,
+        8 => PanelItemDecl::group_toggle("base.test_group_public", "Public", "base.group_public")?,
         _ => return Ok(None),
     };
     Ok(Some(item.block("Probe")?.access(&["base.group_system"])?))

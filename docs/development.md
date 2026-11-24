@@ -137,17 +137,21 @@ Besides its settings (`erp_sdk::setting_declarations!`), an addon puts rows on i
 information row (`PanelItemDecl::info`) shows a value its resolver computes; a link row (`action_link`, `menu_link`)
 opens an action or a menu; a module toggle (`module_toggle(key, label, addon)`) installs or uninstalls an addon that
 the install route offers (not the declaring addon or one it needs; a name the addon directory does not know is
-refused when the page is published). A group toggle (`group_toggle(key, label, "my_addon.group_feature")`) turns a
-feature group on or off for every internal user: on, `base.group_user` implies the group; off, that implication is
-removed, so internal users lose the group unless they were given it directly or hold another group that implies
-it. The page calls `ir.config.setting` `erp_toggle_group(key, enabled)`, which only Settings administrators
-(`base.group_system`) may call; it writes a Settings audit row, and the application reloads afterwards so menus,
-views and fields follow. Off is refused, naming the group, while `base.group_user` still implies the feature group
-through another group. Both toggle kinds are readable only by `base.group_system`. The group must exist, belong to
-an addon the declaring addon depends on, not be `base.group_user`, and be and imply only light groups (the
+refused when the page is published, on every load path of the `erp` command). The row shows the addon's state as the
+database records it; while an install, upgrade or removal is under way the page answers with the same retry error as
+the Addons page. A group toggle (`group_toggle(key, label, "my_addon.group_feature")`) turns a feature group on or
+off for every internal user: on, `base.group_user` implies the group; off, that implication is removed, so internal
+users lose the group unless they were given it directly or hold another group that implies it. The page calls
+`ir.config.setting` `erp_toggle_group(key, enabled)`, which only Settings administrators (`base.group_system`) may
+call; it writes a Settings audit row, and the application reloads afterwards so menus, views and fields follow. Off
+is refused, naming the group, while `base.group_user` still implies the feature group through another group. Both
+toggle kinds are readable only by `base.group_system`. The declared group must belong to an addon the declaring addon
+depends on, not be `base.group_user`, `base.group_portal` or `base.group_public`, and be a light group (the
 `res.groups` `_get_light_group_xmlids` list), so it can never hand out administrative rights; any other group is
-refused by key and group when the page is published. Use a group toggle only for a group that already shows or
-hides something (a menu, a view element or a field).
+refused by key and group when the page is published. When an administrator later deletes the group, or makes it
+imply a group that is not light, in the Groups form, the page keeps working: only that row shows as not available,
+with the reason, and its switch refuses. Use a group toggle only for a group that already shows or hides something
+(a menu, a view element or a field).
 
 ### The request's client address
 

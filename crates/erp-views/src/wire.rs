@@ -1377,7 +1377,11 @@ choice!(ModuleToggleState {
     NotInstalled,
     NotAvailable
 });
-choice!(GroupToggleState { Enabled, Disabled });
+choice!(GroupToggleState {
+    Enabled,
+    Disabled,
+    NotAvailable
+});
 /// One read-only information row, link row, module toggle or group toggle of a settings page. Items are never
 /// settings: their keys are refused by `erp_read_values` and `erp_write_values`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1450,8 +1454,12 @@ pub enum SettingsItem {
         sequence: u32,
         /// `<module>.<name>` identity of the feature group controlled by this row.
         group: String,
-        /// Whether the internal-user group implies the feature group (directly or through other groups).
+        /// Whether the internal-user group implies the feature group (directly or through other groups), or
+        /// `not_available` when the database no longer lets this row work.
         state: GroupToggleState,
+        /// Why the row is not available, or `null` when it is.
+        #[serde(deserialize_with = "required_nullable")]
+        reason: Option<String>,
     },
 }
 object!(/// One visible native declaration; policy internals stay on the server.
