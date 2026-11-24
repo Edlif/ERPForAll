@@ -28,10 +28,8 @@ fn system_over(db: &TestDb, dir: &Path) -> Arc<ModuleSystem> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn second_bind_is_kept_for_the_same_system_or_directories_and_refused_otherwise() {
     let db = TestDb::create().await.unwrap();
-    let (first_dir, other_dir) = (
-        Path::new("/settings-bind/first"),
-        Path::new("/settings-bind/other"),
-    );
+    let (first_tmp, other_tmp) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (first_dir, other_dir) = (first_tmp.path(), other_tmp.path());
     let first = system_over(&db, first_dir);
     bind_settings_catalogue(Arc::clone(&first)).unwrap();
     // The same system again, and another system over the same directories.
