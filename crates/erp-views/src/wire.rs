@@ -1372,7 +1372,6 @@ pub enum SettingsLinkTarget {
         id: WireId,
     },
 }
-/// Resolved state of a settings module toggle row.
 choice!(ModuleToggleState {
     Installed,
     NotInstalled,
