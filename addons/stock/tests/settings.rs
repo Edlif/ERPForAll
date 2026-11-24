@@ -350,7 +350,11 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
         }
         assert_eq!(item.label(), expected_label);
         assert_eq!(item.read_groups(), ["base.group_system"]);
-        assert_eq!(item.scope_restriction(), None, "{key}: groups are database-wide");
+        assert_eq!(
+            item.scope_restriction(),
+            None,
+            "{key}: groups are database-wide"
+        );
     }
     // Groups that gate nothing yet stay information rows.
     for key in [

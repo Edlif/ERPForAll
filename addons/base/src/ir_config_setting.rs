@@ -522,7 +522,11 @@ async fn published(env: &Env, tx: &mut Transaction) -> Result<Published> {
             collect_groups(env, entry.addon.name, item.read_groups(), &mut references)?;
             // A toggled group, like a read group, must come from the contributor's dependency closure.
             if let PanelItemKind::Group { group, .. } = item.kind()
-                && !dependency_contains(env, entry.addon.name, group.split_once('.').ok_or_else(invalid)?.0)
+                && !dependency_contains(
+                    env,
+                    entry.addon.name,
+                    group.split_once('.').ok_or_else(invalid)?.0,
+                )
             {
                 return Err(invalid());
             }

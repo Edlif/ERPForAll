@@ -826,7 +826,11 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
                 "Company-wide lot tracking",
                 "group_production_lot",
             ),
-            ("stock.group_stock_tracking_lot", "Packages", "group_tracking_lot"),
+            (
+                "stock.group_stock_tracking_lot",
+                "Packages",
+                "group_tracking_lot",
+            ),
             (
                 "stock.group_stock_tracking_owner",
                 "Consignment",

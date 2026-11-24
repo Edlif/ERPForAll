@@ -735,8 +735,14 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
         assert_eq!(encoded["kind"], "group");
         assert_eq!(encoded["group"], "stock.group_tracking_lot");
         assert_eq!(encoded["state"], wire_state);
-        assert_eq!(encoded["group_id"], ids.map_or(json!(null), |(group, _)| json!(group)));
-        assert_eq!(encoded["internal_group_id"], ids.map_or(json!(null), |(_, user)| json!(user)));
+        assert_eq!(
+            encoded["group_id"],
+            ids.map_or(json!(null), |(group, _)| json!(group))
+        );
+        assert_eq!(
+            encoded["internal_group_id"],
+            ids.map_or(json!(null), |(_, user)| json!(user))
+        );
         roundtrip::<SettingsItem>(&encoded);
     }
     let sample_group = json!({

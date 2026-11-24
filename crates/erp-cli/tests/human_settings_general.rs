@@ -80,9 +80,13 @@ fn probe_items() -> erp_sdk::Result<Vec<PanelItemDecl>> {
         )?
         .block("Probe")?
         .access(&["base.group_system"])?,
-        PanelItemDecl::group_toggle("base.test_group_export", "Export", "base.group_allow_export")?
-            .block("Probe")?
-            .access(&["base.group_system"])?,
+        PanelItemDecl::group_toggle(
+            "base.test_group_export",
+            "Export",
+            "base.group_allow_export",
+        )?
+        .block("Probe")?
+        .access(&["base.group_system"])?,
         PanelItemDecl::group_toggle("base.test_group_missing", "Missing", "base.no_such_group")?
             .block("Probe")?
             .access(&["base.group_system"])?,
