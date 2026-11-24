@@ -1062,11 +1062,14 @@ fn short_sales_delivery(always: bool, ask: bool) {
             picking.cell(&mut tx, "sale_order_count").await.unwrap(),
             Cell::Int(1)
         );
-        let seller = order.with_env(
-            env.with_user(salesperson)
-                .with_company(world.company)
-                .unwrap(),
-        );
+        // Reads every order but holds no Inventory group, so it reads no transfer.
+        let viewer = user(
+            &mut tx,
+            "delivery-viewer",
+            "group_sale_salesman_all_leads",
+        )
+        .await;
+        let seller = order.with_env(env.with_user(viewer).with_company(world.company).unwrap());
         assert_eq!(
             seller.cell(&mut tx, "delivery_count").await.unwrap(),
             Cell::Int(0),
