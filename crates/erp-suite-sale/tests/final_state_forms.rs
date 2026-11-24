@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use erp_fields::{Cell, RecId};
+use erp_fields::{Cell, ErrorKind, RecId};
 use erp_modules::{AddonIndex, InitOptions, ModuleName, ModuleSystem};
 use erp_orm::{Command, Context, Orm, RawVals, SUPERUSER_ID};
 use erp_sdk::expr::ExprValue;
@@ -476,9 +476,11 @@ fn final_state_forms_show_read_only_exactly_what_the_server_refuses() {
                         tx.flush().await
                     })
                     .await;
-                // the refusal of a cancelled order names it as cancelled; any other answer disagrees
+                // a business rule refuses the write (the cancelled order, or a field's own rule such
+                // as the warehouse's); acceptance or any other error kind disagrees
                 match written {
-                    Err(refused) if refused.message().contains("cancelled") => {}
+                    Err(refused)
+                        if matches!(refused.kind(), ErrorKind::Validation | ErrorKind::UserError) => {}
                     other => disagreements.push(format!(
                         "{model} cancel: {field} is read-only on the form but the server answered {other:?}"
                     )),
