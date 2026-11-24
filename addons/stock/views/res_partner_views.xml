@@ -7,8 +7,8 @@
     <field name="inherit_id" ref="base.partner_form"/>
     <field name="arch" type="xml">
       <xpath expr="//page[@name='details']" position="inside">
-        <group name="stock_warnings" string="Warning on Stock Transfers" groups="stock.group_warning_stock">
-          <field name="picking_warn_msg" placeholder="e.g. Deliveries go to the rear loading dock."/>
+        <group name="stock_warnings" string="Notice on stock transfers" groups="stock.group_warning_stock">
+          <field name="picking_warn_msg" placeholder="e.g. Call the site contact before arriving."/>
         </group>
       </xpath>
     </field>

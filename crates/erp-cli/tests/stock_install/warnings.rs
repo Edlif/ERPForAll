@@ -2,9 +2,8 @@
 //! Stock transfer warning group gating, length validation, picking computation, and Settings toggle.
 
 use super::*;
-use erp_addon_base::ir_config_setting::describe;
-use erp_fields::RecId;
-use erp_orm::{Command, UserId};
+use erp_addon_base::ir_config_setting::{describe, toggle_group};
+use erp_orm::UserId;
 use erp_sdk::views::wire::{SettingsScope, WireId};
 
 fn company_scope(id: i64) -> SettingsScope {
@@ -20,7 +19,6 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
         let installed = install(&db).await;
         let actors = super::security::roles(&installed).await;
         let company = super::security::xid(&installed, "base", "main_company").await;
-        let user_group = super::security::xid(&installed, "base", "group_user").await;
         let warning_group = super::security::xid(&installed, "stock", "group_warning_stock").await;
 
         let admin = UserId::new(actors[0]).unwrap();
@@ -102,6 +100,33 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
             .unwrap()
             .ids()[0];
 
+        // a contact without a message of its own whose parent company has one
+        let silent_child_id = partners
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Silent Branch".into()))
+                        .set_cell("parent_id", Cell::Id(parent_id)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        // a message of spaces only
+        let blank_partner_id = partners
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Blank Note Customer".into()))
+                        .set_cell("picking_warn_msg", Cell::Str("   ".into())),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+
         let pickings = env.records("stock.picking").unwrap();
         let make_picking = |partner: Option<i64>| {
             let mut vals = RawVals::new()
@@ -121,6 +146,16 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
             .ids()[0];
         let picking_quiet_id = pickings
             .create(&mut tx, vec![make_picking(Some(quiet_partner_id))])
+            .await
+            .unwrap()
+            .ids()[0];
+        let picking_silent_id = pickings
+            .create(&mut tx, vec![make_picking(Some(silent_child_id))])
+            .await
+            .unwrap()
+            .ids()[0];
+        let picking_blank_id = pickings
+            .create(&mut tx, vec![make_picking(Some(blank_partner_id))])
             .await
             .unwrap()
             .ids()[0];
@@ -211,24 +246,31 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
         tx.rollback().await.unwrap();
         drop(tx);
 
-        // 2. Enable stock.group_warning_stock via base.group_user.implied_ids.
-        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
-        tx.env()
-            .records("res.groups")
-            .unwrap()
-            .browse([user_group])
-            .unwrap()
-            .write(
-                &mut tx,
-                RawVals::new().set_commands(
-                    "implied_ids",
-                    [Command::Link(RecId::from_real(warning_group).unwrap())],
-                ),
-            )
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        drop(tx);
+        // 2. Enable stock.group_warning_stock through the Settings switch (`toggle_group`), which is
+        //    what the Settings page calls: a stock manager is refused, the administrator switches it
+        //    on for every internal user.
+        let toggle = async |uid: UserId| {
+            let orm = super::security::secure(&db, &installed).await;
+            let mut tx = orm.begin(uid).await.unwrap();
+            let env = tx.env().with_company(company).unwrap();
+            let result = toggle_group(&env, &mut tx, "stock.group_warning_stock", true).await;
+            if result.is_ok() {
+                tx.commit().await.unwrap();
+            } else {
+                tx.rollback().await.unwrap();
+            }
+            result
+        };
+        let refused = toggle(stock_manager).await.unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Access);
+        assert_eq!(
+            refused.message(),
+            "Only Settings administrators may turn a feature on or off for every user."
+        );
+        assert_eq!(
+            toggle(admin).await.unwrap(),
+            erp_sdk::views::wire::GroupToggleState::Enabled
+        );
 
         let orm = super::security::secure(&db, &installed).await;
 
@@ -295,7 +337,7 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
         assert_eq!(over_err.kind(), ErrorKind::Validation);
         assert_eq!(
             over_err.message(),
-            "Transfer warning cannot exceed 4000 characters."
+            "Transfer notice cannot exceed 4000 characters (base.warning_message_max_chars)."
         );
         quiet_rec
             .write(
@@ -337,6 +379,116 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
                 .await
                 .unwrap(),
             Cell::Null
+        );
+        // A contact with no message of its own still shows its parent company's.
+        assert_eq!(
+            pickings
+                .browse([picking_silent_id])
+                .unwrap()
+                .cell(&mut tx, "picking_warning_text")
+                .await
+                .unwrap(),
+            Cell::Str("Call 30 minutes ahead".into())
+        );
+        // A message of spaces only shows no banner.
+        assert_eq!(
+            pickings
+                .browse([picking_blank_id])
+                .unwrap()
+                .cell(&mut tx, "picking_warning_text")
+                .await
+                .unwrap(),
+            Cell::Null
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+
+        // Editing the contact's message and reading the transfer again in the same transaction shows
+        // the new text (the computed value follows its dependencies).
+        let mut tx = orm.begin(stock_manager).await.unwrap();
+        let mgr_env = tx.env().with_company(company).unwrap();
+        let picking = mgr_env
+            .records("stock.picking")
+            .unwrap()
+            .browse([picking_warn_id])
+            .unwrap();
+        assert_eq!(
+            picking.cell(&mut tx, "picking_warning_text").await.unwrap(),
+            Cell::Str("Use rear loading dock\nCall 30 minutes ahead".into())
+        );
+        mgr_env
+            .records("res.partner")
+            .unwrap()
+            .browse([contact_id])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new()
+                    .set_cell("picking_warn_msg", Cell::Str("Gate closes at five".into())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            picking.cell(&mut tx, "picking_warning_text").await.unwrap(),
+            Cell::Str("Gate closes at five\nCall 30 minutes ahead".into())
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+
+        // The length bound is the system parameter base.warning_message_max_chars.
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        let params = tx.env().records("ir.config_parameter").unwrap();
+        let set = async |tx: &mut erp_orm::Transaction, value: i64| {
+            let params = params.clone();
+            // a refused value leaves nothing pending: each try runs in its own savepoint
+            tx.savepoint(async move |tx| {
+                params
+                    .call::<(String, Option<i64>), i64>(
+                        tx,
+                        "set_int",
+                        ("base.warning_message_max_chars".to_owned(), Some(value)),
+                    )
+                    .await
+            })
+            .await
+        };
+        for bad in [0_i64, 20_001] {
+            let err = set(&mut tx, bad).await.unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::Validation, "{bad}");
+        }
+        set(&mut tx, 10).await.unwrap();
+        let env = tx.env().with_company(company).unwrap();
+        let quiet = env
+            .records("res.partner")
+            .unwrap()
+            .browse([quiet_partner_id])
+            .unwrap();
+        quiet
+            .write(
+                &mut tx,
+                RawVals::new().set_cell("picking_warn_msg", Cell::Str("0123456789".into())),
+            )
+            .await
+            .unwrap();
+        let over = tx
+            .savepoint({
+                let rec = quiet.clone();
+                async move |tx| {
+                    rec.write(
+                        tx,
+                        RawVals::new()
+                            .set_cell("picking_warn_msg", Cell::Str("01234567890".into())),
+                    )
+                    .await?;
+                    tx.flush().await
+                }
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(over.kind(), ErrorKind::Validation);
+        assert_eq!(
+            over.message(),
+            "Transfer notice cannot exceed 10 characters (base.warning_message_max_chars)."
         );
         tx.rollback().await.unwrap();
         drop(tx);
