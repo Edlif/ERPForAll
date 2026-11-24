@@ -267,6 +267,16 @@ pub struct StockPicking {
         string = "Responsible"
     )]
     pub user_id: Option<RecId>,
+    /// Batch transfer this transfer belongs to; set by the batch's own actions.
+    #[field(
+        many2one,
+        comodel = "stock.picking.batch",
+        copy = false,
+        ondelete = "set null",
+        index = "btree_not_null",
+        string = "Batch Transfer"
+    )]
+    pub batch_id: Option<RecId>,
     /// Printed.
     #[field(boolean, copy = false, string = "Printed")]
     pub printed: bool,

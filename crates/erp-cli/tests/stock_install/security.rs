@@ -32,6 +32,9 @@ const STOCK_MATRIX: &[(&str, [&str; 3])] = &[
     ("stock.package", ["", "", ""]), // supplies company scope before grants.
     ("stock.package.type", ["", "r", "crud"]),
     ("stock.picking", ["", "crud", "crud"]),
+    ("stock.picking.batch", ["", "crud", "crud"]),
+    ("stock.picking.batch.result", ["", "crud", "crud"]),
+    ("stock.picking.to.batch", ["", "crud", "crud"]),
     ("stock.picking.type", ["r", "r", "crud"]),
     ("stock.putaway.rule", ["r", "r", "crud"]),
     ("stock.quant", ["r", "cru", "cru"]),

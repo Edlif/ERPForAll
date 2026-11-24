@@ -186,7 +186,10 @@ fn stock_installs_the_orderpoint_sequence() {
         .await;
         assert_eq!(
             rows,
-            ["sequence_mrp_op=Stock orderpoint/stock.orderpoint/OP//5/1/1/standard/shared"]
+            [
+                "sequence_mrp_op=Stock orderpoint/stock.orderpoint/OP//5/1/1/standard/shared",
+                "sequence_picking_batch=Batch transfer/stock.picking.batch/BATCH//5/1/1/standard/shared"
+            ]
         );
         // the sequence works: one draw by code gives prefix plus the zero-padded first number, both
         // read from the row (`OP/00001`)
