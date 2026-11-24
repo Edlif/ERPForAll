@@ -88,13 +88,15 @@ async fn picking_type(tx: &mut Transaction, company_id: i64, name: &str, code: &
         .unwrap()
         .create(
             tx,
-            vec![RawVals::new()
-                .set_cell("name", text(name))
-                .set_cell("sequence", Cell::Int(10))
-                .set_cell("company_id", Cell::Id(company_id))
-                .set_cell("code", text(code))
-                .set_cell("default_location_src_id", Cell::Id(shared))
-                .set_cell("default_location_dest_id", Cell::Id(shared))],
+            vec![
+                RawVals::new()
+                    .set_cell("name", text(name))
+                    .set_cell("sequence", Cell::Int(10))
+                    .set_cell("company_id", Cell::Id(company_id))
+                    .set_cell("code", text(code))
+                    .set_cell("default_location_src_id", Cell::Id(shared))
+                    .set_cell("default_location_dest_id", Cell::Id(shared)),
+            ],
         )
         .await
         .unwrap()
@@ -141,12 +143,14 @@ async fn test_is_dropship_flag_computed() {
         .unwrap()
         .create(
             &mut tx,
-            vec![RawVals::new()
-                .set_cell("name", text("DROP-001"))
-                .set_cell("company_id", Cell::Id(c))
-                .set_cell("picking_type_id", Cell::Id(pt_id))
-                .set_cell("location_id", Cell::Id(supplier_loc))
-                .set_cell("location_dest_id", Cell::Id(customer_loc))],
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("DROP-001"))
+                    .set_cell("company_id", Cell::Id(c))
+                    .set_cell("picking_type_id", Cell::Id(pt_id))
+                    .set_cell("location_id", Cell::Id(supplier_loc))
+                    .set_cell("location_dest_id", Cell::Id(customer_loc)),
+            ],
         )
         .await
         .unwrap();
@@ -162,12 +166,14 @@ async fn test_is_dropship_flag_computed() {
         .unwrap()
         .create(
             &mut tx,
-            vec![RawVals::new()
-                .set_cell("name", text("IN-001"))
-                .set_cell("company_id", Cell::Id(c))
-                .set_cell("picking_type_id", Cell::Id(pt_id))
-                .set_cell("location_id", Cell::Id(supplier_loc))
-                .set_cell("location_dest_id", Cell::Id(internal_loc))],
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("IN-001"))
+                    .set_cell("company_id", Cell::Id(c))
+                    .set_cell("picking_type_id", Cell::Id(pt_id))
+                    .set_cell("location_id", Cell::Id(supplier_loc))
+                    .set_cell("location_dest_id", Cell::Id(internal_loc)),
+            ],
         )
         .await
         .unwrap();
@@ -183,12 +189,14 @@ async fn test_is_dropship_flag_computed() {
         .unwrap()
         .create(
             &mut tx,
-            vec![RawVals::new()
-                .set_cell("name", text("INT-001"))
-                .set_cell("company_id", Cell::Id(c))
-                .set_cell("picking_type_id", Cell::Id(pt_id))
-                .set_cell("location_id", Cell::Id(internal_loc))
-                .set_cell("location_dest_id", Cell::Id(internal_loc))],
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("INT-001"))
+                    .set_cell("company_id", Cell::Id(c))
+                    .set_cell("picking_type_id", Cell::Id(pt_id))
+                    .set_cell("location_id", Cell::Id(internal_loc))
+                    .set_cell("location_dest_id", Cell::Id(internal_loc)),
+            ],
         )
         .await
         .unwrap();
@@ -232,9 +240,11 @@ async fn test_route_record_exists_after_install() {
         .unwrap()
         .create(
             &mut tx,
-            vec![RawVals::new()
-                .set_cell("name", text("Dropship"))
-                .set_cell("product_selectable", Cell::Bool(true))],
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("Dropship"))
+                    .set_cell("product_selectable", Cell::Bool(true)),
+            ],
         )
         .await
         .unwrap();
@@ -253,11 +263,24 @@ async fn test_route_record_exists_after_install() {
             &[],
         )
         .await;
-    if let Ok(rows) = rows && let Some(row) = rows.first() {
+    if let Ok(rows) = rows
+        && let Some(row) = rows.first()
+    {
         let res_id: i64 = row.get(0);
-        let r = tx.env().records("stock.route").unwrap().browse([res_id]).unwrap();
-        assert_eq!(r.cell(&mut tx, "name").await.unwrap(), Cell::Str("Dropship".into()));
-        assert_eq!(r.cell(&mut tx, "product_selectable").await.unwrap(), Cell::Bool(true));
+        let r = tx
+            .env()
+            .records("stock.route")
+            .unwrap()
+            .browse([res_id])
+            .unwrap();
+        assert_eq!(
+            r.cell(&mut tx, "name").await.unwrap(),
+            Cell::Str("Dropship".into())
+        );
+        assert_eq!(
+            r.cell(&mut tx, "product_selectable").await.unwrap(),
+            Cell::Bool(true)
+        );
     }
 
     tx.rollback().await.unwrap();
