@@ -1061,9 +1061,10 @@ fn purchase_uninstall_with_the_notice_switch_on() {
             .unwrap();
         let env = init.orm.env(SUPERUSER_ID, Context::new());
         let purchase = ModuleName::new("purchase").unwrap();
-        let installed = Box::pin(system.button_immediate_install(&env, std::slice::from_ref(&purchase)))
-            .await
-            .unwrap();
+        let installed =
+            Box::pin(system.button_immediate_install(&env, std::slice::from_ref(&purchase)))
+                .await
+                .unwrap();
         assert!(
             installed.post_commit.is_clean(),
             "{:?}",
@@ -1091,9 +1092,10 @@ fn purchase_uninstall_with_the_notice_switch_on() {
         drop(tx);
 
         let caller = system.system_env(Context::new());
-        let removed = Box::pin(system.button_immediate_uninstall(&caller, std::slice::from_ref(&purchase)))
-            .await
-            .unwrap();
+        let removed =
+            Box::pin(system.button_immediate_uninstall(&caller, std::slice::from_ref(&purchase)))
+                .await
+                .unwrap();
         assert!(removed.uninstalled.contains(&purchase));
         let mut tx = removed.orm.begin(SUPERUSER_ID).await.unwrap();
         assert_eq!(
