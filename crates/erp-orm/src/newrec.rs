@@ -101,6 +101,18 @@ fn writable(field: &FieldSpec, skip: &[FieldId]) -> bool {
 }
 
 impl Transaction {
+    /// The column of a translatable char holds the language map, not the text: plain text is the
+    /// value in the environment's language (a form's new line, a static or context default).
+    pub(crate) async fn translated_text_cell(
+        &mut self,
+        env: &Env,
+        field: &FieldSpec,
+        text: &Cell,
+    ) -> Result<Cell> {
+        let active = self.active_languages().await?;
+        crate::translated::apply_write_unchecked(field, None, text, env.lang(), &active)
+    }
+
     // ---- new records -----------------------------------------------------------------------------
 
     /// Originless many2one inputs must name active new records of the declared comodel
@@ -170,17 +182,8 @@ impl Transaction {
             let admitted = if matches!(field.ty, FieldType::Html) {
                 self.admit_html_cell(spec, field, cell.clone())?
             } else if field.translate && matches!(cell, Cell::Str(_)) {
-                // the column of a translatable char holds the language map, not the text: the
-                // text is the value in the environment's language (a form's new line sends it so)
                 let text = new_record_cell(spec, field, cell.clone(), self)?;
-                let active = self.active_languages().await?;
-                crate::translated::apply_write_unchecked(
-                    field,
-                    None,
-                    &text,
-                    model.env().lang(),
-                    &active,
-                )?
+                self.translated_text_cell(model.env(), field, &text).await?
             } else {
                 new_record_cell(spec, field, cell.clone(), self)?
             };

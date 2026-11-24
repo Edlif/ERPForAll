@@ -106,18 +106,21 @@ test("module toggle items decode all three states and reject malformed payloads"
 });
 
 test("group toggle items decode every state, a reason only when unavailable, and refuse unknown members, states and groups", () => {
-  const base = { kind: "group", key: "stock.group_stock_tracking_lot", app: "stock", block: "Operations", label: "Packages", sequence: 100, group: "stock.group_tracking_lot" };
+  const base = { kind: "group", key: "stock.group_stock_tracking_lot", app: "stock", block: "Operations", label: "Packages", sequence: 100, group: "stock.group_tracking_lot", on_for_all: false };
   const reason = "Setting item stock.group_stock_tracking_lot cannot toggle the group stock.group_tracking_lot: it does not exist.";
-  for (const row of [{ ...base, state: "enabled", reason: null }, { ...base, state: "disabled", reason: null }, { ...base, state: "not_available", reason }]) {
+  for (const row of [{ ...base, state: "enabled", reason: null }, { ...base, state: "disabled", reason: null }, { ...base, state: "not_available", reason }, { ...base, state: "not_available", reason, on_for_all: true }]) {
     expect(readSettingsItems({ items: [row] }, [])).toEqual([row]);
   }
   for (const [bad, kind, message] of [
     [{ ...base, state: "enabled", reason: null, group_id: 41 }, "unsupported", "Unknown setting item member: group_id."],
     [{ ...base, reason: null }, "server", "Missing setting item member: state."],
     [{ ...base, state: "enabled" }, "server", "Missing setting item member: reason."],
+    [(({ on_for_all: _, ...rest }) => ({ ...rest, state: "enabled", reason: null }))(base), "server", "Missing setting item member: on_for_all."],
     [{ ...base, state: "on", reason: null }, "server", "Invalid setting item group state."],
     [{ ...base, state: "not_available", reason: null }, "server", "Invalid setting item group reason."],
     [{ ...base, state: "enabled", reason }, "server", "Invalid setting item group reason."],
+    [{ ...base, state: "enabled", reason: null, on_for_all: true }, "server", "Invalid setting item group on_for_all."],
+    [{ ...base, state: "not_available", reason, on_for_all: "yes" }, "server", "Invalid setting item group on_for_all."],
     [{ ...base, state: "not_available", reason: "line\u0007" }, "server", "Invalid setting item group reason."],
     [{ ...base, group: "tracking_lot", state: "enabled", reason: null }, "server", "Invalid setting item group."],
   ] as const) {

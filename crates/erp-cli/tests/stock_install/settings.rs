@@ -1594,6 +1594,7 @@ fn inventory_group_toggle_that_is_on_and_made_heavy_can_still_be_switched_off() 
             row["reason"],
             format!("{RULE} It is on for every internal user.")
         );
+        assert_eq!(row["on_for_all"], true);
         let refused = switch(true).await.unwrap_err();
         assert_eq!(refused.kind(), ErrorKind::Validation);
         assert_eq!(
@@ -1605,6 +1606,7 @@ fn inventory_group_toggle_that_is_on_and_made_heavy_can_still_be_switched_off() 
         // Off, the row no longer says it is on.
         let row = described_row(&db, &installed, admin, company, PACKAGES).await;
         assert_eq!(row["reason"], RULE);
+        assert_eq!(row["on_for_all"], false);
         db.cleanup().await.unwrap();
     });
 }

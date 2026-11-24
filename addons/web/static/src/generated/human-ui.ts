@@ -1636,7 +1636,12 @@ state: GroupToggleState,
 /**
  * Why the row is not available, or `null` when it is.
  */
-reason: string | null, };
+reason: string | null,
+/**
+ * Whether the feature group is on for every internal user although the row is not available:
+ * the row can still be switched off, never on.
+ */
+on_for_all: boolean, };
 export type SettingDescription = {
 /**
  *Wire member `key`.

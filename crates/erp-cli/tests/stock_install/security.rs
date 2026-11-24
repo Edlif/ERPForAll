@@ -111,7 +111,7 @@ pub(super) async fn secure(db: &TestDb, installed: &Orm) -> Orm {
         .unwrap()
 }
 
-async fn user(tx: &mut erp_orm::Transaction, login: &str, company: i64, group: i64) -> i64 {
+pub(super) async fn user(tx: &mut erp_orm::Transaction, login: &str, company: i64, group: i64) -> i64 {
     tx.env()
         .records("res.users")
         .unwrap()
