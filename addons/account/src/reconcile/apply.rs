@@ -702,9 +702,11 @@ pub async fn unreconcile_partials(tx: &mut Transaction, partials: &Records) -> R
             .await?;
         let graph = closure(tx, &endpoints).await?;
         hold(tx, &graph).await?;
-        // the lock dates of the matched items' entries, read after their headers are held
-        crate::moves::refuse_locked_items(tx, &endpoints, "unmatch the items of").await?;
         let lines: Vec<i64> = graph.lines.iter().copied().collect();
+        // every item the removal changes is the whole match walk (its settlements go, its residuals
+        // are rebuilt), not only the two ends: the lock dates of all their entries, read after the
+        // headers are held
+        crate::moves::refuse_locked_items(tx, &lines, "unmatch the items of").await?;
         unsettle(tx, &lines).await?;
         let companies: Vec<_> = companies.into_iter().collect();
         let days = erp_addon_base::company_calendar::business_days(tx, &env, &companies).await?;

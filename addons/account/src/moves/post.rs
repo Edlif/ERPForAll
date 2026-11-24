@@ -671,11 +671,12 @@ async fn refuse_locked(
     }
 }
 
-/// Refuses `what` on the journal items `line_ids` when the posted entry of one of them is dated
-/// on or before a lock date (fiscal year, sale or purchase by journal, hard, and the tax lock date
-/// for an entry that reaches the tax report) or in a fiscal period that is not open. Unmatching
-/// asks it: matches of a locked period stay as they are (stricter than the reference, which
-/// unmatches and dates the follow-up entries on the first open day).
+/// Refuses `what` on the journal items `line_ids`, and on the items settled together with them,
+/// when the posted entry of one of them is dated on or before a lock date (fiscal year, sale or
+/// purchase by journal, hard, and the tax lock date for an entry that reaches the tax report) or
+/// in a fiscal period that is not open. Unmatching asks it for every item it changes: matches of
+/// a locked period stay as they are (stricter than the reference, which unmatches and dates the
+/// follow-up entries on the first open day).
 ///
 /// # Errors
 ///
@@ -688,6 +689,8 @@ pub(crate) async fn refuse_locked_items(
     let rows = tx
         .query(
             "SELECT DISTINCT move_id::int8 FROM account_move_line WHERE id = ANY($1::int8[]) \
+             OR full_reconcile_id IN (SELECT full_reconcile_id FROM account_move_line \
+                 WHERE id = ANY($1::int8[]) AND full_reconcile_id IS NOT NULL) \
              ORDER BY 1",
             &[&line_ids],
         )

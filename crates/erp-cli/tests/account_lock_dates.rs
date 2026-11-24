@@ -433,7 +433,6 @@ async fn tax_lock_body() {
     .unwrap_err();
     closed(&error, &taxed_name);
     tx.rollback().await.unwrap();
-    drop(tx);
     drop(orm);
     db.cleanup().await.unwrap();
 }
@@ -768,7 +767,91 @@ async fn matched_body() {
         .unwrap();
     assert_eq!(decimal(&invoice, &mut tx, "amount_residual").await, num("300"));
     tx.rollback().await.unwrap();
-    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+#[test]
+fn unmatching_is_refused_when_any_item_it_changes_is_in_a_locked_period() {
+    big_stack(walk_body);
+}
+
+async fn walk_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.commit().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let b = books(&mut tx, company).await;
+    // January's invoice and February's invoice settled by one February payment
+    let january = posted_invoice(
+        &mut tx,
+        &b,
+        "out_invoice",
+        b.customer,
+        "100",
+        d(2024, 1, 12),
+    )
+    .await;
+    let february = posted_invoice(
+        &mut tx,
+        &b,
+        "out_invoice",
+        b.customer,
+        "200",
+        d(2024, 2, 5),
+    )
+    .await;
+    let pay = posted_entry(
+        &mut tx,
+        &b,
+        b.receivable,
+        b.bank,
+        Some(b.customer),
+        "-300",
+        d(2024, 2, 12),
+    )
+    .await;
+    set_lock(&mut tx, company, "fiscalyear_lock_date", Some(d(2024, 1, 31))).await;
+    // matching an item of a locked period is allowed: it changes no accounting date or amount
+    let items = items_on(&mut tx, &[&january, &february, &pay], b.receivable).await;
+    try_call(&items, &mut tx, "reconcile").await.unwrap();
+    assert_eq!(decimal(&january, &mut tx, "amount_residual").await, num("0"));
+    let february_item = items_on(&mut tx, &[&february], b.receivable).await.ids()[0];
+    let pay_item = items_on(&mut tx, &[&pay], b.receivable).await.ids()[0];
+    let rows = tx
+        .query(
+            "SELECT id::int8 FROM account_partial_reconcile \
+             WHERE debit_move_id = $1 AND credit_move_id = $2",
+            &[&february_item, &pay_item],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1, "February's invoice has its own match");
+    let partial = tx
+        .env()
+        .records("account.partial.reconcile")
+        .unwrap()
+        .browse([rows[0].get::<_, i64>(0)])
+        .unwrap();
+    // both ends of that match are in February, but removing it unsettles January's item too
+    let name = string(&january, &mut tx, "name").await;
+    let error = try_unlink(&partial, &mut tx).await.unwrap_err();
+    locked(&error, &name, "fiscalyear_lock_date through 2024-01-31");
+    let left: i64 = tx
+        .query(
+            "SELECT count(*)::int8 FROM account_partial_reconcile WHERE credit_move_id = $1",
+            &[&pay_item],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(left, 2);
+    set_lock(&mut tx, company, "fiscalyear_lock_date", None).await;
+    try_unlink(&partial, &mut tx).await.unwrap();
+    assert_eq!(decimal(&february, &mut tx, "amount_residual").await, num("200"));
+    tx.rollback().await.unwrap();
     drop(orm);
     db.cleanup().await.unwrap();
 }
