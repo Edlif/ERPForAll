@@ -335,6 +335,7 @@ impl PurchaseOrderLine {
         if lines.is_empty() {
             return sup.call(tx, &lines, (vals,)).await;
         }
+        refuse_consequences(tx, &lines, &vals).await?;
         if !vals.contains("product_id") && !vals.contains("uom_id") {
             return write_lines(tx, &lines, vals, sup).await;
         }
@@ -363,6 +364,67 @@ impl PurchaseOrderLine {
         sup.call(tx, &lines, ()).await?;
         sync_orders(tx, &env, &order_ids).await
     }
+}
+
+/// Per line: number, order number, product, unit, received quantity and billed quantity (draft
+/// and posted bills, refunds subtracted).
+const LINE_CONSEQUENCES: &str = "SELECT l.id::int8, COALESCE(l.name, ''), o.name, l.product_id::int8, \
+    l.uom_id::int8, COALESCE(l.qty_received, 0)::numeric, COALESCE(b.billed, 0)::numeric \
+    FROM purchase_order_line l JOIN purchase_order o ON o.id = l.order_id \
+    LEFT JOIN (SELECT k.purchase_line_id, SUM(CASE m.move_type WHEN 'in_refund' \
+        THEN -i.quantity ELSE i.quantity END) AS billed FROM purchase_direct_bill_line k \
+        JOIN account_move_line i ON i.id = k.bill_line_id JOIN account_move m ON m.id = i.move_id \
+        WHERE m.state IN ('draft', 'posted') GROUP BY k.purchase_line_id) b \
+    ON b.purchase_line_id = l.id WHERE l.id = ANY($1) ORDER BY l.id";
+
+/// Refuses, on lines with received or billed goods, a new product or unit and a quantity below
+/// what was received or billed, naming the line and its order. Stricter than the reference, which
+/// checks neither on a write: the receipts and bills keep the line's product, unit and quantity.
+async fn refuse_consequences(tx: &mut Transaction, lines: &Records, vals: &RawVals) -> Result<()> {
+    let id_of = |field: &str| match vals.get(field) {
+        Some(Cell::Id(id)) => Some(*id),
+        _ => None,
+    };
+    let quantity = match vals.get("product_qty") {
+        Some(cell) => Some(amount(cell, "product_qty")?),
+        None => None,
+    };
+    let identity = vals.contains("product_id") || vals.contains("uom_id");
+    if !identity && quantity.is_none() {
+        return Ok(());
+    }
+    // the write right first: the refusal names the line and its order
+    lines.check_access(tx, erp_sdk::Operation::Write).await?;
+    tx.flush().await?;
+    for row in tx.query(LINE_CONSEQUENCES, &[&lines.ids()]).await? {
+        let line: String = row.try_get(1).map_err(db_error)?;
+        let order: String = row.try_get(2).map_err(db_error)?;
+        let product: Option<i64> = row.try_get(3).map_err(db_error)?;
+        let unit: Option<i64> = row.try_get(4).map_err(db_error)?;
+        let received: Decimal = row.try_get(5).map_err(db_error)?;
+        let billed: Decimal = row.try_get(6).map_err(db_error)?;
+        if received.is_zero() && billed.is_zero() {
+            continue;
+        }
+        let moved = (vals.contains("product_id") && id_of("product_id") != product)
+            || (vals.contains("uom_id") && id_of("uom_id") != unit);
+        if moved {
+            return Err(Error::validation(format!(
+                "The purchase order line {line} of {order} has received or billed goods: its product and unit can no longer change."
+            )));
+        }
+        let floor = received.max(billed);
+        if quantity.is_some_and(|quantity| quantity < floor) {
+            return Err(Error::validation(format!(
+                "The quantity of the purchase order line {line} of {order} cannot go below {floor} ({received} received, {billed} billed); return or refund the rest instead."
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn db_error(error: impl std::error::Error + Send + Sync + 'static) -> Error {
+    Error::db("Reading what a purchase order line received and billed failed.").with_source(error)
 }
 
 /// The totals, in the order currency, of the approved orders of `heads`, before a line change.

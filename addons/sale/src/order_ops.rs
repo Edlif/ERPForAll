@@ -5,9 +5,34 @@
 //! call when one order is not in a legal source state, and writes `state`, `locked` and the
 //! confirmation time through the base write, as the caller.
 
+use std::collections::BTreeSet;
+
 use erp_sdk::prelude::*;
 
 use crate::order::{Header, SaleOrder, headers};
+
+/// The posted customer invoices and credit notes of the orders: order id, order number, invoice
+/// number, the first per order first.
+const POSTED_INVOICES: &str = "SELECT DISTINCT o.id::int8, o.name, m.name FROM sale_invoice_item k \
+    JOIN sale_order_line s ON s.id = k.sale_line_id \
+    JOIN sale_order o ON o.id = s.order_id \
+    JOIN account_move_line l ON l.id = k.invoice_item_id \
+    JOIN account_move m ON m.id = l.move_id \
+    WHERE s.order_id = ANY($1) AND m.state = 'posted' \
+    AND m.move_type IN ('out_invoice', 'out_refund') ORDER BY 1, 3";
+
+fn decode(error: impl std::error::Error + Send + Sync + 'static) -> Error {
+    Error::db("Reading the invoices of a sales order failed.").with_source(error)
+}
+
+/// The stored ids of `records`; a new record has no invoice yet.
+fn stored(records: &Records) -> Vec<i64> {
+    records
+        .rec_ids()
+        .iter()
+        .filter_map(|id| id.as_real().map(|id| id.get()))
+        .collect()
+}
 
 /// The group that may lock and unlock orders (V6).
 pub const LOCK_GROUP: &str = "sales_team.group_sale_manager";
@@ -219,10 +244,56 @@ impl SaleOrder {
         }
     }
 
-    /// The cancel step: in the base, the state becomes `cancel` (the
-    /// draft invoices follow with the invoice link).
+    /// The cancel step: in the base, an order with a posted invoice or credit note is refused
+    /// by name, otherwise the state becomes `cancel`. Stricter than the reference, which cancels
+    /// the order and leaves the posted invoice: what was invoiced stays recorded on the order.
     #[method]
     async fn _action_cancel(this: &RecordSet<SaleOrder>, tx: &mut Transaction) -> Result<()> {
-        this.as_records().write_base(tx, state("cancel")).await
+        let records = this.as_records();
+        tx.flush().await?;
+        if let Some(row) = tx
+            .query(POSTED_INVOICES, &[&stored(records)])
+            .await?
+            .first()
+        {
+            let order: String = row.try_get(1).map_err(decode)?;
+            let invoice: Option<String> = row.try_get(2).map_err(decode)?;
+            return Err(Error::user(format!(
+                "The sales order {order} cannot be cancelled: its invoice {} is posted. Correct the invoice with a credit note; the order keeps what was invoiced.",
+                invoice.as_deref().unwrap_or("(no number)")
+            )));
+        }
+        records.write_base(tx, state("cancel")).await
+    }
+
+    /// The orders whose Cancel would be refused: in the base, those with a posted invoice or
+    /// credit note. A bridge that refuses the cancel step adds its own through an override that
+    /// calls `sup`.
+    #[method]
+    async fn _cancel_blocked(this: &RecordSet<SaleOrder>, tx: &mut Transaction) -> Result<Records> {
+        let records = this.as_records();
+        tx.flush().await?;
+        let mut blocked = BTreeSet::new();
+        for row in tx.query(POSTED_INVOICES, &[&stored(records)]).await? {
+            blocked.insert(row.try_get::<_, i64>(0).map_err(decode)?);
+        }
+        records.browse(blocked)
+    }
+
+    #[compute(depends = [])]
+    async fn _compute_cancel_blocked(
+        this: &RecordSet<SaleOrder>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, SaleOrder>,
+    ) -> Result<()> {
+        let records = this.as_records();
+        let stored = records.browse(stored(records))?;
+        let blocked: Records = stored.call(tx, "_cancel_blocked", ()).await?;
+        let blocked: BTreeSet<i64> = blocked.ids().into_iter().collect();
+        for (index, id) in records.rec_ids().iter().enumerate() {
+            let held = id.as_real().is_some_and(|id| blocked.contains(&id.get()));
+            out.set(index, SaleOrder::CANCEL_BLOCKED, held)?;
+        }
+        Ok(())
     }
 }
