@@ -231,6 +231,11 @@ pub struct SaleOrder {
     /// ([`crate::invoice_buttons`]).
     #[field(integer, compute = "_compute_invoice_count", string = "Invoice Count")]
     pub invoice_count: i32,
+    /// True while Cancel would be refused: an invoice of the order is posted, or a bridge's
+    /// downstream document holds it ([`crate::order_ops`], `_cancel_blocked`). The form hides
+    /// Cancel with it.
+    #[field(boolean, compute = "_compute_cancel_blocked", string = "Cancel Blocked")]
+    pub cancel_blocked: bool,
     /// The pricelist new lines are priced from; none: the products' sales prices. Not changed
     /// once the order is confirmed.
     #[field(
@@ -299,6 +304,10 @@ pub struct SaleOrder {
     )]
     pub amount_total: Decimal,
 }
+
+/// The header fields a locked order refuses besides its protected fields: the salesperson and the
+/// sales team.
+pub const LOCKED_ONLY: [&str; 2] = ["user_id", "team_id"];
 
 /// The fields of `M` a locked order protects (R7): built from field handles of `M`, so a
 /// field that does not exist cannot be named. A satellite adds its own fields in its override of
@@ -1104,7 +1113,7 @@ impl SaleOrder {
                 &[]
             };
             let locked_only: &[&str] = if order.locked {
-                &["user_id", "team_id"]
+                &LOCKED_ONLY
             } else {
                 &[]
             };

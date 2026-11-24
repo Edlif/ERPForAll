@@ -629,6 +629,32 @@ impl DirectSalesOrder {
         }
         sup.call(tx, orders, ()).await
     }
+
+    /// The orders whose cancel step refuses: those of the base and those with a linked transfer
+    /// that is not cancelled.
+    #[method(override)]
+    async fn _cancel_blocked(
+        this: &RecordSet<SaleOrder>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<Records> {
+        let orders = this.as_records();
+        let base: Records = sup.call(tx, orders, ()).await?;
+        tx.flush().await?;
+        let mut blocked: BTreeSet<i64> = base.ids().into_iter().collect();
+        for row in tx
+            .query(
+                "SELECT DISTINCT l.order_id::int8 FROM sale_stock_delivery_link l \
+                 JOIN stock_picking p ON p.id = l.picking_id \
+                 WHERE l.order_id = ANY($1) AND p.state IS DISTINCT FROM 'cancel'",
+                &[&orders.ids()],
+            )
+            .await?
+        {
+            blocked.insert(row.try_get::<_, i64>(0).map_err(decode)?);
+        }
+        orders.browse(blocked)
+    }
 }
 
 /// The source order of the original transfer, subject to the reader's order access.

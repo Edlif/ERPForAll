@@ -382,6 +382,7 @@ pub(crate) struct LineFacts {
     pub(crate) display_type: Option<String>,
     pub(crate) downpayment: bool,
     pub(crate) product: Option<RecId>,
+    pub(crate) unit: Option<RecId>,
     pub(crate) ordered: Decimal,
     pub(crate) delivered: Decimal,
     pub(crate) invoiced: Decimal,
@@ -430,6 +431,7 @@ pub(crate) async fn facts(
     let kinds = this.mapped(tx, SaleOrderLine::DISPLAY_TYPE).await?;
     let downpayments = this.mapped(tx, SaleOrderLine::IS_DOWNPAYMENT).await?;
     let products = this.mapped(tx, SaleOrderLine::PRODUCT_ID).await?;
+    let units = this.mapped(tx, SaleOrderLine::PRODUCT_UOM_ID).await?;
     let ordered = this.mapped(tx, SaleOrderLine::PRODUCT_UOM_QTY).await?;
     let delivered = this.mapped(tx, SaleOrderLine::QTY_DELIVERED).await?;
     let invoiced = this.mapped(tx, SaleOrderLine::QTY_INVOICED).await?;
@@ -449,6 +451,7 @@ pub(crate) async fn facts(
             display_type: text(kinds[index].clone()),
             downpayment: downpayments[index],
             product: products[index],
+            unit: units[index],
             ordered: ordered[index],
             delivered: delivered[index],
             invoiced: invoiced[index],
@@ -891,8 +894,8 @@ impl SaleOrderLine {
             .with(SaleOrderLine::ORDER_ID))
     }
 
-    /// A changed quantity on lines of a confirmed order; `sale_stock`
-    /// refuses a quantity below the delivered one. Nothing to do in `sale`.
+    /// A changed quantity on lines of a confirmed order, after `write` refused one below the
+    /// delivered or invoiced quantity. Nothing to do in `sale`.
     // shortcut: the reference also posts the old and new quantities on the order's chatter; add
     // the note when the order chatter messages are specified.
     #[method]
@@ -1079,14 +1082,20 @@ impl SaleOrderLine {
             })
             .await?;
         }
-        if let Some(product) = vals.get("product_id") {
-            let product = match product {
+        // product and unit stay what was delivered or invoiced
+        for (field, what) in [("product_id", "product"), ("product_uom_id", "unit")] {
+            let Some(value) = vals.get(field) else {
+                continue;
+            };
+            let value = match value {
                 Cell::Id(id) => RecId::from_real(*id),
                 _ => None,
             };
             let frozen: Vec<LineFacts> = lines
                 .iter()
-                .filter(|line| line.product != product)
+                .filter(|line| {
+                    (if field == "product_id" { line.product } else { line.unit }) != value
+                })
                 .filter(|line| {
                     line.downpayment
                         || line.state == "cancel"
@@ -1099,12 +1108,27 @@ impl SaleOrderLine {
                 .collect();
             refuse(tx, &env, &frozen, |listed| {
                 format!(
-                    "The product of these sales order lines can no longer be changed: {listed}."
+                    "The {what} of these sales order lines can no longer be changed: {listed}."
                 )
             })
             .await?;
         }
         if let Some(new_quantity) = quantity(&vals)? {
+            // stricter than the reference, which checks only the delivered quantity: an invoiced
+            // quantity is a consequence too
+            let below: Vec<LineFacts> = lines
+                .iter()
+                .filter(|line| {
+                    line.state == "sale" && new_quantity < line.delivered.max(line.invoiced)
+                })
+                .cloned()
+                .collect();
+            refuse(tx, &env, &below, |listed| {
+                format!(
+                    "The quantity of a confirmed sales order line cannot go below what was delivered or invoiced; return or credit the rest instead: {listed}."
+                )
+            })
+            .await?;
             let changed: Vec<RecId> = lines
                 .iter()
                 .filter(|line| line.state == "sale" && line.ordered != new_quantity)

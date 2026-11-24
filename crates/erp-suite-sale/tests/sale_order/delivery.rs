@@ -1502,3 +1502,218 @@ fn short_sales_delivery(always: bool, ask: bool) {
         }
     });
 }
+
+/// Whether the order's Cancel is shown blocked, read fresh.
+async fn cancel_blocked(tx: &mut Transaction, order: &Records) -> bool {
+    tx.invalidate_records(order, Some(&["cancel_blocked"]))
+        .await
+        .unwrap();
+    order.cell(tx, "cancel_blocked").await.unwrap() == Cell::Bool(true)
+}
+
+/// A delivered line keeps its product and unit and does not go below what was delivered; the
+/// order with a delivery shows Cancel blocked and refuses it. A posted invoice blocks Cancel by
+/// name and keeps the invoiced quantity; a draft invoice blocks nothing.
+#[test]
+fn delivered_and_invoiced_sales_keep_what_happened_downstream() {
+    run(async move {
+        let (db, orm) = cloned_sales_with_pool(8, true).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        admin(&mut tx).await;
+        let world = world(&mut tx).await;
+        let env = tx.env().with_company(world.company).unwrap();
+        super::lines::invoice_chart(&mut tx, &env, world.company).await;
+        let salesperson = user(&mut tx, "final-state-sales", "group_sale_salesman").await;
+        let goods = product(&mut tx, "Final goods", "consu").await;
+        let other = product(&mut tx, "Other goods", "consu").await;
+        let (order_id, line_id, reference) =
+            order_with_product(&mut tx, &world, salesperson, goods, RawVals::new()).await;
+        let order = env
+            .records("sale.order")
+            .unwrap()
+            .browse([order_id])
+            .unwrap();
+        let line = env
+            .records("sale.order.line")
+            .unwrap()
+            .browse([line_id])
+            .unwrap();
+        assert!(!cancel_blocked(&mut tx, &order).await, "a quotation cancels");
+        let location: i64 = tx
+            .query(
+                "SELECT lot_stock_id FROM stock_warehouse WHERE company_id=$1",
+                &[&world.company],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        tx.execute("INSERT INTO stock_quant (company_id,product_id,location_id,quantity,reserved_quantity,in_date) VALUES ($1,$2,$3,3,0,now())", &[&world.company,&goods,&location]).await.unwrap();
+        order
+            .call::<(), ()>(&mut tx, "action_confirm", ())
+            .await
+            .unwrap();
+        assert!(
+            cancel_blocked(&mut tx, &order).await,
+            "an open delivery blocks Cancel"
+        );
+        let picking_id: i64 = tx
+            .query(
+                "SELECT picking_id FROM sale_stock_delivery_link WHERE order_id=$1",
+                &[&order_id],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let picking = env
+            .records("stock.picking")
+            .unwrap()
+            .browse([picking_id])
+            .unwrap();
+        picking
+            .call::<(), ()>(&mut tx, "action_assign", ())
+            .await
+            .unwrap();
+        picking
+            .call::<(), ()>(&mut tx, "button_validate", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            line.cell(&mut tx, "qty_delivered").await.unwrap(),
+            Cell::Decimal(Decimal::from(3))
+        );
+        assert!(cancel_blocked(&mut tx, &order).await);
+        let kept = order
+            .call::<(), ()>(&mut tx, "action_cancel", ())
+            .await
+            .unwrap_err();
+        assert!(kept.message().contains("Cancel the linked transfer"), "{kept}");
+        assert_eq!(text(&mut tx, &order, "state").await, "sale");
+        let below = write(
+            &mut tx,
+            &line,
+            RawVals::new().set_cell("product_uom_qty", Cell::Decimal(Decimal::from(2))),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(below.kind(), ErrorKind::UserError, "{below:?}");
+        assert!(
+            below
+                .message()
+                .contains("cannot go below what was delivered or invoiced"),
+            "{below}"
+        );
+        assert!(below.message().contains(&reference), "{below}");
+        let product_change = write(
+            &mut tx,
+            &line,
+            RawVals::new().set_cell("product_id", Cell::Id(other)),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            product_change
+                .message()
+                .contains("The product of these sales order lines can no longer be changed"),
+            "{product_change}"
+        );
+        let unit = many2one(&mut tx, &line, "product_uom_id").await.unwrap();
+        let another_unit: i64 = tx
+            .query(
+                "SELECT id::int8 FROM uom_uom WHERE id <> $1 ORDER BY id LIMIT 1",
+                &[&unit],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let unit_change = write(
+            &mut tx,
+            &line,
+            RawVals::new().set_cell("product_uom_id", Cell::Id(another_unit)),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            unit_change
+                .message()
+                .contains("The unit of these sales order lines can no longer be changed"),
+            "{unit_change}"
+        );
+        assert_eq!(
+            line.cell(&mut tx, "product_uom_qty").await.unwrap(),
+            Cell::Decimal(Decimal::from(3))
+        );
+
+        // a service order: a draft invoice blocks nothing, a posted one blocks Cancel by name
+        let service = product(&mut tx, "Final service", "service").await;
+        let (billed_id, billed_line_id, billed_reference) =
+            order_with_product(&mut tx, &world, salesperson, service, RawVals::new()).await;
+        let billed = env
+            .records("sale.order")
+            .unwrap()
+            .browse([billed_id])
+            .unwrap();
+        let billed_line = env
+            .records("sale.order.line")
+            .unwrap()
+            .browse([billed_line_id])
+            .unwrap();
+        billed
+            .call::<(), ()>(&mut tx, "action_confirm", ())
+            .await
+            .unwrap();
+        let _: Value = billed
+            .call(&mut tx, "action_create_draft_invoice", ())
+            .await
+            .unwrap();
+        assert!(
+            !cancel_blocked(&mut tx, &billed).await,
+            "a draft invoice blocks nothing"
+        );
+        let invoice: i64 = tx
+            .query(
+                "SELECT DISTINCT l.move_id::int8 FROM sale_invoice_item k \
+                 JOIN account_move_line l ON l.id = k.invoice_item_id \
+                 WHERE k.sale_line_id = $1",
+                &[&billed_line_id],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        env.records("account.move")
+            .unwrap()
+            .browse([invoice])
+            .unwrap()
+            .call::<(), ()>(&mut tx, "action_post", ())
+            .await
+            .unwrap();
+        assert!(cancel_blocked(&mut tx, &billed).await);
+        let posted = billed
+            .call::<(), ()>(&mut tx, "action_cancel", ())
+            .await
+            .unwrap_err();
+        assert_eq!(posted.kind(), ErrorKind::UserError, "{posted:?}");
+        assert!(
+            posted.message().contains(&format!(
+                "The sales order {billed_reference} cannot be cancelled: its invoice"
+            )),
+            "{posted}"
+        );
+        assert!(posted.message().contains("is posted"), "{posted}");
+        assert_eq!(text(&mut tx, &billed, "state").await, "sale");
+        let below_invoiced = write(
+            &mut tx,
+            &billed_line,
+            RawVals::new().set_cell("product_uom_qty", Cell::Decimal(Decimal::ONE)),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            below_invoiced
+                .message()
+                .contains("cannot go below what was delivered or invoiced"),
+            "{below_invoiced}"
+        );
+        tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
+    });
+}

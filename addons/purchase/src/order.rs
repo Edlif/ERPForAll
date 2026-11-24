@@ -29,6 +29,14 @@ pub const NEW_NAME: &str = "New";
 /// sets the day the company-currency total converts at, which the approval question reads.
 pub const CONFIRMED_FIELDS: [&str; 4] = ["partner_id", "currency_id", "company_id", "date_order"];
 
+/// The posted vendor bills and refunds of the orders: order id, order number, bill number, the
+/// first per order first.
+const POSTED_BILLS: &str = "SELECT DISTINCT o.id::int8, o.name, m.name FROM purchase_direct_bill_line k \
+    JOIN purchase_order o ON o.id = k.order_id \
+    JOIN account_move m ON m.id = k.bill_id \
+    WHERE k.order_id = ANY($1) AND m.state = 'posted' \
+    AND m.move_type IN ('in_invoice', 'in_refund') ORDER BY 1, 3";
+
 /// Fields only the operations write (5).
 const OPERATION_FIELDS: [&str; 3] = ["state", "locked", "date_approve"];
 
@@ -203,6 +211,10 @@ pub struct PurchaseOrder {
     /// (`crate::bill_buttons`).
     #[field(integer, compute = "_compute_invoice_count", string = "Bill Count")]
     pub invoice_count: i32,
+    /// True while Cancel would be refused: a vendor bill of the order is posted, or a bridge's
+    /// downstream document holds it (`_cancel_blocked`). The form hides Cancel with it.
+    #[field(boolean, compute = "_compute_cancel_blocked", string = "Cancel Blocked")]
+    pub cancel_blocked: bool,
     /// The total converted to the company currency at the deadline's date; the approval
     /// question compares it with the company's minimum amount (BUG-132).
     #[field(
@@ -572,16 +584,72 @@ impl PurchaseOrder {
             .await
     }
 
-    /// The cancel step: writes the state and nothing else. Bridges extend this step, never the
-    /// action, so no extension runs twice for one order (V9).
+    /// The cancel step: an order with a posted vendor bill or refund is refused by name, otherwise
+    /// the state is written. Bridges extend this step, never the action, so no extension runs
+    /// twice for one order (V9). The reference also refuses an order with a bill that is neither
+    /// a draft nor cancelled.
     #[method]
     async fn _action_cancel(this: &RecordSet<PurchaseOrder>, tx: &mut Transaction) -> Result<()> {
+        tx.flush().await?;
+        if let Some(row) = tx
+            .query(POSTED_BILLS, &[&this.as_records().ids()])
+            .await?
+            .first()
+        {
+            let order: String = row.try_get(1).map_err(db)?;
+            let bill: Option<String> = row.try_get(2).map_err(db)?;
+            return Err(Error::user(format!(
+                "The purchase order {order} cannot be cancelled: its vendor bill {} is posted. Correct the bill with a refund; the order keeps what was billed.",
+                bill.as_deref().unwrap_or("(no number)")
+            )));
+        }
         this.as_records()
             .write_base(
                 tx,
                 RawVals::new().set_cell("state", Cell::Str("cancel".into())),
             )
             .await
+    }
+
+    /// The orders whose Cancel would be refused: in the base, those with a posted vendor bill or
+    /// refund. A bridge that refuses the cancel step adds its own through an override that calls
+    /// `sup`.
+    #[method]
+    async fn _cancel_blocked(
+        this: &RecordSet<PurchaseOrder>,
+        tx: &mut Transaction,
+    ) -> Result<Records> {
+        let records = this.as_records();
+        tx.flush().await?;
+        let mut blocked = BTreeSet::new();
+        for row in tx.query(POSTED_BILLS, &[&records.ids()]).await? {
+            blocked.insert(row.try_get::<_, i64>(0).map_err(db)?);
+        }
+        records.browse(blocked)
+    }
+
+    #[compute(depends = [])]
+    async fn _compute_cancel_blocked(
+        this: &RecordSet<PurchaseOrder>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, PurchaseOrder>,
+    ) -> Result<()> {
+        let records = this.as_records();
+        let stored: Vec<i64> = records
+            .rec_ids()
+            .iter()
+            .filter_map(|id| id.as_real().map(|id| id.get()))
+            .collect();
+        let blocked: Records = records
+            .browse(stored)?
+            .call(tx, "_cancel_blocked", ())
+            .await?;
+        let blocked: BTreeSet<i64> = blocked.ids().into_iter().collect();
+        for (index, id) in records.rec_ids().iter().enumerate() {
+            let held = id.as_real().is_some_and(|id| blocked.contains(&id.get()));
+            out.set(index, PurchaseOrder::CANCEL_BLOCKED, held)?;
+        }
+        Ok(())
     }
 
     /// Marks the draft orders of the call as sent and leaves the others as they are; called after
