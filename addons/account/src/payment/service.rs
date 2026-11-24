@@ -135,7 +135,11 @@ pub(super) async fn refuse_ended(tx: &mut Transaction, ids: &[i64], what: &str) 
     if let Some(row) = rows.first() {
         let name: String = row.try_get(0).map_err(db)?;
         let state: String = row.try_get(1).map_err(db)?;
-        let state = if state == "canceled" { "cancelled" } else { "rejected" };
+        let state = if state == "canceled" {
+            "cancelled"
+        } else {
+            "rejected"
+        };
         return Err(Error::user(format!(
             "Payment {name} is {state}: {what} cannot be changed. Reset it to draft first."
         )));
