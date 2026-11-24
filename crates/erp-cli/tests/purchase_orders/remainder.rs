@@ -108,7 +108,17 @@ fn short_receipt(always: bool) {
                 .await
                 .unwrap();
         }
+        // read before the validation, so the value read after is the same transaction's
+        assert_eq!(
+            po.cell(&mut tx, "receipt_count").await.unwrap(),
+            Cell::Int(1)
+        );
         returns::validate(&mut tx, receipt).await.unwrap();
+        // the backorder counts with its receipt; a receipt type without backorders makes none
+        assert_eq!(
+            po.cell(&mut tx, "receipt_count").await.unwrap(),
+            Cell::Int(if always { 2 } else { 1 })
+        );
         tx.commit().await.unwrap();
         drop(tx);
         let mut tx = orm.begin(buyer).await.unwrap();

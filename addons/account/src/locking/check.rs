@@ -98,7 +98,13 @@ pub async fn check_lock_dates(
             if matches!(period, PeriodVerdict::NoPeriod { .. }) || (hard_period && input.hard) {
                 return Ok(LockVerdict::Refused(LockRefusal::Period(period)));
             }
-            let scalar = state.check(input);
+            // here a hard-locked period means a check without the hard lock (unmatching): the
+            // fiscal-year date cannot be lowered across that period, so it does not bind either
+            let scalar = if hard_period {
+                state.without_fiscal_year().check(input)
+            } else {
+                state.check(input)
+            };
             if matches!(scalar, LockVerdict::Allowed) && !period.is_open() && !hard_period {
                 Ok(LockVerdict::Refused(LockRefusal::Period(period)))
             } else {
