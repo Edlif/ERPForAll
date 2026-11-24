@@ -439,18 +439,25 @@ through the page's metadata cache, so a dialog opened again asks the server only
 The trail survives a reload and follows the browser's Back and Forward. The client keeps, per history entry of the
 tab, the trail as it was drawn (each entry's title and address, nothing else) in one session-storage key,
 `erp.session.navigation` (`addons/web/static/src/client/navigation-store.ts`). Session storage belongs to the tab; the
-key is erased on sign-out, when the session expires and on the sign-in page, and a store written for another user is
-dropped whole. What is read back is untrusted: each entry is checked on its own (a closed shape, an id of plain
+key is erased on sign-out, when the session expires and on the sign-in page (nothing is written back after that, not
+even by a request that fails later), and a store written for another user is dropped whole. A kept trail is shown only
+with the page it was drawn for (same action, related list and record). What is read back is untrusted: each entry is checked on its own (a closed shape, an id of plain
 characters, a title of at most 512 characters, an address the route parser admits) and an entry that fails is left
 out, as is any entry past the cap of 32. Nothing in it is evaluated: an entry is only an address, which opens through
 the normal navigation, so the server checks it again when the user goes to it. An entry that no longer opens (the
 record is gone, the user may no longer read it) drops out of the trail with the failure shown, and the other entries
-stay usable. An address opened afresh (a pasted link, a new tab) has no history entry and starts its own trail.
+stay usable; an entry that fails for another reason (a lost connection, a server failure) stays to be tried again. A
+navigation that fails leaves the trail as it was for the page that stays. An address opened afresh (a pasted link, a new
+tab, a full page load such as the company switcher's) has no history entry and starts its own trail; its entries are
+numbered past the ones the tab keeps, so Back to an older entry still finds that entry's trail. A record saved on the way
+out (the leave prompt, a crumb's autosave) is in the trail as the saved record, and a new record discarded there leaves
+the trail.
 
 A list a button opened (a current-window action result) has no address of its own: its address names it by an id of
 the page (`method_action`). The same key keeps, for each such list, what the server answered for it (title, model,
 views, literal domain and defaults) with the address and title of the page it was opened from, at most 64 lists of at
-most 32 KiB each. After a reload the list is decoded like a server answer and sent back to
+most 32 KiB each. Its context is read back only when every value is null, a boolean, a text, a number or a flat list of
+numbers or texts. After a reload the list is decoded like a server answer and sent back to
 `erp_normalize_action_result`, the check it passed when its button opened it, under the user's rights and the page's
 companies; it opens as the server answers now. A list the server refuses, or one the client cannot read back, opens
 nothing: the page offers the way back to the action it was opened under.
