@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Direct, one-step receipts of approved purchase orders.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use erp_addon_purchase::order::PurchaseOrder;
 use erp_addon_stock::StockPicking;
@@ -559,7 +559,9 @@ impl PurchaseOrderReceipt {
         .await
     }
 
-    /// Cancel the open direct receipt as part of cancelling the associated purchase order.
+    /// Cancel the open direct receipt as part of cancelling the associated purchase order. A done
+    /// receipt refuses the cancel by name: stricter than the reference, which cancels the order
+    /// and leaves the received goods on a done receipt of a cancelled order.
     #[method(override)]
     async fn _action_cancel(
         this: &RecordSet<PurchaseOrder>,
@@ -582,7 +584,11 @@ impl PurchaseOrderReceipt {
                     return Err(Error::user("Cancelling a purchase order with a receipt backorder requires a later release."));
                 }
                 let state: &str = row.try_get(2).map_err(decode)?;
-                if matches!(state, "done" | "cancel") {
+                if state == "done" {
+                    let picking: i64 = row.try_get(1).map_err(decode)?;
+                    return Err(Error::user(done_receipt(tx, picking).await?));
+                }
+                if state == "cancel" {
                     continue;
                 }
                 let company: i64 = row.try_get(0).map_err(decode)?;
@@ -594,6 +600,54 @@ impl PurchaseOrderReceipt {
         })
         .await
     }
+
+    /// The orders whose cancel step refuses: those of the base and those with a done receipt or
+    /// a receipt backorder.
+    #[method(override)]
+    async fn _cancel_blocked(
+        this: &RecordSet<PurchaseOrder>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<Records> {
+        let orders = this.as_records();
+        let base: Records = sup.call(tx, orders, ()).await?;
+        tx.flush().await?;
+        let mut blocked: BTreeSet<i64> = base.ids().into_iter().collect();
+        for row in tx
+            .query(
+                "SELECT DISTINCT l.order_id::int8 FROM purchase_stock_receipt_link l \
+                 JOIN stock_picking p ON p.id = l.picking_id \
+                 WHERE l.order_id = ANY($1) AND (p.state = 'done' \
+                     OR EXISTS (SELECT 1 FROM stock_picking c WHERE c.backorder_id = p.id))",
+                &[&orders.ids()],
+            )
+            .await?
+        {
+            blocked.insert(row.try_get::<_, i64>(0).map_err(decode)?);
+        }
+        orders.browse(blocked)
+    }
+}
+
+/// The refusal of cancelling an order whose receipt `picking` is done, naming both.
+async fn done_receipt(tx: &mut Transaction, picking: i64) -> Result<String> {
+    let rows = tx
+        .query(
+            "SELECT o.name, p.name FROM purchase_stock_receipt_link l \
+             JOIN purchase_order o ON o.id = l.order_id JOIN stock_picking p ON p.id = l.picking_id \
+             WHERE l.picking_id = $1 ORDER BY o.id LIMIT 1",
+            &[&picking],
+        )
+        .await?;
+    let row = rows
+        .first()
+        .ok_or_else(|| Error::invariant(format!("receipt {picking} has no purchase order link")))?;
+    let order: String = row.try_get(0).map_err(decode)?;
+    let receipt: Option<String> = row.try_get(1).map_err(decode)?;
+    Ok(format!(
+        "The purchase order {order} cannot be cancelled: its receipt {} is done. Return the goods instead; the order keeps what was received.",
+        receipt.as_deref().unwrap_or("(no reference)")
+    ))
 }
 
 /// The source order of the original transfer, subject to the reader's order access.

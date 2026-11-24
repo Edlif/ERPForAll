@@ -38,10 +38,11 @@
           <field name="purchase_line_warn_msg" readonly="1" invisible="not purchase_line_warn_msg" groups="purchase.group_warning_purchase"/>
           <group>
             <group string="Product and delivery">
-              <field name="product_id"/>
+              <!-- received goods keep their product and unit -->
+              <field name="product_id" readonly="qty_received"/>
               <field name="name"/>
               <field name="product_qty"/>
-              <field name="uom_id"/>
+              <field name="uom_id" readonly="qty_received"/>
               <field name="date_planned"/>
               <field name="qty_received" readonly="1"/>
               <field name="qty_invoiced" readonly="1"/>
@@ -99,7 +100,7 @@
           <button name="button_lock" type="object" string="Lock" invisible="state != 'purchase' or locked"/>
           <button name="button_unlock" type="object" string="Unlock" invisible="not locked" groups="purchase.group_purchase_manager"/>
           <button name="button_draft" type="object" string="Set to Draft" invisible="state != 'cancel'"/>
-          <button name="button_cancel" type="object" string="Cancel" invisible="state == 'cancel' or locked"/>
+          <button name="button_cancel" type="object" string="Cancel" invisible="state == 'cancel' or locked or cancel_blocked"/>
           <field name="state" widget="statusbar" statusbar_visible="draft,sent,purchase" readonly="1"/>
         </header>
         <sheet>
@@ -126,6 +127,7 @@
               <field name="user_id" readonly="state == 'cancel'"/>
               <field name="invoice_status" readonly="1" invisible="state != 'purchase'"/>
               <field name="locked" invisible="1"/>
+              <field name="cancel_blocked" invisible="1"/>
             </group>
           </group>
           <notebook>

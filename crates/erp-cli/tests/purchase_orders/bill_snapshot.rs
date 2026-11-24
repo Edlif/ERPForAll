@@ -152,8 +152,18 @@ fn stale_purchase_snapshot_cannot_generate_duplicate_first_or_followup_bills() {
         drop(tx);
         let mut tx = orm.begin(buyer).await.unwrap();
         let source = orders(&tx, &[company]).browse([po]).unwrap();
-        act(&mut tx, &source, "button_cancel").await.unwrap();
-        act(&mut tx, &source, "button_draft").await.unwrap();
+        // a received order is not cancelled, so it does not return to draft with its bills
+        let kept = act(&mut tx, &source, "button_cancel").await.unwrap_err();
+        assert!(kept.message().contains("its receipt"), "{kept:?}");
+        assert!(kept.message().contains("is done"), "{kept:?}");
+        // an order redrafted before that rule still keeps the identity its bills were made for
+        tx.execute(
+            "UPDATE purchase_order SET state = 'draft' WHERE id = $1",
+            &[&po],
+        )
+        .await
+        .unwrap();
+        tx.invalidate_model("purchase.order", None).await.unwrap();
         for (field, value) in [("partner_id", books.vendor), ("currency_id", euro)] {
             let before = source.cell(&mut tx, field).await.unwrap();
             assert_ne!(before, Cell::Id(value));

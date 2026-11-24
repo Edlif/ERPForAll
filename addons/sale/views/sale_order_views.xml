@@ -159,8 +159,8 @@ The total with taxes and
           <button name="action_lock" type="object" string="Lock" invisible="state != 'sale' or locked" groups="sales_team.group_sale_manager"/>
           <button name="action_unlock" type="object" string="Unlock" invisible="state != 'sale' or not locked" groups="sales_team.group_sale_manager"/>
           <button name="action_draft" type="object" string="Set to Quotation" invisible="state != 'cancel'"/>
-          <button name="action_cancel" type="object" string="Cancel" invisible="state == 'cancel' or locked"/>
-          <field name="state" widget="statusbar" statusbar_visible="draft,sent,sale"/>
+          <button name="action_cancel" type="object" string="Cancel" invisible="state == 'cancel' or locked or cancel_blocked"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,sent,sale" readonly="1"/>
         </header>
         <sheet>
           <div class="oe_button_box" name="button_box">
@@ -184,6 +184,7 @@ The total with taxes and
               <field name="currency_id" readonly="1"/>
               <field name="company_id" readonly="state not in ('draft', 'sent')"/>
               <field name="locked" invisible="1"/>
+              <field name="cancel_blocked" invisible="1"/>
             </group>
           </group>
           <notebook>
@@ -191,7 +192,7 @@ The total with taxes and
               <field name="order_line" context="{'inline_search_field': 'product_id'}" readonly="locked or state == 'cancel'"/>
               <group name="note_group">
                 <group>
-                  <field name="note"/>
+                  <field name="note" readonly="state == 'cancel'"/>
                 </group>
                 <group name="sale_total">
                   <field name="amount_untaxed"/>
@@ -205,8 +206,8 @@ The total with taxes and
                 <group name="sales_person" string="Sales">
                   <field name="user_id" readonly="locked or state == 'cancel'"/>
                   <field name="team_id" readonly="locked or state == 'cancel'"/>
-                  <field name="client_order_ref"/>
-                  <field name="tag_ids" widget="many2many_tags"/>
+                  <field name="client_order_ref" readonly="state == 'cancel'"/>
+                  <field name="tag_ids" widget="many2many_tags" readonly="state == 'cancel'"/>
                 </group>
                 <group name="sale_info" string="Invoicing">
                   <field name="fiscal_position_id" readonly="state not in ('draft', 'sent')"/>
@@ -214,11 +215,11 @@ The total with taxes and
                   <field name="invoicing_closed" readonly="1"/>
                 </group>
                 <group name="sale_shipping" string="Delivery">
-                  <field name="commitment_date"/>
+                  <field name="commitment_date" readonly="locked or state == 'cancel'"/>
                   <field name="delivery_status"/>
                 </group>
                 <group name="sale_reporting" string="Tracking">
-                  <field name="origin"/>
+                  <field name="origin" readonly="state == 'cancel'"/>
                 </group>
               </group>
             </page>
