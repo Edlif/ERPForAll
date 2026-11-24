@@ -297,7 +297,10 @@ fn direct_delivery_confirms_saved_order_as_salesperson() {
             panic!("an action dictionary")
         };
         assert_eq!(none["res_model"], Value::str("stock.picking"));
-        assert!(!format!("{:?}", none["domain"]).contains("Int("), "{none:?}");
+        assert!(
+            !format!("{:?}", none["domain"]).contains("Int("),
+            "{none:?}"
+        );
         assert_eq!(
             orders
                 .sudo(true)
@@ -400,7 +403,10 @@ fn direct_delivery_confirms_saved_order_as_salesperson() {
             panic!("an action dictionary")
         };
         assert_eq!(back["res_model"], Value::str("sale.order"));
-        assert!(!format!("{:?}", back["domain"]).contains("Int("), "{back:?}");
+        assert!(
+            !format!("{:?}", back["domain"]).contains("Int("),
+            "{back:?}"
+        );
         tx.rollback().await.unwrap();
         drop(tx);
         db.cleanup().await.unwrap();
