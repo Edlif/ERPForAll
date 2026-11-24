@@ -107,7 +107,13 @@ fn run(body: impl std::future::Future<Output = ()> + Send + 'static) {
 }
 
 async fn install(db: &TestDb) -> Orm {
-    let system = system(db);
+    let system = std::sync::Arc::new(system(db));
+    // Settings module toggles resolve against the install route's catalogue, as the server binds it; every
+    // system of this binary reads the same addon index, so the first one bound answers for all.
+    static CATALOGUE: std::sync::Once = std::sync::Once::new();
+    CATALOGUE.call_once(|| {
+        erp_cli::module::bind_settings_catalogue(std::sync::Arc::clone(&system)).unwrap();
+    });
     let initialized = system.initialize(InitOptions::new()).await.unwrap();
     assert!(initialized.post_commit.is_clean());
     let installed = system

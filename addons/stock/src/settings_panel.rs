@@ -22,12 +22,6 @@ const FEATURES: &[(&str, &str, &str, &str)] = &[
         TRACKING,
     ),
     (
-        "stock.group_stock_picking_batch",
-        "Batch transfers",
-        "Operations",
-        GROUPS,
-    ),
-    (
         "stock.group_stock_sign_delivery",
         "Delivery signatures",
         "Shipping",
@@ -68,6 +62,12 @@ const FEATURES: &[(&str, &str, &str, &str)] = &[
 // Feature groups that already show or hide menus, view elements or fields: the row turns the group on or
 // off for every internal user. `(key, label, block, group)`.
 const GROUP_TOGGLES: &[(&str, &str, &str, &str)] = &[
+    (
+        "stock.group_stock_picking_batch",
+        "Batch transfers",
+        "Operations",
+        "stock.group_stock_picking_batch",
+    ),
     (
         "stock.group_stock_multi_locations",
         "Multiple locations",

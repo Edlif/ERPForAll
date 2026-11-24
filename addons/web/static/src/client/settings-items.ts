@@ -44,7 +44,7 @@ export function readSettingsItems(description: Record<string, unknown>, declarat
   return array(description["items"], "setting items").map(raw => {
     const row = object(raw, "setting item"), kind = row["kind"];
     if (kind !== "info" && kind !== "link" && kind !== "module" && kind !== "group") throw new ClientError("unsupported", `Unsupported setting item kind: ${String(kind)}.`);
-    closed(row, ["kind", "key", "label", "app", "block", "sequence", ...(kind === "info" ? ["value", "detail"] : kind === "link" ? ["target"] : kind === "module" ? ["addon", "state"] : ["group", "state", "group_id", "internal_group_id"])], "setting item");
+    closed(row, ["kind", "key", "label", "app", "block", "sequence", ...(kind === "info" ? ["value", "detail"] : kind === "link" ? ["target"] : kind === "module" ? ["addon", "state"] : ["group", "state"])], "setting item");
     const key = caption(row["key"], "setting item key", 128), app = caption(row["app"], "setting item app", 128);
     if (!/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(key) || !/^[a-z][a-z0-9_]*$/.test(app)) throw new ClientError("server", "Invalid setting item key or app.");
     if (keys.has(key)) throw new ClientError("server", `Duplicate settings item or declaration key: ${key}.`);
@@ -64,12 +64,8 @@ export function readSettingsItems(description: Record<string, unknown>, declarat
       const group = caption(row["group"], "setting item group", 128);
       if (!/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(group)) throw new ClientError("server", "Invalid setting item group.");
       const state = row["state"];
-      if (state !== "enabled" && state !== "disabled" && state !== "not_available") throw new ClientError("server", "Invalid setting item group state.");
-      // Both group rows exist exactly when the toggle is available.
-      const available = state !== "not_available";
-      const ids = [row["group_id"], row["internal_group_id"]].map(raw => raw === null ? null : targetId(raw));
-      if (ids.some(id => (id === null) === available)) throw new ClientError("server", "Invalid setting item group ids.");
-      return { ...common, kind, group, state: state as GroupToggleState, group_id: ids[0] ?? null, internal_group_id: ids[1] ?? null };
+      if (state !== "enabled" && state !== "disabled") throw new ClientError("server", "Invalid setting item group state.");
+      return { ...common, kind, group, state: state as GroupToggleState };
     }
     const value = row["value"];
     if (typeof value !== "boolean" && typeof value !== "string" && !(typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER)) throw new ClientError("server", "Invalid setting item value.");

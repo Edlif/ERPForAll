@@ -1522,7 +1522,7 @@ res_id: WireId | null, } | { "kind": "menu",
  */
 id: WireId, };
 export type ModuleToggleState = "installed" | "not_installed" | "not_available";
-export type GroupToggleState = "enabled" | "disabled" | "not_available";
+export type GroupToggleState = "enabled" | "disabled";
 export type SettingsItem = { "kind": "info",
 /**
  * Addon-qualified identity.
@@ -1629,17 +1629,9 @@ sequence: number,
  */
 group: string,
 /**
- * Whether the internal-user group implies the feature group, or that either group is missing.
+ * Whether the internal-user group implies the feature group (directly or through other groups).
  */
-state: GroupToggleState,
-/**
- * Id of the feature group row; `null` exactly when the state is `not_available`.
- */
-group_id: WireId | null,
-/**
- * Id of the internal-user group row; `null` exactly when the state is `not_available`.
- */
-internal_group_id: WireId | null, };
+state: GroupToggleState, };
 export type SettingDescription = {
 /**
  *Wire member `key`.

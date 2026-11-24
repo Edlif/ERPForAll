@@ -13,6 +13,9 @@
 //! done. A transfer without any reserved quantity leaves the batch (result `detached`). A run is
 //! never repeated for a transfer that already has a result in it, so a retried chunk is harmless.
 //!
+//! The feature group `stock.group_stock_picking_batch` shows the menu, the button and the field, and
+//! every batch action checks it (an administrator is not exempt unless acting as the system).
+//!
 //! Not here yet: waves, automatic batching, merging batches, the batch report, scheduled date and
 //! responsible propagation to the transfers, and the batch state following a transfer that is
 //! validated or cancelled on its own (the state is settled at the end of a validation).
@@ -24,7 +27,7 @@ use erp_sdk::prelude::*;
 use erp_sdk::serde_json::json;
 use erp_sdk::{CompanyId, DefaultContext, ErrorKind, Operation};
 
-use crate::move_counters::cell_id;
+use crate::move_counters::{cell_id, lock_pickings};
 use crate::picking::StockPicking;
 
 /// The job kind of a batch validation.
@@ -48,7 +51,7 @@ fn decode(error: impl std::error::Error + Send + Sync + 'static) -> Error {
 
 /// Set while a batch action writes the fields that only it may write.
 #[derive(Default)]
-struct OwnWrite(bool);
+pub(crate) struct OwnWrite(pub(crate) bool);
 
 /// `stock.picking.batch`: transfers processed together.
 #[model(
@@ -284,7 +287,6 @@ erp_sdk::jobs::register_job_kind!(
             method: "run_validate_step",
         },
     )
-    .max_attempts(3)
 );
 
 /// A batch whose state follows from how many of its transfers are open and done.
@@ -300,8 +302,27 @@ fn settled_state(total: i64, open: i64, done: i64) -> Option<&'static str> {
     }
 }
 
+/// The feature group of batch transfers.
+const GROUP: &str = "stock.group_stock_picking_batch";
+
+/// The batch actions are for users of the feature group.
+async fn require_group(env: &Env, tx: &mut Transaction) -> Result<()> {
+    if env.su() || tx.has_group(env, GROUP).await? {
+        Ok(())
+    } else {
+        Err(Error::access(
+            "Batch transfers are not turned on for you: ask an administrator to enable Batch transfers in the Inventory settings.",
+        ))
+    }
+}
+
 fn bounded(text: &str) -> String {
     text.chars().take(MAX_MESSAGE).collect()
+}
+
+/// True when `vals` names `field`, as a plain value or as an x2many command list.
+fn names(vals: &RawVals, field: &str) -> bool {
+    vals.contains(field) || vals.iter_commands().any(|(name, _)| name == field)
 }
 
 fn guard_own_fields(vals: &RawVals) -> Result<()> {
@@ -313,12 +334,43 @@ fn guard_own_fields(vals: &RawVals) -> Result<()> {
     }
 }
 
-/// Write the fields only a batch action sets.
-async fn write_own(records: &Records, tx: &mut Transaction, vals: RawVals) -> Result<()> {
+/// Refuse a write of `batch_id` on a transfer unless a batch action is running.
+///
+/// # Errors
+/// `Validation` outside a batch action.
+pub(crate) fn refuse_link(tx: &mut Transaction) -> Result<()> {
+    if tx.extension::<OwnWrite>().0 {
+        Ok(())
+    } else {
+        Err(Error::validation(
+            "A transfer joins or leaves a batch only through the batch actions (Add to Batch, Cancel, Validate).",
+        ))
+    }
+}
+
+/// Write while the flag of the batch actions is set.
+async fn with_flag(records: &Records, tx: &mut Transaction, vals: RawVals) -> Result<()> {
     let previous = std::mem::replace(&mut tx.extension::<OwnWrite>().0, true);
     let written = records.write(tx, vals).await;
     tx.extension::<OwnWrite>().0 = previous;
     written
+}
+
+/// Write the fields only a batch action sets.
+async fn write_own(records: &Records, tx: &mut Transaction, vals: RawVals) -> Result<()> {
+    with_flag(records, tx, vals).await
+}
+
+/// Join (`Some`) or leave (`None`) a batch.
+async fn link(
+    env: &Env,
+    tx: &mut Transaction,
+    pickings: Vec<i64>,
+    batch: Option<i64>,
+) -> Result<()> {
+    let value = batch.map_or(Cell::Null, Cell::Id);
+    let records = env.records("stock.picking")?.browse(pickings)?;
+    with_flag(&records, tx, RawVals::new().set_cell("batch_id", value)).await
 }
 
 struct Header {
@@ -352,21 +404,65 @@ async fn header(tx: &mut Transaction, id: i64) -> Result<Header> {
     })
 }
 
+fn job_key(id: i64, run: i32) -> String {
+    format!("{VALIDATE_KIND}:{id}:{run}")
+}
+
+/// A validation counts as running only while a live job holds its key: a job that died, was
+/// cancelled or discarded leaves the flag set, and the batch is then free again.
+async fn held(tx: &mut Transaction, id: i64, head: &Header) -> Result<bool> {
+    if !head.validating {
+        return Ok(false);
+    }
+    let key = job_key(id, head.run);
+    Ok(!tx
+        .query(
+            "SELECT 1 FROM erp_job WHERE kind = $1 AND dedup_key = $2 AND state <> 'dead'",
+            &[&VALIDATE_KIND, &key],
+        )
+        .await?
+        .is_empty())
+}
+
+/// Check the caller may change the batch (and the transfers `ids`) before anything is read raw.
+async fn check_write(env: &Env, tx: &mut Transaction, batch: i64, ids: &[i64]) -> Result<()> {
+    env.records("stock.picking.batch")?
+        .browse([batch])?
+        .check_access(tx, Operation::Write)
+        .await?;
+    if !ids.is_empty() {
+        env.records("stock.picking")?
+            .browse(ids.to_vec())?
+            .check_access(tx, Operation::Write)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Add `ids` to batch `batch`, or refuse naming every transfer that does not fit.
 ///
 /// A transfer fits when it is Waiting, Waiting for stock or Ready (or Draft, for a draft batch),
 /// has the batch's company and operation type and is in no other batch. A batch without an
-/// operation type takes the one of its first transfer.
+/// operation type takes the one of its first transfer. Nothing joins a batch that is being
+/// validated.
 ///
 /// # Errors
-/// `User` for a batch that is done or cancelled, a missing transfer or an incompatible one.
-pub(crate) async fn add_pickings(tx: &mut Transaction, batch: i64, ids: &[i64]) -> Result<()> {
+/// `User` for a batch that is done, cancelled or validating, a missing transfer or an
+/// incompatible one; the caller's access errors.
+pub(crate) async fn add_pickings(
+    env: &Env,
+    tx: &mut Transaction,
+    batch: i64,
+    ids: &[i64],
+) -> Result<()> {
     let mut ids = ids.to_vec();
     ids.sort_unstable();
     ids.dedup();
     if ids.is_empty() {
         return Err(Error::user("Select at least one transfer to add."));
     }
+    require_group(env, tx).await?;
+    check_write(env, tx, batch, &ids).await?;
     let head = header(tx, batch).await?;
     if !matches!(head.state.as_str(), "draft" | "in_progress") {
         return Err(Error::user(format!(
@@ -379,6 +475,13 @@ pub(crate) async fn add_pickings(tx: &mut Transaction, batch: i64, ids: &[i64]) 
             }
         )));
     }
+    if held(tx, batch, &head).await? {
+        return Err(Error::user(format!(
+            "Batch {} is being validated: add transfers when it is finished.",
+            head.name
+        )));
+    }
+    lock_pickings(tx, &ids).await?;
     let rows = tx
         .query(
             "SELECT id, name, state, company_id, picking_type_id, batch_id \
@@ -422,48 +525,89 @@ pub(crate) async fn add_pickings(tx: &mut Transaction, batch: i64, ids: &[i64]) 
             misfits.join(", ")
         )));
     }
-    let env = tx.env();
     if head.picking_type.is_none() {
-        write_plain(
-            &env,
+        let records = env.records("stock.picking.batch")?.browse([batch])?;
+        write_own(
+            &records,
             tx,
-            batch,
             RawVals::new().set_cell("picking_type_id", Cell::Id(picking_type)),
         )
         .await?;
     }
-    env.records("stock.picking")?
-        .browse(ids)?
-        .write(tx, RawVals::new().set_cell("batch_id", Cell::Id(batch)))
-        .await
+    link(env, tx, ids, Some(batch)).await
 }
 
-async fn write_plain(env: &Env, tx: &mut Transaction, batch: i64, vals: RawVals) -> Result<()> {
-    env.records("stock.picking.batch")?
-        .browse([batch])?
-        .write(tx, vals)
-        .await
+/// Open transfers of the batch that have no result in `run`.
+const OPEN_FILTER: &str = "p.batch_id = $1 AND p.state NOT IN ('done', 'cancel') \
+     AND NOT EXISTS (SELECT 1 FROM stock_picking_batch_result r \
+          WHERE r.batch_id = $1 AND r.run = $2 AND r.picking_id = p.id)";
+/// A transfer has a reserved quantity on an open move.
+const HAS_QUANTITY: &str = "EXISTS (SELECT 1 FROM stock_move m JOIN stock_move_line l ON l.move_id = m.id \
+     WHERE m.picking_id = p.id AND m.state NOT IN ('done', 'cancel') AND l.quantity > 0)";
+
+async fn count_one(tx: &mut Transaction, sql: &str, batch: i64, run: i32) -> Result<i64> {
+    tx.flush().await?;
+    tx.query(sql, &[&batch, &run])
+        .await?
+        .first()
+        .ok_or_else(|| Error::internal("A count returned no row."))?
+        .try_get(0)
+        .map_err(decode)
 }
 
 async fn count_open(tx: &mut Transaction, batch: i64, run: i32) -> Result<i64> {
-    tx.flush().await?;
-    tx.query(
-        "SELECT count(*) FROM stock_picking p WHERE p.batch_id = $1 \
-           AND p.state NOT IN ('done', 'cancel') \
-           AND NOT EXISTS (SELECT 1 FROM stock_picking_batch_result r \
-                WHERE r.batch_id = $1 AND r.run = $2 AND r.picking_id = p.id)",
-        &[&batch, &run],
+    count_one(
+        tx,
+        &format!("SELECT count(*) FROM stock_picking p WHERE {OPEN_FILTER}"),
+        batch,
+        run,
     )
-    .await?
-    .first()
-    .ok_or_else(|| Error::internal("A count returned no row."))?
-    .try_get(0)
-    .map_err(decode)
+    .await
+}
+
+/// Set the batch's end state when no transfer is open any more, and clear its validating flag.
+async fn settle(env: &Env, tx: &mut Transaction, id: i64) -> Result<()> {
+    tx.flush().await?;
+    let counts = tx
+        .query(
+            "SELECT count(*), count(*) FILTER (WHERE state NOT IN ('done', 'cancel')), \
+                    count(*) FILTER (WHERE state = 'done') \
+             FROM stock_picking WHERE batch_id = $1",
+            &[&id],
+        )
+        .await?;
+    let [row] = counts.as_slice() else {
+        return Err(Error::internal("A count returned no row."));
+    };
+    let mut vals = RawVals::new().set_cell("validating", Cell::Bool(false));
+    if let Some(state) = settled_state(
+        row.try_get(0).map_err(decode)?,
+        row.try_get(1).map_err(decode)?,
+        row.try_get(2).map_err(decode)?,
+    ) {
+        vals = vals.set_cell("state", Cell::Str(state.into()));
+    }
+    write_own(&env.records("stock.picking.batch")?.browse([id])?, tx, vals).await
+}
+
+/// The errors a person can act on are kept as a transfer's result; any other error (a lock
+/// timeout, a database or programming error) is returned so the queue retries or dead-letters.
+fn is_user_facing(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::UserError
+            | ErrorKind::Validation
+            | ErrorKind::Conflict
+            | ErrorKind::Access
+            | ErrorKind::AccessDenied
+            | ErrorKind::Missing
+    )
 }
 
 #[methods(StockPickingBatch, addon = "stock")]
 impl StockPickingBatch {
-    /// A new batch takes its company and reference; its status fields are the actions' own.
+    /// A new batch takes its company and reference; its status fields and transfers are the
+    /// actions' own.
     #[method(override)]
     async fn create(
         this: &RecordSet<StockPickingBatch>,
@@ -476,6 +620,11 @@ impl StockPickingBatch {
         let env = records.env().clone();
         for vals in &mut vals_list {
             guard_own_fields(vals)?;
+            if names(vals, "picking_ids") {
+                return Err(Error::validation(
+                    "Add transfers to a batch with Add Transfers or the Add to Batch button of a transfer.",
+                ));
+            }
             if !vals.contains("company_id") {
                 let company = env.company_id()?.ok_or_else(|| {
                     Error::user("Select a company before creating a batch transfer.")
@@ -502,7 +651,8 @@ impl StockPickingBatch {
         sup.call(tx, records, (vals_list,)).await
     }
 
-    /// Status fields and the transfer list are changed by the actions only.
+    /// Status fields and the transfer list are changed by the actions only, and the operation type
+    /// and company of a batch that holds transfers do not change.
     #[method(override)]
     async fn write(
         this: &RecordSet<StockPickingBatch>,
@@ -512,16 +662,37 @@ impl StockPickingBatch {
     ) -> Result<()> {
         if !tx.extension::<OwnWrite>().0 {
             guard_own_fields(&vals)?;
-            if vals.contains("picking_ids") {
+            if names(&vals, "picking_ids") {
                 return Err(Error::validation(
                     "Add transfers to a batch with Add Transfers or the Add to Batch button of a transfer.",
                 ));
+            }
+            let records = this.as_records();
+            if !records.is_empty()
+                && ["picking_type_id", "company_id"]
+                    .iter()
+                    .any(|f| vals.contains(f))
+            {
+                records.check_access(tx, Operation::Write).await?;
+                tx.flush().await?;
+                let used = tx
+                    .query(
+                        "SELECT 1 FROM stock_picking WHERE batch_id = ANY($1) LIMIT 1",
+                        &[&records.ids()],
+                    )
+                    .await?;
+                if !used.is_empty() {
+                    return Err(Error::validation(
+                        "The operation type and company of a batch that holds transfers cannot change.",
+                    ));
+                }
             }
         }
         sup.call(tx, this.as_records(), (vals,)).await
     }
 
-    /// A done batch is the record of what was processed.
+    /// A batch is deleted only while it is not being validated and none of its transfers is done:
+    /// it is the record of what was processed.
     #[method(override)]
     async fn unlink(
         this: &RecordSet<StockPickingBatch>,
@@ -534,18 +705,28 @@ impl StockPickingBatch {
         }
         records.check_access(tx, Operation::Unlink).await?;
         tx.flush().await?;
-        let done = tx
+        let ids = records.ids();
+        for id in &ids {
+            let head = header(tx, *id).await?;
+            if held(tx, *id, &head).await? {
+                return Err(Error::user(format!(
+                    "Batch {} is being validated and cannot be deleted.",
+                    head.name
+                )));
+            }
+        }
+        let kept = tx
             .query(
-                "SELECT count(*) FROM stock_picking_batch WHERE id = ANY($1) AND state = 'done'",
-                &[&records.ids()],
+                "SELECT 1 FROM stock_picking_batch b WHERE b.id = ANY($1) AND (b.state = 'done' \
+                   OR EXISTS (SELECT 1 FROM stock_picking p WHERE p.batch_id = b.id AND p.state = 'done')) \
+                 LIMIT 1",
+                &[&ids],
             )
-            .await?
-            .first()
-            .ok_or_else(|| Error::internal("A count returned no row."))?
-            .try_get::<_, i64>(0)
-            .map_err(decode)?;
-        if done > 0 {
-            return Err(Error::user("A done batch cannot be deleted."));
+            .await?;
+        if !kept.is_empty() {
+            return Err(Error::user(
+                "A batch with a done transfer is the record of what was processed and cannot be deleted.",
+            ));
         }
         sup.call(tx, records, ()).await
     }
@@ -559,6 +740,8 @@ impl StockPickingBatch {
     ) -> Result<()> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
+        records.check_access(tx, Operation::Write).await?;
         let head = header(tx, id).await?;
         if head.state != "draft" {
             return Err(Error::user(format!(
@@ -604,7 +787,15 @@ impl StockPickingBatch {
     ) -> Result<()> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
-        tx.flush().await?;
+        require_group(records.env(), tx).await?;
+        records.check_access(tx, Operation::Write).await?;
+        let head = header(tx, id).await?;
+        if head.state != "in_progress" || held(tx, id, &head).await? {
+            return Err(Error::user(format!(
+                "Batch {} must be in progress and not being validated to check availability.",
+                head.name
+            )));
+        }
         let ids: Vec<i64> = tx
             .query(
                 "SELECT id FROM stock_picking WHERE batch_id = $1 \
@@ -636,12 +827,15 @@ impl StockPickingBatch {
     ) -> Result<()> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
+        records.check_access(tx, Operation::Write).await?;
         let head = header(tx, id).await?;
-        if !matches!(head.state.as_str(), "draft" | "in_progress") || head.validating {
+        let running = held(tx, id, &head).await?;
+        if !matches!(head.state.as_str(), "draft" | "in_progress") || running {
             return Err(Error::user(format!(
                 "Batch {} cannot be cancelled while it is {}.",
                 head.name,
-                if head.validating {
+                if running {
                     "being validated"
                 } else {
                     "done or cancelled"
@@ -659,22 +853,21 @@ impl StockPickingBatch {
             .collect::<std::result::Result<_, _>>()
             .map_err(decode)?;
         if !open.is_empty() {
-            records
-                .env()
-                .records("stock.picking")?
-                .browse(open)?
-                .write(tx, RawVals::new().set_cell("batch_id", Cell::Null))
-                .await?;
+            link(records.env(), tx, open, None).await?;
         }
         write_own(
             records,
             tx,
-            RawVals::new().set_cell("state", Cell::Str("cancel".into())),
+            RawVals::new()
+                .set_cell("state", Cell::Str("cancel".into()))
+                .set_cell("validating", Cell::Bool(false)),
         )
         .await
     }
 
-    /// Validate the batch: queue the chunked job that validates its transfers one by one.
+    /// Validate the batch: queue the chunked job that validates its transfers one by one. A
+    /// batch whose transfers are all done or cancelled is settled at once. A validation whose job
+    /// is gone is queued again, continuing the same run.
     #[method]
     #[rpc(effect = write)]
     pub async fn action_done(
@@ -683,6 +876,8 @@ impl StockPickingBatch {
     ) -> Result<()> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
+        records.check_access(tx, Operation::Write).await?;
         let head = header(tx, id).await?;
         if head.state != "in_progress" {
             return Err(Error::user(format!(
@@ -690,17 +885,32 @@ impl StockPickingBatch {
                 head.name
             )));
         }
-        if head.validating {
+        if held(tx, id, &head).await? {
             return Err(Error::user(format!(
                 "Batch {} is already being validated.",
                 head.name
             )));
         }
-        let run = head.run + 1;
+        let run = if head.validating {
+            head.run
+        } else {
+            head.run + 1
+        };
         if count_open(tx, id, run).await? == 0 {
-            return Err(Error::user(
-                "Every transfer of this batch is already done or cancelled.",
-            ));
+            return settle(records.env(), tx, id).await;
+        }
+        let with_quantity = count_one(
+            tx,
+            &format!("SELECT count(*) FROM stock_picking p WHERE {OPEN_FILTER} AND {HAS_QUANTITY}"),
+            id,
+            run,
+        )
+        .await?;
+        if with_quantity == 0 {
+            return Err(Error::user(format!(
+                "No open transfer of batch {} has a reserved quantity: use Check Availability first.",
+                head.name
+            )));
         }
         write_own(
             records,
@@ -715,10 +925,7 @@ impl StockPickingBatch {
             &env,
             EnqueueRequest::new(VALIDATE_KIND)
                 .payload(&json!({ "id": id, "run": run }))?
-                .dedup(
-                    JobKey::new(&format!("{VALIDATE_KIND}:{id}:{run}"))?,
-                    OnDuplicate::Keep,
-                ),
+                .dedup(JobKey::new(&job_key(id, run))?, OnDuplicate::Keep),
         )
         .await?;
         Ok(())
@@ -729,9 +936,10 @@ impl StockPickingBatch {
     #[rpc(effect = read)]
     pub async fn action_add_transfers(
         this: &RecordSet<StockPickingBatch>,
-        _tx: &mut Transaction,
+        tx: &mut Transaction,
     ) -> Result<Value> {
         let id = this.as_records().ensure_one()?.int()?;
+        require_group(this.as_records().env(), tx).await?;
         Ok(dialog(
             json!({ "default_mode": "existing", "default_batch_id": id }),
         ))
@@ -740,8 +948,9 @@ impl StockPickingBatch {
     /// One chunk of a batch validation (job kind [`VALIDATE_KIND`]), as the user who asked for it.
     ///
     /// # Errors
-    /// `Invariant` for a payload that is not `{id, run}`; a concurrency error (the queue retries
-    /// the chunk). A transfer that cannot be validated is recorded, not raised.
+    /// `Invariant` for a payload that is not `{id, run}`; an error of a transfer that is not one a
+    /// person can act on (the queue retries the chunk). A transfer that cannot be validated for a
+    /// reason a person can act on is recorded, not raised.
     #[method]
     async fn run_validate_step(
         this: &RecordSet<StockPickingBatch>,
@@ -759,6 +968,7 @@ impl StockPickingBatch {
             ));
         };
         let env = this.as_records().env().clone();
+        tx.flush().await?;
         let exists = !tx
             .query("SELECT 1 FROM stock_picking_batch WHERE id = $1", &[&id])
             .await?
@@ -773,15 +983,10 @@ impl StockPickingBatch {
         let chunk = erp_sdk::params::get_int(tx, &crate::ADDON, CHUNK_KEY).await?;
         let todo = tx
             .query(
-                "SELECT p.id, \
-                   EXISTS (SELECT 1 FROM stock_move m JOIN stock_move_line l ON l.move_id = m.id \
-                           WHERE m.picking_id = p.id AND m.state NOT IN ('done', 'cancel') \
-                             AND l.quantity > 0) \
-                 FROM stock_picking p \
-                 WHERE p.batch_id = $1 AND p.state NOT IN ('done', 'cancel') \
-                   AND NOT EXISTS (SELECT 1 FROM stock_picking_batch_result r \
-                        WHERE r.batch_id = $1 AND r.run = $2 AND r.picking_id = p.id) \
-                 ORDER BY p.id LIMIT $3",
+                &format!(
+                    "SELECT p.id, {HAS_QUANTITY} FROM stock_picking p WHERE {OPEN_FILTER} \
+                     ORDER BY p.id LIMIT $3"
+                ),
                 &[&id, &run, &chunk],
             )
             .await?;
@@ -792,9 +997,7 @@ impl StockPickingBatch {
             let has_quantity: bool = row.try_get(1).map_err(decode)?;
             let record = pickings.browse([picking])?;
             let (outcome, message) = if !has_quantity {
-                record
-                    .write(tx, RawVals::new().set_cell("batch_id", Cell::Null))
-                    .await?;
+                link(&env, tx, vec![picking], None).await?;
                 (
                     "detached",
                     "No quantity is reserved: the transfer left the batch.".to_owned(),
@@ -806,9 +1009,25 @@ impl StockPickingBatch {
                     })
                     .await;
                 match validated {
-                    Ok(()) => ("done", String::new()),
-                    Err(error) if error.kind() == ErrorKind::Concurrency => return Err(error),
-                    Err(error) => ("error", bounded(error.message())),
+                    Ok(()) => {
+                        tx.flush().await?;
+                        let state: String = tx
+                            .query("SELECT state FROM stock_picking WHERE id = $1", &[&picking])
+                            .await?
+                            .first()
+                            .ok_or_else(|| Error::internal("A transfer vanished."))?
+                            .try_get(0)
+                            .map_err(decode)?;
+                        if state == "done" {
+                            ("done", String::new())
+                        } else {
+                            ("error", format!("The transfer is {state}, not done."))
+                        }
+                    }
+                    Err(error) if is_user_facing(error.kind()) => {
+                        ("error", bounded(error.message()))
+                    }
+                    Err(error) => return Err(error),
                 }
             };
             results.push(
@@ -830,7 +1049,9 @@ impl StockPickingBatch {
         }
         let processed = u64::try_from(results.len()).unwrap_or(0);
         if !results.is_empty() {
-            env.records("stock.picking.batch.result")?
+            // users may read results but never write them: the job writes them
+            env.sudo(true)
+                .records("stock.picking.batch.result")?
                 .create(tx, results)
                 .await?;
         }
@@ -842,27 +1063,7 @@ impl StockPickingBatch {
                 u64::try_from(left).ok(),
             ));
         }
-        tx.flush().await?;
-        let counts = tx
-            .query(
-                "SELECT count(*), count(*) FILTER (WHERE state NOT IN ('done', 'cancel')), \
-                        count(*) FILTER (WHERE state = 'done') \
-                 FROM stock_picking WHERE batch_id = $1",
-                &[&id],
-            )
-            .await?;
-        let [row] = counts.as_slice() else {
-            return Err(Error::internal("A count returned no row."));
-        };
-        let mut vals = RawVals::new().set_cell("validating", Cell::Bool(false));
-        if let Some(state) = settled_state(
-            row.try_get(0).map_err(decode)?,
-            row.try_get(1).map_err(decode)?,
-            row.try_get(2).map_err(decode)?,
-        ) {
-            vals = vals.set_cell("state", Cell::Str(state.into()));
-        }
-        write_own(&env.records("stock.picking.batch")?.browse([id])?, tx, vals).await?;
+        settle(&env, tx, id).await?;
         Ok(StepOutcome::done(
             json!({ "id": id, "run": run }),
             processed,
@@ -893,6 +1094,7 @@ impl StockPickingToBatch {
     ) -> Result<Value> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
         tx.flush().await?;
         let ids: Vec<i64> = tx
             .query(
@@ -947,7 +1149,7 @@ impl StockPickingToBatch {
                 .await?
                 .ids()[0]
         };
-        add_pickings(tx, batch, &ids).await?;
+        add_pickings(&env, tx, batch, &ids).await?;
         if mode == "new" && !draft {
             env.records("stock.picking.batch")?
                 .browse([batch])?
@@ -972,8 +1174,9 @@ impl StockPicking {
     #[rpc(effect = read)]
     pub async fn action_add_to_batch(
         this: &RecordSet<StockPicking>,
-        _tx: &mut Transaction,
+        tx: &mut Transaction,
     ) -> Result<Value> {
+        require_group(this.as_records().env(), tx).await?;
         let ids = this.as_records().ids();
         if ids.is_empty() {
             return Err(Error::user(
@@ -986,7 +1189,8 @@ impl StockPicking {
 
 #[cfg(test)]
 mod tests {
-    use super::settled_state;
+    use super::{is_user_facing, settled_state};
+    use erp_sdk::ErrorKind;
 
     #[test]
     fn a_batch_settles_only_when_no_transfer_is_open() {
@@ -994,5 +1198,29 @@ mod tests {
         assert_eq!(settled_state(3, 0, 2), Some("done"));
         assert_eq!(settled_state(2, 0, 0), Some("cancel"));
         assert_eq!(settled_state(0, 0, 0), Some("cancel"));
+    }
+
+    /// Only errors a person can act on become a transfer's result; the others are returned so the
+    /// queue retries the chunk.
+    #[test]
+    fn only_user_facing_errors_are_recorded() {
+        for kind in [
+            ErrorKind::UserError,
+            ErrorKind::Validation,
+            ErrorKind::Access,
+            ErrorKind::Missing,
+            ErrorKind::Conflict,
+        ] {
+            assert!(is_user_facing(kind), "{kind:?}");
+        }
+        for kind in [
+            ErrorKind::Concurrency,
+            ErrorKind::Lock,
+            ErrorKind::Database,
+            ErrorKind::Programming,
+            ErrorKind::Internal,
+        ] {
+            assert!(!is_user_facing(kind), "{kind:?}");
+        }
     }
 }

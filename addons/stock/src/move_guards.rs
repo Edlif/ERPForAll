@@ -504,6 +504,12 @@ impl StockPicking {
             &mut vals_list,
         )
         .await?;
+        if vals_list.iter().any(|vals| vals.contains("batch_id"))
+            || records.env().context().contains("default_batch_id")
+        {
+            records.check_access(tx, Operation::Create).await?;
+            crate::batch::refuse_link(tx)?;
+        }
         fill_from_types(records, tx, &mut vals_list).await?;
         let mut sources: Vec<i64> = vals_list
             .iter()
@@ -549,6 +555,10 @@ impl StockPicking {
             &vals,
         )
         .await?;
+        if vals.contains("batch_id") {
+            records.check_access(tx, Operation::Write).await?;
+            crate::batch::refuse_link(tx)?;
+        }
         check_picking_write(records, tx, &vals).await?;
         let reevaluate = !records.is_empty() && STATE_INPUT_FIELDS.iter().any(|f| vals.contains(f));
         if reevaluate {

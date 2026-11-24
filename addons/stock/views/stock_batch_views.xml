@@ -36,12 +36,12 @@
             <group>
               <field name="description"/>
               <field name="user_id"/>
-              <field name="picking_type_id"/>
+              <field name="picking_type_id" readonly="state != 'draft'"/>
             </group>
             <group>
               <field name="scheduled_date"/>
               <field name="priority"/>
-              <field name="company_id"/>
+              <field name="company_id" readonly="1"/>
               <field name="validating"/>
             </group>
           </group>

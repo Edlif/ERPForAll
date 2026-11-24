@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Inventory settings through the real installer and durable settings service.
 use super::*;
-use erp_addon_base::ir_config_setting::{describe, read_values, write_values};
+use erp_addon_base::ir_config_setting::{describe, read_values, toggle_group, write_values};
 use erp_sdk::Value;
+use erp_sdk::views::wire::GroupToggleState;
 use erp_sdk::views::wire::{SettingsScope, WireId};
 use std::collections::BTreeMap;
 
@@ -808,9 +809,8 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
         }
         let description = describe(&env, &mut tx, company_scope(a)).await.unwrap();
         let json = serde_json::to_value(&description).unwrap();
-        // The feature groups that gate menus, view elements or fields are toggles, off on a fresh install, carrying
-        // the ids of the feature group and of the internal-user group.
-        let internal_group = super::security::xid(&orm, "base", "group_user").await;
+        // The feature groups that gate menus, view elements or fields are toggles, off on a fresh install; no group
+        // row ids travel.
         for (key, label, group) in [
             (
                 "stock.group_stock_multi_locations",
@@ -853,13 +853,11 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
             assert_eq!(item["label"], label, "{key}");
             assert_eq!(item["group"], format!("stock.{group}"), "{key}");
             assert_eq!(item["state"], "disabled", "{key}");
-            assert_eq!(
-                item["group_id"],
-                super::security::xid(&orm, "stock", group).await,
-                "{key}"
-            );
-            assert_eq!(item["internal_group_id"], internal_group, "{key}");
+            assert!(item.get("group_id").is_none(), "{key}");
         }
+        // A module toggle reads what the install route says: offered addons (linked into this binary) are not
+        // installed yet, other addons of the directory are not available.
+        let catalogue = erp_sdk::settings::addon_catalogue().await.unwrap().unwrap();
         for (key, module, menu) in [
             (
                 "stock.backorder_policies",
@@ -917,7 +915,13 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
             assert_eq!(item["kind"], "module");
             assert_eq!(item["label"], label);
             assert_eq!(item["addon"], addon);
-            assert_eq!(item["state"], "not_available");
+            let expected = if catalogue.offered.contains(addon) {
+                "not_installed"
+            } else {
+                assert!(catalogue.refused.contains(addon), "{addon}");
+                "not_available"
+            };
+            assert_eq!(item["state"], expected, "{key}");
             let error = write_values(
                 &env,
                 &mut tx,
@@ -1218,5 +1222,185 @@ fn stock_unit_policy_is_in_system_parameters_not_on_the_settings_page() {
             }
             tx.rollback().await.unwrap();
         }
+    });
+}
+
+/// Whether `user` holds `group`, asked through the membership check of a freshly built policy-enforcing ORM.
+async fn holds(db: &TestDb, installed: &Orm, user: i64, group: &str) -> bool {
+    let orm = super::security::secure(db, installed).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let env = tx.env();
+    let held = tx
+        .user_has_group(&env, erp_orm::UserId::new(user).unwrap(), group)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    held
+}
+
+// The Inventory group toggles through the Settings service: only Settings administrators may switch them, on
+// grants the feature to every internal user, off takes it from users who held it only that way, and off is
+// refused while another group still grants it.
+#[test]
+fn inventory_group_toggle_turns_a_feature_on_and_off_for_every_internal_user() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let installed = install(&db).await;
+        let actors = super::security::roles(&installed).await;
+        let (admin, internal, direct, manager) = (actors[0], actors[1], actors[2], actors[3]);
+        let company = super::security::xid(&installed, "base", "main_company").await;
+        let packages = super::security::xid(&installed, "stock", "group_tracking_lot").await;
+        let locations =
+            super::security::xid(&installed, "stock", "group_stock_multi_locations").await;
+        const PACKAGES: &str = "stock.group_stock_tracking_lot";
+        const LOCATIONS: &str = "stock.group_stock_multi_locations";
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        tx.env()
+            .records("res.users")
+            .unwrap()
+            .browse([direct])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "group_ids",
+                    [erp_orm::Command::link(
+                        erp_fields::RecId::from_real(packages).unwrap(),
+                    )],
+                ),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+        let toggle = async |uid: i64, key: &str, enabled: bool| {
+            let orm = super::security::secure(&db, &installed).await;
+            let mut tx = orm.begin(erp_orm::UserId::new(uid).unwrap()).await.unwrap();
+            let env = tx.env().with_company(company).unwrap();
+            let result = toggle_group(&env, &mut tx, key, enabled).await;
+            if result.is_ok() {
+                tx.commit().await.unwrap();
+            } else {
+                tx.rollback().await.unwrap();
+            }
+            result
+        };
+        assert!(!holds(&db, &installed, internal, "stock.group_tracking_lot").await);
+        assert!(holds(&db, &installed, direct, "stock.group_tracking_lot").await);
+
+        // Only Settings administrators; only declared group toggles.
+        let refused = toggle(manager, PACKAGES, true).await.unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Access);
+        assert_eq!(
+            refused.message(),
+            "Only Settings administrators may turn a feature on or off for every user."
+        );
+        let refused = toggle(admin, "stock.picking_policy", true)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Validation);
+        assert_eq!(
+            refused.message(),
+            "Setting stock.picking_policy is not a feature toggle."
+        );
+        assert!(!holds(&db, &installed, internal, "stock.group_tracking_lot").await);
+
+        // On: every internal user has the feature, and the page says so.
+        assert_eq!(
+            toggle(admin, PACKAGES, true).await.unwrap(),
+            GroupToggleState::Enabled
+        );
+        assert!(holds(&db, &installed, internal, "stock.group_tracking_lot").await);
+        let orm = super::security::secure(&db, &installed).await;
+        let mut tx = orm
+            .begin(erp_orm::UserId::new(admin).unwrap())
+            .await
+            .unwrap();
+        let env = tx.env().with_company(company).unwrap();
+        let described = serde_json::to_value(
+            describe(&env, &mut tx, company_scope(company))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let row = described["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["key"] == PACKAGES)
+            .unwrap()
+            .clone();
+        assert_eq!(row["state"], "enabled");
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(orm);
+
+        // Off: the user who held it only through the internal-user group loses it; the directly granted user keeps it.
+        assert_eq!(
+            toggle(admin, PACKAGES, false).await.unwrap(),
+            GroupToggleState::Disabled
+        );
+        assert!(!holds(&db, &installed, internal, "stock.group_tracking_lot").await);
+        assert!(holds(&db, &installed, direct, "stock.group_tracking_lot").await);
+        // The same answer again changes nothing.
+        assert_eq!(
+            toggle(admin, PACKAGES, false).await.unwrap(),
+            GroupToggleState::Disabled
+        );
+
+        // Each change wrote one Settings audit row in the global scope, by the administrator.
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        let audit = tx
+            .query(
+                "SELECT a.old_value || '>' || a.new_value || '@' || a.actor FROM ir_config_setting_audit a \
+                 JOIN ir_config_setting_scope s ON s.id = a.scope_id \
+                 WHERE a.setting_key = $1 AND s.identity = 'global' ORDER BY a.id",
+                &[&PACKAGES],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            audit,
+            [
+                format!("false>true@user:{admin}"),
+                format!("true>false@user:{admin}")
+            ]
+        );
+        // Another group now grants the feature too (Multiple locations implies Packages).
+        tx.env()
+            .records("res.groups")
+            .unwrap()
+            .browse([locations])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "implied_ids",
+                    [erp_orm::Command::link(
+                        erp_fields::RecId::from_real(packages).unwrap(),
+                    )],
+                ),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert_eq!(
+            toggle(admin, LOCATIONS, true).await.unwrap(),
+            GroupToggleState::Enabled
+        );
+        assert!(holds(&db, &installed, internal, "stock.group_tracking_lot").await);
+        // Off for Packages would not be true while Multiple locations is on: refused, naming the group.
+        let refused = toggle(admin, PACKAGES, false).await.unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Validation);
+        assert_eq!(
+            refused.message(),
+            "Packages stays on for every internal user through the group stock.group_stock_multi_locations; \
+             change that group instead."
+        );
+        assert!(holds(&db, &installed, internal, "stock.group_tracking_lot").await);
     });
 }
