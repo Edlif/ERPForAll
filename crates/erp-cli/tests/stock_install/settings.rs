@@ -839,14 +839,50 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
             "Unavailable until a later release supplies route activation."
         );
         let action = super::security::xid(&orm, "stock", "inventory_addons_action").await;
-        for item in json["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|i| i["key"].as_str().unwrap().starts_with("stock.module_"))
-        {
+        for (key, label) in [
+            (
+                "stock.module_product_expiry",
+                "Set up expiry dates in Addons",
+            ),
+            ("stock.module_stock_sms", "Set up text delivery in Addons"),
+            ("stock.module_delivery", "Set up carriers in Addons"),
+            (
+                "stock.module_stock_dropshipping",
+                "Set up direct supplier delivery in Addons",
+            ),
+        ] {
+            let item = json["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["key"] == key)
+                .unwrap();
             assert_eq!(item["kind"], "link");
+            assert_eq!(item["label"], label);
             assert_eq!(item["target"]["id"], action);
+        }
+        for (key, label) in [
+            ("stock.module_stock_fleet", "Transport"),
+            ("stock.module_stock_barcode", "Scanning"),
+            ("stock.module_stock_barcode_barcodelookup", "Barcode lookup"),
+            ("stock.module_quality_control", "Quality checks"),
+            (
+                "stock.module_quality_control_worksheet",
+                "Quality worksheets",
+            ),
+        ] {
+            let item = json["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["key"] == key)
+                .unwrap();
+            assert_eq!(item["kind"], "info");
+            assert_eq!(item["value"], format!("{label} (unavailable)"));
+            assert_eq!(
+                item["detail"],
+                "Unavailable until a later release supplies this addon."
+            );
         }
         let error = write_values(
             &env,

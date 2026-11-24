@@ -7,6 +7,7 @@ const GROUPS: &str = "Unavailable until a later release supplies feature-group c
 const TRACKING: &str =
     "Unavailable until a later release and a later release supply tracking controls.";
 const ROUTES: &str = "Unavailable until a later release supplies route activation.";
+const ADDONS: &str = "Unavailable until a later release supplies this addon.";
 const FEATURES: &[(&str, &str, &str, &str)] = &[
     (
         "stock.group_stock_multi_locations",
@@ -74,6 +75,31 @@ const FEATURES: &[(&str, &str, &str, &str)] = &[
         "Warehouse",
         ROUTES,
     ),
+    (
+        "stock.module_stock_fleet",
+        "Transport",
+        "Operations",
+        ADDONS,
+    ),
+    ("stock.module_stock_barcode", "Scanning", "Barcode", ADDONS),
+    (
+        "stock.module_stock_barcode_barcodelookup",
+        "Barcode lookup",
+        "Barcode",
+        ADDONS,
+    ),
+    (
+        "stock.module_quality_control",
+        "Quality checks",
+        "Operations",
+        ADDONS,
+    ),
+    (
+        "stock.module_quality_control_worksheet",
+        "Quality worksheets",
+        "Operations",
+        ADDONS,
+    ),
 ];
 // Each shortcut opens the ordinary menu of the records that own the policy.
 const CONFIGURATION: &[(&str, &str, &str, &str, &str)] = &[
@@ -123,34 +149,9 @@ const MODULES: &[(&str, &str, &str)] = &[
         "Shipping",
     ),
     (
-        "stock.module_stock_fleet",
-        "Set up transport in Addons",
-        "Operations",
-    ),
-    (
         "stock.module_stock_dropshipping",
-        "Set up direct supplier delivery",
+        "Set up direct supplier delivery in Addons",
         "Warehouse",
-    ),
-    (
-        "stock.module_stock_barcode",
-        "Set up scanning in Addons",
-        "Barcode",
-    ),
-    (
-        "stock.module_stock_barcode_barcodelookup",
-        "Set up barcode lookup in Addons",
-        "Barcode",
-    ),
-    (
-        "stock.module_quality_control",
-        "Set up quality checks in Addons",
-        "Operations",
-    ),
-    (
-        "stock.module_quality_control_worksheet",
-        "Set up quality worksheets in Addons",
-        "Operations",
     ),
 ];
 fn items() -> Result<Vec<PanelItemDecl>> {
