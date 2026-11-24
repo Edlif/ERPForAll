@@ -317,7 +317,9 @@ async fn set_groups(orm: &Orm, user: i64, command: Command) {
 fn batch_group_refusal(error: &erp_sdk::Error, what: &str) {
     assert_eq!(error.kind(), ErrorKind::Access, "{what}: {error:?}");
     assert!(
-        error.message().contains("Batch transfers are not turned on"),
+        error
+            .message()
+            .contains("Batch transfers are not turned on"),
         "{what}: {}",
         error.message()
     );
@@ -349,7 +351,10 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
         )
         .await;
         let product: i64 = setup
-            .query("SELECT id FROM product_product WHERE product_tmpl_id = $1", &[&template])
+            .query(
+                "SELECT id FROM product_product WHERE product_tmpl_id = $1",
+                &[&template],
+            )
             .await
             .unwrap()[0]
             .get(0);
@@ -406,9 +411,20 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
                     .set_cell("picking_id", Cell::Id(picking)),
             )
             .await;
-            let records = setup.env().records("stock.picking").unwrap().browse([picking]).unwrap();
-            records.call::<(), ()>(&mut setup, "action_confirm", ()).await.unwrap();
-            records.call::<(), ()>(&mut setup, "action_assign", ()).await.unwrap();
+            let records = setup
+                .env()
+                .records("stock.picking")
+                .unwrap()
+                .browse([picking])
+                .unwrap();
+            records
+                .call::<(), ()>(&mut setup, "action_confirm", ())
+                .await
+                .unwrap();
+            records
+                .call::<(), ()>(&mut setup, "action_assign", ())
+                .await
+                .unwrap();
             receipts.push(picking);
         }
         let grouped = user(&mut setup, "batch-user", company, stock_user).await;
@@ -423,7 +439,10 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
             .env()
             .records("stock.picking.batch")
             .unwrap()
-            .create(&mut tx, vec![RawVals::new().set_cell("description", Cell::Str("Dock".into()))])
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("description", Cell::Str("Dock".into()))],
+            )
             .await
             .unwrap()
             .ids()[0];
@@ -449,9 +468,20 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
             .call::<(), erp_sdk::Value>(&mut tx, "action_add_to_batch", ())
             .await
             .unwrap();
-        let batches = tx.env().records("stock.picking.batch").unwrap().browse([batch]).unwrap();
-        batches.call::<(), ()>(&mut tx, "action_confirm", ()).await.unwrap();
-        batches.call::<(), ()>(&mut tx, "action_done", ()).await.unwrap();
+        let batches = tx
+            .env()
+            .records("stock.picking.batch")
+            .unwrap()
+            .browse([batch])
+            .unwrap();
+        batches
+            .call::<(), ()>(&mut tx, "action_confirm", ())
+            .await
+            .unwrap();
+        batches
+            .call::<(), ()>(&mut tx, "action_done", ())
+            .await
+            .unwrap();
         // a result row is never written by the user
         let error = tx
             .env()
@@ -498,7 +528,11 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
             .env()
             .records("stock.picking.batch")
             .unwrap()
-            .call::<(erp_sdk::jobs::StepArgs,), erp_sdk::jobs::StepOutcome>(&mut tx, "run_validate_step", (args,))
+            .call::<(erp_sdk::jobs::StepArgs,), erp_sdk::jobs::StepOutcome>(
+                &mut tx,
+                "run_validate_step",
+                (args,),
+            )
             .await
             .unwrap();
         assert!(outcome.finished);
@@ -516,7 +550,10 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
             .collect();
         assert_eq!(results, ["done", "done"]);
         let state: String = check
-            .query("SELECT state FROM stock_picking_batch WHERE id = $1", &[&batch])
+            .query(
+                "SELECT state FROM stock_picking_batch WHERE id = $1",
+                &[&batch],
+            )
             .await
             .unwrap()[0]
             .get(0);
@@ -525,8 +562,18 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
 
         // an Inventory operator without the group is refused everywhere, by name
         let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
-        let batches = tx.env().records("stock.picking.batch").unwrap().browse([batch]).unwrap();
-        for method in ["action_confirm", "action_assign", "action_cancel", "action_done"] {
+        let batches = tx
+            .env()
+            .records("stock.picking.batch")
+            .unwrap()
+            .browse([batch])
+            .unwrap();
+        for method in [
+            "action_confirm",
+            "action_assign",
+            "action_cancel",
+            "action_done",
+        ] {
             let error = tx
                 .savepoint({
                     let records = batches.clone();
@@ -557,10 +604,10 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
             .unwrap()
             .create(
                 &mut tx,
-                vec![RawVals::new().set_commands(
-                    "picking_ids",
-                    [Command::set([group_id(receipts[0])])],
-                )],
+                vec![
+                    RawVals::new()
+                        .set_commands("picking_ids", [Command::set([group_id(receipts[0])])]),
+                ],
             )
             .await
             .unwrap();
@@ -573,12 +620,18 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
             .env()
             .records("stock.picking.batch")
             .unwrap()
-            .create(&mut tx, vec![RawVals::new().set_cell("description", Cell::Str("No".into()))])
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("description", Cell::Str("No".into()))],
+            )
             .await
             .unwrap_err();
         batch_group_refusal(&error, "create");
         let error = batches
-            .write(&mut tx, RawVals::new().set_cell("description", Cell::Str("No".into())))
+            .write(
+                &mut tx,
+                RawVals::new().set_cell("description", Cell::Str("No".into())),
+            )
             .await
             .unwrap_err();
         batch_group_refusal(&error, "write");

@@ -950,7 +950,11 @@ async fn a_lost_validation_job_does_not_hold_the_batch() {
     for method in ["action_cancel", "action_done", "action_assign"] {
         let error = f.call_batch(&mut tx, batch, method).await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::UserError, "{method}: {error:?}");
-        assert!(error.message().contains("being validated"), "{method}: {}", error.message());
+        assert!(
+            error.message().contains("being validated"),
+            "{method}: {}",
+            error.message()
+        );
     }
     // the job dies: the flag no longer holds the batch
     tx.execute(
@@ -1199,7 +1203,9 @@ async fn an_error_nobody_can_act_on_goes_back_to_the_queue() {
         .unwrap();
     let batch = f.batch(&mut tx).await.unwrap();
     f.add(&mut tx, batch, &[boom]).await.unwrap();
-    f.call_batch(&mut tx, batch, "action_confirm").await.unwrap();
+    f.call_batch(&mut tx, batch, "action_confirm")
+        .await
+        .unwrap();
     f.call_batch(&mut tx, batch, "action_done").await.unwrap();
     let args = StepArgs {
         payload: f.queued(&mut tx, batch, 1).await,
@@ -1214,7 +1220,11 @@ async fn an_error_nobody_can_act_on_goes_back_to_the_queue() {
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Programming, "{error:?}");
-    assert!(error.message().contains("injected failure"), "{}", error.message());
+    assert!(
+        error.message().contains("injected failure"),
+        "{}",
+        error.message()
+    );
     assert!(results(&mut tx, batch, 1).await.is_empty());
     assert_ne!(picking_state(&mut tx, boom).await, "done");
 }
