@@ -12,6 +12,25 @@ publish.workspace = true
 erp-sdk = { workspace = true }
 erp-addon-purchase_stock = { workspace = true }
 erp-addon-sale_stock = { workspace = true }
+erp-addon-stock = { workspace = true }
+
+[dev-dependencies]
+erp-testkit = { workspace = true }
+erp-addon-base = { workspace = true }
+erp-addon-uom = { workspace = true }
+erp-addon-product = { workspace = true }
+erp-addon-barcodes = { workspace = true }
+erp-addon-barcodes_gs1_nomenclature = { workspace = true }
+erp-addon-stock = { workspace = true }
+erp-addon-web = { workspace = true }
+erp-addon-reporting = { workspace = true }
+erp-addon-analytic = { workspace = true }
+erp-addon-account = { workspace = true }
+erp-addon-stock_account = { workspace = true }
+erp-addon-purchase = { workspace = true }
+erp-addon-sale = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+toml = { workspace = true }
 
 [lints]
 workspace = true
