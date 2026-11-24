@@ -5169,20 +5169,23 @@ pub async fn test_get_views(
     .await
 }
 
-/// Trusted test helper: every field of `model`'s default form, with whether the client shows it
-/// read-only on a record whose fields `names` hold the given values. The rule is the client's
-/// (`field-modifiers.ts`): the field's own read-only flag, or its `readonly` expression evaluated
-/// on the record. A field placed twice is read-only only when every placement is. An expression
-/// that reads a name missing from `names` fails the call.
+/// Trusted test helper: every field of `model`'s form `view` (the default one for `None`), with
+/// whether the client lets a user edit it on a record whose fields `names` hold the given values.
+/// The rule is the client's (`field-modifiers.ts`): the field's own read-only flag, or its
+/// `readonly` expression evaluated on the record; a placement hidden by its `invisible`
+/// expression is not editable either. A field placed twice is read-only only when every placement
+/// is. An expression that reads a name missing from `names` fails the call.
 #[cfg(feature = "test-support")]
 pub async fn test_form_readonly(
     env: &Env,
     tx: &mut Transaction,
     model: &str,
+    view: Option<i64>,
     names: &[(&str, erp_sdk::expr::ExprValue)],
 ) -> Result<BTreeMap<String, bool>> {
     use erp_sdk::expr::{EvalContext, eval_ast, wire::ValidatedAst};
-    let form = Value::list([Value::False, Value::str("form")]);
+    let view_id = view.map_or(Value::False, Value::Int);
+    let form = Value::list([view_id, Value::str("form")]);
     let description = test_get_views(env, tx, model, vec![form], 32 * 1024 * 1024).await?;
     let description = serde_json::to_value(&description).map_err(|e| {
         Error::internal("The view description could not be encoded.").with_source(e)
@@ -5204,20 +5207,21 @@ pub async fn test_form_readonly(
         let Some(name) = node["field"]["name"].as_str() else {
             return Err(Error::internal("A form field node has no name."));
         };
-        let own = description["fields"][model][name]["readonly"] == true;
-        let readonly = match &node["modifiers"]["readonly"] {
-            serde_json::Value::Null => own,
-            document => {
-                let bytes = serde_json::to_vec(document).map_err(|e| {
-                    Error::internal("A modifier could not be encoded.").with_source(e)
-                })?;
-                let ast = ValidatedAst::from_json(&bytes)
-                    .map_err(|e| Error::internal(format!("readonly of {name}: {}", e.message())))?;
-                let value = eval_ast(ast.as_expr(), &ctx)
-                    .map_err(|e| Error::internal(format!("readonly of {name}: {e}")))?;
-                value.is_truthy() || own
+        let holds = |modifier: &str| -> Result<bool> {
+            let document = &node["modifiers"][modifier];
+            if document.is_null() {
+                return Ok(false);
             }
+            let bytes = serde_json::to_vec(document)
+                .map_err(|e| Error::internal("A modifier could not be encoded.").with_source(e))?;
+            let ast = ValidatedAst::from_json(&bytes)
+                .map_err(|e| Error::internal(format!("{modifier} of {name}: {}", e.message())))?;
+            let value = eval_ast(ast.as_expr(), &ctx)
+                .map_err(|e| Error::internal(format!("{modifier} of {name}: {e}")))?;
+            Ok(value.is_truthy())
         };
+        let own = description["fields"][model][name]["readonly"] == true;
+        let readonly = own || holds("readonly")? || holds("invisible")?;
         let entry = result.entry(name.to_owned()).or_insert(true);
         *entry = *entry && readonly;
     }

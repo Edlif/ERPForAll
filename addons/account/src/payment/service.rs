@@ -120,6 +120,29 @@ pub(super) async fn refuse_posted(tx: &mut Transaction, ids: &[i64], what: &str)
     Ok(())
 }
 
+/// Refuses a change of `what` on the cancelled or rejected payments of `ids`, naming the first:
+/// such a payment is reset to draft before it is changed. The state itself moves only through
+/// the payment's actions, so Reset to Draft is not refused here.
+pub(super) async fn refuse_ended(tx: &mut Transaction, ids: &[i64], what: &str) -> Result<()> {
+    tx.flush().await?;
+    let rows = tx
+        .query(
+            "SELECT COALESCE(name, 'Draft Payment'), state::text FROM account_payment \
+             WHERE id = ANY($1::int8[]) AND state IN ('canceled', 'rejected') ORDER BY id LIMIT 1",
+            &[&ids],
+        )
+        .await?;
+    if let Some(row) = rows.first() {
+        let name: String = row.try_get(0).map_err(db)?;
+        let state: String = row.try_get(1).map_err(db)?;
+        let state = if state == "canceled" { "cancelled" } else { "rejected" };
+        return Err(Error::user(format!(
+            "Payment {name} is {state}: {what} cannot be changed. Reset it to draft first."
+        )));
+    }
+    Ok(())
+}
+
 /// The memo of the posted payments of `ids` becomes their entries' reference (the entry write
 /// keeps its own rights and rules).
 pub(super) async fn memo_to_entries(tx: &mut Transaction, env: &Env, ids: &[i64]) -> Result<()> {

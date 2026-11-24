@@ -7,7 +7,7 @@
     <field name="inherit_id" ref="account.view_invoice_line_form"/>
     <field name="arch" type="xml">
       <xpath expr="//field[@name='product_id']" position="after">
-        <field name="sale_line_id" groups="sales_team.group_sale_salesman" domain="[('state', '=', 'sale'), ('product_id', '=', product_id)]"/>
+        <field name="sale_line_id" groups="sales_team.group_sale_salesman" readonly="parent_state != 'draft'" domain="[('state', '=', 'sale'), ('product_id', '=', product_id)]"/>
       </xpath>
     </field>
   </record>

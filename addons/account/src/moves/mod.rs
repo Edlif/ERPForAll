@@ -20,6 +20,7 @@ mod line;
 mod post;
 
 pub use line::AccountMoveLine;
+pub use post::{POSTED_LINE_WRITABLE, POSTED_MOVE_WRITABLE};
 pub(crate) use post::refuse_locked_items;
 pub use post::{POSTER_GROUP, cancel_moves, post_moves, reset_moves};
 

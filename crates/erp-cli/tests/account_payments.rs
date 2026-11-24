@@ -506,8 +506,36 @@ async fn refusals_body() {
         try_call(&wrong, &mut tx, "action_post").await.unwrap_err(),
         "reset it to draft",
     );
+    // a cancelled payment keeps what feeds its entry, for every caller; its memo still changes
+    for elevated in [false, true] {
+        let target = wrong.sudo(elevated);
+        for (field, value) in [
+            ("amount", Cell::Decimal(num("21"))),
+            ("date", Cell::Date(d(2024, 2, 2))),
+            ("partner_id", Cell::Id(b.vendor)),
+            ("journal_id", Cell::Id(other_bank)),
+        ] {
+            let err = target
+                .write(&mut tx, RawVals::new().set_cell(field, value))
+                .await
+                .unwrap_err();
+            refused(err, "is cancelled");
+        }
+    }
+    wrong
+        .write(&mut tx, RawVals::new().set_cell("memo", text("kept")))
+        .await
+        .unwrap();
     try_call(&wrong, &mut tx, "action_draft").await.unwrap();
     assert_eq!(string(&wrong, &mut tx, "state").await, "draft");
+    // back in draft it changes again
+    wrong
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("amount", Cell::Decimal(num("21"))),
+        )
+        .await
+        .unwrap();
     refused(
         try_call(&wrong, &mut tx, "action_validate")
             .await
