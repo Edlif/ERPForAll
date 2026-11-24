@@ -13,8 +13,8 @@
 //! done. A transfer without any reserved quantity leaves the batch (result `detached`). A run is
 //! never repeated for a transfer that already has a result in it, so a retried chunk is harmless.
 //!
-//! The feature group `stock.group_stock_picking_batch` only shows the menu, the button and the field;
-//! the batch models themselves are open to every Inventory user.
+//! The feature group `stock.group_stock_picking_batch` shows the menu, the button and the field, and
+//! every batch action checks it (an administrator is not exempt unless acting as the system).
 //!
 //! Not here yet: waves, automatic batching, merging batches, the batch report, scheduled date and
 //! responsible propagation to the transfers, and the batch state following a transfer that is
@@ -302,6 +302,20 @@ fn settled_state(total: i64, open: i64, done: i64) -> Option<&'static str> {
     }
 }
 
+/// The feature group of batch transfers.
+const GROUP: &str = "stock.group_stock_picking_batch";
+
+/// The batch actions are for users of the feature group.
+async fn require_group(env: &Env, tx: &mut Transaction) -> Result<()> {
+    if env.su() || tx.has_group(env, GROUP).await? {
+        Ok(())
+    } else {
+        Err(Error::access(
+            "Batch transfers are not turned on for you: ask an administrator to enable Batch transfers in the Inventory settings.",
+        ))
+    }
+}
+
 fn bounded(text: &str) -> String {
     text.chars().take(MAX_MESSAGE).collect()
 }
@@ -447,6 +461,7 @@ pub(crate) async fn add_pickings(
     if ids.is_empty() {
         return Err(Error::user("Select at least one transfer to add."));
     }
+    require_group(env, tx).await?;
     check_write(env, tx, batch, &ids).await?;
     let head = header(tx, batch).await?;
     if !matches!(head.state.as_str(), "draft" | "in_progress") {
@@ -725,6 +740,7 @@ impl StockPickingBatch {
     ) -> Result<()> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
         records.check_access(tx, Operation::Write).await?;
         let head = header(tx, id).await?;
         if head.state != "draft" {
@@ -771,6 +787,7 @@ impl StockPickingBatch {
     ) -> Result<()> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
         records.check_access(tx, Operation::Write).await?;
         let head = header(tx, id).await?;
         if head.state != "in_progress" || held(tx, id, &head).await? {
@@ -810,6 +827,7 @@ impl StockPickingBatch {
     ) -> Result<()> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
         records.check_access(tx, Operation::Write).await?;
         let head = header(tx, id).await?;
         let running = held(tx, id, &head).await?;
@@ -858,6 +876,7 @@ impl StockPickingBatch {
     ) -> Result<()> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
         records.check_access(tx, Operation::Write).await?;
         let head = header(tx, id).await?;
         if head.state != "in_progress" {
@@ -917,9 +936,10 @@ impl StockPickingBatch {
     #[rpc(effect = read)]
     pub async fn action_add_transfers(
         this: &RecordSet<StockPickingBatch>,
-        _tx: &mut Transaction,
+        tx: &mut Transaction,
     ) -> Result<Value> {
         let id = this.as_records().ensure_one()?.int()?;
+        require_group(this.as_records().env(), tx).await?;
         Ok(dialog(
             json!({ "default_mode": "existing", "default_batch_id": id }),
         ))
@@ -1074,6 +1094,7 @@ impl StockPickingToBatch {
     ) -> Result<Value> {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
         tx.flush().await?;
         let ids: Vec<i64> = tx
             .query(
@@ -1153,8 +1174,9 @@ impl StockPicking {
     #[rpc(effect = read)]
     pub async fn action_add_to_batch(
         this: &RecordSet<StockPicking>,
-        _tx: &mut Transaction,
+        tx: &mut Transaction,
     ) -> Result<Value> {
+        require_group(this.as_records().env(), tx).await?;
         let ids = this.as_records().ids();
         if ids.is_empty() {
             return Err(Error::user(
@@ -1167,7 +1189,8 @@ impl StockPicking {
 
 #[cfg(test)]
 mod tests {
-    use super::settled_state;
+    use super::{is_user_facing, settled_state};
+    use erp_sdk::ErrorKind;
 
     #[test]
     fn a_batch_settles_only_when_no_transfer_is_open() {
@@ -1175,5 +1198,17 @@ mod tests {
         assert_eq!(settled_state(3, 0, 2), Some("done"));
         assert_eq!(settled_state(2, 0, 0), Some("cancel"));
         assert_eq!(settled_state(0, 0, 0), Some("cancel"));
+    }
+
+    /// Only errors a person can act on become a transfer's result; the others are returned so the
+    /// queue retries the chunk.
+    #[test]
+    fn only_user_facing_errors_are_recorded() {
+        for kind in [ErrorKind::UserError, ErrorKind::Validation, ErrorKind::Access, ErrorKind::Missing, ErrorKind::Conflict] {
+            assert!(is_user_facing(kind), "{kind:?}");
+        }
+        for kind in [ErrorKind::Concurrency, ErrorKind::Lock, ErrorKind::Database, ErrorKind::Programming, ErrorKind::Internal] {
+            assert!(!is_user_facing(kind), "{kind:?}");
+        }
     }
 }
