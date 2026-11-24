@@ -341,6 +341,11 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
             "stock.group_tracking_owner",
         ),
         (
+            "stock.group_warning_stock",
+            "Partner stock warnings",
+            "stock.group_warning_stock",
+        ),
+        (
             "stock.group_stock_picking_batch",
             "Batch transfers",
             "stock.group_stock_picking_batch",
@@ -365,7 +370,6 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
     for key in [
         "stock.group_stock_lot_print_gs1",
         "stock.group_lot_on_delivery_slip",
-        "stock.group_warning_stock",
         "stock.group_stock_sign_delivery",
     ] {
         let item = items.iter().find(|i| i.key() == key).expect(key);

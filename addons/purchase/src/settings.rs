@@ -85,6 +85,25 @@ fn setup_links() -> Result<Vec<PanelItemDecl>> {
     .collect()
 }
 
+const GROUP_TOGGLES: &[(&str, &str, &str, &str)] = &[(
+    "purchase.group_warning_purchase",
+    "Warnings",
+    "Orders",
+    crate::WARNING_GROUP,
+)];
+
+fn group_toggles() -> Result<Vec<PanelItemDecl>> {
+    GROUP_TOGGLES
+        .iter()
+        .map(|(key, label, block, group)| {
+            PanelItemDecl::group_toggle(key, label, group)?
+                .block(block)?
+                .sequence(100)
+                .access(&["base.group_system"])
+        })
+        .collect()
+}
+
 const MODULES: &[(&str, &str, &str, &str)] = &[
     (
         "purchase.module_three_way_match",
@@ -114,6 +133,7 @@ fn module_toggles() -> Result<Vec<PanelItemDecl>> {
 
 fn panel_items() -> Result<Vec<PanelItemDecl>> {
     let mut items = setup_links()?;
+    items.extend(group_toggles()?);
     items.extend(module_toggles()?);
     Ok(items)
 }
@@ -310,11 +330,38 @@ mod tests {
     fn module_toggles_declare_existing_addons_for_administrators() {
         use erp_sdk::settings::PanelItemKind;
         let items = panel_items().unwrap();
-        assert_eq!(items.len(), 6);
+        assert_eq!(items.len(), 7);
         let mut keys = std::collections::BTreeSet::new();
         for item in &items {
             assert!(keys.insert(item.key()), "duplicate key {}", item.key());
         }
+        let group_items: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item.kind() {
+                PanelItemKind::Group { group, .. } => Some((
+                    item.key(),
+                    item.block_title(),
+                    item.label(),
+                    group.as_str(),
+                    item.read_groups().to_vec(),
+                    item.scope_restriction(),
+                    item.display_sequence(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            group_items,
+            [(
+                "purchase.group_warning_purchase",
+                "Orders",
+                "Warnings",
+                crate::WARNING_GROUP,
+                vec!["base.group_system".to_string()],
+                None,
+                100,
+            )]
+        );
         let toggles: Vec<_> = items
             .iter()
             .filter_map(|item| match item.kind() {

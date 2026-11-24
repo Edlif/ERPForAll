@@ -334,4 +334,14 @@ pub struct StockPicking {
     /// `assigned` only while it is 0, that is, while every non-scrap move is make-to-stock.
     #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub mto_nonscrap_count: i32,
+    /// Non-blocking partner and parent company warning messages for this transfer.
+    #[field(
+        text,
+        compute = "_compute_picking_warning_text",
+        compute_sudo = true,
+        readonly = true,
+        copy = false,
+        string = "Transfer Warning"
+    )]
+    pub picking_warning_text: Option<Arc<str>>,
 }

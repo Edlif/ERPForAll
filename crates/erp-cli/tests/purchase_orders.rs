@@ -41,6 +41,8 @@ mod replenish;
 mod returns;
 #[path = "purchase_orders/settings.rs"]
 mod settings;
+#[path = "purchase_orders/warnings.rs"]
+mod warnings;
 
 fn addons_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -205,8 +207,35 @@ fn purchase_installs_with_groups_access_sequence_and_settings() {
             .await,
             [
                 "group_purchase_manager=Administrator/Purchase",
-                "group_purchase_user=User/Purchase"
+                "group_purchase_user=User/Purchase",
+                "group_warning_purchase=Purchase warnings on products and vendors/-",
             ]
+        );
+        // group_warning_purchase is a light feature group and is not implied by base.group_user
+        // by default.
+        assert_eq!(
+            strings(
+                &mut tx,
+                "SELECT count(*)::text FROM res_groups_implied_rel r \
+                 JOIN ir_model_data g ON g.model = 'res.groups' AND g.res_id = r.hid \
+                 WHERE g.module = 'purchase' AND g.name = 'group_warning_purchase'"
+            )
+            .await,
+            ["0"],
+            "purchase.group_warning_purchase has no default implication"
+        );
+        assert_eq!(
+            strings(
+                &mut tx,
+                "SELECT count(*)::text FROM res_groups_implied_rel r \
+                 JOIN ir_model_data g ON g.model = 'res.groups' AND g.res_id = r.gid \
+                 JOIN ir_model_data l ON l.model = 'res.groups' AND l.res_id = r.hid \
+                 WHERE g.module = 'purchase' AND g.name = 'group_warning_purchase' \
+                 AND l.module = 'base' AND l.name = 'group_user_regular'"
+            )
+            .await,
+            ["0"],
+            "purchase.group_warning_purchase is classified as a light group"
         );
         // the administrator group implies the user group, the user group the internal user
         assert_eq!(
