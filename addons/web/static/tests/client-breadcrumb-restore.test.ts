@@ -98,6 +98,7 @@ beforeEach(() => {
       const result = body["result"] as { name: string; res_model: string; views: [number | false, string][]; domain?: unknown[] };
       value = { wire_major: 1, result: { kind: "current_window", name: result.name, model: result.res_model, views: result.views.map(([id, type]) => ({ id: id === false ? null : id, type })), domain: result.domain ?? [], context: {} } };
     }
+    else if (call === "res.company/get_views") value = companyViews;
     else if (call === "res.company/web_search_read") value = { length: 1, records: [{ id: 9, name: "Company record" }] };
     else if (call === "test.note/web_search_read") value = { length: 2, records: [{ id: 5, name: "Source record" }, { id: 6, name: "Parent record" }] };
     else if (call === "test.note/web_read" || call === "res.company/web_read") {
