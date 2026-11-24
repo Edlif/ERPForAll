@@ -15,28 +15,41 @@ export class ExpiredMethodAction extends ClientError {
   constructor() { super("validation", "This related action has expired. Open its originating menu again."); }
 }
 
+/** Largest method action kept, as JSON bytes. */
+export const MAX_METHOD_ACTION_BYTES = 32768;
+/** Most method actions kept. */
+export const MAX_METHOD_ACTIONS = 64;
+
 /** Bounded page-lifetime state. URLs/history reference identities, never action payloads.
- * An unknown/evicted identity is an explicit error; it must never open an unfiltered list. */
+ * An unknown/evicted identity is an explicit error; it must never open an unfiltered list.
+ * `keep` hears every entry added and removed (the tab's store keeps them for a reload). */
 export class MethodActions {
   private readonly page = crypto.randomUUID();
   private next = 0;
   private readonly entries = new Map<string, MethodAction>();
+  constructor(private readonly keep?: { save(id: string, entry: MethodAction): void; remove(id: string): void }) {}
   add(entry: MethodAction): string {
     if (!Number.isSafeInteger(this.next + 1)) throw new ClientError("unsupported", "Method-action identities are exhausted. Reload the page.");
-    if (new TextEncoder().encode(JSON.stringify(entry)).length > 32768) throw new ClientError("server", "Method-action state is too large.");
     const id = `${this.page}:${++this.next}`;
+    this.restore(id, entry);
+    return id;
+  }
+  /** Puts an entry back under its identity (one admitted again after a reload). */
+  restore(id: string, entry: MethodAction): void {
+    if (new TextEncoder().encode(JSON.stringify(entry)).length > MAX_METHOD_ACTION_BYTES) throw new ClientError("server", "Method-action state is too large.");
+    this.entries.delete(id);
     this.entries.set(id, structuredClone(entry));
-    if (this.entries.size > 64) {
+    if (this.entries.size > MAX_METHOD_ACTIONS) {
       const oldest = this.entries.keys().next().value;
       if (oldest !== undefined) this.entries.delete(oldest);
     }
-    return id;
+    this.keep?.save(id, entry);
   }
   get(id: string): MethodAction {
     const entry = this.entries.get(id);
     if (!entry) throw new ExpiredMethodAction();
     return entry;
   }
-  remove(id: string): void { this.entries.delete(id); }
+  remove(id: string): void { this.entries.delete(id); this.keep?.remove(id); }
   clear(): void { this.entries.clear(); }
 }

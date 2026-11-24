@@ -21,13 +21,16 @@ const char = (model: string) => ({ kind: "field", force_save: false, field: { mo
 const link = (name: string, label: string, model: string) => ({ kind: "field", force_save: false, field: { model, name }, widget: "many2one", options: {}, modifiers, label });
 const relation = (label: string, target: string) => ({ type: "many2one", label, required: false, readonly: true, relation: target, relation_field: null, selection: null });
 const nameField = { type: "char", label: "Name", required: true, readonly: false, relation: null, relation_field: null, selection: null };
+const details = { size: "normal", circle: false, classes: [], debounce_ms: 0, block_ui: false };
 
 const noteViews = {
   wire_major: 1, registry_version: "r1", description_version: "n1", model: "test.note", notices: [],
   fields: { "test.note": { name: nameField, company_id: relation("Company", "res.company") } },
   views: [
     { identity: { kind: "stored", id: 1 }, type: "form", schema_major: 1, renderer: "web.form", root: 0,
-      nodes: [{ kind: "form", record_mode: "record", children: [1, 2] }, char("test.note"), link("company_id", "Company", "test.note")] },
+      nodes: [{ kind: "form", record_mode: "record", children: [3, 1, 2] }, char("test.note"), link("company_id", "Company", "test.note"),
+        { kind: "header", children: [4] },
+        { kind: "button", name: "action_view_companies", button_type: "object", label: "Note companies", variant: "secondary", confirm: null, modifiers, details }] },
     { identity: { kind: "stored", id: 2 }, type: "list", schema_major: 1, renderer: "web.list", root: 0, nodes: [{ kind: "list", children: [1] }, char("test.note")] }
   ]
 };
@@ -51,6 +54,8 @@ let app: HumanApp | undefined;
 let root: HTMLElement;
 /** Records the server refuses to read (`web_read` answers 403). */
 let refused: Set<number>;
+/** Whether the server refuses to admit a related list again. */
+let refuseList: boolean;
 const calls: string[] = [];
 const showModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "showModal");
 const closeDialog = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "close");
@@ -59,6 +64,7 @@ beforeEach(() => {
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value(this: HTMLDialogElement) { this.open = true; } });
   Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value(this: HTMLDialogElement) { this.open = false; } });
   refused = new Set();
+  refuseList = false;
   calls.length = 0;
   configureClientTemplates([{
     name: "web.HumanControlPanel",
@@ -85,6 +91,15 @@ beforeEach(() => {
       ? { menu: 11, any_record: true, action: companiesAction, views: companyViews }
       : { menu: 10, any_record: true, action: notesAction, views: noteViews };
     else if (call.endsWith("erp_load_web_action_views")) value = (body["ids"] as number[])[0] === 21 ? { action: companiesAction, views: companyViews } : { action: notesAction, views: noteViews };
+    else if (call === "test.note/action_view_companies") value = { type: "ir.actions.act_window", name: "Note companies", res_model: "res.company", target: "current", views: [[false, "list"], [false, "form"]], domain: [["id", "=", 9]] };
+    else if (call.endsWith("erp_normalize_action_result")) {
+      if (refuseList) return new Response(JSON.stringify({ name: "erp.exceptions.AccessError", message: "You may not read these records." }), { status: 403, headers: { "Content-Type": "application/json" } });
+      // The server's admission of a window result, reduced to what these cases send.
+      const result = body["result"] as { name: string; res_model: string; views: [number | false, string][]; domain?: unknown[] };
+      value = { wire_major: 1, result: { kind: "current_window", name: result.name, model: result.res_model, views: result.views.map(([id, type]) => ({ id: id === false ? null : id, type })), domain: result.domain ?? [], context: {} } };
+    }
+    else if (call === "res.company/get_views") value = companyViews;
+    else if (call === "res.company/web_search_read") value = { length: 1, records: [{ id: 9, name: "Company record" }] };
     else if (call === "test.note/web_search_read") value = { length: 2, records: [{ id: 5, name: "Source record" }, { id: 6, name: "Parent record" }] };
     else if (call === "test.note/web_read" || call === "res.company/web_read") {
       const id = (body["ids"] as number[])[0]!;
@@ -256,4 +271,64 @@ test("an address opened afresh starts its own trail; sign-out erases the store",
   sessionStorage.setItem(NAVIGATION_KEY, "{}");
   clearProtectedTabState();
   expect(sessionStorage.getItem(NAVIGATION_KEY)).toBeNull();
+});
+
+const headerButton = (label: string) => [...root.querySelectorAll<HTMLButtonElement>(".form-header-btn")].find(item => item.textContent?.includes(label))!;
+const listed = (id: number) => vi.waitFor(() => expect(root.querySelector(`tbody tr[data-id='${id}']`)).not.toBeNull());
+const recovery = () => vi.waitFor(() => expect(root.querySelector("a.method-action-recovery")?.getAttribute("href")).toBe("/erp/action-20"));
+
+/** Notes list › Source record › the related list its button opened. */
+async function relatedList(): Promise<string> {
+  history.replaceState(null, "", "/erp/action-20");
+  await load();
+  root.querySelector<HTMLElement>("tbody tr[data-id='5']")!.click();
+  await opened("Source record");
+  await vi.waitFor(() => expect(headerButton("Note companies").disabled).toBe(false));
+  headerButton("Note companies").click();
+  await listed(9);
+  expect(trail()).toEqual(["Notes", "Source record", "Note companies"]);
+  return new URLSearchParams(location.search).get("method_action")!;
+}
+
+test("a related list a button opened comes back after a reload, admitted again by the server", async () => {
+  const related = await relatedList();
+  calls.length = 0;
+  await load();
+  await listed(9);
+  // The kept list went to the server again before it opened.
+  expect(calls).toContain("res.company/erp_normalize_action_result");
+  expect(new URLSearchParams(location.search).get("method_action")).toBe(related);
+  expect(trail()).toEqual(["Notes", "Source record", "Note companies"]);
+  root.querySelector<HTMLElement>("tbody tr[data-id='9']")!.click();
+  await opened("Company record");
+  await load();
+  await opened("Company record");
+  expect(trail()).toEqual(["Notes", "Source record", "Note companies", "Company record"]);
+  back();
+  await listed(9);
+  expect(trail()).toEqual(["Notes", "Source record", "Note companies"]);
+  back();
+  await opened("Source record");
+  expect(trail()).toEqual(["Notes", "Source record"]);
+});
+
+test("a kept related list the server refuses, or one this client did not write, is not opened", async () => {
+  const related = await relatedList();
+  refuseList = true;
+  await expect(load()).rejects.toThrow("You may not read these records.");
+  await recovery();
+  expect(root.querySelector("tbody tr[data-id='9']")).toBeNull();
+
+  refuseList = false;
+  const data = JSON.parse(sessionStorage.getItem(NAVIGATION_KEY)!) as { actions: [string, { result: Record<string, unknown> }][] };
+  const kept = data.actions.find(([id]) => id === related)!;
+  for (const result of [{ ...kept[1].result, kind: "window" }, { ...kept[1].result, domain: "[]" }, { ...kept[1].result, extra: 1 }]) {
+    kept[1].result = result;
+    sessionStorage.setItem(NAVIGATION_KEY, JSON.stringify(data));
+    calls.length = 0;
+    await expect(load()).rejects.toThrow("This related action has expired. Open its originating menu again.");
+    await recovery();
+    expect(calls.filter(call => call.endsWith("erp_normalize_action_result"))).toEqual([]);
+    expect(root.querySelector("tbody tr[data-id='9']")).toBeNull();
+  }
 });
