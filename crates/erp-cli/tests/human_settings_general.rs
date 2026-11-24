@@ -17,8 +17,7 @@ use erp_sdk::settings::{
     LinkTarget, PanelItemDecl, PanelItemKind, PanelItemValue, ScopeKind, SettingsScope,
 };
 use erp_sdk::views::wire::{
-    ModuleToggleState, SettingValue, SettingsDescription, SettingsItem, SettingsLinkTarget,
-    WireId,
+    ModuleToggleState, SettingValue, SettingsDescription, SettingsItem, SettingsLinkTarget, WireId,
 };
 use erp_sdk::{Env, Value};
 use std::sync::Arc;
@@ -81,10 +80,16 @@ fn bad_toggle(index: u8) -> erp_sdk::Result<Option<PanelItemDecl>> {
     let item = match index {
         1 => PanelItemDecl::module_toggle("base.test_mod_unknown", "Unknown", "no_such_addon")?,
         2 => PanelItemDecl::module_toggle("base.test_mod_base", "Base", "base")?,
-        3 => PanelItemDecl::group_toggle("base.test_group_missing", "Missing", "base.no_such_group")?,
+        3 => {
+            PanelItemDecl::group_toggle("base.test_group_missing", "Missing", "base.no_such_group")?
+        }
         4 => PanelItemDecl::group_toggle("base.test_group_user", "Users", "base.group_user")?,
         5 => PanelItemDecl::group_toggle("base.test_group_heavy", "Admins", "base.group_system")?,
-        6 => PanelItemDecl::group_toggle("base.test_group_export", "Export", "base.group_allow_export")?,
+        6 => PanelItemDecl::group_toggle(
+            "base.test_group_export",
+            "Export",
+            "base.group_allow_export",
+        )?,
         _ => return Ok(None),
     };
     Ok(Some(item.block("Probe")?.access(&["base.group_system"])?))

@@ -1044,7 +1044,10 @@ fn module_toggle_items_validate_addon_names_publish_and_resolve_states() {
         ModuleToggleState::resolve("dlivery", &db_installed, Some(&catalogue)),
         None
     );
-    assert_eq!(ModuleToggleState::resolve("sale", &db_installed, None), None);
+    assert_eq!(
+        ModuleToggleState::resolve("sale", &db_installed, None),
+        None
+    );
 }
 
 #[test]
@@ -1120,9 +1123,14 @@ fn group_toggle_items_validate_group_identities_access_and_publish() {
         .unwrap_err(),
     );
     assert_eq!(
-        publish(toggle.clone().access(&["stock.group_tracking_lot"]).unwrap())
-            .unwrap_err()
-            .message(),
+        publish(
+            toggle
+                .clone()
+                .access(&["stock.group_tracking_lot"])
+                .unwrap()
+        )
+        .unwrap_err()
+        .message(),
         "Setting item stock.group_stock_tracking_lot is a toggle; only base.group_system may read it."
     );
 }

@@ -1058,8 +1058,10 @@ impl SettingsRegistry {
                     ));
                 }
                 // A toggle changes the whole database (an addon, or a group of every internal user).
-                if matches!(item.kind, PanelItemKind::Module { .. } | PanelItemKind::Group { .. })
-                    && item.read_groups != ["base.group_system"]
+                if matches!(
+                    item.kind,
+                    PanelItemKind::Module { .. } | PanelItemKind::Group { .. }
+                ) && item.read_groups != ["base.group_system"]
                 {
                     return Err(Error::validation(format!(
                         "Setting item {} is a toggle; only base.group_system may read it.",

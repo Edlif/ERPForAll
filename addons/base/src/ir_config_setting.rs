@@ -928,7 +928,11 @@ impl ToggleGroups {
             if id == internal {
                 return Err(refused("it is the internal-user group itself"));
             }
-            if graph.up([id]).iter().any(|implied| !light.contains(implied)) {
+            if graph
+                .up([id])
+                .iter()
+                .any(|implied| !light.contains(implied))
+            {
                 return Err(refused(
                     "it is or implies a group that is not a light feature group",
                 ));

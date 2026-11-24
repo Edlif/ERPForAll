@@ -481,7 +481,7 @@ test("a refused group toggle reloads the settings, keeps the page and rethrows",
   Object.defineProperty(window, "location", { configurable: true, value: { reload: () => { reloaded++; } } });
   const errors: unknown[] = [];
   const jobs: Promise<void>[] = [];
-  const { rpc, describes } = groupToggleServer(() => "enabled", () => new Response(JSON.stringify({ error: { message: "Packages stays on for every internal user through the group stock.group_x; change that group instead.", name: "erp.exceptions.ValidationError" } }), { status: 400, headers: { "Content-Type": "application/json" } }));
+  const { rpc, describes } = groupToggleServer(() => "enabled", () => new Response(JSON.stringify({ message: "Packages stays on for every internal user through the group stock.group_x; change that group instead.", name: "erp.exceptions.ValidationError" }), { status: 400, headers: { "Content-Type": "application/json" } }));
   const host = document.createElement("div");
   document.body.append(host);
   await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job().catch(error => { errors.push(error); })); }, () => {}, {}, ["global"], "r1", undefined, undefined, "stock");
