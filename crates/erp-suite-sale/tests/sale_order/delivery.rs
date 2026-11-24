@@ -1738,3 +1738,74 @@ fn delivered_and_invoiced_sales_keep_what_happened_downstream() {
         db.cleanup().await.unwrap();
     });
 }
+
+/// The invoice form and the transfer form each have one button box, and the sales count buttons go into it, so both
+/// forms still describe once sales and stock are installed (the form layout refuses any other named box under the
+/// sheet, and refused to open either form before).
+#[test]
+fn invoice_and_transfer_forms_describe_with_the_sales_count_buttons() {
+    run(async {
+        let (db, orm) = cloned_sales(true).await;
+        let mut setup = orm.begin(SUPERUSER_ID).await.unwrap();
+        admin(&mut setup).await;
+        let manager = user(&mut setup, "button-box-manager", "group_sale_manager").await;
+        let mut groups = Vec::new();
+        for (module, name) in [
+            ("account", "group_account_manager"),
+            ("stock", "group_stock_manager"),
+        ] {
+            groups.push(Command::link(id(xmlid(&mut setup, module, name).await)));
+        }
+        setup
+            .env()
+            .records("res.users")
+            .unwrap()
+            .browse(vec![manager])
+            .unwrap()
+            .write(&mut setup, RawVals::new().set_commands("group_ids", groups))
+            .await
+            .unwrap();
+        setup.commit().await.unwrap();
+        drop(setup);
+        // the compiled access policy, as a served node has it: the transfer form names groups
+        let secured = policy_orm(&db, &orm).await;
+        let mut tx = secured.begin(UserId::new(manager).unwrap()).await.unwrap();
+        let company = xmlid(&mut tx, "base", "main_company").await;
+        let env = tx.env().with_company(company).unwrap();
+        for (model, module, view, button) in [
+            (
+                "account.move",
+                "account",
+                "view_invoice_form",
+                "action_view_sale_orders",
+            ),
+            (
+                "stock.picking",
+                "stock",
+                "view_picking_form",
+                "action_view_sale_order",
+            ),
+        ] {
+            let id = xmlid(&mut tx, module, view).await;
+            let described = erp_addon_web::metadata_test_support::test_get_views(
+                &env,
+                &mut tx,
+                model,
+                vec![Value::list([Value::Int(id), Value::str("form")])],
+                32 * 1024 * 1024,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("the {model} form describes: {error}"));
+            let text = erp_sdk::serde_json::to_string(&described).unwrap();
+            assert!(text.contains(button), "the {model} form shows {button}");
+            // every addon's count buttons share the one box: a second named box under the sheet is refused
+            assert_eq!(
+                text.matches(r#""kind":"button_box""#).count(),
+                1,
+                "the {model} form has exactly one button box"
+            );
+        }
+        tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
+    });
+}
