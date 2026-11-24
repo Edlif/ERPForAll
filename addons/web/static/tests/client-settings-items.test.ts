@@ -355,7 +355,7 @@ test("module toggle handles uninstall preview validation refusal and 409 conflic
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     if (url.endsWith("/erp_preview_uninstall")) {
       if (mode === "validation") {
-        return new Response(JSON.stringify({ error: { message: "Refused", name: "erp.exceptions.ValidationError" } }), { status: 400, headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ message: "Carriers is needed by Sales; uninstall Sales first.", name: "erp.exceptions.ValidationError" }), { status: 400, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({ fingerprint: "fp-stale", resolved: ["delivery"], dropped_models: [], target_count: "0" }), { headers: { "Content-Type": "application/json" } });
     }
@@ -378,13 +378,13 @@ test("module toggle handles uninstall preview validation refusal and 409 conflic
   document.body.append(host);
   await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job().catch(err => { errors.push(err); })); }, message => { notices.push(message); }, {}, ["global"], "r1", undefined, undefined, "stock");
 
-  // Validation refusal on preview: shows fixed notice, no dialog, no thrown error.
+  // Validation refusal on preview: the server's own reason, no dialog, no thrown error.
   const box1 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
   box1.checked = false;
   box1.dispatchEvent(new Event("change"));
   await Promise.all(jobs);
   expect(document.querySelector(".addon-uninstall-dialog")).toBeNull();
-  expect(notices).toContain("Uninstalling this addon from this page is not available yet.");
+  expect(notices).toContain("Carriers is needed by Sales; uninstall Sales first.");
   expect(errors).toHaveLength(0);
 
   // 409 conflict on uninstall: shows conflict notice and reloads settings.
@@ -400,8 +400,8 @@ test("module toggle handles uninstall preview validation refusal and 409 conflic
 });
 
 test("group toggles render on and off, and stay out of scalar RPCs", async () => {
-  const on: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "enabled" };
-  const off: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_owner", label: "Consignment", app: "stock", block: "Operations", sequence: 110, group: "stock.group_tracking_owner", state: "disabled" };
+  const on: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "enabled", reason: null };
+  const off: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_owner", label: "Consignment", app: "stock", block: "Operations", sequence: 110, group: "stock.group_tracking_owner", state: "disabled", reason: null };
   const { host, controller, calls, jobs } = await mount([on, off], [], "stock");
   const box = (key: string) => host.querySelector<HTMLInputElement>(`[data-setting-key="${key}"] input[type="checkbox"]`)!;
   expect([box(on.key).checked, box(on.key).disabled]).toEqual([true, false]);
@@ -421,7 +421,7 @@ function groupToggleServer(state: () => "enabled" | "disabled", toggle: (body: R
     if (url === "/erp/json/2/ir.config.setting/erp_toggle_group") return toggle(body);
     if (url.endsWith("/erp_describe")) describes.push(state());
     const response = url.endsWith("/erp_describe")
-      ? { wire_major: 1, registry_version: "r1", scope: body["scope"], declarations: [], items: [{ kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: state() }] }
+      ? { wire_major: 1, registry_version: "r1", scope: body["scope"], declarations: [], items: [{ kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: state(), reason: null }] }
       : { wire_major: 1, scope: body["scope"], revision: "1", values: [] };
     return new Response(JSON.stringify(response), { headers: { "Content-Type": "application/json" } });
   }, () => {});
@@ -498,4 +498,138 @@ test("a refused group toggle reloads the settings, keeps the page and rethrows",
   expect(describes.length).toBeGreaterThan(described);
   expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.group_stock_tracking_lot"] input')!.checked).toBe(true);
   host.remove();
+});
+
+const JSON_HEADERS = { "Content-Type": "application/json" };
+const deliveryRow = { kind: "module", key: "stock.module_delivery", label: "Carriers", app: "stock", block: "Shipping", sequence: 200, addon: "delivery", state: "not_installed" };
+// A server whose install answer and Settings description failure the test chooses.
+function moduleServer(install: () => Response, describeFails: () => boolean = () => false, declarations: { key: string }[] = []) {
+  const posts: string[] = [], describes: number[] = [];
+  const rpc = new RpcClient(async (path, init) => {
+    const url = String(path), body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    if (url.startsWith("/erp/module/")) { posts.push(url); return install(); }
+    if (url.endsWith("/erp_describe")) {
+      describes.push(describes.length);
+      if (describeFails()) return new Response(JSON.stringify({ message: "Settings are being changed.", name: "erp.exceptions.ValidationError" }), { status: 400, headers: JSON_HEADERS });
+      return new Response(JSON.stringify({ wire_major: 1, registry_version: "r1", scope: body["scope"], declarations, items: [deliveryRow] }), { headers: JSON_HEADERS });
+    }
+    return new Response(JSON.stringify({ wire_major: 1, scope: body["scope"], revision: "1", values: declarations.map(d => ({ key: d.key, value: false, source: "stored" })) }), { headers: JSON_HEADERS });
+  }, () => {});
+  return { rpc, posts, describes };
+}
+async function openStock(rpc: RpcClient, notices: string[], errors: unknown[], jobs: Promise<void>[]) {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const controller = await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job().catch(error => { errors.push(error); })); }, message => { notices.push(message); }, {}, ["global"], "r1", undefined, undefined, "stock");
+  return { host, controller };
+}
+const toggleBox = (host: HTMLElement, key: string) => host.querySelector<HTMLInputElement>(`[data-setting-key="${key}"] input[type="checkbox"]`)!;
+const answer = (text: string) => [...document.querySelectorAll<HTMLButtonElement>(".message-dialog-footer button")].find(b => b.textContent === text)!.click();
+const flipOn = async (host: HTMLElement, key: string) => {
+  const box = toggleBox(host, key);
+  box.checked = true;
+  box.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(document.querySelector(".message-dialog-footer button")).not.toBeNull());
+};
+
+test("a rejected install keeps the checkbox off, says so, reloads the settings, hands the error on and refocuses the toggle", async () => {
+  stubDialogs();
+  let reloaded = 0;
+  Object.defineProperty(window, "location", { configurable: true, value: { reload: () => { reloaded++; } } });
+  const notices: string[] = [], errors: unknown[] = [], jobs: Promise<void>[] = [];
+  const { rpc, posts, describes } = moduleServer(() => new Response(JSON.stringify({ message: "Carriers cannot be installed while another install runs.", name: "erp.exceptions.ValidationError" }), { status: 400, headers: JSON_HEADERS }));
+  const { host } = await openStock(rpc, notices, errors, jobs);
+  const described = describes.length;
+  await flipOn(host, deliveryRow.key);
+  answer("Install");
+  await Promise.all(jobs);
+  expect(posts).toEqual(["/erp/module/install"]);
+  expect(errors).toHaveLength(1);
+  expect((errors[0] as Error).message).toBe("Carriers cannot be installed while another install runs.");
+  expect(notices).toContain("Installation status may have changed. Reloading settings…");
+  expect(describes.length).toBeGreaterThan(described);
+  expect(reloaded).toBe(0);
+  const box = toggleBox(host, deliveryRow.key);
+  expect(box.checked).toBe(false);
+  expect(document.activeElement).toBe(box);
+});
+
+test("a settings reload that fails after a rejected install asks for an application reload and keeps the install error", async () => {
+  stubDialogs();
+  const notices: string[] = [], errors: unknown[] = [], jobs: Promise<void>[] = [];
+  let failing = false;
+  const { rpc } = moduleServer(() => { failing = true; return new Response(JSON.stringify({ message: "Carriers cannot be installed now.", name: "erp.exceptions.ValidationError" }), { status: 400, headers: JSON_HEADERS }); }, () => failing);
+  const { host } = await openStock(rpc, notices, errors, jobs);
+  await flipOn(host, deliveryRow.key);
+  answer("Install");
+  await Promise.all(jobs);
+  expect(notices).toContain("Settings could not be reloaded. Reload the application.");
+  expect(errors).toHaveLength(1);
+  expect((errors[0] as Error).message).toBe("Carriers cannot be installed now.");
+});
+
+test("a second change while a toggle is pending makes no second request", async () => {
+  stubDialogs();
+  let reloaded = 0;
+  Object.defineProperty(window, "location", { configurable: true, value: { reload: () => { reloaded++; } } });
+  const notices: string[] = [], errors: unknown[] = [], jobs: Promise<void>[] = [];
+  const { rpc, posts } = moduleServer(() => new Response(JSON.stringify({ installed: ["delivery"], registry_version: "r2", asset_version: "a2" }), { headers: JSON_HEADERS }));
+  const { host } = await openStock(rpc, notices, errors, jobs);
+  await flipOn(host, deliveryRow.key);
+  // The confirmation is still open: another change is ignored and asks nothing.
+  const box = toggleBox(host, deliveryRow.key);
+  box.checked = true;
+  box.dispatchEvent(new Event("change"));
+  expect(box.checked).toBe(false);
+  expect(jobs).toHaveLength(1);
+  answer("Install");
+  await Promise.all(jobs);
+  expect(posts).toEqual(["/erp/module/install"]);
+  expect(reloaded).toBe(1);
+  expect(errors).toHaveLength(0);
+});
+
+test("unsaved edits are offered for discard before a toggle, and Cancel keeps them and asks nothing", async () => {
+  stubDialogs();
+  const notices: string[] = [], errors: unknown[] = [], jobs: Promise<void>[] = [];
+  const flag = { ...setting, key: "stock.stock_move_email_validation", app: "stock", block: "Shipping", default: false };
+  const { rpc, posts } = moduleServer(() => new Response("{}", { headers: JSON_HEADERS }), () => false, [flag]);
+  const { host, controller } = await openStock(rpc, notices, errors, jobs);
+  const input = host.querySelector<HTMLInputElement>(`[data-setting-key="${flag.key}"] input`)!;
+  input.checked = true; input.dispatchEvent(new Event("change"));
+  expect(controller.dirty()).toBe(true);
+  await flipOn(host, deliveryRow.key);
+  expect(document.querySelector(".message-dialog-body")?.textContent).toContain("Discard changes before installing or uninstalling an addon?");
+  answer("Cancel");
+  await Promise.all(jobs);
+  expect(posts).toHaveLength(0);
+  expect(controller.dirty()).toBe(true);
+  // The install confirmation never opened.
+  expect(document.body.textContent).not.toContain("Install Carriers (delivery) and its dependencies?");
+  expect(errors).toHaveLength(0);
+});
+
+test("unavailable toggle rows say why, wire their label and description, and a change on them asks nothing", async () => {
+  const reason = "Setting item stock.group_stock_tracking_lot cannot toggle the group stock.group_tracking_lot: it is or implies a group that is not a light feature group.";
+  const group: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "not_available", reason };
+  const moduleItem: SettingsItem = { kind: "module", key: "stock.module_product_expiry", label: "Expiry dates", app: "stock", block: "Traceability", sequence: 220, addon: "product_expiry", state: "not_available" };
+  const { host, calls, jobs } = await mount([group, moduleItem], [], "stock");
+  for (const [key, help] of [[group.key, reason], [moduleItem.key, "Not available in this server (product_expiry)."]] as const) {
+    const row = host.querySelector<HTMLElement>(`[data-setting-key="${key}"]`)!;
+    const box = toggleBox(host, key);
+    expect(row.classList.contains("is-unavailable")).toBe(true);
+    expect(box.disabled).toBe(true);
+    expect(box.id).toBe(`setting-${key}`);
+    expect(row.querySelector<HTMLLabelElement>("label.setting-label-text")!.htmlFor).toBe(box.id);
+    const described = document.getElementById(box.getAttribute("aria-describedby")!)!;
+    expect(described.textContent).toBe(help);
+    expect(row.contains(described)).toBe(true);
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    expect(box.checked).toBe(false);
+  }
+  await Promise.all(jobs);
+  expect(jobs).toHaveLength(0);
+  expect(document.querySelector(".message-dialog-footer")).toBeNull();
+  expect(calls.some(c => c.method === "erp_toggle_group" || c.method === "install")).toBe(false);
 });

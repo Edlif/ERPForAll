@@ -1522,7 +1522,7 @@ res_id: WireId | null, } | { "kind": "menu",
  */
 id: WireId, };
 export type ModuleToggleState = "installed" | "not_installed" | "not_available";
-export type GroupToggleState = "enabled" | "disabled";
+export type GroupToggleState = "enabled" | "disabled" | "not_available";
 export type SettingsItem = { "kind": "info",
 /**
  * Addon-qualified identity.
@@ -1629,9 +1629,14 @@ sequence: number,
  */
 group: string,
 /**
- * Whether the internal-user group implies the feature group (directly or through other groups).
+ * Whether the internal-user group implies the feature group (directly or through other groups), or
+ * `not_available` when the database no longer lets this row work.
  */
-state: GroupToggleState, };
+state: GroupToggleState,
+/**
+ * Why the row is not available, or `null` when it is.
+ */
+reason: string | null, };
 export type SettingDescription = {
 /**
  *Wire member `key`.

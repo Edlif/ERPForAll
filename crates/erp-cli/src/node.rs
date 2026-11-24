@@ -210,6 +210,10 @@ impl Node {
                 .build()
                 .map_err(|e| CliError::ModuleOperation(Box::new(e)))?,
         );
+        // Settings module toggles resolve against this composition's install catalogue on every load path.
+        if native {
+            crate::module::bind_settings_catalogue(Arc::clone(&system))?;
+        }
         let life = Arc::new(WasmLifecycle::new(
             Arc::clone(&system),
             Arc::clone(&packages),

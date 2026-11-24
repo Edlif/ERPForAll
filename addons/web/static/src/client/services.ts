@@ -568,7 +568,9 @@ export async function settingsView(
                 // Keep the confirmed server state until the change completes.
                 checkbox.checked = on;
                 if (disposed || pending || unavailable) return;
-                run(() => item.kind === "module" ? toggleModule(item, wanted, checkbox) : toggleGroup(item, wanted));
+                run(async () => {
+                  try { await (item.kind === "module" ? toggleModule(item, wanted, checkbox) : toggleGroup(item, wanted)); } finally { focusToggle(key); }
+                });
               });
               const toggleLabel = labelled("", checkbox);
               toggleLabel.classList.add("settings-toggle");
@@ -581,7 +583,7 @@ export async function settingsView(
               let helpEl: HTMLElement | undefined;
               let helpText: string | undefined;
               if (unavailable) {
-                helpText = `Not available in this server (${technical}).`;
+                helpText = item.kind === "group" && item.reason !== null ? item.reason : `Not available in this server (${technical}).`;
                 helpEl = el("div", helpText, "setting-help text-muted");
                 helpEl.id = `setting-help-${key}`;
                 checkbox.setAttribute("aria-describedby", helpEl.id);
@@ -849,6 +851,13 @@ export async function settingsView(
     declarations = nextDeclarations; items = nextItems; baseline = nextValues; revision = nextRevision; scope = immutableScope; showScope(scopeKey(scope)); edits.clear(); ambiguous = false; draw();
   };
 
+  // A redraw replaces the row: keyboard focus goes back to the toggle, found again by its settings key.
+  const focusToggle = (key: string): void => {
+    if (disposed) return;
+    const row = [...form.querySelectorAll<HTMLElement>(".setting-block[data-setting-key]")].find(candidate => candidate.dataset["settingKey"] === key);
+    row?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus();
+  };
+
   // After a failed install or uninstall the page may be stale; say so when it cannot be read again (the caller rethrows).
   const reloadAfterFailure = async (): Promise<void> => {
     try { await load(scope, false, selectedApp ?? undefined); } catch { notice("Settings could not be reloaded. Reload the application."); }
@@ -875,7 +884,8 @@ export async function settingsView(
       try {
         impact = object(await rpc.call("ir.module.module", "erp_preview_uninstall", { modules: [item.addon], context }));
       } catch (error) {
-        if (error instanceof ClientError && error.kind === "validation") { notice(UNINSTALL_UNAVAILABLE); return; }
+        // A refused preview says why in the server's own words.
+        if (error instanceof ClientError && error.kind === "validation") { notice(error.message || UNINSTALL_UNAVAILABLE); return; }
         notice(`Uninstall preview failed: ${(error as Error).message || "Unable to compute uninstall impact."}`);
         throw error;
       }
