@@ -445,6 +445,14 @@ the normal navigation, so the server checks it again when the user goes to it. A
 record is gone, the user may no longer read it) drops out of the trail with the failure shown, and the other entries
 stay usable. An address opened afresh (a pasted link, a new tab) has no history entry and starts its own trail.
 
+A list a button opened (a current-window action result) has no address of its own: its address names it by an id of
+the page (`method_action`). The same key keeps, for each such list, what the server answered for it (title, model,
+views, literal domain and defaults) with the address and title of the page it was opened from, at most 64 lists of at
+most 32 KiB each. After a reload the list is decoded like a server answer and sent back to
+`erp_normalize_action_result`, the check it passed when its button opened it, under the user's rights and the page's
+companies; it opens as the server answers now. A list the server refuses, or one the client cannot read back, opens
+nothing: the page offers the way back to the action it was opened under.
+
 A user's home action (`res.users.action_id`, a window action the user may set on their own record) opens in place of
 the app grid when the address names no action. It loads through the usual access checks: an action the user may not
 open leaves the grid with a notice. The logo still opens the grid.

@@ -1,36 +1,61 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
+import { actionResult } from "./actions.js";
+import { MAX_METHOD_ACTIONS, MAX_METHOD_ACTION_BYTES, type MethodAction } from "./method-actions.js";
 import type { BreadcrumbItem } from "./navigation.js";
 import { parseRoute, routeUrl, type Route } from "./route.js";
 
 /** The tab's navigation store: one session-storage key (`erp.session.*`, so sign-out, expiry and the sign-in page erase
  *  it with the rest of the tab's protected state). It holds, per history entry, the breadcrumb trail as it was drawn
- *  (titles and addresses the user saw). What it reads back is untrusted: checked entry by entry, never evaluated, and
- *  every entry is loaded again through the normal, server-checked navigation when the user goes to it. */
+ *  (titles and addresses the user saw), and each related list a button opened (the list the server admitted for it, the
+ *  address and title of the page it was opened from). What it reads back is untrusted: checked entry by entry, never
+ *  evaluated, and every entry is loaded again through the normal, server-checked navigation when the user goes to it; a
+ *  related list is admitted again by the server before it opens. */
 export const NAVIGATION_KEY = "erp.session.navigation";
 /** Most history entries whose trail is kept; the oldest drop first. */
 const MAX_ENTRIES = 64;
 /** Largest stored text, in UTF-16 units; a larger value is not read. */
-const MAX_STORED = 512 * 1024;
+const MAX_STORED = 1024 * 1024;
 const MAX_TITLE = 512;
 
 interface Stored { readonly id: string; readonly title: string; readonly url: string; readonly form: boolean }
+interface StoredAction { readonly result: unknown; readonly context: Record<string, unknown>; readonly origin: string; readonly label: string }
+
+const title = (value: unknown): value is string => typeof value === "string" && !!value.trim() && value.length <= MAX_TITLE && !/[\u0000-\u001f\u007f]/u.test(value);
+/** A page address this client writes: same origin, a route the parser admits, an action. */
+function address(value: unknown): Route | undefined {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return undefined;
+  try {
+    const route = parseRoute(new URL(value, window.location.origin));
+    return route.action === undefined ? undefined : route;
+  } catch { return undefined; }
+}
 
 /** A trail entry read back from storage, or `undefined` when it is not one this client writes. */
 function crumb(raw: unknown): BreadcrumbItem | undefined {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
-  const { id, title, url, form } = raw as Record<string, unknown>;
-  if (typeof id !== "string" || !/^[A-Za-z0-9:_-]{1,256}$/.test(id)) return undefined;
-  if (typeof title !== "string" || !title.trim() || title.length > MAX_TITLE || /[\u0000-\u001f\u007f]/u.test(title)) return undefined;
-  if (typeof form !== "boolean" || typeof url !== "string" || !url.startsWith("/") || url.startsWith("//")) return undefined;
+  const { id, title: name, url, form } = raw as Record<string, unknown>;
+  if (typeof id !== "string" || !/^[A-Za-z0-9:_-]{1,256}$/.test(id) || !title(name) || typeof form !== "boolean") return undefined;
+  const route = address(url);
+  return route && { id, title: name, route, url: routeUrl(route), isFormView: form };
+}
+
+/** A related list read back from storage, or `undefined` when it is not one this client writes. The list itself goes
+ *  through the same decoder as a server answer; the server admits it again before it opens. */
+function methodAction(raw: unknown): MethodAction | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw) || JSON.stringify(raw).length > MAX_METHOD_ACTION_BYTES) return undefined;
+  const { result, context, origin, label } = raw as Record<string, unknown>;
+  const route = address(origin);
+  if (!route || !title(label) || typeof context !== "object" || context === null || Array.isArray(context) || Object.keys(context).length > 64) return undefined;
   try {
-    const route = parseRoute(new URL(url, window.location.origin));
-    if (route.action === undefined) return undefined;
-    return { id, title, route, url: routeUrl(route), isFormView: form };
+    const decoded = actionResult({ wire_major: 1, result });
+    return decoded.kind === "current_window" ? { result: decoded, context: context as Record<string, unknown>, origin: route, originLabel: label } : undefined;
   } catch { return undefined; }
 }
+const METHOD_ACTION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[1-9][0-9]{0,15}$/;
 
 export class NavigationStore {
   private trails = new Map<number, readonly BreadcrumbItem[]>();
+  private readonly actions = new Map<string, MethodAction>();
   private failed = false;
 
   /** `report` hears once when the browser refuses to keep the store (disabled storage, full quota). */
@@ -49,6 +74,27 @@ export class NavigationStore {
       const items = (pair[1] as unknown[]).slice(-cap).map(crumb).filter((item): item is BreadcrumbItem => item !== undefined);
       if (items.length) this.trails.set(pair[0] as number, items);
     }
+    for (const pair of Array.isArray(value["actions"]) ? value["actions"].slice(-MAX_METHOD_ACTIONS) : []) {
+      if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || !METHOD_ACTION_ID.test(pair[0])) continue;
+      const entry = methodAction(pair[1]);
+      if (entry) this.actions.set(pair[0], entry);
+    }
+  }
+
+  /** The related list `id` kept by this tab, as it was before a reload; the caller has the server admit it again. */
+  action(id: string): MethodAction | undefined {
+    return this.actions.get(id);
+  }
+
+  saveAction(id: string, entry: MethodAction): void {
+    this.actions.delete(id);
+    this.actions.set(id, entry);
+    while (this.actions.size > MAX_METHOD_ACTIONS) this.actions.delete(this.actions.keys().next().value!);
+    this.write();
+  }
+
+  removeAction(id: string): void {
+    if (this.actions.delete(id)) this.write();
   }
 
   /** The trail kept for history entry `index`, when its last entry is the page `route` opens (same action, same related
@@ -68,9 +114,14 @@ export class NavigationStore {
 
   private write(): void {
     const trails = [...this.trails].map(([index, items]) => [index, items.map((item): Stored => ({ id: item.id, title: item.title, url: item.url, form: item.isFormView === true }))]);
-    let text = JSON.stringify({ v: 1, uid: this.uid, trails });
-    // The oldest entries give way until the store fits its bound.
-    while (text.length > MAX_STORED && trails.length > 1) { trails.shift(); this.trails.delete(this.trails.keys().next().value!); text = JSON.stringify({ v: 1, uid: this.uid, trails }); }
+    const actions = [...this.actions].map(([id, entry]) => [id, { result: entry.result, context: entry.context, origin: routeUrl(entry.origin), label: entry.originLabel } satisfies StoredAction]);
+    let text = JSON.stringify({ v: 1, uid: this.uid, trails, actions });
+    // The oldest related lists, then the oldest trails, give way until the store fits its bound.
+    while (text.length > MAX_STORED && trails.length + actions.length > 1) {
+      if (actions.length) { actions.shift(); this.actions.delete(this.actions.keys().next().value!); }
+      else { trails.shift(); this.trails.delete(this.trails.keys().next().value!); }
+      text = JSON.stringify({ v: 1, uid: this.uid, trails, actions });
+    }
     try { this.storage().setItem(NAVIGATION_KEY, text); } catch (error) { this.refused(error); }
   }
 

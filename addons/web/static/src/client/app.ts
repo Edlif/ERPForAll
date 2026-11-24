@@ -206,7 +206,8 @@ export class HumanApp {
   private readonly menus = new Map<number, Menu>();
   private readonly metadata = new MetadataCache();
   private readonly panelRecovery = new PanelRecoverySafety();
-  private readonly methodActions = new MethodActions();
+  /** Related lists opened by buttons; the tab's navigation store keeps them for a reload. */
+  private readonly methodActions: MethodActions;
   /** An invocation identity, distinct from route data; only its completed result may hand off. */
   private pendingInvocation: { caller: RecordState; generation: number } | undefined;
   private rootMenuIds: number[] = [];
@@ -346,6 +347,7 @@ export class HumanApp {
     this.errors = new ErrorDialog(this.messages.dialogs);
     this.navigationStore = new NavigationStore(this.userId, this.breadcrumbs.cap, error =>
       this.messages.notifications.add(`The breadcrumb trail cannot be kept across a reload in this tab: ${errorMessage(error)}`, { level: "warning" }));
+    this.methodActions = new MethodActions({ save: (id, entry) => this.navigationStore.saveAction(id, entry), remove: id => this.navigationStore.removeAction(id) });
     this.navigation = region("[data-client-navigation]");
     this.header = region("[data-client-header]");
     this.loading = requestLoading(host);
@@ -1255,7 +1257,8 @@ export class HumanApp {
     if (this.lifetime.signal.aborted) return;
     try { await this.navigate(initialRoute, true); }
     catch (error) {
-      if (error instanceof ExpiredMethodAction) {
+      // A related list that the tab no longer holds, or that the server no longer admits.
+      if (error instanceof ExpiredMethodAction || initialRoute.method_action !== undefined && !this.isClientRoute(initialRoute)) {
         // A reload/new tab has no retained action payload. Offer explicit recovery to the
         // originating persisted action; never silently substitute it for the related list.
         const recovery = el("a", "Return to originating action", "method-action-recovery");
@@ -2191,6 +2194,25 @@ export class HumanApp {
     }
   }
 
+  /** The related list `id` of this page, or the one the tab kept from before a reload: that one is admitted again by the
+   *  server exactly as when its button first opened it (model, views, literal domain and defaults, under the caller's
+   *  rights and the page's companies), and opens as the server answers now. One the tab does not hold is expired. */
+  private async methodAction(id: string): Promise<MethodAction> {
+    try { return this.methodActions.get(id); }
+    catch (error) {
+      const kept = error instanceof ExpiredMethodAction ? this.navigationStore.action(id) : undefined;
+      if (!kept) throw error;
+      const { result } = kept, context = { ...kept.context, ...this.context };
+      const input = { type: "ir.actions.act_window", name: result.name, res_model: result.model, target: "current",
+        views: result.views.map(view => [view.id ?? false, view.type]), domain: result.domain, context: result.context };
+      const admitted = actionResult(await this.rpc.call(result.model, "erp_normalize_action_result", { wire_major: 1, result: input, context }));
+      if (admitted.kind !== "current_window" || admitted.model !== result.model) throw new ClientError("server", "The related list did not open again as a list of its model.");
+      const entry: MethodAction = { ...kept, result: admitted, context };
+      this.methodActions.restore(id, entry);
+      return entry;
+    }
+  }
+
   /** Keeps the trail on screen for the current history entry. */
   private saveTrail(): void {
     this.navigationStore.saveTrail(this.historyIndex, this.breadcrumbs.items);
@@ -2265,7 +2287,7 @@ export class HumanApp {
       } else {
         this.homeMenuOpen = false;
         const actionId = rpcId(route.action);
-        const entry = route.method_action ? this.methodActions.get(route.method_action) : undefined;
+        const entry = route.method_action ? await this.methodAction(route.method_action) : undefined;
         if (entry && entry.origin.action !== route.action) throw new ClientError("validation", "Related action does not belong to this route.");
         const action: Record<string, unknown> = entry
           ? { ...entry.result, wire_major: 1, target: "current", id: rpcId(route.action) }
