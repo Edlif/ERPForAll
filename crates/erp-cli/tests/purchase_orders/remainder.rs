@@ -165,8 +165,8 @@ fn short_receipt(always: bool) {
                 order_row.with_env(tx.env().with_user(buyer).with_company(company).unwrap());
             assert_eq!(
                 blind.cell(&mut tx, "receipt_count").await.unwrap(),
-                Cell::Int(0),
-                "a buyer without Inventory rights sees no receipts"
+                Cell::Int(2),
+                "a purchase user reads incoming transfers, so the count is the real one"
             );
             let shown: Value = order_row
                 .call(&mut tx, "action_view_receipt", ())
