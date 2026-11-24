@@ -465,7 +465,8 @@ test("relational defaults flow through shared initial onchange as ORM commands",
 
 test("failed replacement metadata preserves the original scope read-only", async () => {
   let descriptions = 0;
-  const { calls } = await setup({...wizard,name:"Next step"}, undefined, path => path.includes("test.wizard/get_views") && ++descriptions > 1
+  // Another scope than the first dialog's: the page's view cache holds the first one's views, not these.
+  const { calls } = await setup({...wizard,name:"Next step",context:{default_name:"Next borrower"}}, undefined, path => path.includes("test.wizard/get_views") && ++descriptions > 1
     ? new Response(JSON.stringify({name:"erp.exceptions.AccessError",message:"Next view denied."}),{status:403,headers:{"Content-Type":"application/json"}}) : undefined);
   dialogButton("Confirm loan").click();
   await vi.waitFor(() => expect(presented).toEqual([expect.objectContaining({kind:"permission",message:"Next view denied."})]));
