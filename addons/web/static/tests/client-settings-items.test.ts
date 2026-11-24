@@ -414,14 +414,14 @@ test("group toggles render on and off, and stay out of scalar RPCs", async () =>
   expect(calls.some(c => c.method === "erp_write_values" || c.method === "erp_toggle_group")).toBe(false);
 });
 
-function groupToggleServer(state: () => "enabled" | "disabled", toggle: (body: Record<string, unknown>) => Response) {
+function groupToggleServer(state: () => "enabled" | "disabled" | "not_available", toggle: (body: Record<string, unknown>) => Response) {
   const describes: string[] = [];
   const rpc = new RpcClient(async (path, init) => {
     const url = String(path), body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     if (url === "/erp/json/2/ir.config.setting/erp_toggle_group") return toggle(body);
     if (url.endsWith("/erp_describe")) describes.push(state());
     const response = url.endsWith("/erp_describe")
-      ? { wire_major: 1, registry_version: "r1", scope: body["scope"], declarations: [], items: [{ kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: state(), reason: null }] }
+      ? { wire_major: 1, registry_version: "r1", scope: body["scope"], declarations: [], items: [{ kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: state(), reason: state() === "not_available" ? "Not available." : null }] }
       : { wire_major: 1, scope: body["scope"], revision: "1", values: [] };
     return new Response(JSON.stringify(response), { headers: { "Content-Type": "application/json" } });
   }, () => {});
@@ -475,13 +475,14 @@ test("group toggles ask the server to change the feature after confirmation, the
   again.remove();
 });
 
-test("a refused group toggle reloads the settings, keeps the page and rethrows", async () => {
+test("a refused group toggle reloads the settings, keeps the page and rethrows; a row that came back unavailable keeps focus on its label", async () => {
   stubDialogs();
   let reloaded = 0;
   Object.defineProperty(window, "location", { configurable: true, value: { reload: () => { reloaded++; } } });
   const errors: unknown[] = [];
   const jobs: Promise<void>[] = [];
-  const { rpc, describes } = groupToggleServer(() => "enabled", () => new Response(JSON.stringify({ message: "Packages stays on for every internal user through the group stock.group_x; change that group instead.", name: "erp.exceptions.ValidationError" }), { status: 400, headers: { "Content-Type": "application/json" } }));
+  let state: "enabled" | "not_available" = "enabled";
+  const { rpc, describes } = groupToggleServer(() => state, () => { state = "not_available"; return new Response(JSON.stringify({ message: "Packages stays on for every internal user through the group stock.group_x; change that group instead.", name: "erp.exceptions.ValidationError" }), { status: 400, headers: { "Content-Type": "application/json" } }); });
   const host = document.createElement("div");
   document.body.append(host);
   await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job().catch(error => { errors.push(error); })); }, () => {}, {}, ["global"], "r1", undefined, undefined, "stock");
@@ -496,7 +497,10 @@ test("a refused group toggle reloads the settings, keeps the page and rethrows",
   expect((errors[0] as Error).message).toContain("stays on for every internal user");
   expect(reloaded).toBe(0);
   expect(describes.length).toBeGreaterThan(described);
-  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.group_stock_tracking_lot"] input')!.checked).toBe(true);
+  const row = host.querySelector<HTMLElement>('[data-setting-key="stock.group_stock_tracking_lot"]')!;
+  expect(row.querySelector<HTMLInputElement>("input")!.disabled).toBe(true);
+  // The disabled switch cannot take focus: it goes to the row's label instead of being lost.
+  expect(document.activeElement).toBe(row.querySelector(".setting-label-text"));
   host.remove();
 });
 

@@ -150,8 +150,12 @@ depends on, not be `base.group_user`, `base.group_portal` or `base.group_public`
 `res.groups` `_get_light_group_xmlids` list), so it can never hand out administrative rights; any other group is
 refused by key and group when the page is published. When an administrator later deletes the group, or makes it
 imply a group that is not light, in the Groups form, the page keeps working: only that row shows as not available,
-with the reason, and its switch refuses. Use a group toggle only for a group that already shows or hides something
-(a menu, a view element or a field).
+with the reason, and its switch refuses (a row that is on for every internal user says so and can still be switched
+off). The server logs a warning with the key and the reason for each such row when the registry is built, so a
+mistyped group id or a group your addon ships with an implication that is not light would otherwise only show on
+the page. Give your addon an install test that describes the Settings page and asserts that no group row you ship
+has a `reason`. Use a group toggle only for a group that already shows or hides something (a menu, a view element
+or a field).
 
 ### The request's client address
 
