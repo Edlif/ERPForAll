@@ -25,7 +25,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         );
         let orm = purchase_policy_orm(&db, &installed.orm, &[]).await;
 
-        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let mut tx = installed.orm.begin(SUPERUSER_ID).await.unwrap();
         let company = xmlid(&mut tx, "base", "main_company").await;
         let system_group = xmlid(&mut tx, "base", "group_system").await;
         let user_group = xmlid(&mut tx, "base", "group_user").await;
@@ -397,7 +397,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         drop(tx);
 
         // 3. Enable purchase.group_warning_purchase via base.group_user.implied_ids (Settings toggle path).
-        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let mut tx = installed.orm.begin(SUPERUSER_ID).await.unwrap();
         tx.env()
             .records("res.groups")
             .unwrap()
