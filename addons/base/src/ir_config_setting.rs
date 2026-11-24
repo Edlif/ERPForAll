@@ -648,7 +648,9 @@ async fn addon_catalogue(
     let toggles: Vec<(&str, &str)> = registry
         .items()
         .filter_map(|item| match item.kind() {
-            PanelItemKind::Module { addon, .. } if recorded_state(modules, addon) == Some(false) => {
+            PanelItemKind::Module { addon, .. }
+                if recorded_state(modules, addon) == Some(false) =>
+            {
                 Some((item.key(), addon.as_str()))
             }
             _ => None,
@@ -974,8 +976,15 @@ impl ToggleGroups {
                     "it is the internal-user group itself",
                 )));
             }
-            if [crate::group_graph::GROUP_PORTAL, crate::group_graph::GROUP_PUBLIC].contains(&group) {
-                return Err(Error::validation(refused("it is the portal or public group")));
+            if [
+                crate::group_graph::GROUP_PORTAL,
+                crate::group_graph::GROUP_PUBLIC,
+            ]
+            .contains(&group)
+            {
+                return Err(Error::validation(refused(
+                    "it is the portal or public group",
+                )));
             }
             if !light_xmlids.iter().any(|light| light == group) {
                 return Err(Error::validation(refused(NOT_LIGHT)));
@@ -984,7 +993,12 @@ impl ToggleGroups {
             let row = match id {
                 None => Err(refused("it does not exist")),
                 Some(id) if id == internal => Err(refused("it is the internal-user group itself")),
-                Some(id) if graph.up([id]).iter().any(|implied| !light.contains(implied)) => {
+                Some(id)
+                    if graph
+                        .up([id])
+                        .iter()
+                        .any(|implied| !light.contains(implied)) =>
+                {
                     Err(refused(NOT_LIGHT))
                 }
                 Some(id) => Ok(id),

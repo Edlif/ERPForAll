@@ -1467,7 +1467,9 @@ fn inventory_group_toggle_made_heavy_in_the_groups_form_is_unavailable_on_its_ro
         assert_eq!(other["state"], "disabled");
         assert!(other["reason"].is_null());
         // The switch of that row refuses with the same reason; nothing changes.
-        let refused = toggle_group(&env, &mut tx, PACKAGES, true).await.unwrap_err();
+        let refused = toggle_group(&env, &mut tx, PACKAGES, true)
+            .await
+            .unwrap_err();
         assert_eq!(refused.kind(), ErrorKind::Validation);
         assert_eq!(refused.message(), RULE);
         // A key no declaration can have is refused before it is repeated.

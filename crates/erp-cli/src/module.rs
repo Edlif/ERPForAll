@@ -19,9 +19,9 @@ pub fn bind_settings_catalogue(
     system: std::sync::Arc<erp_modules::system::ModuleSystem>,
 ) -> erp_sdk::Result<()> {
     static BOUND: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
-    let mut bound = BOUND
-        .lock()
-        .map_err(|_| erp_sdk::Error::internal("The Settings catalogue binding lock is poisoned."))?;
+    let mut bound = BOUND.lock().map_err(|_| {
+        erp_sdk::Error::internal("The Settings catalogue binding lock is poisoned.")
+    })?;
     if *bound {
         return Ok(());
     }
