@@ -438,25 +438,25 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
         // The length bound is the system parameter base.warning_message_max_chars.
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         let params = tx.env().records("ir.config_parameter").unwrap();
+        let set = async |tx: &mut erp_orm::Transaction, value: i64| {
+            let params = params.clone();
+            // a refused value leaves nothing pending: each try runs in its own savepoint
+            tx.savepoint(async move |tx| {
+                params
+                    .call::<(String, Option<i64>), i64>(
+                        tx,
+                        "set_int",
+                        ("base.warning_message_max_chars".to_owned(), Some(value)),
+                    )
+                    .await
+            })
+            .await
+        };
         for bad in [0_i64, 20_001] {
-            let err = params
-                .call::<(String, Option<i64>), i64>(
-                    &mut tx,
-                    "set_int",
-                    ("base.warning_message_max_chars".to_owned(), Some(bad)),
-                )
-                .await
-                .unwrap_err();
+            let err = set(&mut tx, bad).await.unwrap_err();
             assert_eq!(err.kind(), ErrorKind::Validation, "{bad}");
         }
-        params
-            .call::<(String, Option<i64>), i64>(
-                &mut tx,
-                "set_int",
-                ("base.warning_message_max_chars".to_owned(), Some(10)),
-            )
-            .await
-            .unwrap();
+        set(&mut tx, 10).await.unwrap();
         let env = tx.env().with_company(company).unwrap();
         let quiet = env
             .records("res.partner")

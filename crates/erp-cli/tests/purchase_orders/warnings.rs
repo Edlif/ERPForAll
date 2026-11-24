@@ -698,6 +698,8 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         let warning_group = xmlid(&mut tx, "purchase", "group_warning_purchase").await;
         let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
         let manager_group = xmlid(&mut tx, "purchase", "group_purchase_manager").await;
+        let system_group = xmlid(&mut tx, "base", "group_system").await;
+        user(&mut tx, "notice-admin", &[system_group], &[company]).await;
         let wide_buyer = user(
             &mut tx,
             "notice-wide",
@@ -965,13 +967,18 @@ fn purchase_notice_length_follows_the_system_parameter() {
         .await;
         let params = tx.env().records("ir.config_parameter").unwrap();
         let set = async |tx: &mut Transaction, value: i64| {
-            params
-                .call::<(String, Option<i64>), i64>(
-                    tx,
-                    "set_int",
-                    ("base.warning_message_max_chars".to_owned(), Some(value)),
-                )
-                .await
+            let params = params.clone();
+            // a refused value leaves nothing pending: each try runs in its own savepoint
+            tx.savepoint(async move |tx| {
+                params
+                    .call::<(String, Option<i64>), i64>(
+                        tx,
+                        "set_int",
+                        ("base.warning_message_max_chars".to_owned(), Some(value)),
+                    )
+                    .await
+            })
+            .await
         };
         for outside in [0, 20_001] {
             assert_eq!(
