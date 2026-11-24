@@ -220,15 +220,8 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
         // the remaining half bolt, then a cancelled and a deleted bill free their quantities
         let second = bill(&mut tx, &po, "action_bill_remaining").await;
         assert_ne!(second, first);
-        assert_eq!(
-            num(
-                &mut tx,
-                &item_of(&mut tx, company, second, &goods).await,
-                "quantity"
-            )
-            .await,
-            dec("0.5")
-        );
+        let half = item_of(&mut tx, company, second, &goods).await;
+        assert_eq!(num(&mut tx, &half, "quantity").await, dec("0.5"));
         assert_eq!(billed(&mut tx, &goods).await, d("2/0"));
         assert_eq!(status(&mut tx, &po).await, "invoiced");
         bill_books::moves(&tx, company)
