@@ -145,8 +145,8 @@ impl SaleOrder {
         out: &mut Assign<'_, SaleOrder>,
     ) -> Result<()> {
         let records = this.as_records();
-        let found = readable_links(tx, &records, ORDER_INVOICES, "account.move").await?;
-        for (index, count) in counts(&records, &found)?.into_iter().enumerate() {
+        let found = readable_links(tx, records, ORDER_INVOICES, "account.move").await?;
+        for (index, count) in counts(records, &found)?.into_iter().enumerate() {
             out.set(index, SaleOrder::INVOICE_COUNT, count)?;
         }
         Ok(())
@@ -162,7 +162,7 @@ impl SaleOrder {
         let records = this.as_records();
         records.check_access(tx, Operation::Read).await?;
         records.ensure_one()?;
-        let found = readable_links(tx, &records, ORDER_INVOICES, "account.move").await?;
+        let found = readable_links(tx, records, ORDER_INVOICES, "account.move").await?;
         let views = invoice_views(tx).await?;
         Ok(window("Invoices", "account.move", views, flat(found)))
     }
@@ -189,8 +189,8 @@ impl SalesInvoiceOrders {
         out: &mut Assign<'_, AccountMove>,
     ) -> Result<()> {
         let records = this.as_records();
-        let found = readable_links(tx, &records, INVOICE_ORDERS, "sale.order").await?;
-        for (index, count) in counts(&records, &found)?.into_iter().enumerate() {
+        let found = readable_links(tx, records, INVOICE_ORDERS, "sale.order").await?;
+        for (index, count) in counts(records, &found)?.into_iter().enumerate() {
             out.set(index, SalesInvoiceOrders::SALE_ORDER_COUNT, count)?;
         }
         Ok(())
@@ -206,7 +206,7 @@ impl SalesInvoiceOrders {
         let records = this.as_records();
         records.check_access(tx, Operation::Read).await?;
         records.ensure_one()?;
-        let found = readable_links(tx, &records, INVOICE_ORDERS, "sale.order").await?;
+        let found = readable_links(tx, records, INVOICE_ORDERS, "sale.order").await?;
         Ok(window(
             "Sales Orders",
             "sale.order",

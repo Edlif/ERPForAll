@@ -148,8 +148,8 @@ impl PurchaseOrderBills {
         out: &mut Assign<'_, PurchaseOrder>,
     ) -> Result<()> {
         let records = this.as_records();
-        let found = readable_links(tx, &records, ORDER_BILLS, "account.move").await?;
-        for (index, count) in counts(&records, &found)?.into_iter().enumerate() {
+        let found = readable_links(tx, records, ORDER_BILLS, "account.move").await?;
+        for (index, count) in counts(records, &found)?.into_iter().enumerate() {
             out.set(index, PurchaseOrderBills::INVOICE_COUNT, count)?;
         }
         Ok(())
@@ -165,7 +165,7 @@ impl PurchaseOrderBills {
         let records = this.as_records();
         records.check_access(tx, Operation::Read).await?;
         records.ensure_one()?;
-        let found = readable_links(tx, &records, ORDER_BILLS, "account.move").await?;
+        let found = readable_links(tx, records, ORDER_BILLS, "account.move").await?;
         let views = invoice_views(tx).await?;
         Ok(window("Vendor Bills", "account.move", views, flat(found)))
     }
@@ -192,8 +192,8 @@ impl PurchaseBillOrders {
         out: &mut Assign<'_, AccountMove>,
     ) -> Result<()> {
         let records = this.as_records();
-        let found = readable_links(tx, &records, BILL_ORDERS, "purchase.order").await?;
-        for (index, count) in counts(&records, &found)?.into_iter().enumerate() {
+        let found = readable_links(tx, records, BILL_ORDERS, "purchase.order").await?;
+        for (index, count) in counts(records, &found)?.into_iter().enumerate() {
             out.set(index, PurchaseBillOrders::PURCHASE_ORDER_COUNT, count)?;
         }
         Ok(())
@@ -209,7 +209,7 @@ impl PurchaseBillOrders {
         let records = this.as_records();
         records.check_access(tx, Operation::Read).await?;
         records.ensure_one()?;
-        let found = readable_links(tx, &records, BILL_ORDERS, "purchase.order").await?;
+        let found = readable_links(tx, records, BILL_ORDERS, "purchase.order").await?;
         Ok(window(
             "Purchase Orders",
             "purchase.order",
