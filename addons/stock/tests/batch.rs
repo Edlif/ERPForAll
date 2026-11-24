@@ -862,18 +862,25 @@ async fn links_and_batch_identity_are_not_written_directly() {
     assert_eq!(picking_batch(&mut tx, a).await, Some(batch));
     assert_eq!(picking_batch(&mut tx, b).await, None);
     // a transfer in a batch keeps its type and company
-    let error = env
-        .records("stock.picking")
-        .unwrap()
-        .browse([a])
-        .unwrap()
-        .write(
-            &mut tx,
-            RawVals::new().set_cell("picking_type_id", Cell::Id(f.delivery_type)),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    for field in ["picking_type_id", "company_id"] {
+        let error = env
+            .records("stock.picking")
+            .unwrap()
+            .browse([a])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_cell(field, Cell::Id(f.delivery_type + 1_000_000)),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation, "{field} {error:?}");
+        assert!(
+            error.message().contains("in a batch"),
+            "{field} {}",
+            error.message()
+        );
+    }
     // a batch is not created with transfers
     let error = env
         .records("stock.picking.batch")
@@ -1227,4 +1234,38 @@ async fn an_error_nobody_can_act_on_goes_back_to_the_queue() {
     );
     assert!(results(&mut tx, batch, 1).await.is_empty());
     assert_ne!(picking_state(&mut tx, boom).await, "done");
+}
+
+/// A type or company write on a batch whose snapshot predates an add is refused with a
+/// serialization error, not passed on a stale read of the batch's transfers.
+#[tokio::test]
+async fn an_add_concurrent_with_a_type_write_forces_a_retry() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let batch = f.batch(&mut tx).await.unwrap();
+    f.batches(&tx, batch)
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("picking_type_id", Cell::Id(f.receipt_type)),
+        )
+        .await
+        .unwrap();
+    let transfer = f.transfer(&mut tx, true, "1").await;
+    tx.commit().await.unwrap();
+    // the second session's snapshot is taken while the batch still holds nothing
+    let (mut late, mut adder) = f.h.begin_pair().await.unwrap();
+    assert_eq!(picking_batch(&mut late, transfer).await, None);
+    f.add(&mut adder, batch, &[transfer]).await.unwrap();
+    adder.commit().await.unwrap();
+    let error = f
+        .batches(&late, batch)
+        .write(
+            &mut late,
+            RawVals::new().set_cell("picking_type_id", Cell::Id(f.delivery_type)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Concurrency, "{error:?}");
+    assert_eq!(error.sqlstate(), Some("40001"), "{error:?}");
+    late.rollback().await.unwrap();
 }

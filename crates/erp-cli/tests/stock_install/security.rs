@@ -428,7 +428,7 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
             receipts.push(picking);
         }
         let grouped = user(&mut setup, "batch-user", company, stock_user).await;
-        setup.install_audit_schema().await.ok();
+        setup.install_audit_schema().await.unwrap();
         setup.commit().await.unwrap();
         set_groups(&installed, grouped, Command::link(group_id(batch_group))).await;
 
@@ -506,6 +506,23 @@ fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
         // the user loses the group before the job runs: the queued job still finishes as that user
         set_groups(&installed, grouped, Command::unlink(group_id(batch_group))).await;
         let orm = secure(&db, &installed).await;
+        {
+            // without the group the user is refused a batch action now: the step below runs as
+            // that user because the queued job carries its identity, not because it kept the group
+            let mut tx = orm.begin(UserId::new(grouped).unwrap()).await.unwrap();
+            let records = tx
+                .env()
+                .records("stock.picking.batch")
+                .unwrap()
+                .browse([batch])
+                .unwrap();
+            let error = tx
+                .savepoint(async move |tx| records.call::<(), ()>(tx, "action_confirm", ()).await)
+                .await
+                .unwrap_err();
+            batch_group_refusal(&error, "action_confirm after the group was removed");
+            tx.rollback().await.unwrap();
+        }
         let payload: String = {
             let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
             let rows = tx

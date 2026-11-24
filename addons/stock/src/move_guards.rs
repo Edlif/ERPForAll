@@ -572,13 +572,25 @@ impl StockPicking {
         {
             records.check_access(tx, Operation::Write).await?;
             tx.flush().await?;
-            let joined = tx
-                .query(
-                    "SELECT 1 FROM stock_picking WHERE id = ANY($1) AND batch_id IS NOT NULL LIMIT 1",
-                    &[&records.ids()],
-                )
-                .await?;
-            if !joined.is_empty() {
+            let mut joined = false;
+            // an unchanged value passes: only a different type or company is refused
+            for field in ["picking_type_id", "company_id"] {
+                let Some(cell) = vals.get(field) else {
+                    continue;
+                };
+                let value = cell_id(cell);
+                joined |= !tx
+                    .query(
+                        &format!(
+                            "SELECT 1 FROM stock_picking WHERE id = ANY($1) AND batch_id IS NOT NULL \
+                             AND {field} IS DISTINCT FROM $2 LIMIT 1"
+                        ),
+                        &[&records.ids(), &value],
+                    )
+                    .await?
+                    .is_empty();
+            }
+            if joined {
                 return Err(Error::validation(
                     "The operation type and company of a transfer in a batch cannot change: take it out of the batch first.",
                 ));
