@@ -15,10 +15,7 @@ fn purchase_settings_describe_module_toggles_and_states() {
             .unwrap();
         let env = init.orm.env(SUPERUSER_ID, Context::new());
         let installed = Box::pin(
-            system.button_immediate_install(
-                &env,
-                &[ModuleName::new("purchase").unwrap()],
-            ),
+            system.button_immediate_install(&env, &[ModuleName::new("purchase").unwrap()]),
         )
         .await
         .unwrap();
@@ -29,8 +26,20 @@ fn purchase_settings_describe_module_toggles_and_states() {
         let company = xmlid(&mut tx, "base", "main_company").await;
         let system_group = xmlid(&mut tx, "base", "group_system").await;
         let manager_group = xmlid(&mut tx, "purchase", "group_purchase_manager").await;
-        let admin = user(&mut tx, "purchase-settings-admin", &[system_group], &[company]).await;
-        let manager = user(&mut tx, "purchase-settings-manager", &[manager_group], &[company]).await;
+        let admin = user(
+            &mut tx,
+            "purchase-settings-admin",
+            &[system_group],
+            &[company],
+        )
+        .await;
+        let manager = user(
+            &mut tx,
+            "purchase-settings-manager",
+            &[manager_group],
+            &[company],
+        )
+        .await;
         tx.commit().await.unwrap();
         drop(tx);
 
@@ -137,12 +146,10 @@ fn purchase_settings_describe_module_toggles_and_states() {
 
         // 3. Install purchase_three_way_match; its state transitions to Installed while stock_dropshipping remains NotInstalled
         let env = installed.orm.env(SUPERUSER_ID, Context::new());
-        let upgraded = Box::pin(
-            system.button_immediate_install(
-                &env,
-                &[ModuleName::new("purchase_three_way_match").unwrap()],
-            ),
-        )
+        let upgraded = Box::pin(system.button_immediate_install(
+            &env,
+            &[ModuleName::new("purchase_three_way_match").unwrap()],
+        ))
         .await
         .unwrap();
         assert!(upgraded.post_commit.is_clean());
