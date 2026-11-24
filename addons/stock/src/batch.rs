@@ -958,8 +958,10 @@ impl StockPickingBatch {
         this: &RecordSet<StockPickingBatch>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let id = this.as_records().ensure_one()?.int()?;
-        require_group(this.as_records().env(), tx).await?;
+        let records = this.as_records();
+        let id = records.ensure_one()?.int()?;
+        require_group(records.env(), tx).await?;
+        records.check_access(tx, Operation::Read).await?;
         let head = header_with(tx, id, "").await?;
         if held(tx, id, &head).await? {
             return Err(Error::user(format!(

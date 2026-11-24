@@ -1808,6 +1808,46 @@ fn line_form_offers_editable_expressions_and_a_form_built_report_computes() {
                 .unwrap();
             assert_eq!(found.len(), 1, "{name}");
         }
+        // and only administrators see them
+        for (name, sql) in [
+            (
+                "menu_reporting_report_line",
+                "SELECT dg.name FROM ir_ui_menu_group_rel r \
+                 JOIN ir_model_data dm ON dm.model = 'ir.ui.menu' AND dm.res_id = r.menu_id \
+                 JOIN ir_model_data dg ON dg.model = 'res.groups' AND dg.res_id = r.gid \
+                 WHERE dm.module = 'reporting' AND dm.name = $1",
+            ),
+            (
+                "menu_reporting_report_expression",
+                "SELECT dg.name FROM ir_ui_menu_group_rel r \
+                 JOIN ir_model_data dm ON dm.model = 'ir.ui.menu' AND dm.res_id = r.menu_id \
+                 JOIN ir_model_data dg ON dg.model = 'res.groups' AND dg.res_id = r.gid \
+                 WHERE dm.module = 'reporting' AND dm.name = $1",
+            ),
+            (
+                "action_reporting_report_line",
+                "SELECT dg.name FROM ir_act_window_group_rel r \
+                 JOIN ir_model_data dm ON dm.model = 'ir.actions.act_window' AND dm.res_id = r.act_id \
+                 JOIN ir_model_data dg ON dg.model = 'res.groups' AND dg.res_id = r.gid \
+                 WHERE dm.module = 'reporting' AND dm.name = $1",
+            ),
+            (
+                "action_reporting_report_expression",
+                "SELECT dg.name FROM ir_act_window_group_rel r \
+                 JOIN ir_model_data dm ON dm.model = 'ir.actions.act_window' AND dm.res_id = r.act_id \
+                 JOIN ir_model_data dg ON dg.model = 'res.groups' AND dg.res_id = r.gid \
+                 WHERE dm.module = 'reporting' AND dm.name = $1",
+            ),
+        ] {
+            let groups: Vec<String> = tx
+                .query(sql, &[&name])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            assert_eq!(groups, ["group_system"], "{name}");
+        }
         tx.rollback().await.unwrap();
         drop(tx);
 
@@ -1884,7 +1924,32 @@ fn onchange_of_a_new_report_accepts_new_lines_and_columns_with_plain_names() {
         let result = reports
             .onchange(&mut tx, values, vec!["line_ids".to_owned()], spec)
             .await;
-        assert!(result.is_ok(), "{:?}", result.err());
+        // no onchange method changes a value here, so the answer holds no names to compare; it
+        // must be a plain answer without a warning
+        let result = result.unwrap().to_string();
+        assert!(!result.contains("warning"), "{result}");
+    });
+}
+
+/// A translatable char of a new record created from a `default_<field>` context key reads back the
+/// text (the default path stores the language map like a write).
+#[test]
+fn new_record_default_of_a_translatable_char_reads_back_the_text() {
+    run(async {
+        let f = fixture().await;
+        let mut tx = f.orm.begin(f.admin).await.unwrap();
+        let env = tx
+            .env()
+            .with_context([("default_name", Value::str("Defaulted"))]);
+        let reports = env.records("reporting.report").unwrap();
+        let new = tx
+            .new_record(&reports, erp_orm::RawVals::new(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            new.cell(&mut tx, "name").await.unwrap(),
+            Cell::Str("Defaulted".into())
+        );
     });
 }
 

@@ -496,3 +496,160 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
         db.cleanup().await.unwrap();
     });
 }
+
+/// A contact of another company adds no notice to a transfer for a caller limited to the first
+/// company (the caller's own partner rule hides it), and shows for a caller with both companies.
+#[test]
+fn stock_warning_hides_a_contact_of_another_company_from_a_narrow_caller() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let installed = install(&db).await;
+        let actors = super::security::roles(&installed).await;
+        let company = super::security::xid(&installed, "base", "main_company").await;
+        let stock_group = super::security::xid(&installed, "stock", "group_stock_user").await;
+        let user_group = super::security::xid(&installed, "base", "group_user").await;
+        let warning_group = super::security::xid(&installed, "stock", "group_warning_stock").await;
+        let narrow = UserId::new(actors[2]).unwrap();
+
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        let currency: i64 = tx
+            .query(
+                "SELECT currency_id FROM res_company WHERE id=$1",
+                &[&company],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let other_company = tx
+            .env()
+            .with_company(company)
+            .unwrap()
+            .records("res.company")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Notice Other Company".into()))
+                        .set_cell("currency_id", Cell::Id(currency)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let wide_id =
+            super::security::user(&mut tx, "stock-notice-wide", company, stock_group).await;
+        tx.env()
+            .records("res.users")
+            .unwrap()
+            .browse([wide_id])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "company_ids",
+                    [erp_orm::Command::Link(
+                        erp_fields::RecId::from_real(other_company).unwrap(),
+                    )],
+                ),
+            )
+            .await
+            .unwrap();
+        let wide = UserId::new(wide_id).unwrap();
+        tx.env()
+            .records("res.groups")
+            .unwrap()
+            .browse([user_group])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "implied_ids",
+                    [erp_orm::Command::Link(
+                        erp_fields::RecId::from_real(warning_group).unwrap(),
+                    )],
+                ),
+            )
+            .await
+            .unwrap();
+        let picking_type_row = tx
+            .query(
+                "SELECT id::int8, default_location_src_id::int8, default_location_dest_id::int8 \
+                 FROM stock_picking_type WHERE company_id = $1 ORDER BY id LIMIT 1",
+                &[&company],
+            )
+            .await
+            .unwrap();
+        let env = tx.env().with_company(company).unwrap();
+        let contact = env
+            .records("res.partner")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Foreign Dock".into()))
+                        .set_cell("picking_warn_msg", Cell::Str("Foreign dock note".into())),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let picking = env
+            .records("stock.picking")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("company_id", Cell::Id(company))
+                        .set_cell("picking_type_id", Cell::Id(picking_type_row[0].get(0)))
+                        .set_cell("location_id", Cell::Id(picking_type_row[0].get(1)))
+                        .set_cell("location_dest_id", Cell::Id(picking_type_row[0].get(2)))
+                        .set_cell("partner_id", Cell::Id(contact)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        // the contact joins the other company after the transfer exists, so no company check refuses it
+        tx.execute(
+            "UPDATE res_partner SET company_id = $1 WHERE id = $2",
+            &[&other_company, &contact],
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let orm = super::security::secure(&db, &installed).await;
+        for (uid, companies, expected) in [
+            (narrow, vec![company], Cell::Null),
+            (
+                wide,
+                vec![company, other_company],
+                Cell::Str("Foreign dock note".into()),
+            ),
+        ] {
+            let mut tx = orm.begin(uid).await.unwrap();
+            let record = tx
+                .env()
+                .with_context([(
+                    "allowed_company_ids",
+                    erp_sdk::Value::list(companies.iter().map(|c| erp_sdk::Value::Int(*c))),
+                )])
+                .records("stock.picking")
+                .unwrap()
+                .browse([picking])
+                .unwrap();
+            assert_eq!(
+                record.cell(&mut tx, "picking_warning_text").await.unwrap(),
+                expected,
+                "{uid:?}"
+            );
+            tx.rollback().await.unwrap();
+        }
+        drop(orm);
+        db.cleanup().await.unwrap();
+    });
+}

@@ -400,8 +400,8 @@ test("module toggle handles uninstall preview validation refusal and 409 conflic
 });
 
 test("group toggles render on and off, and stay out of scalar RPCs", async () => {
-  const on: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "enabled", reason: null };
-  const off: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_owner", label: "Consignment", app: "stock", block: "Operations", sequence: 110, group: "stock.group_tracking_owner", state: "disabled", reason: null };
+  const on: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "enabled", reason: null, on_for_all: false };
+  const off: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_owner", label: "Consignment", app: "stock", block: "Operations", sequence: 110, group: "stock.group_tracking_owner", state: "disabled", reason: null, on_for_all: false };
   const { host, controller, calls, jobs } = await mount([on, off], [], "stock");
   const box = (key: string) => host.querySelector<HTMLInputElement>(`[data-setting-key="${key}"] input[type="checkbox"]`)!;
   expect([box(on.key).checked, box(on.key).disabled]).toEqual([true, false]);
@@ -421,7 +421,7 @@ function groupToggleServer(state: () => "enabled" | "disabled" | "not_available"
     if (url === "/erp/json/2/ir.config.setting/erp_toggle_group") return toggle(body);
     if (url.endsWith("/erp_describe")) describes.push(state());
     const response = url.endsWith("/erp_describe")
-      ? { wire_major: 1, registry_version: "r1", scope: body["scope"], declarations: [], items: [{ kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: state(), reason: state() === "not_available" ? "Not available." : null }] }
+      ? { wire_major: 1, registry_version: "r1", scope: body["scope"], declarations: [], items: [{ kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: state(), reason: state() === "not_available" ? "Not available." : null, on_for_all: false }] }
       : { wire_major: 1, scope: body["scope"], revision: "1", values: [] };
     return new Response(JSON.stringify(response), { headers: { "Content-Type": "application/json" } });
   }, () => {});
@@ -615,7 +615,7 @@ test("unsaved edits are offered for discard before a toggle, and Cancel keeps th
 
 test("unavailable toggle rows say why, wire their label and description, and a change on them asks nothing", async () => {
   const reason = "Setting item stock.group_stock_tracking_lot cannot toggle the group stock.group_tracking_lot: it is or implies a group that is not a light feature group.";
-  const group: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "not_available", reason };
+  const group: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "not_available", reason, on_for_all: false };
   const moduleItem: SettingsItem = { kind: "module", key: "stock.module_product_expiry", label: "Expiry dates", app: "stock", block: "Traceability", sequence: 220, addon: "product_expiry", state: "not_available" };
   const { host, calls, jobs } = await mount([group, moduleItem], [], "stock");
   for (const [key, help] of [[group.key, reason], [moduleItem.key, "Not available in this server (product_expiry)."]] as const) {
@@ -636,4 +636,30 @@ test("unavailable toggle rows say why, wire their label and description, and a c
   expect(jobs).toHaveLength(0);
   expect(document.querySelector(".message-dialog-footer")).toBeNull();
   expect(calls.some(c => c.method === "erp_toggle_group" || c.method === "install")).toBe(false);
+});
+
+test("an unavailable group that is on for every internal user renders checked and enabled and can only be switched off; unavailable and off stays disabled", async () => {
+  stubDialogs();
+  let reloaded = 0;
+  Object.defineProperty(window, "location", { configurable: true, value: { reload: () => { reloaded++; } } });
+  const reason = "Not a light group. It is on for every internal user.";
+  const onItem: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "not_available", reason, on_for_all: true };
+  const offItem: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_owner", label: "Consignment", app: "stock", block: "Operations", sequence: 110, group: "stock.group_tracking_owner", state: "not_available", reason: "Not a light group.", on_for_all: false };
+  const { host, calls, jobs } = await mount([onItem, offItem], [], "stock");
+  const on = toggleBox(host, onItem.key), off = toggleBox(host, offItem.key);
+  expect([on.checked, on.disabled]).toEqual([true, false]);
+  expect(document.getElementById(on.getAttribute("aria-describedby")!)!.textContent).toBe(reason);
+  expect([off.checked, off.disabled]).toEqual([false, true]);
+  // Checking it again asks nothing.
+  on.checked = true;
+  on.dispatchEvent(new Event("change"));
+  expect(jobs).toHaveLength(0);
+  // Switching it off asks to turn off only.
+  on.checked = false;
+  on.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(document.querySelector(".message-dialog-footer button")).not.toBeNull());
+  [...document.querySelectorAll<HTMLButtonElement>(".message-dialog-footer button")].find(b => b.textContent === "Turn off")!.click();
+  await Promise.all(jobs);
+  expect(calls.filter(c => c.method === "erp_toggle_group").map(c => c.args)).toEqual([{ key: onItem.key, enabled: false, context: {} }]);
+  expect(reloaded).toBe(1);
 });

@@ -735,12 +735,17 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
             group: "stock.group_tracking_lot".into(),
             state,
             reason: reason.clone(),
+            on_for_all: wire_state == "not_available",
         };
         let encoded = serde_json::to_value(&group_item).unwrap();
         assert_eq!(encoded["kind"], "group");
         assert_eq!(encoded["group"], "stock.group_tracking_lot");
         assert_eq!(encoded["state"], wire_state);
         assert_eq!(encoded["reason"], json!(reason));
+        assert_eq!(
+            encoded["on_for_all"],
+            json!(matches!(wire_state, "not_available"))
+        );
         assert!(encoded.get("group_id").is_none() && encoded.get("internal_group_id").is_none());
         roundtrip::<SettingsItem>(&encoded);
     }
@@ -753,7 +758,8 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
         "sequence": 100,
         "group": "stock.group_tracking_lot",
         "state": "disabled",
-        "reason": null
+        "reason": null,
+        "on_for_all": false
     });
     let mut with_ids = sample_group.clone();
     with_ids["group_id"] = json!(7);
@@ -761,7 +767,7 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
     let mut unknown = sample_group.clone();
     unknown["extra"] = json!(true);
     assert!(serde_json::from_value::<SettingsItem>(unknown).is_err());
-    for member in ["group", "state", "reason"] {
+    for member in ["group", "state", "reason", "on_for_all"] {
         let mut missing = sample_group.clone();
         missing.as_object_mut().unwrap().remove(member);
         assert!(

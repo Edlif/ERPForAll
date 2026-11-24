@@ -548,10 +548,13 @@ export async function settingsView(
               row.dataset["settingKey"] = key;
               if (item.kind === "module") { row.dataset["moduleAddon"] = item.addon; row.dataset["moduleState"] = item.state; }
               else { row.dataset["group"] = item.group; row.dataset["groupState"] = item.state; }
-              const on = item.kind === "module" ? item.state === "installed" : item.state === "enabled";
+              // An unavailable group that is on for every internal user shows on and can be switched off, never on.
+              const offOnly = item.kind === "group" && item.state === "not_available" && item.on_for_all;
+              const on = item.kind === "module" ? item.state === "installed" : item.state === "enabled" || offOnly;
               const technical = item.kind === "module" ? item.addon : item.group;
-              const unavailable = item.state === "not_available";
-              if (unavailable) row.classList.add("is-unavailable");
+              const unavailable = item.state === "not_available" && !offOnly;
+              const showReason = item.state === "not_available";
+              if (showReason) row.classList.add("is-unavailable");
               const leftPane = el("div", undefined, "setting-left-pane");
               const rightPane = el("div", undefined, "setting-right-pane");
               const checkbox = el("input");
@@ -567,7 +570,7 @@ export async function settingsView(
                 const wanted = checkbox.checked;
                 // Keep the confirmed server state until the change completes.
                 checkbox.checked = on;
-                if (disposed || pending || unavailable) return;
+                if (disposed || pending || unavailable || (offOnly && wanted)) return;
                 run(async () => {
                   try { await (item.kind === "module" ? toggleModule(item, wanted, checkbox) : toggleGroup(item, wanted)); } finally { focusToggle(key); }
                 });
@@ -582,7 +585,7 @@ export async function settingsView(
               rightPane.append(titleRow);
               let helpEl: HTMLElement | undefined;
               let helpText: string | undefined;
-              if (unavailable) {
+              if (showReason) {
                 helpText = item.kind === "group" && item.reason !== null ? item.reason : `Not available in this server (${technical}).`;
                 helpEl = el("div", helpText, "setting-help text-muted");
                 helpEl.id = `setting-help-${key}`;

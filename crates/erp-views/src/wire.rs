@@ -1460,6 +1460,9 @@ pub enum SettingsItem {
         /// Why the row is not available, or `null` when it is.
         #[serde(deserialize_with = "required_nullable")]
         reason: Option<String>,
+        /// Whether the feature group is on for every internal user although the row is not available:
+        /// the row can still be switched off, never on.
+        on_for_all: bool,
     },
 }
 object!(/// One visible native declaration; policy internals stay on the server.

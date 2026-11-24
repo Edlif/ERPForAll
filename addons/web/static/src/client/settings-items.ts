@@ -44,7 +44,7 @@ export function readSettingsItems(description: Record<string, unknown>, declarat
   return array(description["items"], "setting items").map(raw => {
     const row = object(raw, "setting item"), kind = row["kind"];
     if (kind !== "info" && kind !== "link" && kind !== "module" && kind !== "group") throw new ClientError("unsupported", `Unsupported setting item kind: ${String(kind)}.`);
-    closed(row, ["kind", "key", "label", "app", "block", "sequence", ...(kind === "info" ? ["value", "detail"] : kind === "link" ? ["target"] : kind === "module" ? ["addon", "state"] : ["group", "state", "reason"])], "setting item");
+    closed(row, ["kind", "key", "label", "app", "block", "sequence", ...(kind === "info" ? ["value", "detail"] : kind === "link" ? ["target"] : kind === "module" ? ["addon", "state"] : ["group", "state", "reason", "on_for_all"])], "setting item");
     const key = caption(row["key"], "setting item key", 128), app = caption(row["app"], "setting item app", 128);
     if (!/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(key) || !/^[a-z][a-z0-9_]*$/.test(app)) throw new ClientError("server", "Invalid setting item key or app.");
     if (keys.has(key)) throw new ClientError("server", `Duplicate settings item or declaration key: ${key}.`);
@@ -68,7 +68,10 @@ export function readSettingsItems(description: Record<string, unknown>, declarat
       // Only an unavailable row says why.
       if ((state === "not_available") !== (row["reason"] !== null)) throw new ClientError("server", "Invalid setting item group reason.");
       const reason = row["reason"] === null ? null : caption(row["reason"], "setting item group reason", 1024);
-      return { ...common, kind, group, state: state as GroupToggleState, reason };
+      // On for every internal user although unavailable: the row can still be switched off.
+      const on_for_all = row["on_for_all"];
+      if (typeof on_for_all !== "boolean" || (on_for_all && state !== "not_available")) throw new ClientError("server", "Invalid setting item group on_for_all.");
+      return { ...common, kind, group, state: state as GroupToggleState, reason, on_for_all };
     }
     const value = row["value"];
     if (typeof value !== "boolean" && typeof value !== "string" && !(typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER)) throw new ClientError("server", "Invalid setting item value.");

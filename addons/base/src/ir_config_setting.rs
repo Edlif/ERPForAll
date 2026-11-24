@@ -1053,13 +1053,22 @@ impl ToggleGroups {
             ))),
         }
     }
-    /// The row's state and, for an unavailable row, why.
-    fn state(&self, group: &str) -> Result<(wire::GroupToggleState, Option<String>)> {
-        if let Some(Err((_, reason))) = self.groups.get(group) {
-            return Ok((wire::GroupToggleState::NotAvailable, Some(reason.clone())));
+    /// The row's state, for an unavailable row why, and whether its group is on for every internal user
+    /// (an unavailable row that is on can still be switched off).
+    fn state(&self, group: &str) -> Result<(wire::GroupToggleState, Option<String>, bool)> {
+        if let Some(Err((id, reason))) = self.groups.get(group) {
+            let on = match (id, &self.internal) {
+                (Some(id), Some((_, implied))) => implied.contains(id),
+                _ => false,
+            };
+            return Ok((
+                wire::GroupToggleState::NotAvailable,
+                Some(reason.clone()),
+                on,
+            ));
         }
         let (id, _, implied) = self.rows(group, true)?;
-        Ok((toggle_state(implied.contains(&id)), None))
+        Ok((toggle_state(implied.contains(&id)), None, false))
     }
 }
 async fn describe_item(
@@ -1176,7 +1185,7 @@ async fn describe_item(
             }))
         }
         PanelItemKind::Group { group, .. } => {
-            let (state, reason) = published.toggles.state(group)?;
+            let (state, reason, on_for_all) = published.toggles.state(group)?;
             Ok(Some(wire::SettingsItem::Group {
                 key: key.into(),
                 label: item.label().into(),
@@ -1186,6 +1195,7 @@ async fn describe_item(
                 group: group.clone(),
                 state,
                 reason,
+                on_for_all,
             }))
         }
         _ => Err(unsupported_item()),

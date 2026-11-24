@@ -957,6 +957,14 @@ impl Transaction {
         // a default (static or a `default_<field>` context key from the caller) reaches the cache
         // like an assigned value, so HTML goes through the field's policy first (review r1 M3)
         let cell = self.admit_html_cell(spec, fs, cell)?;
+        let cell = if fs.translate
+            && !matches!(fs.ty, erp_fields::FieldType::Html)
+            && matches!(cell, Cell::Str(_))
+        {
+            self.translated_text_cell(records.env(), fs, &cell).await?
+        } else {
+            cell
+        };
         // a draft holds a company map: the default is the environment's company's entry
         let to_map = |tx: &Self, cell: Cell| -> Result<Cell> {
             if !fs.company_dependent {

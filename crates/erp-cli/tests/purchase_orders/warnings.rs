@@ -51,6 +51,14 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         let admin = user(&mut tx, "po-warn-admin", &[system_group], &[company]).await;
         let manager = user(&mut tx, "po-warn-manager", &[manager_group], &[company]).await;
         let buyer = user(&mut tx, "po-warn-buyer", &[buyer_group], &[company]).await;
+        let product_admin_group = xmlid(&mut tx, "product", "group_product_manager").await;
+        let product_admin = user(
+            &mut tx,
+            "po-warn-product-admin",
+            &[product_admin_group, manager_group],
+            &[company],
+        )
+        .await;
 
         let setup_env = tx.env().with_company(company).unwrap();
         let partners = setup_env.records("res.partner").unwrap();
@@ -528,24 +536,40 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
                 .unwrap(),
             text("Manager note")
         );
-        let manager_tmpl = manager_env
+        // The product notice is written by the Product Administrator, not by the purchase manager.
+        let denied = write(
+            &mut tx,
+            &manager_env
+                .records("product.template")
+                .unwrap()
+                .browse([plain_tmpl_id])
+                .unwrap(),
+            RawVals::new().set_cell("purchase_line_warn_msg", text("Manager product note")),
+        )
+        .await;
+        refused(denied, ErrorKind::Access, &[]);
+        tx.rollback().await.unwrap();
+        drop(tx);
+        let mut tx = orm.begin(product_admin).await.unwrap();
+        let product_env = tx.env().with_company(company).unwrap();
+        let product_tmpl = product_env
             .records("product.template")
             .unwrap()
             .browse([plain_tmpl_id])
             .unwrap();
         write(
             &mut tx,
-            &manager_tmpl,
-            RawVals::new().set_cell("purchase_line_warn_msg", text("Manager product note")),
+            &product_tmpl,
+            RawVals::new().set_cell("purchase_line_warn_msg", text("Product admin note")),
         )
         .await
         .unwrap();
         assert_eq!(
-            manager_tmpl
+            product_tmpl
                 .cell(&mut tx, "purchase_line_warn_msg")
                 .await
                 .unwrap(),
-            text("Manager product note")
+            text("Product admin note")
         );
         tx.rollback().await.unwrap();
         drop(tx);
@@ -800,6 +824,32 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         )
         .await
         .ids()[0];
+        // A vendor of the other company: the caller's own partner rule hides it from a caller
+        // limited to the first company (moved after the order exists, so no company check refuses it).
+        let foreign_vendor = create_one(
+            &mut tx,
+            company,
+            "res.partner",
+            RawVals::new()
+                .set_cell("name", text("Foreign Vendor"))
+                .set_cell("purchase_warn_msg", text("Foreign vendor note")),
+        )
+        .await;
+        let foreign_order = order(
+            &mut tx,
+            &[company],
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(foreign_vendor))
+                .set_cell("company_id", Cell::Id(company)),
+        )
+        .await
+        .ids()[0];
+        tx.execute(
+            "UPDATE res_partner SET company_id = $1 WHERE id = $2",
+            &[&other_company, &foreign_vendor],
+        )
+        .await
+        .unwrap();
         for product in [visible, guarded] {
             create_one(
                 &mut tx,
@@ -934,6 +984,35 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
                 .await
                 .unwrap(),
             text("Guarded note")
+        );
+        // The vendor of the other company adds no notice for the narrow caller, its note for the wide one.
+        let narrow_foreign = record_as(
+            &tx,
+            narrow_buyer,
+            &[company],
+            "purchase.order",
+            foreign_order,
+        );
+        let wide_foreign = record_as(
+            &tx,
+            wide_buyer,
+            &[company, other_company],
+            "purchase.order",
+            foreign_order,
+        );
+        assert_eq!(
+            narrow_foreign
+                .cell(&mut tx, "purchase_warning_text")
+                .await
+                .unwrap(),
+            Cell::Null
+        );
+        assert_eq!(
+            wide_foreign
+                .cell(&mut tx, "purchase_warning_text")
+                .await
+                .unwrap(),
+            text("Foreign Vendor - Foreign vendor note")
         );
         // A note of spaces only gives no banner.
         let blank_as_narrow =
