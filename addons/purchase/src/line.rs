@@ -19,14 +19,17 @@ use erp_sdk::prelude::*;
 
 use crate::order::refuse_context_defaults;
 
-/// Fields only this module writes: the amounts, the quantity in the product unit and the vendor
-/// price the line was priced from.
-pub(crate) const COMPUTED: [&str; 5] = [
+/// Fields only this module writes: the amounts, the quantity in the product unit, the vendor
+/// price the line was priced from, and the billed quantities with their private bill links.
+pub(crate) const COMPUTED: [&str; 8] = [
     "price_subtotal",
     "price_tax",
     "price_total",
     "product_uom_qty",
     "selected_seller_id",
+    "direct_bill_line_ids",
+    "qty_invoiced",
+    "qty_to_invoice",
 ];
 
 /// The received quantity and its method, filled by the receipt slices.
@@ -231,6 +234,37 @@ pub struct PurchaseOrderLine {
         string = "Received Qty"
     )]
     pub qty_received: Decimal,
+    /// The private links to the vendor bill items made from this line (Accounting reads them, a
+    /// buyer only sees the quantities below).
+    #[field(
+        one2many,
+        comodel = "purchase.direct.bill.line",
+        inverse_name = "purchase_line_id",
+        readonly = true,
+        copy = false,
+        string = "Vendor Bill Items"
+    )]
+    pub direct_bill_line_ids: Vec<RecId>,
+    /// The quantity on linked draft and posted vendor bills less linked vendor credit notes, in
+    /// the line's unit ([`crate::billing`]).
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_qty_invoiced",
+        store = true,
+        string = "Billed Qty"
+    )]
+    pub qty_invoiced: Decimal,
+    /// What is left to bill on a confirmed order under the product's bill control: the ordered or
+    /// received quantity less the billed one ([`crate::billing`]).
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_qty_to_invoice",
+        store = true,
+        string = "Quantity to Bill"
+    )]
+    pub qty_to_invoice: Decimal,
     /// Non-blocking notice from the line product. Computed elevated, but empty when the caller's own
     /// rights cannot read the product.
     #[field(

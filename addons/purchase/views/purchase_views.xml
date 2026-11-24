@@ -20,6 +20,7 @@
         <field name="currency_id" invisible="1"/>
         <field name="price_subtotal"/>
         <field name="qty_received" invisible="1"/>
+        <field name="qty_invoiced" string="Billed"/>
       </list>
     </field>
   </record>
@@ -43,6 +44,8 @@
               <field name="uom_id"/>
               <field name="date_planned"/>
               <field name="qty_received" readonly="1"/>
+              <field name="qty_invoiced" readonly="1"/>
+              <field name="qty_to_invoice" readonly="1"/>
             </group>
             <group string="Pricing">
               <field name="price_unit"/>
@@ -77,6 +80,7 @@
         <field name="amount_total"/>
         <field name="currency_id"/>
         <field name="state" widget="badge"/>
+        <field name="invoice_status" widget="badge"/>
       </list>
     </field>
   </record>
@@ -120,6 +124,7 @@
               <field name="date_approve" readonly="1" invisible="state not in ('purchase', 'cancel')"/>
               <field name="date_planned" readonly="1"/>
               <field name="user_id" readonly="state == 'cancel'"/>
+              <field name="invoice_status" readonly="1" invisible="state != 'purchase'"/>
               <field name="locked" invisible="1"/>
             </group>
           </group>
@@ -156,6 +161,9 @@
         <filter name="to_approve" string="To Approve" domain="[('state', '=', 'to approve')]"/>
         <filter name="purchase" string="Purchase Orders" domain="[('state', '=', 'purchase')]"/>
         <filter name="cancel" string="Cancelled" domain="[('state', '=', 'cancel')]"/>
+        <separator/>
+        <filter name="waiting_bills" string="Waiting Bills" domain="[('invoice_status', '=', 'to invoice')]"/>
+        <filter name="fully_billed" string="Fully Billed" domain="[('invoice_status', '=', 'invoiced')]"/>
         <separator/>
         <filter name="locked" string="Locked" domain="[('locked', '=', True)]"/>
         <group>

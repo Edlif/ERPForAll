@@ -36,12 +36,13 @@ const OPERATION_FIELDS: [&str; 3] = ["state", "locked", "date_approve"];
 const WRITE_REFUSED: [&str; 4] = ["state", "locked", "date_approve", "name"];
 
 /// Fields computed from the lines; never written by a client.
-const AMOUNT_FIELDS: [&str; 5] = [
+const AMOUNT_FIELDS: [&str; 6] = [
     "amount_untaxed",
     "amount_tax",
     "amount_total",
     "amount_total_cc",
     "date_planned",
+    "invoice_status",
 ];
 
 /// A change of these fields on an order prices its lines' amounts again; the company too, so the
@@ -224,6 +225,20 @@ pub struct PurchaseOrder {
         string = "Order notices"
     )]
     pub purchase_warning_text: Option<Arc<str>>,
+    /// Nothing to bill, waiting bills or fully billed, from the lines of a confirmed order
+    /// ([`crate::billing`]).
+    #[field(
+        selection,
+        selection = [
+            ("no", "Nothing to Bill"),
+            ("to invoice", "Waiting Bills"),
+            ("invoiced", "Fully Billed"),
+        ],
+        compute = "_compute_invoice_status",
+        store = true,
+        string = "Billing Status"
+    )]
+    pub invoice_status: Option<Arc<str>>,
 }
 
 #[methods(PurchaseOrder, addon = "purchase")]
