@@ -138,6 +138,28 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
             cell(&mut tx, &repair, "purchase_method").await,
             text("receive")
         );
+        // a write that names the type it already has is no type change: a control chosen by hand
+        // stays, also when nothing of the product is loaded yet (a fresh client call)
+        write(
+            &mut tx,
+            &repair,
+            RawVals::new().set_cell("purchase_method", text("purchase")),
+        )
+        .await
+        .unwrap();
+        tx.flush().await.unwrap();
+        tx.invalidate_all().await.unwrap();
+        write(
+            &mut tx,
+            &repair,
+            RawVals::new().set_cell("type", text("consu")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cell(&mut tx, &repair, "purchase_method").await,
+            text("purchase")
+        );
         let po = order(
             &mut tx,
             &[company],
@@ -878,6 +900,13 @@ fn cancelled_purchases_take_their_draft_bills_along_and_keep_the_billed_floor() 
             );
         }
         assert_eq!(bill_state(&mut tx, redrafted.1).await, "draft");
+        // confirmed again, the order gets a new first bill, not the one its cancel cancelled
+        let po = orders(&tx, &[company]).browse([drafted.0]).unwrap();
+        act(&mut tx, &po, "button_confirm").await.unwrap();
+        let again = bill(&mut tx, &po, "action_create_vendor_bill").await;
+        assert_ne!(again, drafted.1);
+        assert_eq!(bill_state(&mut tx, again).await, "draft");
+        assert_eq!(bill_state(&mut tx, drafted.1).await, "cancel");
         tx.rollback().await.unwrap();
         db.cleanup().await.unwrap();
     })

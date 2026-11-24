@@ -1087,7 +1087,7 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
     (
         "account/moves/post.rs::cancel_document_drafts",
         1,
-        "cancels, through the ordinary cancel of draft entries (which refuses any entry no longer a draft), only the draft invoices or bills linked to a sales or purchase order whose cancel step already checked the caller's write right on that order; elevated only for a caller without accounting rights, so a sales or purchase user can cancel an order whose invoices are drafts; returns nothing",
+        "cancels, through the ordinary cancel of draft entries (which refuses any entry no longer a draft), only the draft invoices or bills linked to a sales or purchase order whose cancel step already checked the caller's write right on that order, each as a whole document (also its items of another order or of no order, whose invoiced quantities recompute; an accountant can reset it to draft); elevated only for a caller without accounting rights, so a sales or purchase user can cancel an order whose invoices are drafts; returns nothing",
     ),
     (
         "base/report_settings.rs::barcode_grid",

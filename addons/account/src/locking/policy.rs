@@ -29,7 +29,8 @@ pub struct LockCheck {
     pub(crate) journal: JournalClass,
     pub(crate) tax: TaxImpact,
     /// Whether the hard lock (date and hard-locked period) binds this check; only the unmatch
-    /// route leaves it out, so a match made into a hard-locked period can still be undone.
+    /// route leaves it out, so a match made into a hard-locked period can still be undone (in
+    /// such a period the fiscal-year date, which cannot be lowered across it, is left out too).
     pub(crate) hard: bool,
 }
 impl LockCheck {
@@ -162,6 +163,17 @@ pub(crate) const FIELDS: [LockField; 5] = [
     LockField::Hard,
 ];
 impl EffectiveDates {
+    /// The same dates without the fiscal-year lock date.
+    pub(crate) fn without_fiscal_year(&self) -> Self {
+        let mut dates = self.0;
+        for (date, field) in dates.iter_mut().zip(FIELDS) {
+            if field == LockField::FiscalYear {
+                *date = None;
+            }
+        }
+        Self(dates)
+    }
+
     pub(crate) fn check(&self, input: &LockCheck) -> LockVerdict {
         let mut violations = Vec::new();
         for (i, field) in FIELDS.iter().enumerate() {
