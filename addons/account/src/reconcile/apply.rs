@@ -946,7 +946,7 @@ async fn invalidate(tx: &mut Transaction) -> Result<()> {
         "account.move",
         Some(&["amount_residual", "payment_state", "reset_blocked"]),
     )
-        .await?;
+    .await?;
     for model in [
         "account.partial.reconcile",
         "account.full.reconcile",
