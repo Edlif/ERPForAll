@@ -679,7 +679,10 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let company = xmlid(&mut tx, "base", "main_company").await;
         let currency: i64 = tx
-            .query("SELECT currency_id FROM res_company WHERE id=$1", &[&company])
+            .query(
+                "SELECT currency_id FROM res_company WHERE id=$1",
+                &[&company],
+            )
             .await
             .unwrap()[0]
             .get(0);
@@ -695,7 +698,13 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         let warning_group = xmlid(&mut tx, "purchase", "group_warning_purchase").await;
         let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
         let manager_group = xmlid(&mut tx, "purchase", "group_purchase_manager").await;
-        let wide_buyer = user(&mut tx, "notice-wide", &[buyer_group], &[company, other_company]).await;
+        let wide_buyer = user(
+            &mut tx,
+            "notice-wide",
+            &[buyer_group],
+            &[company, other_company],
+        )
+        .await;
         let narrow_buyer = user(&mut tx, "notice-narrow", &[buyer_group], &[company]).await;
         let manager = user(&mut tx, "notice-manager", &[manager_group], &[company]).await;
 
@@ -725,7 +734,10 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         )
         .await;
         let mut products = Vec::new();
-        for (name, note) in [("Visible Valve", "Visible note"), ("Guarded Valve", "Guarded note")] {
+        for (name, note) in [
+            ("Visible Valve", "Visible note"),
+            ("Guarded Valve", "Guarded note"),
+        ] {
             let template = create_one(
                 &mut tx,
                 "product.template",
@@ -819,9 +831,7 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             Cell::Str(s) => s.to_string(),
             other => panic!("display name: {other:?}"),
         };
-        let both = |ids: &[i64]| {
-            Value::list(ids.iter().map(|c| Value::Int(*c)))
-        };
+        let both = |ids: &[i64]| Value::list(ids.iter().map(|c| Value::Int(*c)));
         let parent_line = "Parent Holdings - Parent requires PO reference";
         let narrow_text = format!("{parent_line}\n{visible_name} - Visible note");
         let wide_text = format!("{narrow_text}\n{guarded_name} - Guarded note");
@@ -838,15 +848,24 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         let narrow_order = read_as(narrow_buyer, &[company], notice_order);
         let wide_order = read_as(wide_buyer, &[company, other_company], notice_order);
         assert_eq!(
-            narrow_order.cell(&mut tx, "purchase_warning_text").await.unwrap(),
+            narrow_order
+                .cell(&mut tx, "purchase_warning_text")
+                .await
+                .unwrap(),
             text(&narrow_text)
         );
         assert_eq!(
-            wide_order.cell(&mut tx, "purchase_warning_text").await.unwrap(),
+            wide_order
+                .cell(&mut tx, "purchase_warning_text")
+                .await
+                .unwrap(),
             text(&wide_text)
         );
         assert_eq!(
-            narrow_order.cell(&mut tx, "purchase_warning_text").await.unwrap(),
+            narrow_order
+                .cell(&mut tx, "purchase_warning_text")
+                .await
+                .unwrap(),
             text(&narrow_text)
         );
         // The line of the hidden product shows nothing to the narrow caller, its note to the wide one.
@@ -869,11 +888,17 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         let narrow_line = line_as(narrow_buyer, &[company]);
         let wide_line = line_as(wide_buyer, &[company, other_company]);
         assert_eq!(
-            narrow_line.cell(&mut tx, "purchase_line_warn_msg").await.unwrap(),
+            narrow_line
+                .cell(&mut tx, "purchase_line_warn_msg")
+                .await
+                .unwrap(),
             Cell::Null
         );
         assert_eq!(
-            wide_line.cell(&mut tx, "purchase_line_warn_msg").await.unwrap(),
+            wide_line
+                .cell(&mut tx, "purchase_line_warn_msg")
+                .await
+                .unwrap(),
             text("Guarded note")
         );
         // A note of spaces only gives no banner.

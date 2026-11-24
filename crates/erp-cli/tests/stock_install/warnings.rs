@@ -423,7 +423,8 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
             .unwrap()
             .write(
                 &mut tx,
-                RawVals::new().set_cell("picking_warn_msg", Cell::Str("Gate closes at five".into())),
+                RawVals::new()
+                    .set_cell("picking_warn_msg", Cell::Str("Gate closes at five".into())),
             )
             .await
             .unwrap();
@@ -475,7 +476,8 @@ fn stock_warnings_group_gating_validation_computation_and_settings_toggle() {
                 async move |tx| {
                     rec.write(
                         tx,
-                        RawVals::new().set_cell("picking_warn_msg", Cell::Str("01234567890".into())),
+                        RawVals::new()
+                            .set_cell("picking_warn_msg", Cell::Str("01234567890".into())),
                     )
                     .await?;
                     tx.flush().await

@@ -28,11 +28,7 @@ pub(crate) struct StockPartner {
     pub property_stock_supplier: Option<RecId>,
     /// Non-blocking notice shown on stock transfers for this contact. Transfers show it only to a
     /// caller who can read this contact.
-    #[field(
-        text,
-        groups = "stock.group_warning_stock",
-        string = "Transfer notice"
-    )]
+    #[field(text, groups = "stock.group_warning_stock", string = "Transfer notice")]
     pub picking_warn_msg: Option<Arc<str>>,
 }
 

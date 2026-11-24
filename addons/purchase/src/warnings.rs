@@ -48,7 +48,10 @@ async fn read_partner_info(
     if !unnamed.is_empty() {
         let fallback = env.records("res.partner")?.browse_ids(unnamed);
         let ids = fallback.rec_ids().to_vec();
-        for (id, display) in ids.into_iter().zip(fallback.values(tx, "display_name").await?) {
+        for (id, display) in ids
+            .into_iter()
+            .zip(fallback.values(tx, "display_name").await?)
+        {
             if let Some(label) = non_empty_text("res.partner.display_name", display)? {
                 labels.insert(id, label);
             }
@@ -271,7 +274,9 @@ impl PurchaseOrder {
         )
         .await?;
         if !readable_products.is_empty() {
-            let products = env.records("product.product")?.browse_ids(readable_products);
+            let products = env
+                .records("product.product")?
+                .browse_ids(readable_products);
             let rec_ids = products.rec_ids().to_vec();
             let display_names = products.values(tx, "display_name").await?;
             for (id, display_name) in rec_ids.into_iter().zip(display_names) {
