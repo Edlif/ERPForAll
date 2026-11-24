@@ -74,6 +74,12 @@ fn parameters() -> Result<Vec<ParameterDecl>> {
             (1, 1_000_000),
         ),
         (
+            crate::batch::CHUNK_KEY,
+            "Transfers one chunk of a batch validation validates",
+            20,
+            (1, 500),
+        ),
+        (
             crate::position::FACT_LIMIT_KEY,
             "Source rows one current stock position may read",
             10_000,
@@ -337,6 +343,7 @@ impl StockSettings {
                 crate::move_relations::CHAIN_LIMIT_KEY,
                 crate::warehouse_setup::CODE_LENGTH_KEY,
                 crate::quant_guards::SHOW_EXPECTED_KEY,
+                crate::batch::CHUNK_KEY,
             ])
             .map(str::to_owned)
             .collect();
