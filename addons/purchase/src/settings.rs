@@ -318,7 +318,7 @@ mod tests {
         let toggles: Vec<_> = items
             .iter()
             .filter_map(|item| match item.kind() {
-                PanelItemKind::Module { addon } => Some((
+                PanelItemKind::Module { addon, .. } => Some((
                     item.key(),
                     item.block_title(),
                     item.label(),
