@@ -68,6 +68,8 @@ let extraMenus: boolean;
 let failSearch: boolean;
 /** Whether the note's lines may be edited in their dialog. */
 let editableLines: boolean;
+/** A note whose read fails on the server, and one that no longer exists (its read finds no row). */
+let failRead: number | undefined, gone: number | undefined;
 /** Notes as the server holds them after a save in this case. */
 let saved: Map<number, Record<string, unknown>>;
 /** The `vals` of each `web_save` of a note, in order. */
@@ -86,7 +88,7 @@ const showModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "
 const closeDialog = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "close");
 
 beforeEach(() => {
-  extraMenus = false; failSearch = false; editableLines = false; saved = new Map(); writes = []; board = undefined;
+  extraMenus = false; failSearch = false; editableLines = false; failRead = undefined; gone = undefined; saved = new Map(); writes = []; board = undefined;
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value(this: HTMLDialogElement) { this.open = true; } });
   Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value(this: HTMLDialogElement) { this.open = false; } });
   configureClientTemplates([{
@@ -160,7 +162,11 @@ async function start(resolve: (model: string) => unknown = model => model === "r
       value = [record];
     }
     else if (call === "res.company/web_search_read") value = { length: 1, records: [{ id: 9, name: "Company record" }] };
-    else if (call === "test.note/web_read") { const id = (body["ids"] as number[])[0]!; value = [saved.get(id) ?? notes[id]]; }
+    else if (call === "test.note/web_read") {
+      const id = (body["ids"] as number[])[0]!;
+      if (id === failRead) return new Response(JSON.stringify({ name: "erp.exceptions.ServerError", message: "The note could not be read." }), { status: 500, headers: { "Content-Type": "application/json" } });
+      value = id === gone ? [] : [saved.get(id) ?? notes[id]];
+    }
     else if (call === "res.company/web_read") value = [{ id: 9, name: "Company record", note_id: { id: 6, display_name: "Parent record" } }];
     return new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
   }));
@@ -373,15 +379,23 @@ const type = async (root: ParentNode, value: string) => {
 };
 const button = (root: HTMLElement, label: string) => [...root.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent?.trim() === label)!;
 
-/** Notes list › a new note with a name typed and a company set by default. */
-async function newNote(root: HTMLElement): Promise<void> {
+/** The browser's current history entry: its address and its index. */
+const entry = () => ({ url: location.pathname + location.search, index: (history.state as { erpIndex: number }).erpIndex });
+/** A new note, with a name typed and a company set by default. */
+async function draft(root: HTMLElement): Promise<void> {
+  await type(root, "Draft note");
+  await vi.waitFor(() => expect(root.textContent).toContain("Unsaved changes"));
+}
+/** Notes list › a new note with a name typed and a company set by default; returns the list's history entry. */
+async function newNote(root: HTMLElement): Promise<{ url: string; index: number }> {
   root.querySelector<HTMLButtonElement>(".breadcrumb-previous .breadcrumb-back")!.click();
   await listed(root, 5);
+  const list = entry();
   button(root, "New").click();
   await vi.waitFor(() => expect(root.querySelector('[aria-label="Open Company: Company record"]')).not.toBeNull());
   expect(trail(root)).toEqual(["Notes", "New"]);
-  await type(root, "Draft note");
-  await vi.waitFor(() => expect(root.textContent).toContain("Unsaved changes"));
+  await draft(root);
+  return list;
 }
 
 test("a new record saved through the leave prompt is the record its crumb leads back to", async () => {
@@ -472,4 +486,62 @@ test("a related list on top of a form names the page with its heading", async ()
   const heading = root.querySelector("[data-control-breadcrumbs] h1");
   expect(heading?.textContent).toBe("Note companies");
   expect(heading?.getAttribute("aria-current")).toBe("page");
+});
+
+test("browser Back with Save from a new record leaves the entry it lands on with its own address and index", async () => {
+  const { root } = await start();
+  const list = await newNote(root);
+  history.back();
+  await answer("Save");
+  await vi.waitFor(() => expect(writes).toHaveLength(1));
+  await listed(root, 5);
+  // The browser had already moved to the list's entry: the save does not write the record's address or index over it.
+  expect(entry()).toEqual(list);
+});
+
+test("a crumb opened with a new record unsaved saves it, and its history entry then opens the saved record", async () => {
+  const { root } = await start();
+  await newNote(root);
+  const own = entry().index;
+  root.querySelector<HTMLButtonElement>(".breadcrumb-previous .breadcrumb-back")!.click();
+  await vi.waitFor(() => expect(writes).toHaveLength(1));
+  await listed(root, 5);
+  history.back();
+  await opened(root, "Draft note");
+  expect(entry().index).toBe(own);
+  expect(new URLSearchParams(location.search).get("id")).toBe("7");
+});
+
+test("Back with Save from a new record whose destination fails to open returns to the saved record's address", async () => {
+  const { root } = await start();
+  button(root, "New").click();
+  await vi.waitFor(() => expect(trail(root).at(-1)).toBe("New"));
+  await draft(root);
+  failRead = 5;
+  history.back();
+  await answer("Save");
+  await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")?.textContent).toContain("The note could not be read."));
+  await vi.waitFor(() => expect(new URLSearchParams(location.search).get("id")).toBe("7"));
+  expect(root.querySelector<HTMLInputElement>('input[name="name"]')?.value).toBe("Draft note");
+});
+
+test("a crumb whose record no longer exists drops out of the trail", async () => {
+  const { root } = await start();
+  open(root, "Parent: Parent record");
+  await opened(root, "Parent record");
+  gone = 5;
+  root.querySelector<HTMLButtonElement>(".breadcrumb-previous .breadcrumb-back")!.click();
+  await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")?.textContent).toContain("This record no longer exists"));
+  expect(trail(root)).toEqual(["Notes", "Parent record"]);
+  expect(root.querySelector<HTMLInputElement>('input[name="name"]')?.value).toBe("Parent record");
+});
+
+test("a one-record result with no list view gets no crumb that would open a blank form", async () => {
+  extraMenus = true;
+  const { root } = await start();
+  [...root.querySelectorAll<HTMLButtonElement>(".nav-item")].find(item => item.textContent?.includes("Board"))!.click();
+  await vi.waitFor(() => expect(root.querySelector("[data-screen=board]")).not.toBeNull());
+  await board!.open({ type: "ir.actions.act_window", name: "Company", res_model: "res.company", res_id: 9, views: [[3, "form"]] });
+  await opened(root, "Company record");
+  expect(trail(root)).toEqual(["Company record"]);
 });

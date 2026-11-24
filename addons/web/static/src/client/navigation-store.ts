@@ -143,8 +143,9 @@ export class NavigationStore {
     if (text.length > MAX_STORED) {
       let excess = text.length - MAX_STORED;
       while (excess > 0 && trails.length + actions.length > 1) {
-        if (actions.length) { excess -= JSON.stringify(actions.shift()).length + 1; this.actions.delete(this.actions.keys().next().value!); }
-        else { excess -= JSON.stringify(trails.shift()).length + 1; this.trails.delete(this.trails.keys().next().value!); }
+        // The comma goes with the entry only while another one stays in the same array.
+        if (actions.length) { excess -= JSON.stringify(actions.shift()).length + (actions.length ? 1 : 0); this.actions.delete(this.actions.keys().next().value!); }
+        else { excess -= JSON.stringify(trails.shift()).length + (trails.length ? 1 : 0); this.trails.delete(this.trails.keys().next().value!); }
       }
       text = JSON.stringify({ v: 1, uid: this.uid, trails, actions });
     }

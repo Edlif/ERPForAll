@@ -259,7 +259,9 @@ export class RecordState {
         const records = array(await this.rpc.call(this.model, "web_read", this.readArgs({ ids: [id], specification: specification(this.fields) })), "records");
         // again on arrival: a widget still on screen may have read the old file while this read travelled
         forgetBinaryContent(this.rpc);
-        if (records.length !== 1 || object(records[0])["id"] !== id) throw new ClientError("server", "The record is unavailable or the response did not match it.");
+        // No row: the record was deleted, or the user may no longer read it (a refusal, so its breadcrumb drops out).
+        if (records.length === 0) throw new ClientError("validation", "This record no longer exists, or you may no longer open it.");
+        if (records.length !== 1 || object(records[0])["id"] !== id) throw new ClientError("server", "The response did not match the requested record.");
         this.id = id;
         this.values = object(records[0]);
       }

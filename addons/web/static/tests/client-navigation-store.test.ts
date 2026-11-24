@@ -104,3 +104,33 @@ test("a store past its size bound drops its oldest entries and keeps the newest"
   expect(indexes.length).toBeLessThan(64);
   expect(indexes).toEqual(Array.from({ length: indexes.length }, (_, at) => 64 - indexes.length + at));
 });
+
+test("a store that sheds its only related list still ends within the bound: no comma is counted for the last entry", () => {
+  const MAX = 1024 * 1024;
+  const stored = () => sessionStorage.getItem(NAVIGATION_KEY)!;
+  const named = (count: number, size: (at: number) => number): BreadcrumbItem[] => Array.from({ length: count }, (_, at) => ({ ...crumb(at + 1), title: "t".repeat(size(at)) }));
+  const store = new NavigationStore(2, 32, () => {});
+  store.saveAction(ID, related({ lang: "en_US" }));
+  const lone = JSON.stringify((JSON.parse(stored()) as { actions: unknown[] }).actions[0]).length;
+  store.saveTrail(0, [crumb(1)]);
+  let index = 1;
+  // Wide trails, then narrower ones, until the store is 10 to 15 thousand units under its bound (within the 64 entries).
+  while (stored().length < MAX - 30000) store.saveTrail(index++, named(32, () => 480));
+  while (stored().length < MAX - 15000) store.saveTrail(index++, named(32, () => 50));
+  expect(index).toBeLessThan(63);
+  store.saveTrail(index, named(32, () => 10));
+  const before = JSON.parse(stored()) as { trails: unknown[]; actions: unknown[] };
+  expect(before.actions).toHaveLength(1);
+  expect(before.trails).toHaveLength(index + 1);
+  // Grow the newest trail until the store is exactly one unit more than the related list (without a comma) gives back.
+  const grow = MAX + lone + 1 - stored().length;
+  expect(grow).toBeGreaterThan(0);
+  expect(grow).toBeLessThanOrEqual(32 * 500);
+  store.saveTrail(index, named(32, at => 10 + Math.floor(grow / 32) + (at < grow % 32 ? 1 : 0)));
+  const after = JSON.parse(stored()) as { trails: [number, unknown[]][]; actions: unknown[] };
+  expect(stored().length).toBeLessThanOrEqual(MAX);
+  expect(after.actions).toEqual([]);
+  expect(after.trails.map(([at]) => at)).not.toContain(0);
+  expect(after.trails.at(-1)![0]).toBe(index);
+  expect(new NavigationStore(2, 32, () => {}).trail(index, { action: "20", id: "32", view_type: "form" })).toHaveLength(32);
+});
