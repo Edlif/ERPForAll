@@ -46,23 +46,11 @@ fn text(s: &str) -> Cell {
     Cell::Str(s.into())
 }
 
-async fn company(tx: &mut Transaction, name: &str) -> i64 {
-    let existing = tx
-        .query("SELECT id FROM res_currency ORDER BY id LIMIT 1", &[])
+/// The company the harness already seeds, so the default responsible user belongs to it.
+async fn company(tx: &mut Transaction, _name: &str) -> i64 {
+    tx.query("SELECT id::int8 FROM res_company ORDER BY id LIMIT 1", &[])
         .await
-        .unwrap();
-    let currency: i64 = match existing.first() {
-        Some(row) => row.get(0),
-        None => erp_testkit::fixtures::seed_currency_in(tx).await.unwrap(),
-    };
-    tx.query(
-        "WITH n AS (SELECT nextval(pg_get_serial_sequence('res_company', 'id')) AS id) \
-         INSERT INTO res_company (tz, id, name, currency_id, parent_path, account_price_include, tax_calculation_rounding_method, anglo_saxon_accounting, expects_chart_of_accounts, fpos_revision, sale_invoice_policy) \
-         SELECT 'UTC', id, $1, $2, id::text || '/', 'tax_excluded', 'round_globally', false, true, 0, 'order' FROM n RETURNING id::int8",
-        &[&name, &currency],
-    )
-    .await
-    .unwrap()[0]
+        .unwrap()[0]
         .get(0)
 }
 
