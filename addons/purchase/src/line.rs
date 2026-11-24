@@ -242,7 +242,7 @@ pub struct PurchaseOrderLine {
         inverse_name = "purchase_line_id",
         readonly = true,
         copy = false,
-        groups = "account.group_account_readonly",
+        // no `groups`: the order's bill count, which a buyer reads, depends on this field
         string = "Vendor Bill Items"
     )]
     pub direct_bill_line_ids: Vec<RecId>,
