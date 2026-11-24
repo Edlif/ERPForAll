@@ -120,13 +120,13 @@ async fn upgrade() {
         "account.journal_code_max_length@7 20>6",
         "account.tax_repartition_lines_max@7 18>3",
     ];
-    assert_stores(&client, "1.11.0", [("6", "6"), ("3", "3")], &audit).await;
+    assert_stores(&client, account_version(), [("6", "6"), ("3", "3")], &audit).await;
     let upgraded = lifecycle
         .button_immediate_upgrade(&caller, &account)
         .await
         .unwrap();
     assert!(upgraded.post_commit.is_clean());
-    assert_stores(&client, "1.11.0", [("6", "6"), ("3", "3")], &audit).await;
+    assert_stores(&client, account_version(), [("6", "6"), ("3", "3")], &audit).await;
 
     let orm = policy_orm(&db, &upgraded.orm).await;
     let mut tx = orm.begin(UserId::new(manager).unwrap()).await.unwrap();
@@ -195,7 +195,7 @@ async fn upgrade() {
     );
     tx.rollback().await.unwrap();
     drop(tx);
-    assert_stores(&client, "1.11.0", [("6", "6"), ("3", "3")], &audit).await;
+    assert_stores(&client, account_version(), [("6", "6"), ("3", "3")], &audit).await;
 }
 
 #[test]
@@ -251,6 +251,16 @@ async fn direct_upgrade() {
         7,
     );
     tx.rollback().await.unwrap();
+}
+
+/// The account addon's version as its manifest states it: the upgrade leaves exactly that in the module row, so a
+/// version bump of the addon does not need an edit here.
+fn account_version() -> &'static str {
+    include_str!("../../../addons/account/manifest.toml")
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap()
 }
 
 async fn assert_stores(
