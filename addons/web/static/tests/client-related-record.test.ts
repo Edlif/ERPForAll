@@ -44,9 +44,11 @@ const notes: Record<number, Record<string, unknown>> = {
 
 let app: HumanApp | undefined;
 const showModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "showModal");
+const closeDialog = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "close");
 
 beforeEach(() => {
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value(this: HTMLDialogElement) { this.open = true; } });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value(this: HTMLDialogElement) { this.open = false; } });
   configureClientTemplates([{
     name: "web.HumanControlPanel",
     render: () => {
@@ -66,6 +68,9 @@ afterEach(() => {
   app?.dispose();
   app = undefined;
   if (showModal) Object.defineProperty(HTMLDialogElement.prototype, "showModal", showModal);
+  else Reflect.deleteProperty(HTMLDialogElement.prototype, "showModal");
+  if (closeDialog) Object.defineProperty(HTMLDialogElement.prototype, "close", closeDialog);
+  else Reflect.deleteProperty(HTMLDialogElement.prototype, "close");
   vi.restoreAllMocks();
   document.body.replaceChildren();
   vi.unstubAllGlobals();

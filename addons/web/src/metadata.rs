@@ -3561,7 +3561,8 @@ async fn resolve_record_action(
             continue;
         }
         if let Some(document) = action.domain.as_ref() {
-            let domain = crate::dashboard::literal_domain(Some(document), env.uid(), "Window action")?;
+            let domain =
+                crate::dashboard::literal_domain(Some(document), env.uid(), "Window action")?;
             let scoped = Domain::from_json(&serde_json::json!([["id", "=", record_id]]))
                 .map_err(Error::from)?
                 & domain;

@@ -13,7 +13,11 @@ fn fail(message: impl Into<String>) -> Error {
 }
 fn literal(expr: &erp_sdk::expr::Expr, uid: i64, depth: usize, label: &str) -> Result<Json> {
     use erp_sdk::expr::{Expr, Literal, UnaryOp};
-    let only = || fail(format!("{label} domains support literal criteria and uid only."));
+    let only = || {
+        fail(format!(
+            "{label} domains support literal criteria and uid only."
+        ))
+    };
     if depth > 32 {
         return Err(fail(format!("{label} domain exceeds the 32-level bound.")));
     }
@@ -48,7 +52,11 @@ fn domain(document: Option<&WireDocument>, uid: i64) -> Result<Domain> {
     literal_domain(document, uid, "Dashboard")
 }
 /// A saved domain of literal criteria and `uid`; anything else is refused, named by `label`.
-pub(crate) fn literal_domain(document: Option<&WireDocument>, uid: i64, label: &str) -> Result<Domain> {
+pub(crate) fn literal_domain(
+    document: Option<&WireDocument>,
+    uid: i64,
+    label: &str,
+) -> Result<Domain> {
     match document {
         None => Ok(Domain::TRUE),
         Some(document) => {
