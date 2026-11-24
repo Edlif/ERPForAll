@@ -189,3 +189,197 @@ test("shared-only addon settings read just the shared values when entered from a
   expect(host.querySelector('[data-scope="global"]')?.getAttribute("aria-checked")).toBe("true");
   expect(calls.filter(c => c.method === "erp_read_values").map(c => c.args["scope"])).toEqual([{kind: "global"}]);
 });
+
+function stubDialogs(): void {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true,
+    value: function (this: HTMLDialogElement) { this.open = true; },
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", {
+    configurable: true,
+    value: function (this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new Event("close")); },
+  });
+}
+
+test("module toggles render all three states, keep unavailable disabled, and stay out of scalar RPCs", async () => {
+  const installedItem: SettingsItem = { kind: "module", key: "stock.module_delivery", label: "Carriers", app: "stock", block: "Shipping", sequence: 200, addon: "delivery", state: "installed" };
+  const notInstalledItem: SettingsItem = { kind: "module", key: "stock.module_stock_sms", label: "Text delivery", app: "stock", block: "Shipping", sequence: 210, addon: "stock_sms", state: "not_installed" };
+  const unavailableItem: SettingsItem = { kind: "module", key: "stock.module_product_expiry", label: "Expiry dates", app: "stock", block: "Traceability", sequence: 220, addon: "product_expiry", state: "not_available" };
+  const { host, controller, calls, jobs } = await mount([installedItem, notInstalledItem, unavailableItem], [], "stock");
+
+  const installedBox = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input[type="checkbox"]')!;
+  const notInstalledBox = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_stock_sms"] input[type="checkbox"]')!;
+  const unavailableRow = host.querySelector<HTMLElement>('[data-setting-key="stock.module_product_expiry"]')!;
+  const unavailableBox = unavailableRow.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+
+  expect(installedBox.checked).toBe(true);
+  expect(installedBox.disabled).toBe(false);
+  expect(notInstalledBox.checked).toBe(false);
+  expect(notInstalledBox.disabled).toBe(false);
+  expect(unavailableBox.checked).toBe(false);
+  expect(unavailableBox.disabled).toBe(true);
+  expect(unavailableRow.classList.contains("is-unavailable")).toBe(true);
+  expect(unavailableRow.textContent).toContain("Not available in this server");
+
+  // Unavailable row remains disabled after another operation (Discard reload) completes.
+  [...host.querySelectorAll<HTMLButtonElement>(".settings-toolbar button")].find(b => b.textContent === "Discard")!.click();
+  await Promise.all(jobs);
+  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_product_expiry"] input[type="checkbox"]')!.disabled).toBe(true);
+
+  expect(controller.dirty()).toBe(false);
+  expect(calls.find(c => c.method === "erp_read_values")?.args["keys"]).toEqual([]);
+  expect(calls.some(c => c.method === "erp_write_values")).toBe(false);
+});
+
+test("module toggle install and uninstall flows use existing endpoints and update in place without page reload", async () => {
+  stubDialogs();
+  let state: "not_installed" | "installed" = "not_installed";
+  let registryVersion = "r1";
+  const notices: string[] = [];
+  const posts: { path: string; body: Record<string, unknown> }[] = [];
+  const previewCalls: Record<string, unknown>[] = [];
+  const jobs: Promise<void>[] = [];
+
+  const rpc = new RpcClient(async (path, init) => {
+    const url = String(path);
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    if (url === "/erp/module/install") {
+      posts.push({ path: url, body });
+      state = "installed";
+      registryVersion = "r2";
+      return new Response(JSON.stringify({ installed: ["delivery"], registry_version: registryVersion, asset_version: "a2" }), { headers: { "Content-Type": "application/json" } });
+    }
+    if (url === "/erp/module/uninstall") {
+      posts.push({ path: url, body });
+      state = "not_installed";
+      registryVersion = "r3";
+      return new Response(JSON.stringify({ uninstalled: ["delivery"], registry_version: registryVersion, asset_version: "a3" }), { headers: { "Content-Type": "application/json" } });
+    }
+    if (url.endsWith("/erp_preview_uninstall")) {
+      previewCalls.push(body);
+      return new Response(JSON.stringify({
+        fingerprint: "fp-123",
+        resolved: ["delivery"],
+        dropped_models: [{ model: "delivery.carrier", table: "delivery_carrier", row_count: "2" }],
+        target_count: "2",
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+    if (url.endsWith("/erp_describe")) {
+      return new Response(JSON.stringify({
+        wire_major: 1,
+        registry_version: registryVersion,
+        scope: body["scope"],
+        declarations: [],
+        items: [{ kind: "module", key: "stock.module_delivery", label: "Carriers", app: "stock", block: "Shipping", sequence: 200, addon: "delivery", state }],
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ wire_major: 1, scope: body["scope"], revision: "1", values: [] }), { headers: { "Content-Type": "application/json" } });
+  }, () => {});
+
+  const host = document.createElement("div");
+  document.body.append(host);
+  await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job()); }, message => { notices.push(message); }, {}, ["global"], "r1", undefined, undefined, "stock");
+
+  // 1. Tick -> Cancel install: no POST, checkbox stays unchecked.
+  const box1 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
+  expect(box1.checked).toBe(false);
+  box1.checked = true;
+  box1.dispatchEvent(new Event("change"));
+  expect(box1.checked).toBe(false);
+  await vi.waitFor(() => expect(document.querySelector(".message-dialog-footer button")).not.toBeNull());
+  [...document.querySelectorAll<HTMLButtonElement>(".message-dialog-footer button")].find(b => b.textContent === "Cancel")!.click();
+  await Promise.all(jobs);
+  expect(posts).toHaveLength(0);
+  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(false);
+
+  // 2. Tick -> Confirm install: POST /erp/module/install, reloads with r2, checkbox becomes checked.
+  const box2 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
+  box2.checked = true;
+  box2.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(document.querySelector(".message-dialog-footer button")).not.toBeNull());
+  [...document.querySelectorAll<HTMLButtonElement>(".message-dialog-footer button")].find(b => b.textContent === "Install")!.click();
+  await Promise.all(jobs);
+  expect(posts).toEqual([{ path: "/erp/module/install", body: { modules: ["delivery"] } }]);
+  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(true);
+  expect(notices).toContain("Carriers installed.");
+
+  // 3. Untick -> Cancel uninstall impact dialog: preview called, no uninstall POST, stays checked.
+  const box3 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
+  box3.checked = false;
+  box3.dispatchEvent(new Event("change"));
+  expect(box3.checked).toBe(true);
+  await vi.waitFor(() => expect(document.querySelector(".addon-uninstall-dialog")).not.toBeNull());
+  expect(previewCalls).toHaveLength(1);
+  expect(document.querySelector(".addon-uninstall-dialog")?.textContent).toContain("delivery.carrier");
+  document.querySelector<HTMLButtonElement>(".addon-uninstall-cancel")!.click();
+  await Promise.all(jobs);
+  expect(posts).toHaveLength(1);
+  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(true);
+
+  // 4. Untick -> Confirm uninstall: POST /erp/module/uninstall with fingerprint, reloads with r3, becomes unchecked.
+  const box4 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
+  box4.checked = false;
+  box4.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(document.querySelector(".addon-uninstall-confirm")).not.toBeNull());
+  document.querySelector<HTMLButtonElement>(".addon-uninstall-confirm")!.click();
+  await Promise.all(jobs);
+  expect(posts[1]).toEqual({ path: "/erp/module/uninstall", body: { modules: ["delivery"], impact: "fp-123" } });
+  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(false);
+  expect(notices).toContain("Carriers uninstalled.");
+});
+
+test("module toggle handles uninstall preview validation refusal and 409 conflict", async () => {
+  stubDialogs();
+  let mode: "validation" | "conflict" = "validation";
+  const notices: string[] = [];
+  const errors: unknown[] = [];
+  const jobs: Promise<void>[] = [];
+
+  const rpc = new RpcClient(async (path, init) => {
+    const url = String(path);
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    if (url.endsWith("/erp_preview_uninstall")) {
+      if (mode === "validation") {
+        return new Response(JSON.stringify({ error: { message: "Refused", name: "erp.exceptions.ValidationError" } }), { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ fingerprint: "fp-stale", resolved: ["delivery"], dropped_models: [], target_count: "0" }), { headers: { "Content-Type": "application/json" } });
+    }
+    if (url === "/erp/module/uninstall") {
+      return new Response(JSON.stringify({ error: { message: "Stale fingerprint", name: "erp.exceptions.ConflictError" } }), { status: 409, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.endsWith("/erp_describe")) {
+      return new Response(JSON.stringify({
+        wire_major: 1,
+        registry_version: "r1",
+        scope: body["scope"],
+        declarations: [],
+        items: [{ kind: "module", key: "stock.module_delivery", label: "Carriers", app: "stock", block: "Shipping", sequence: 200, addon: "delivery", state: "installed" }],
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ wire_major: 1, scope: body["scope"], revision: "1", values: [] }), { headers: { "Content-Type": "application/json" } });
+  }, () => {});
+
+  const host = document.createElement("div");
+  document.body.append(host);
+  await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job().catch(err => { errors.push(err); })); }, message => { notices.push(message); }, {}, ["global"], "r1", undefined, undefined, "stock");
+
+  // Validation refusal on preview: shows fixed notice, no dialog, no thrown error.
+  const box1 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
+  box1.checked = false;
+  box1.dispatchEvent(new Event("change"));
+  await Promise.all(jobs);
+  expect(document.querySelector(".addon-uninstall-dialog")).toBeNull();
+  expect(notices).toContain("Uninstalling this addon from this page is not available yet.");
+  expect(errors).toHaveLength(0);
+
+  // 409 conflict on uninstall: shows conflict notice and reloads settings.
+  mode = "conflict";
+  const box2 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
+  box2.checked = false;
+  box2.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(document.querySelector(".addon-uninstall-confirm")).not.toBeNull());
+  document.querySelector<HTMLButtonElement>(".addon-uninstall-confirm")!.click();
+  await Promise.all(jobs);
+  expect(notices).toContain("Database state changed since preview. A fresh confirmation is required.");
+  expect(errors).toHaveLength(1);
+});

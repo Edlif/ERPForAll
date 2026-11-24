@@ -4,106 +4,198 @@ export type WireId = number;
 export type WirePageLimit = number;
 export type WireMajor = 1;
 export type LoginPage = {
-/** Wire member `csrf`. */
+/**
+ *Wire member `csrf`.
+ */
 csrf: string,
-/** Wire member `database`. */
+/**
+ *Wire member `database`.
+ */
 database: string,
-/** Wire member `redirect`. */
+/**
+ *Wire member `redirect`.
+ */
 redirect: string,
-/** Wire member `error`. */
+/**
+ *Wire member `error`.
+ */
 error: string | null, };
 export type Bootstrap = {
-/** Wire member `wire_major`. */
+/**
+ *Wire member `wire_major`.
+ */
 wire_major: WireMajor,
-/** Wire member `registry_version`. */
+/**
+ *Wire member `registry_version`.
+ */
 registry_version: string,
-/** Wire member `asset_version`. */
+/**
+ *Wire member `asset_version`.
+ */
 asset_version: string,
-/** Wire member `identity`. */
+/**
+ *Wire member `identity`.
+ */
 identity: Identity,
-/** Wire member `companies`. */
+/**
+ *Wire member `companies`.
+ */
 companies: Array<Company>,
-/** Wire member `current_company_id`. */
+/**
+ *Wire member `current_company_id`.
+ */
 current_company_id: WireId,
-/** Wire member `allowed_company_ids`. */
+/**
+ *Wire member `allowed_company_ids`.
+ */
 allowed_company_ids: Array<WireId>,
-/** Wire member `active_company_ids`. */
+/**
+ *Wire member `active_company_ids`.
+ */
 active_company_ids: Array<WireId>,
-/** Wire member `locale`. */
+/**
+ *Wire member `locale`.
+ */
 locale: Locale,
-/** Wire member `csrf`. */
+/**
+ *Wire member `csrf`.
+ */
 csrf: Csrf,
-/** Wire member `renderers`. */
+/**
+ *Wire member `renderers`.
+ */
 renderers: Array<Renderer>,
-/** Wire member `attachment_limits`. */
+/**
+ *Wire member `attachment_limits`.
+ */
 attachment_limits: AttachmentUploadLimits | null,
-/** Wire member `rpc_body_bytes`. */
+/**
+ *Wire member `rpc_body_bytes`.
+ */
 rpc_body_bytes: number | null,
-/** Wire member `thread_reconnect_ms`. */
+/**
+ *Wire member `thread_reconnect_ms`.
+ */
 thread_reconnect_ms: [number, number] | null, };
 export type AttachmentUploadLimits = {
-/** Wire member `max_file_bytes`. */
+/**
+ *Wire member `max_file_bytes`.
+ */
 max_file_bytes: number,
-/** Wire member `inline_max_bytes`. */
+/**
+ *Wire member `inline_max_bytes`.
+ */
 inline_max_bytes: number, };
 export type Identity = {
-/** Wire member `uid`. */
+/**
+ *Wire member `uid`.
+ */
 uid: WireId,
-/** Wire member `name`. */
+/**
+ *Wire member `name`.
+ */
 name: string,
-/** Wire member `internal`. */
+/**
+ *Wire member `internal`.
+ */
 internal: boolean, };
 export type Company = {
-/** Wire member `id`. */
+/**
+ *Wire member `id`.
+ */
 id: WireId,
-/** Wire member `name`. */
+/**
+ *Wire member `name`.
+ */
 name: string,
-/** Wire member `parent_id`. */
+/**
+ *Wire member `parent_id`.
+ */
 parent_id: WireId | null, };
 export type Locale = {
-/** Wire member `lang`. */
+/**
+ *Wire member `lang`.
+ */
 lang: string,
-/** Wire member `tz`. */
+/**
+ *Wire member `tz`.
+ */
 tz: string,
-/** Wire member `decimal_point`. */
+/**
+ *Wire member `decimal_point`.
+ */
 decimal_point: string,
-/** Wire member `thousands_sep`. */
+/**
+ *Wire member `thousands_sep`.
+ */
 thousands_sep: string,
-/** Wire member `grouping`. */
+/**
+ *Wire member `grouping`.
+ */
 grouping: Array<number>,
-/** Wire member `date_format`. */
+/**
+ *Wire member `date_format`.
+ */
 date_format: string,
-/** Wire member `time_format`. */
+/**
+ *Wire member `time_format`.
+ */
 time_format: string, };
 export type Csrf = {
-/** Wire member `logout`. */
+/**
+ *Wire member `logout`.
+ */
 logout: string, };
 export type Renderer = {
-/** Wire member `key`. */
+/**
+ *Wire member `key`.
+ */
 key: string,
-/** Wire member `schema_major`. */
+/**
+ *Wire member `schema_major`.
+ */
 schema_major: WireMajor, };
 export type MenuTree = {
-/** Wire member `wire_major`. */
+/**
+ *Wire member `wire_major`.
+ */
 wire_major: WireMajor,
-/** Wire member `registry_version`. */
+/**
+ *Wire member `registry_version`.
+ */
 registry_version: string,
-/** Wire member `roots`. */
+/**
+ *Wire member `roots`.
+ */
 roots: Array<WireId>,
-/** Wire member `nodes`. */
+/**
+ *Wire member `nodes`.
+ */
 nodes: Array<MenuNode>, };
 export type MenuNode = {
-/** Wire member `id`. */
+/**
+ *Wire member `id`.
+ */
 id: WireId,
-/** Wire member `parent_id`. */
+/**
+ *Wire member `parent_id`.
+ */
 parent_id: WireId | null,
-/** Wire member `children`. */
+/**
+ *Wire member `children`.
+ */
 children: Array<WireId>,
-/** Wire member `label`. */
+/**
+ *Wire member `label`.
+ */
 label: string,
-/** Wire member `icon`. */
+/**
+ *Wire member `icon`.
+ */
 icon: string | null,
-/** Wire member `action_id`. */
+/**
+ *Wire member `action_id`.
+ */
 action_id: WireId | null,
 /**
  *Wire member `action_kind`.
@@ -119,62 +211,114 @@ export type MenuActionKind = "window" | "client";
 export type ActionTarget = "current" | "main" | "new";
 export type ViewType = "list" | "form" | "search" | "kanban" | "calendar" | "pivot" | "graph" | "gantt" | "activity";
 export type WindowAction = {
-/** Wire member `wire_major`. */
+/**
+ *Wire member `wire_major`.
+ */
 wire_major: WireMajor,
-/** Wire member `id`. */
+/**
+ *Wire member `id`.
+ */
 id: WireId,
-/** Wire member `name`. */
+/**
+ *Wire member `name`.
+ */
 name: string,
-/** Wire member `model`. */
+/**
+ *Wire member `model`.
+ */
 model: string,
-/** Wire member `target`. */
+/**
+ *Wire member `target`.
+ */
 target: ActionTarget,
-/** Wire member `views`. */
+/**
+ *Wire member `views`.
+ */
 views: Array<ActionView>,
-/** Wire member `domain`. */
+/**
+ *Wire member `domain`.
+ */
 domain: WireDocument | null,
-/** Wire member `context`. */
+/**
+ *Wire member `context`.
+ */
 context: WireDocument | null, };
 export type WindowActionViews = {
-/** Wire member `action`. */
+/**
+ *Wire member `action`.
+ */
 action: WindowAction,
-/** Wire member `views`. */
+/**
+ *Wire member `views`.
+ */
 views: ViewDescription, };
 export type ActionView = {
-/** Wire member `id`. */
+/**
+ *Wire member `id`.
+ */
 id: WireId | null,
-/** Wire member `view_type`. */
+/**
+ *Wire member `view_type`.
+ */
 type: ViewType, };
 export type ViewDescription = {
-/** Wire member `wire_major`. */
+/**
+ *Wire member `wire_major`.
+ */
 wire_major: WireMajor,
-/** Wire member `registry_version`. */
+/**
+ *Wire member `registry_version`.
+ */
 registry_version: string,
-/** Wire member `description_version`. */
+/**
+ *Wire member `description_version`.
+ */
 description_version: string,
-/** Wire member `model`. */
+/**
+ *Wire member `model`.
+ */
 model: string,
-/** Wire member `fields`. */
+/**
+ *Wire member `fields`.
+ */
 fields: { [key in string]?: { [key in string]?: FieldDescription } },
-/** Wire member `views`. */
+/**
+ *Wire member `views`.
+ */
 views: Array<View>,
-/** Wire member `notices`. */
+/**
+ *Wire member `notices`.
+ */
 notices: Array<Notice>, };
 export type FieldKind = "char" | "text" | "html" | "boolean" | "integer" | "float" | "monetary" | "date" | "datetime" | "selection" | "many2one" | "one2many" | "many2many" | "binary" | "json";
 export type FieldDescription = {
-/** Wire member `field_type`. */
+/**
+ *Wire member `field_type`.
+ */
 type: FieldKind,
-/** Wire member `label`. */
+/**
+ *Wire member `label`.
+ */
 label: string,
-/** Wire member `required`. */
+/**
+ *Wire member `required`.
+ */
 required: boolean,
-/** Wire member `readonly`. */
+/**
+ *Wire member `readonly`.
+ */
 readonly: boolean,
-/** Wire member `selection`. */
+/**
+ *Wire member `selection`.
+ */
 selection: Array<[string, string]> | null,
-/** Wire member `relation`. */
+/**
+ *Wire member `relation`.
+ */
 relation: string | null,
-/** Wire member `relation_field`. */
+/**
+ *Wire member `relation_field`.
+ */
 relation_field: string | null, };
 export type ViewIdentity = { "kind": "stored",
 /**
@@ -182,27 +326,47 @@ export type ViewIdentity = { "kind": "stored",
  */
 id: WireId, } | { "kind": "generated", };
 export type View = {
-/** Wire member `identity`. */
+/**
+ *Wire member `identity`.
+ */
 identity: ViewIdentity,
-/** Wire member `view_type`. */
+/**
+ *Wire member `view_type`.
+ */
 type: ViewType,
-/** Wire member `schema_major`. */
+/**
+ *Wire member `schema_major`.
+ */
 schema_major: WireMajor,
-/** Wire member `renderer`. */
+/**
+ *Wire member `renderer`.
+ */
 renderer: string,
-/** Wire member `root`. */
+/**
+ *Wire member `root`.
+ */
 root: number,
-/** Wire member `nodes`. */
+/**
+ *Wire member `nodes`.
+ */
 nodes: Array<ViewNode>, };
 export type FieldRef = {
-/** Wire member `model`. */
+/**
+ *Wire member `model`.
+ */
 model: string,
-/** Wire member `name`. */
+/**
+ *Wire member `name`.
+ */
 name: string, };
 export type ColumnWidth = {
-/** Wire member `min`. */
+/**
+ *Wire member `min`.
+ */
 min: number,
-/** Wire member `max`. */
+/**
+ *Wire member `max`.
+ */
 max?: number, };
 export type DashboardItem = { "kind": "count",
 /**
@@ -250,132 +414,254 @@ aggregate: string,
  */
 domain: WireDocument | null, };
 export type Modifiers = {
-/** Wire member `readonly`. */
+/**
+ *Wire member `readonly`.
+ */
 readonly: WireDocument | null,
-/** Wire member `required`. */
+/**
+ *Wire member `required`.
+ */
 required: WireDocument | null,
-/** Wire member `invisible`. */
+/**
+ *Wire member `invisible`.
+ */
 invisible: WireDocument | null, };
 export type EmptyOptions = Record<string, never>;
 export type StatusbarOptions = {
-/** Wire member `visible`. */
+/**
+ *Wire member `visible`.
+ */
 visible: Array<string> | null, };
 export type CodeMode = "xml" | "python" | "javascript" | "json" | "qweb" | "scss" | "bash" | "text";
 export type CodeOptions = {
-/** Wire member `mode`. */
+/**
+ *Wire member `mode`.
+ */
 mode: CodeMode, };
 export type FieldPresentationOptions = {
-/** Wire member `help`. */
+/**
+ *Wire member `help`.
+ */
 help?: string | null,
-/** Wire member `placeholder`. */
+/**
+ *Wire member `placeholder`.
+ */
 placeholder?: string | null,
-/** Wire member `autocomplete`. */
+/**
+ *Wire member `autocomplete`.
+ */
 autocomplete?: string | null,
-/** Wire member `icon`. */
+/**
+ *Wire member `icon`.
+ */
 icon?: string | null,
-/** Wire member `icon_class`. */
+/**
+ *Wire member `icon_class`.
+ */
 icon_class?: string | null,
-/** Wire member `alt`. */
+/**
+ *Wire member `alt`.
+ */
 alt?: string | null,
-/** Wire member `img_class`. */
+/**
+ *Wire member `img_class`.
+ */
 img_class?: string | null,
-/** Wire member `accepted_file_extensions`. */
+/**
+ *Wire member `accepted_file_extensions`.
+ */
 accepted_file_extensions?: string | null,
-/** Wire member `min_date`. */
+/**
+ *Wire member `min_date`.
+ */
 min_date?: string | null,
-/** Wire member `max_date`. */
+/**
+ *Wire member `max_date`.
+ */
 max_date?: string | null,
-/** Wire member `min_precision`. */
+/**
+ *Wire member `min_precision`.
+ */
 min_precision?: string | null,
-/** Wire member `max_precision`. */
+/**
+ *Wire member `max_precision`.
+ */
 max_precision?: string | null,
-/** Wire member `warn`. */
+/**
+ *Wire member `warn`.
+ */
 warn?: string | null,
-/** Wire member `r#type`. */
+/**
+ *Wire member `r#type`.
+ */
 type?: string | null,
-/** Wire member `text`. */
+/**
+ *Wire member `text`.
+ */
 text?: string | null,
-/** Wire member `password`. */
+/**
+ *Wire member `password`.
+ */
 password?: boolean | null,
-/** Wire member `nolabel`. */
+/**
+ *Wire member `nolabel`.
+ */
 nolabel?: boolean | null,
-/** Wire member `no_open`. */
+/**
+ *Wire member `no_open`.
+ */
 no_open?: boolean | null,
-/** Wire member `no_create`. */
+/**
+ *Wire member `no_create`.
+ */
 no_create?: boolean | null,
-/** Wire member `no_quick_create`. */
+/**
+ *Wire member `no_quick_create`.
+ */
 no_quick_create?: boolean | null,
-/** Wire member `no_create_edit`. */
+/**
+ *Wire member `no_create_edit`.
+ */
 no_create_edit?: boolean | null,
-/** Wire member `no_symbol`. */
+/**
+ *Wire member `no_symbol`.
+ */
 no_symbol?: boolean | null,
-/** Wire member `enable_formatting`. */
+/**
+ *Wire member `enable_formatting`.
+ */
 enable_formatting?: boolean | null,
-/** Wire member `hide_trailing_zeros`. */
+/**
+ *Wire member `hide_trailing_zeros`.
+ */
 hide_trailing_zeros?: boolean | null,
-/** Wire member `field_digits`. */
+/**
+ *Wire member `field_digits`.
+ */
 field_digits?: boolean | null,
-/** Wire member `show_time`. */
+/**
+ *Wire member `show_time`.
+ */
 show_time?: boolean | null,
-/** Wire member `show_seconds`. */
+/**
+ *Wire member `show_seconds`.
+ */
 show_seconds?: boolean | null,
-/** Wire member `always_range`. */
+/**
+ *Wire member `always_range`.
+ */
 always_range?: boolean | null,
-/** Wire member `numeric`. */
+/**
+ *Wire member `numeric`.
+ */
 numeric?: boolean | null,
-/** Wire member `create`. */
+/**
+ *Wire member `create`.
+ */
 create?: boolean | null,
-/** Wire member `can_open`. */
+/**
+ *Wire member `can_open`.
+ */
 can_open?: boolean | null,
-/** Wire member `horizontal`. */
+/**
+ *Wire member `horizontal`.
+ */
 horizontal?: boolean | null,
-/** Wire member `zoom`. */
+/**
+ *Wire member `zoom`.
+ */
 zoom?: boolean | null,
-/** Wire member `reload`. */
+/**
+ *Wire member `reload`.
+ */
 reload?: boolean | null,
-/** Wire member `convert_to_webp`. */
+/**
+ *Wire member `convert_to_webp`.
+ */
 convert_to_webp?: boolean | null,
-/** Wire member `rows`. */
+/**
+ *Wire member `rows`.
+ */
 rows?: number | null,
-/** Wire member `max_length`. */
+/**
+ *Wire member `max_length`.
+ */
 max_length?: number | null,
-/** Wire member `badge_limit`. */
+/**
+ *Wire member `badge_limit`.
+ */
 badge_limit?: number | null,
-/** Wire member `tag_limit`. */
+/**
+ *Wire member `tag_limit`.
+ */
 tag_limit?: number | null,
-/** Wire member `search_threshold`. */
+/**
+ *Wire member `search_threshold`.
+ */
 search_threshold?: number | null,
-/** Wire member `rounding`. */
+/**
+ *Wire member `rounding`.
+ */
 rounding?: number | null,
-/** Wire member `zoom_delay`. */
+/**
+ *Wire member `zoom_delay`.
+ */
 zoom_delay?: number | null,
-/** Wire member `placeholder_field`. */
+/**
+ *Wire member `placeholder_field`.
+ */
 placeholder_field?: FieldRef | null,
-/** Wire member `currency_field`. */
+/**
+ *Wire member `currency_field`.
+ */
 currency_field?: FieldRef | null,
-/** Wire member `start_date_field`. */
+/**
+ *Wire member `start_date_field`.
+ */
 start_date_field?: FieldRef | null,
-/** Wire member `end_date_field`. */
+/**
+ *Wire member `end_date_field`.
+ */
 end_date_field?: FieldRef | null,
-/** Wire member `whitelist_fname`. */
+/**
+ *Wire member `whitelist_fname`.
+ */
 whitelist_fname?: FieldRef | null,
-/** Wire member `color_field`. */
+/**
+ *Wire member `color_field`.
+ */
 color_field?: FieldRef | null,
-/** Wire member `preview_image`. */
+/**
+ *Wire member `preview_image`.
+ */
 preview_image?: FieldRef | null,
-/** Wire member `filename`. */
+/**
+ *Wire member `filename`.
+ */
 filename?: FieldRef | null,
-/** Wire member `whitelisted_values`. */
+/**
+ *Wire member `whitelisted_values`.
+ */
 whitelisted_values?: Array<string> | null,
-/** Wire member `blacklisted_values`. */
+/**
+ *Wire member `blacklisted_values`.
+ */
 blacklisted_values?: Array<string> | null,
-/** Wire member `digits`. */
+/**
+ *Wire member `digits`.
+ */
 digits?: number[] | null,
-/** Wire member `size`. */
+/**
+ *Wire member `size`.
+ */
 size?: number[] | null,
-/** Wire member `domain`. */
+/**
+ *Wire member `domain`.
+ */
 domain?: WireDocument | null,
-/** Wire member `context`. */
+/**
+ *Wire member `context`.
+ */
 context?: WireDocument | null, };
 export type FieldOptions = CodeOptions | FieldPresentationOptions | StatusbarOptions | EmptyOptions;
 export type RecordMode = "record" | "service";
@@ -384,9 +670,13 @@ export type PivotRole = "row" | "col" | "measure";
 export type KanbanRegion = "main" | "aside" | "footer";
 export type ProgressTone = "success" | "warning" | "danger" | "info" | "muted";
 export type ProgressColor = {
-/** Wire member `value`. */
+/**
+ *Wire member `value`.
+ */
 value: string,
-/** Wire member `tone`. */
+/**
+ *Wire member `tone`.
+ */
 tone: ProgressTone, };
 export type CalendarScale = "day" | "week" | "month" | "year";
 export type GraphMode = "bar" | "line" | "pie";
@@ -395,50 +685,92 @@ export type GraphOrder = "asc" | "desc";
 export type ButtonType = "object";
 export type ButtonVariant = "primary" | "secondary" | "link" | "success" | "info" | "warning" | "danger" | "unstyled";
 export type ButtonDetails = {
-/** Wire member `size`. */
+/**
+ *Wire member `size`.
+ */
 size: ButtonSize,
-/** Wire member `circle`. */
+/**
+ *Wire member `circle`.
+ */
 circle: boolean,
-/** Wire member `classes`. */
+/**
+ *Wire member `classes`.
+ */
 classes: Array<string>,
-/** Wire member `debounce_ms`. */
+/**
+ *Wire member `debounce_ms`.
+ */
 debounce_ms: number,
-/** Wire member `block_ui`. */
+/**
+ *Wire member `block_ui`.
+ */
 block_ui: boolean,
-/** Wire member `icon`. */
+/**
+ *Wire member `icon`.
+ */
 icon?: string,
-/** Wire member `title`. */
+/**
+ *Wire member `title`.
+ */
 title?: string,
-/** Wire member `help`. */
+/**
+ *Wire member `help`.
+ */
 help?: string,
-/** Wire member `hotkey`. */
+/**
+ *Wire member `hotkey`.
+ */
 hotkey?: string,
-/** Wire member `confirm_title`. */
+/**
+ *Wire member `confirm_title`.
+ */
 confirm_title?: string,
-/** Wire member `confirm_label`. */
+/**
+ *Wire member `confirm_label`.
+ */
 confirm_label?: string,
-/** Wire member `cancel_label`. */
+/**
+ *Wire member `cancel_label`.
+ */
 cancel_label?: string,
-/** Wire member `context`. */
+/**
+ *Wire member `context`.
+ */
 context?: WireDocument,
-/** Wire member `prompt`. */
+/**
+ *Wire member `prompt`.
+ */
 prompt?: ButtonPrompt, };
 export type PromptKind = "text" | "date" | "selection";
 export type PromptChoice = {
-/** Wire member `value`. */
+/**
+ *Wire member `value`.
+ */
 value: string,
-/** Wire member `label`. */
+/**
+ *Wire member `label`.
+ */
 label: string, };
 export type ButtonPrompt = {
-/** Wire member `kind`. */
+/**
+ *Wire member `kind`.
+ */
 kind: PromptKind,
-/** Wire member `label`. */
+/**
+ *Wire member `label`.
+ */
 label: string,
-/** Wire member `required`. */
+/**
+ *Wire member `required`.
+ */
 required: boolean,
-/** Wire member `max_length`. */
+/**
+ *Wire member `max_length`.
+ */
 max_length?: number,
-/** Wire member `choices`. */
+/**
+ *Wire member `choices`.
+ */
 choices?: Array<PromptChoice>, };
 export type ButtonSize = "small" | "normal" | "large";
 export type ButtonTarget = { "kind": "action",
@@ -453,9 +785,13 @@ href: string, } | { "kind": "inert" };
 export type RibbonBackground = "info" | "success" | "warning" | "danger";
 export type ScopeKind = "global" | "company";
 export type SettingsOptions = {
-/** Wire member `scope_kinds`. */
+/**
+ *Wire member `scope_kinds`.
+ */
 scope_kinds: Array<ScopeKind>,
-/** Wire member `app`. */
+/**
+ *Wire member `app`.
+ */
 app: string | null, };
 export type WidgetOptions = SettingsOptions | EmptyOptions;
 export type ServiceWidget = "web.settings" | "web.addons";
@@ -463,9 +799,13 @@ export type PanelVersion = 1;
 export type PanelDisplayLimit = number;
 export type PanelValue = string | WireId;
 export type PanelDomain = {
-/** Wire member `model`. */
+/**
+ *Wire member `model`.
+ */
 model: string,
-/** Wire member `ast`. */
+/**
+ *Wire member `ast`.
+ */
 ast: WireDocument, };
 export type PanelSection = { "kind": "category",
 /**
@@ -606,15 +946,14 @@ items: Array<DashboardItem>, } | { "kind": "list",
  * Child arena indexes.
  */
 children: Array<number>,
-/** Authorized standard search-panel category or explicit unsupported-scope notice. */
+/**
+ * Authorized standard search-panel category or explicit unsupported-scope notice.
+ */
 search_panel?: ListSearchPanel,
 /**
  * Positive XML limit override or the admitted action limit; absent keeps legacy clients.
  */
-page_limit?: WirePageLimit,
-create?: boolean,
-edit?: boolean,
-delete?: boolean, } | { "kind": "form",
+page_limit?: WirePageLimit, create?: boolean, edit?: boolean, delete?: boolean, } | { "kind": "form",
 /**
  * Explicit persistence mode.
  */
@@ -622,10 +961,7 @@ record_mode: RecordMode,
 /**
  * Child arena indexes.
  */
-children: Array<number>,
-create?: boolean,
-edit?: boolean,
-delete?: boolean,
+children: Array<number>, create?: boolean, edit?: boolean, delete?: boolean,
 /**
  * `read`: a saved record opens read-first, with an Edit command; absent means `edit` (always editable).
  */
@@ -860,7 +1196,9 @@ modifiers: Modifiers,
  * Display label.
  */
 label: string,
-/** Whether a readonly value is still written on save; false when omitted. */
+/**
+ * Whether a readonly value is still written on save; false when omitted.
+ */
 force_save: boolean,
 /**
  * List column width set by the arch; omitted when it sets none.
@@ -882,15 +1220,14 @@ modifiers: Modifiers, } | { "kind": "search",
  * Child arena indexes.
  */
 children: Array<number>,
-/** Authorized panel metadata from this standalone search view. */
+/**
+ * Authorized panel metadata from this standalone search view.
+ */
 search_panel?: ListSearchPanel, } | { "kind": "pivot",
 /**
  * Child arena indexes (only `pivot_field`).
  */
-children: Array<number>,
-disable_linking: boolean,
-display_quantity: boolean,
-default_order?: string, } | { "kind": "pivot_field",
+children: Array<number>, disable_linking: boolean, display_quantity: boolean, default_order?: string, } | { "kind": "pivot_field",
 /**
  * Accessible field handle.
  */
@@ -914,13 +1251,7 @@ children: Array<number>,
 /**
  * Cards per page from the arch `limit`; absent keeps the client's list default.
  */
-page_limit?: WirePageLimit,
-default_group_by?: FieldRef,
-quick_create: boolean,
-records_draggable: boolean,
-groups_draggable: boolean,
-archivable: boolean,
-can_open: boolean,
+page_limit?: WirePageLimit, default_group_by?: FieldRef, quick_create: boolean, records_draggable: boolean, groups_draggable: boolean, archivable: boolean, can_open: boolean,
 /**
  * Whether new records can be created from this view.
  */
@@ -964,21 +1295,7 @@ help?: string, } | { "kind": "calendar",
 /**
  * Child arena indexes (only `calendar_field`).
  */
-children: Array<number>,
-date_start: FieldRef,
-date_stop?: FieldRef,
-all_day?: FieldRef,
-color?: FieldRef,
-mode: CalendarScale,
-scales: Array<CalendarScale>,
-create: boolean,
-edit: boolean,
-delete: boolean,
-quick_create: boolean,
-hide_date: boolean,
-hide_time: boolean,
-month_overflow: boolean,
-event_limit: number, } | { "kind": "calendar_field",
+children: Array<number>, date_start: FieldRef, date_stop?: FieldRef, all_day?: FieldRef, color?: FieldRef, mode: CalendarScale, scales: Array<CalendarScale>, create: boolean, edit: boolean, delete: boolean, quick_create: boolean, hide_date: boolean, hide_time: boolean, month_overflow: boolean, event_limit: number, } | { "kind": "calendar_field",
 /**
  * Accessible field handle.
  */
@@ -990,17 +1307,11 @@ label: string,
 /**
  * Read for the event but not shown in its popover.
  */
-invisible: boolean,
-filters: boolean, } | { "kind": "graph",
+invisible: boolean, filters: boolean, } | { "kind": "graph",
 /**
  * Child arena indexes (only `graph_field`).
  */
-children: Array<number>,
-mode: GraphMode,
-stacked: boolean,
-cumulated: boolean,
-order?: GraphOrder,
-disable_linking: boolean, } | { "kind": "graph_field",
+children: Array<number>, mode: GraphMode, stacked: boolean, cumulated: boolean, order?: GraphOrder, disable_linking: boolean, } | { "kind": "graph_field",
 /**
  * Accessible field handle.
  */
@@ -1152,14 +1463,22 @@ model: string,
  */
 ids: Array<WireId>, };
 export type ActionResultEnvelope = {
-/** Wire member `wire_major`. */
+/**
+ *Wire member `wire_major`.
+ */
 wire_major: WireMajor,
-/** Wire member `result`. */
+/**
+ *Wire member `result`.
+ */
 result: ActionResult, };
 export type Notice = {
-/** Wire member `code`. */
+/**
+ *Wire member `code`.
+ */
 code: string,
-/** Wire member `message`. */
+/**
+ *Wire member `message`.
+ */
 message: string, };
 export type SettingsScope = { "kind": "global", } | { "kind": "company",
 /**
@@ -1169,15 +1488,25 @@ company_id: WireId, };
 export type SettingKind = "boolean" | "string" | "integer" | "float" | "selection";
 export type SettingValue = boolean | string | number | number;
 export type SettingsDescription = {
-/** Wire member `wire_major`. */
+/**
+ *Wire member `wire_major`.
+ */
 wire_major: WireMajor,
-/** Wire member `registry_version`. */
+/**
+ *Wire member `registry_version`.
+ */
 registry_version: string,
-/** Wire member `scope`. */
+/**
+ *Wire member `scope`.
+ */
 scope: SettingsScope,
-/** Wire member `declarations`. */
+/**
+ *Wire member `declarations`.
+ */
 declarations: Array<SettingDescription>,
-/** Wire member `items`. */
+/**
+ *Wire member `items`.
+ */
 items: Array<SettingsItem>, };
 export type SettingsLinkTarget = { "kind": "action",
 /**
@@ -1192,6 +1521,7 @@ res_id: WireId | null, } | { "kind": "menu",
  * Id of the `ir.ui.menu` row.
  */
 id: WireId, };
+export type ModuleToggleState = "installed" | "not_installed" | "not_available";
 export type SettingsItem = { "kind": "info",
 /**
  * Addon-qualified identity.
@@ -1244,180 +1574,364 @@ sequence: number,
 /**
  * What the link opens.
  */
-target: SettingsLinkTarget, };
-export type SettingDescription = {
-/** Wire member `key`. */
+target: SettingsLinkTarget, } | { "kind": "module",
+/**
+ * Addon-qualified identity.
+ */
 key: string,
-/** Wire member `label`. */
+/**
+ * Display label.
+ */
 label: string,
-/** Wire member `kind`. */
-kind: SettingKind,
-/** Wire member `default`. */
-default: SettingValue,
-/** Wire member `choices`. */
-choices: Array<[string, string]> | null,
-/** Wire member `writable`. */
-writable: boolean,
-/** Wire member `app`. */
+/**
+ * Settings app page.
+ */
 app: string,
-/** Wire member `block`. */
+/**
+ * Block title within the page.
+ */
 block: string,
-/** Wire member `sequence`. */
+/**
+ * Display sort sequence.
+ */
 sequence: number,
-/** Wire member `help`. */
+/**
+ * Technical name of the addon controlled by this row.
+ */
+addon: string,
+/**
+ * Resolved availability and installation state of the addon.
+ */
+state: ModuleToggleState, };
+export type SettingDescription = {
+/**
+ *Wire member `key`.
+ */
+key: string,
+/**
+ *Wire member `label`.
+ */
+label: string,
+/**
+ *Wire member `kind`.
+ */
+kind: SettingKind,
+/**
+ *Wire member `default`.
+ */
+default: SettingValue,
+/**
+ *Wire member `choices`.
+ */
+choices: Array<[string, string]> | null,
+/**
+ *Wire member `writable`.
+ */
+writable: boolean,
+/**
+ *Wire member `app`.
+ */
+app: string,
+/**
+ *Wire member `block`.
+ */
+block: string,
+/**
+ *Wire member `sequence`.
+ */
+sequence: number,
+/**
+ *Wire member `help`.
+ */
 help?: string | null, };
 export type ValueSource = "default" | "stored";
 export type SettingsValues = {
-/** Wire member `wire_major`. */
+/**
+ *Wire member `wire_major`.
+ */
 wire_major: WireMajor,
-/** Wire member `scope`. */
+/**
+ *Wire member `scope`.
+ */
 scope: SettingsScope,
-/** Wire member `revision`. */
+/**
+ *Wire member `revision`.
+ */
 revision: string,
-/** Wire member `values`. */
+/**
+ *Wire member `values`.
+ */
 values: Array<SettingEntry>, };
 export type SettingEntry = {
-/** Wire member `key`. */
+/**
+ *Wire member `key`.
+ */
 key: string,
-/** Wire member `value`. */
+/**
+ *Wire member `value`.
+ */
 value: SettingValue,
-/** Wire member `source`. */
+/**
+ *Wire member `source`.
+ */
 source: ValueSource, };
 export type AddonState = "installed" | "uninstalled";
 export type AddonCatalog = {
-/** Wire member `wire_major`. */
+/**
+ *Wire member `wire_major`.
+ */
 wire_major: WireMajor,
-/** Wire member `registry_version`. */
+/**
+ *Wire member `registry_version`.
+ */
 registry_version: string,
-/** Wire member `addons`. */
+/**
+ *Wire member `addons`.
+ */
 addons: Array<AddonEntry>, };
 export type AddonEntry = {
-/** Wire member `name`. */
+/**
+ *Wire member `name`.
+ */
 name: string,
-/** Wire member `label`. */
+/**
+ *Wire member `label`.
+ */
 label: string,
-/** Wire member `version`. */
+/**
+ *Wire member `version`.
+ */
 version: string,
-/** Wire member `state`. */
+/**
+ *Wire member `state`.
+ */
 state: AddonState,
-/** Wire member `installable`. */
+/**
+ *Wire member `installable`.
+ */
 installable: boolean,
-/** Wire member `summary`. */
+/**
+ *Wire member `summary`.
+ */
 summary: string,
-/** Wire member `category`. */
+/**
+ *Wire member `category`.
+ */
 category: string,
-/** Wire member `author`. */
+/**
+ *Wire member `author`.
+ */
 author: string,
-/** Wire member `application`. */
+/**
+ *Wire member `application`.
+ */
 application: boolean,
-/** Wire member `website`. */
+/**
+ *Wire member `website`.
+ */
 website: string,
-/** Wire member `license`. */
+/**
+ *Wire member `license`.
+ */
 license: string,
-/** Wire member `depends`. */
+/**
+ *Wire member `depends`.
+ */
 depends: Array<string>,
-/** Wire member `icon`. */
+/**
+ *Wire member `icon`.
+ */
 icon?: string, };
 export type InstallResult = {
-/** Wire member `installed`. */
+/**
+ *Wire member `installed`.
+ */
 installed: Array<string>,
-/** Wire member `registry_version`. */
+/**
+ *Wire member `registry_version`.
+ */
 registry_version: string,
-/** Wire member `asset_version`. */
+/**
+ *Wire member `asset_version`.
+ */
 asset_version: string, };
 export type UpgradeResult = {
-/** Wire member `upgraded`. */
+/**
+ *Wire member `upgraded`.
+ */
 upgraded: Array<string>,
-/** Wire member `installed`. */
+/**
+ *Wire member `installed`.
+ */
 installed: Array<string>,
-/** Wire member `registry_version`. */
+/**
+ *Wire member `registry_version`.
+ */
 registry_version: string,
-/** Wire member `asset_version`. */
+/**
+ *Wire member `asset_version`.
+ */
 asset_version: string, };
 export type UninstallResult = {
-/** Wire member `uninstalled`. */
+/**
+ *Wire member `uninstalled`.
+ */
 uninstalled: Array<string>,
-/** Wire member `registry_version`. */
+/**
+ *Wire member `registry_version`.
+ */
 registry_version: string,
-/** Wire member `asset_version`. */
+/**
+ *Wire member `asset_version`.
+ */
 asset_version: string, };
 export type AddonDetailLimit = number;
 export type AddonDetailRequest = {
-/** Wire member `name`. */
+/**
+ *Wire member `name`.
+ */
 name: string,
-/** Wire member `limit`. */
+/**
+ *Wire member `limit`.
+ */
 limit?: AddonDetailLimit,
-/** Wire member `dependencies_cursor`. */
+/**
+ *Wire member `dependencies_cursor`.
+ */
 dependencies_cursor?: string,
-/** Wire member `dependents_cursor`. */
+/**
+ *Wire member `dependents_cursor`.
+ */
 dependents_cursor?: string,
-/** Wire member `menus_cursor`. */
+/**
+ *Wire member `menus_cursor`.
+ */
 menus_cursor?: string,
-/** Wire member `views_cursor`. */
+/**
+ *Wire member `views_cursor`.
+ */
 views_cursor?: string, };
 export type AddonDetailState = "installed" | "uninstalled" | "to_install" | "to_upgrade" | "to_remove" | "uninstallable";
 export type AddonNamePage = {
-/** Wire member `items`. */
+/**
+ *Wire member `items`.
+ */
 items: Array<string>,
-/** Wire member `next_cursor`. */
+/**
+ *Wire member `next_cursor`.
+ */
 next_cursor: string | null, };
 export type AddonMenu = {
-/** Wire member `id`. */
+/**
+ *Wire member `id`.
+ */
 id: WireId,
-/** Wire member `name`. */
+/**
+ *Wire member `name`.
+ */
 name: string,
-/** Wire member `label`. */
+/**
+ *Wire member `label`.
+ */
 label: string, };
 export type AddonView = {
-/** Wire member `id`. */
+/**
+ *Wire member `id`.
+ */
 id: WireId,
-/** Wire member `name`. */
+/**
+ *Wire member `name`.
+ */
 name: string,
-/** Wire member `model`. */
+/**
+ *Wire member `model`.
+ */
 model: string,
-/** Wire member `kind`. */
+/**
+ *Wire member `kind`.
+ */
 kind: string, };
 export type AddonMenuPage = {
-/** Wire member `items`. */
+/**
+ *Wire member `items`.
+ */
 items: Array<AddonMenu>,
-/** Wire member `next_cursor`. */
+/**
+ *Wire member `next_cursor`.
+ */
 next_cursor: string | null, };
 export type AddonViewPage = {
-/** Wire member `items`. */
+/**
+ *Wire member `items`.
+ */
 items: Array<AddonView>,
-/** Wire member `next_cursor`. */
+/**
+ *Wire member `next_cursor`.
+ */
 next_cursor: string | null, };
 export type AddonDetail = {
-/** Wire member `wire_major`. */
+/**
+ *Wire member `wire_major`.
+ */
 wire_major: WireMajor,
-/** Wire member `registry_version`. */
+/**
+ *Wire member `registry_version`.
+ */
 registry_version: string,
-/** Wire member `name`. */
+/**
+ *Wire member `name`.
+ */
 name: string,
-/** Wire member `label`. */
+/**
+ *Wire member `label`.
+ */
 label: string,
-/** Wire member `summary`. */
+/**
+ *Wire member `summary`.
+ */
 summary: string,
-/** Wire member `description`. */
+/**
+ *Wire member `description`.
+ */
 description: string,
-/** Wire member `author`. */
+/**
+ *Wire member `author`.
+ */
 author: string,
-/** Wire member `available_version`. */
+/**
+ *Wire member `available_version`.
+ */
 available_version: string | null,
-/** Wire member `installed_version`. */
+/**
+ *Wire member `installed_version`.
+ */
 installed_version: string | null,
-/** Wire member `state`. */
+/**
+ *Wire member `state`.
+ */
 state: AddonDetailState,
-/** Wire member `dependencies`. */
+/**
+ *Wire member `dependencies`.
+ */
 dependencies: AddonNamePage,
-/** Wire member `dependents`. */
+/**
+ *Wire member `dependents`.
+ */
 dependents: AddonNamePage,
-/** Wire member `menus`. */
+/**
+ *Wire member `menus`.
+ */
 menus: AddonMenuPage,
-/** Wire member `views`. */
+/**
+ *Wire member `views`.
+ */
 views: AddonViewPage,
-/** Wire member `upgrade_refusal`. */
+/**
+ *Wire member `upgrade_refusal`.
+ */
 upgrade_refusal: string | null,
-/** Wire member `uninstall_refusal`. */
+/**
+ *Wire member `uninstall_refusal`.
+ */
 uninstall_refusal: string | null, };
 export type WireDecimalCount = string;

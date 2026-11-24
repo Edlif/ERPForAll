@@ -1372,8 +1372,13 @@ pub enum SettingsLinkTarget {
         id: WireId,
     },
 }
-/// One read-only information row or link row of a settings page. Items are never settings: their
-/// keys are refused by `erp_read_values` and `erp_write_values`.
+choice!(ModuleToggleState {
+    Installed,
+    NotInstalled,
+    NotAvailable
+});
+/// One read-only information row, link row, or module toggle of a settings page. Items are never
+/// settings: their keys are refused by `erp_read_values` and `erp_write_values`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -1411,6 +1416,23 @@ pub enum SettingsItem {
         sequence: u32,
         /// What the link opens.
         target: SettingsLinkTarget,
+    },
+    /// A toggle row that installs or uninstalls one addon.
+    Module {
+        /// Addon-qualified identity.
+        key: String,
+        /// Display label.
+        label: String,
+        /// Settings app page.
+        app: String,
+        /// Block title within the page.
+        block: String,
+        /// Display sort sequence.
+        sequence: u32,
+        /// Technical name of the addon controlled by this row.
+        addon: String,
+        /// Resolved availability and installation state of the addon.
+        state: ModuleToggleState,
     },
 }
 object!(/// One visible native declaration; policy internals stay on the server.

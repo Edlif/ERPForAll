@@ -84,3 +84,23 @@ test("Inventory and general entry share all authorized app tabs across scopes", 
     mounted.dispose?.();
   }
 });
+
+test("module toggle items decode all three states and reject malformed payloads", () => {
+  const base = { kind: "module", key: "stock.module_delivery", app: "stock", block: "Shipping", label: "Carriers", sequence: 200, addon: "delivery" };
+  for (const state of ["installed", "not_installed", "not_available"] as const) {
+    expect(readSettingsItems({ items: [{ ...base, state }] }, [])).toEqual([{ ...base, state }]);
+  }
+  expect(() => readSettingsItems({ items: [{ ...base, state: "installed" }] }, ["stock.module_delivery"])).toThrowError(
+    expect.objectContaining({ kind: "server", message: "Duplicate settings item or declaration key: stock.module_delivery." })
+  );
+  for (const [bad, kind, message] of [
+    [{ ...base, state: "installed", extra: 1 }, "unsupported", "Unknown setting item member: extra."],
+    [{ kind: "module", key: "stock.module_delivery", app: "stock", block: "Shipping", label: "Carriers", sequence: 200, state: "installed" }, "server", "Missing setting item member: addon."],
+    [{ ...base }, "server", "Missing setting item member: state."],
+    [{ ...base, addon: "Bad-Addon", state: "installed" }, "server", "Invalid setting item addon."],
+    [{ ...base, addon: "", state: "installed" }, "server", "Invalid setting item addon."],
+    [{ ...base, state: "pending" }, "server", "Invalid setting item module state."],
+  ] as const) {
+    expect(() => readSettingsItems({ items: [bad] }, [])).toThrowError(expect.objectContaining({ kind, message }));
+  }
+});

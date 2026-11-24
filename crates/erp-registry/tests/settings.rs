@@ -876,3 +876,139 @@ fn every_kind_refuses_by_name_with_its_bounds() {
         assert!(!decl.kind().fits(&given));
     }
 }
+
+#[test]
+fn module_toggle_items_validate_addon_names_publish_and_resolve_states() {
+    use erp_registry::settings::{
+        LinkTarget, ModuleToggleState, PanelItemDecl, PanelItemKind, SettingsRegistry,
+    };
+    use std::collections::BTreeSet;
+
+    let toggle =
+        PanelItemDecl::module_toggle("stock.module_delivery", "Carriers", "delivery").unwrap();
+    assert_eq!(toggle.key(), "stock.module_delivery");
+    assert_eq!(toggle.label(), "Carriers");
+    assert_eq!(toggle.target_app(), "stock");
+    assert_eq!(toggle.block_title(), "General");
+    assert_eq!(toggle.display_sequence(), 100);
+    assert!(toggle.read_groups().is_empty());
+    match toggle.kind() {
+        PanelItemKind::Module { addon, .. } => assert_eq!(addon, "delivery"),
+        other => panic!("unexpected kind {other:?}"),
+    }
+
+    let longest_addon = "a".repeat(128);
+    assert!(PanelItemDecl::module_toggle("stock.long", "Long", &longest_addon).is_ok());
+
+    let too_long_addon = "a".repeat(129);
+    for bad_addon in [
+        "",
+        "Delivery",
+        "stock.delivery",
+        "stock-delivery",
+        "delivery\n",
+        "1delivery",
+        too_long_addon.as_str(),
+    ] {
+        invalid_declaration_message(
+            &PanelItemDecl::module_toggle("stock.module_bad", "Bad", bad_addon).unwrap_err(),
+        );
+    }
+
+    let toggle_with_access = toggle
+        .clone()
+        .block("Shipping")
+        .unwrap()
+        .sequence(200)
+        .access(&["base.group_system"])
+        .unwrap();
+    let installed = BTreeSet::from(["base".to_owned(), "stock".to_owned()]);
+    let registry = SettingsRegistry::build(vec![], &installed, |_| true)
+        .unwrap()
+        .with_items(
+            vec![("stock".into(), vec![toggle_with_access.clone()])],
+            &installed,
+            |group| group == "base.group_system",
+            |_: &str, _: &LinkTarget| false,
+        )
+        .unwrap();
+    let published = registry.item("stock.module_delivery").unwrap();
+    assert_eq!(published.block_title(), "Shipping");
+    assert_eq!(published.display_sequence(), 200);
+    assert!(matches!(
+        published.kind(),
+        PanelItemKind::Module { addon, .. } if addon == "delivery"
+    ));
+
+    // Publication still refuses wrong owner, missing access, duplicate key, and uninstalled target_app.
+    invalid_declaration_message(
+        &SettingsRegistry::build(vec![], &installed, |_| true)
+            .unwrap()
+            .with_items(
+                vec![("base".into(), vec![toggle_with_access.clone()])],
+                &installed,
+                |_| true,
+                |_: &str, _: &LinkTarget| true,
+            )
+            .unwrap_err(),
+    );
+    invalid_declaration_message(
+        &SettingsRegistry::build(vec![], &installed, |_| true)
+            .unwrap()
+            .with_items(
+                vec![("stock".into(), vec![toggle])],
+                &installed,
+                |_| true,
+                |_: &str, _: &LinkTarget| true,
+            )
+            .unwrap_err(),
+    );
+    invalid_declaration_message(
+        &SettingsRegistry::build(vec![], &installed, |_| true)
+            .unwrap()
+            .with_items(
+                vec![(
+                    "stock".into(),
+                    vec![toggle_with_access.clone(), toggle_with_access.clone()],
+                )],
+                &installed,
+                |_| true,
+                |_: &str, _: &LinkTarget| true,
+            )
+            .unwrap_err(),
+    );
+    invalid_declaration_message(
+        &SettingsRegistry::build(vec![], &installed, |_| true)
+            .unwrap()
+            .with_items(
+                vec![(
+                    "stock".into(),
+                    vec![toggle_with_access.app("sale").unwrap()],
+                )],
+                &installed,
+                |_| true,
+                |_: &str, _: &LinkTarget| true,
+            )
+            .unwrap_err(),
+    );
+
+    // State resolution: Installed takes precedence even if not in linked; otherwise linked -> NotInstalled; else NotAvailable.
+    let linked = BTreeSet::from(["base".to_owned(), "sale".to_owned()]);
+    let db_installed = BTreeSet::from(["base".to_owned(), "legacy_installed".to_owned()]);
+    assert_eq!(
+        ModuleToggleState::resolve("base", &db_installed, &linked),
+        ModuleToggleState::Installed
+    );
+    assert_eq!(
+        ModuleToggleState::resolve("legacy_installed", &db_installed, &linked),
+        ModuleToggleState::Installed
+    );
+    assert_eq!(
+        ModuleToggleState::resolve("sale", &db_installed, &linked),
+        ModuleToggleState::NotInstalled
+    );
+    assert_eq!(
+        ModuleToggleState::resolve("delivery", &db_installed, &linked),
+        ModuleToggleState::NotAvailable
+    );
+}

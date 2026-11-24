@@ -132,26 +132,25 @@ const CONFIGURATION: &[(&str, &str, &str, &str, &str)] = &[
         "base.group_system",
     ),
 ];
-const MODULES: &[(&str, &str, &str)] = &[
+const MODULES: &[(&str, &str, &str, &str)] = &[
     (
         "stock.module_product_expiry",
-        "Set up expiry dates in Addons",
+        "Expiry dates",
         "Traceability",
+        "product_expiry",
     ),
     (
         "stock.module_stock_sms",
-        "Set up text delivery in Addons",
+        "Text delivery",
         "Shipping",
+        "stock_sms",
     ),
-    (
-        "stock.module_delivery",
-        "Set up carriers in Addons",
-        "Shipping",
-    ),
+    ("stock.module_delivery", "Carriers", "Shipping", "delivery"),
     (
         "stock.module_stock_dropshipping",
-        "Set up direct supplier delivery in Addons",
+        "Direct supplier delivery",
         "Warehouse",
+        "stock_dropshipping",
     ),
 ];
 fn items() -> Result<Vec<PanelItemDecl>> {
@@ -174,9 +173,9 @@ fn items() -> Result<Vec<PanelItemDecl>> {
                 .access(&["stock.group_stock_manager", "base.group_system"])?,
         );
     }
-    for (key, label, block) in MODULES {
+    for (key, label, block, addon) in MODULES {
         items.push(
-            PanelItemDecl::action_link(key, label, "stock.inventory_addons_action", false)?
+            PanelItemDecl::module_toggle(key, label, addon)?
                 .block(block)?
                 .sequence(200)
                 .access(&["base.group_system"])?,
@@ -207,7 +206,7 @@ pub(super) fn require_linked() -> Result<()> {
         .iter()
         .map(|(key, _, _, _)| *key)
         .chain(CONFIGURATION.iter().map(|(key, _, _, _, _)| *key))
-        .chain(MODULES.iter().map(|(key, _, _)| *key))
+        .chain(MODULES.iter().map(|(key, _, _, _)| *key))
         .map(str::to_owned)
         .collect();
     let mut keys = std::collections::BTreeSet::new();
