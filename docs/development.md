@@ -434,6 +434,17 @@ a form opened from that list, and for a link in a line dialog or a relation dial
 in the trail (up to 32) and each crumb returns to its own step. Dialogs and line views read their view descriptions
 through the page's metadata cache, so a dialog opened again asks the server only for its record.
 
+The trail survives a reload and follows the browser's Back and Forward. The client keeps, per history entry of the
+tab, the trail as it was drawn (each entry's title and address, nothing else) in one session-storage key,
+`erp.session.navigation` (`addons/web/static/src/client/navigation-store.ts`). Session storage belongs to the tab; the
+key is erased on sign-out, when the session expires and on the sign-in page, and a store written for another user is
+dropped whole. What is read back is untrusted: each entry is checked on its own (a closed shape, an id of plain
+characters, a title of at most 512 characters, an address the route parser admits) and an entry that fails is left
+out, as is any entry past the cap of 32. Nothing in it is evaluated: an entry is only an address, which opens through
+the normal navigation, so the server checks it again when the user goes to it. An entry that no longer opens (the
+record is gone, the user may no longer read it) drops out of the trail with the failure shown, and the other entries
+stay usable. An address opened afresh (a pasted link, a new tab) has no history entry and starts its own trail.
+
 A user's home action (`res.users.action_id`, a window action the user may set on their own record) opens in place of
 the app grid when the address names no action. It loads through the usual access checks: an action the user may not
 open leaves the grid with a notice. The logo still opens the grid.

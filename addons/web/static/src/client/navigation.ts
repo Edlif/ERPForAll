@@ -62,6 +62,16 @@ export class BreadcrumbTrail {
     this.stack = [];
   }
 
+  /** The most entries the trail holds. */
+  get cap(): number {
+    return this.maxDepth;
+  }
+
+  /** Puts a whole trail back (a reload, a step through the browser's history), at most `cap` of its newest entries. */
+  replace(items: readonly BreadcrumbItem[]): void {
+    this.stack = items.slice(-this.maxDepth);
+  }
+
   truncateTo(id: string): void {
     const idx = this.stack.findIndex(item => item.id === id);
     if (idx >= 0) {

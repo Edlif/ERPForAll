@@ -9,5 +9,6 @@ erp_sdk::addon!(
 mod buy_route;
 mod receipt;
 mod receipt_access;
+mod receipt_buttons;
 mod received_quantity;
 mod replenish;
