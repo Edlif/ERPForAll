@@ -268,3 +268,49 @@ fn annual_date_group_refuses_impossible_dates_without_clamping() {
         );
     }
 }
+
+#[test]
+fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
+    let entry = erp_sdk::settings::PANEL_CONTRIBUTIONS
+        .iter()
+        .find(|c| c.addon.name == erp_addon_stock::ADDON.name)
+        .expect("stock panel contribution");
+    let items = (entry.declarations)().unwrap();
+    for key in [
+        "stock.module_stock_fleet",
+        "stock.module_stock_barcode",
+        "stock.module_stock_barcode_barcodelookup",
+        "stock.module_quality_control",
+        "stock.module_quality_control_worksheet",
+    ] {
+        let item = items.iter().find(|i| i.key() == key).expect(key);
+        assert!(
+            matches!(item.kind(), erp_sdk::settings::PanelItemKind::Info),
+            "{key} must be an info row"
+        );
+    }
+    for (key, expected_label) in [
+        (
+            "stock.module_product_expiry",
+            "Set up expiry dates in Addons",
+        ),
+        ("stock.module_stock_sms", "Set up text delivery in Addons"),
+        ("stock.module_delivery", "Set up carriers in Addons"),
+        (
+            "stock.module_stock_dropshipping",
+            "Set up direct supplier delivery in Addons",
+        ),
+    ] {
+        let item = items.iter().find(|i| i.key() == key).expect(key);
+        assert!(
+            matches!(
+                item.kind(),
+                erp_sdk::settings::PanelItemKind::Link(
+                    erp_sdk::settings::LinkTarget::Action { .. }
+                )
+            ),
+            "{key} must be an action link"
+        );
+        assert_eq!(item.label(), expected_label);
+    }
+}
