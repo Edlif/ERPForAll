@@ -202,7 +202,8 @@ impl PurchaseOrderLine {
             .zip(ordered.into_iter().zip(received).zip(billed));
         for (index, ((state, product), ((ordered, received), billed))) in rows.enumerate() {
             let quantity = if state.as_deref() == Some("purchase") {
-                let ordered_control = product.and_then(|p| by_ordered.get(&p)).copied() == Some(true);
+                let ordered_control =
+                    product.and_then(|p| by_ordered.get(&p)).copied() == Some(true);
                 let base = if ordered_control { ordered } else { received };
                 base.checked_sub(billed).ok_or_else(|| {
                     Error::validation("The quantity to bill of a purchase line is out of range.")

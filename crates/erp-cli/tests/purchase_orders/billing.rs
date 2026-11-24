@@ -72,7 +72,13 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
         user(&mut tx, "billing-admin", &[system], &[company]).await;
         let purchase = xmlid(&mut tx, "purchase", "group_purchase_user").await;
         let accounting = xmlid(&mut tx, "account", "group_account_user").await;
-        let clerk = user(&mut tx, "billing-clerk", &[purchase, accounting], &[company]).await;
+        let clerk = user(
+            &mut tx,
+            "billing-clerk",
+            &[purchase, accounting],
+            &[company],
+        )
+        .await;
         let buyer = user(&mut tx, "billing-buyer", &[purchase], &[company]).await;
         bill_books::books(&mut tx, company).await;
         let k = catalog(&mut tx, company).await;
@@ -98,7 +104,10 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
         // goods take the setting's default, services bill ordered quantities
         for (product, control) in [(k.bolt, "receive"), (service, "purchase")] {
             let product = products.browse([product]).unwrap();
-            assert_eq!(cell(&mut tx, &product, "purchase_method").await, text(control));
+            assert_eq!(
+                cell(&mut tx, &product, "purchase_method").await,
+                text(control)
+            );
         }
         let po = order(
             &mut tx,
@@ -125,10 +134,22 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
         let [goods, work] = <[Records; 2]>::try_from(lines_of(&mut tx, &[company], &po).await)
             .unwrap_or_else(|_| panic!("two lines"));
         assert_eq!(status(&mut tx, &po).await, "no");
-        assert_eq!(billed(&mut tx, &work).await, d("0/0"), "an RFQ has nothing to bill");
+        assert_eq!(
+            billed(&mut tx, &work).await,
+            d("0/0"),
+            "an RFQ has nothing to bill"
+        );
         act(&mut tx, &po, "button_confirm").await.unwrap();
-        assert_eq!(billed(&mut tx, &goods).await, d("0/0"), "nothing received yet");
-        assert_eq!(billed(&mut tx, &work).await, d("0/2"), "the service bills its order");
+        assert_eq!(
+            billed(&mut tx, &goods).await,
+            d("0/0"),
+            "nothing received yet"
+        );
+        assert_eq!(
+            billed(&mut tx, &work).await,
+            d("0/2"),
+            "the service bills its order"
+        );
         assert_eq!(status(&mut tx, &po).await, "to invoice");
         // receive two of the three bolts, no backorder
         let order_id = po.ids()[0];
@@ -200,7 +221,12 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
         let second = bill(&mut tx, &po, "action_bill_remaining").await;
         assert_ne!(second, first);
         assert_eq!(
-            num(&mut tx, &item_of(&mut tx, company, second, &goods).await, "quantity").await,
+            num(
+                &mut tx,
+                &item_of(&mut tx, company, second, &goods).await,
+                "quantity"
+            )
+            .await,
             dec("0.5")
         );
         assert_eq!(billed(&mut tx, &goods).await, d("2/0"));
@@ -211,7 +237,11 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
             .call::<(), ()>(&mut tx, "button_cancel", ())
             .await
             .unwrap();
-        assert_eq!(billed(&mut tx, &goods).await, d("1.5/0.5"), "a cancelled bill");
+        assert_eq!(
+            billed(&mut tx, &goods).await,
+            d("1.5/0.5"),
+            "a cancelled bill"
+        );
         assert_eq!(status(&mut tx, &po).await, "to invoice");
         let third = bill(&mut tx, &po, "action_bill_remaining").await;
         assert_ne!(third, second);
@@ -222,7 +252,11 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
             .unlink(&mut tx)
             .await
             .unwrap();
-        assert_eq!(billed(&mut tx, &goods).await, d("1.5/0.5"), "a deleted bill");
+        assert_eq!(
+            billed(&mut tx, &goods).await,
+            d("1.5/0.5"),
+            "a deleted bill"
+        );
         // a removed draft item counts nothing
         let removed = item_of(&mut tx, company, first, &work).await;
         bill_books::moves(&tx, company)
@@ -267,7 +301,11 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
         let fourth = bill(&mut tx, &po, "action_bill_remaining").await;
         let over = item_of(&mut tx, company, fourth, &goods).await;
         set_quantity(&mut tx, &over, "1.5").await;
-        assert_eq!(billed(&mut tx, &goods).await, d("3/-1"), "billed above receipt");
+        assert_eq!(
+            billed(&mut tx, &goods).await,
+            d("3/-1"),
+            "billed above receipt"
+        );
         assert_eq!(status(&mut tx, &po).await, "to invoice");
         let over_billed = po.clone();
         refused(
@@ -348,7 +386,10 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
             .await
             .unwrap();
         assert!(full.is_empty());
-        for (filter, value) in [("waiting_bills", "to invoice"), ("fully_billed", "invoiced")] {
+        for (filter, value) in [
+            ("waiting_bills", "to invoice"),
+            ("fully_billed", "invoiced"),
+        ] {
             let found: i64 = tx
                 .query(
                     "SELECT count(*) FROM ir_ui_view v JOIN ir_model_data d ON d.res_id = v.id
@@ -390,7 +431,13 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
         let admin = user(&mut tx, "bill-control-admin", &[system], &[company]).await;
         let purchase = xmlid(&mut tx, "purchase", "group_purchase_user").await;
         let accounting = xmlid(&mut tx, "account", "group_account_user").await;
-        let clerk = user(&mut tx, "bill-control-clerk", &[purchase, accounting], &[company]).await;
+        let clerk = user(
+            &mut tx,
+            "bill-control-clerk",
+            &[purchase, accounting],
+            &[company],
+        )
+        .await;
         bill_books::books(&mut tx, company).await;
         let k = catalog(&mut tx, company).await;
         tx.commit().await.unwrap();
@@ -437,9 +484,15 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
             )
             .await
             .unwrap();
-        assert_eq!(cell(&mut tx, &gasket, "purchase_method").await, text("purchase"));
+        assert_eq!(
+            cell(&mut tx, &gasket, "purchase_method").await,
+            text("purchase")
+        );
         let bolt = products.browse([k.bolt]).unwrap();
-        assert_eq!(cell(&mut tx, &bolt, "purchase_method").await, text("receive"));
+        assert_eq!(
+            cell(&mut tx, &bolt, "purchase_method").await,
+            text("receive")
+        );
         let po = order(
             &mut tx,
             &[company],
@@ -460,8 +513,9 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
                 ),
         )
         .await;
-        let [ordered, received] = <[Records; 2]>::try_from(lines_of(&mut tx, &[company], &po).await)
-            .unwrap_or_else(|_| panic!("two lines"));
+        let [ordered, received] =
+            <[Records; 2]>::try_from(lines_of(&mut tx, &[company], &po).await)
+                .unwrap_or_else(|_| panic!("two lines"));
         // the computed fields are never written by a client
         refused(
             write(
@@ -474,7 +528,12 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
             &["qty_invoiced"],
         );
         refused(
-            write(&mut tx, &po, RawVals::new().set_cell("invoice_status", text("invoiced"))).await,
+            write(
+                &mut tx,
+                &po,
+                RawVals::new().set_cell("invoice_status", text("invoiced")),
+            )
+            .await,
             ErrorKind::Validation,
             &["invoice_status"],
         );
@@ -512,9 +571,12 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
         tx.execute("ALTER TABLE purchase_order DROP COLUMN invoice_status", &[])
             .await
             .unwrap();
-        tx.execute("ALTER TABLE product_template DROP COLUMN purchase_method", &[])
-            .await
-            .unwrap();
+        tx.execute(
+            "ALTER TABLE product_template DROP COLUMN purchase_method",
+            &[],
+        )
+        .await
+        .unwrap();
         tx.execute(
             "UPDATE ir_module_module SET latest_version='1.2.2' WHERE name='purchase'",
             &[],
