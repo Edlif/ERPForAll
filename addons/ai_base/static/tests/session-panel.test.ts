@@ -221,7 +221,8 @@ test("the delete refusal shows friendly copy and the row leaves the confirm pose
   // Friendly copy on the status line, never the code or the ADR jargon.
   await vi.waitFor(() => expect(view.node.querySelector(".ai-session-status")?.textContent).toContain("Deleting sessions isn't available yet."));
   expect(document.body.textContent).not.toContain("erp.ai.session_delete_pending");
-  expect(document.body.textContent).not.toContain("");
+  // A regular expression, not the citation text: the public export rewrites a literal "ADR <number>" to an empty string.
+  expect(document.body.textContent).not.toMatch(/\bADR\b/);
   // The row left the confirm pose and the session is still listed.
   expect(document.querySelector('[data-session-id="1"] [aria-label="Confirm delete"]')).toBeNull();
   expect(document.querySelector('[data-session-id="1"] [aria-label="Delete session"]')).not.toBeNull();
