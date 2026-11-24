@@ -64,7 +64,11 @@ fn closed(error: &Error, entry: &str) {
         "{entry}: {}",
         error.message()
     );
-    assert!(!error.message().contains("is locked"), "{}", error.message());
+    assert!(
+        !error.message().contains("is locked"),
+        "{}",
+        error.message()
+    );
 }
 
 async fn set_lock(tx: &mut Transaction, company: i64, field: &str, date: Option<Date>) {
@@ -187,7 +191,13 @@ async fn every_route_body() {
         .unwrap();
     let name = string(&locked_entry, &mut tx, "name").await;
     let open_name = string(&open_entry, &mut tx, "name").await;
-    set_lock(&mut tx, company, "fiscalyear_lock_date", Some(d(2024, 1, 31))).await;
+    set_lock(
+        &mut tx,
+        company,
+        "fiscalyear_lock_date",
+        Some(d(2024, 1, 31)),
+    )
+    .await;
     let lock = "fiscalyear_lock_date through 2024-01-31";
     let item = items_on(&mut tx, &[&locked_entry], b.receivable).await;
 
@@ -199,9 +209,13 @@ async fn every_route_body() {
     )
     .await
     .unwrap();
-    try_write(&item, &mut tx, RawVals::new().set_cell("name", text("label")))
-        .await
-        .unwrap();
+    try_write(
+        &item,
+        &mut tx,
+        RawVals::new().set_cell("name", text("label")),
+    )
+    .await
+    .unwrap();
 
     for elevated in [false, true] {
         let entry = locked_entry.sudo(elevated);
@@ -261,7 +275,11 @@ async fn every_route_body() {
             let error = try_call(&entry, &mut tx, method).await.unwrap_err();
             assert_eq!(error.kind(), ErrorKind::UserError, "{}", error.message());
             for part in [name.as_str(), lock, "only allows a reversal"] {
-                assert!(error.message().contains(part), "{method}: {}", error.message());
+                assert!(
+                    error.message().contains(part),
+                    "{method}: {}",
+                    error.message()
+                );
             }
         }
         // a posted entry in an open period: moving it into the locked period names the lock,
@@ -290,7 +308,11 @@ async fn every_route_body() {
     let result = tx
         .savepoint(async |tx| {
             model
-                .load(tx, &[".id", "balance"], &[vec![item_id.to_string(), "9".into()]])
+                .load(
+                    tx,
+                    &[".id", "balance"],
+                    &[vec![item_id.to_string(), "9".into()]],
+                )
                 .await
         })
         .await
@@ -470,15 +492,7 @@ async fn matched_body() {
         d(2024, 2, 1),
     )
     .await;
-    let second = posted_invoice(
-        &mut tx,
-        &b,
-        "out_invoice",
-        b.customer,
-        "500",
-        d(2024, 2, 2),
-    )
-    .await;
+    let second = posted_invoice(&mut tx, &b, "out_invoice", b.customer, "500", d(2024, 2, 2)).await;
     let part = posted_entry(
         &mut tx,
         &b,
@@ -550,9 +564,13 @@ async fn matched_body() {
             open_item.sudo(elevated),
         );
         service(
-            try_write(&partial, &mut tx, RawVals::new().set_cell("amount", dec("1")))
-                .await
-                .unwrap_err(),
+            try_write(
+                &partial,
+                &mut tx,
+                RawVals::new().set_cell("amount", dec("1")),
+            )
+            .await
+            .unwrap_err(),
         );
         service(
             try_write(
@@ -602,7 +620,11 @@ async fn matched_body() {
         let error = try_call(&invoice, &mut tx, method).await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::UserError, "{}", error.message());
         for part in [invoice_name.as_str(), "matched", "only allows a reversal"] {
-            assert!(error.message().contains(part), "{method}: {}", error.message());
+            assert!(
+                error.message().contains(part),
+                "{method}: {}",
+                error.message()
+            );
         }
     }
     let error = try_unlink(&invoice, &mut tx).await.unwrap_err();
@@ -669,7 +691,9 @@ async fn matched_body() {
         )
         .await
         .unwrap();
-    try_call(&cancelled, &mut tx, "button_cancel").await.unwrap();
+    try_call(&cancelled, &mut tx, "button_cancel")
+        .await
+        .unwrap();
     assert_eq!(
         cancelled.cell(&mut tx, "reset_blocked").await.unwrap(),
         Cell::Bool(false)
@@ -716,9 +740,13 @@ async fn matched_body() {
     .await
     .unwrap();
     for error in [
-        try_call(&draft, &mut tx, "button_cancel").await.unwrap_err(),
+        try_call(&draft, &mut tx, "button_cancel")
+            .await
+            .unwrap_err(),
         try_unlink(&draft, &mut tx).await.unwrap_err(),
-        try_call(&cancelled, &mut tx, "button_draft").await.unwrap_err(),
+        try_call(&cancelled, &mut tx, "button_draft")
+            .await
+            .unwrap_err(),
     ] {
         assert_eq!(error.kind(), ErrorKind::UserError, "{}", error.message());
         assert!(error.message().contains("matched"), "{}", error.message());
@@ -754,18 +782,30 @@ async fn matched_body() {
     let items = items_on(&mut tx, &[&invoice, &pay], b.receivable).await;
     try_call(&items, &mut tx, "reconcile").await.unwrap();
     let name = string(&invoice, &mut tx, "name").await;
-    set_lock(&mut tx, company, "fiscalyear_lock_date", Some(d(2024, 1, 31))).await;
+    set_lock(
+        &mut tx,
+        company,
+        "fiscalyear_lock_date",
+        Some(d(2024, 1, 31)),
+    )
+    .await;
     let error = try_call(&items, &mut tx, "remove_move_reconcile")
         .await
         .unwrap_err();
     locked(&error, &name, "fiscalyear_lock_date through 2024-01-31");
     assert!(error.message().contains("unmatch"), "{}", error.message());
-    assert_eq!(decimal(&invoice, &mut tx, "amount_residual").await, num("0"));
+    assert_eq!(
+        decimal(&invoice, &mut tx, "amount_residual").await,
+        num("0")
+    );
     set_lock(&mut tx, company, "fiscalyear_lock_date", None).await;
     try_call(&items, &mut tx, "remove_move_reconcile")
         .await
         .unwrap();
-    assert_eq!(decimal(&invoice, &mut tx, "amount_residual").await, num("300"));
+    assert_eq!(
+        decimal(&invoice, &mut tx, "amount_residual").await,
+        num("300")
+    );
     tx.rollback().await.unwrap();
     drop(orm);
     db.cleanup().await.unwrap();
@@ -794,15 +834,8 @@ async fn walk_body() {
         d(2024, 1, 12),
     )
     .await;
-    let february = posted_invoice(
-        &mut tx,
-        &b,
-        "out_invoice",
-        b.customer,
-        "200",
-        d(2024, 2, 5),
-    )
-    .await;
+    let february =
+        posted_invoice(&mut tx, &b, "out_invoice", b.customer, "200", d(2024, 2, 5)).await;
     let pay = posted_entry(
         &mut tx,
         &b,
@@ -813,11 +846,20 @@ async fn walk_body() {
         d(2024, 2, 12),
     )
     .await;
-    set_lock(&mut tx, company, "fiscalyear_lock_date", Some(d(2024, 1, 31))).await;
+    set_lock(
+        &mut tx,
+        company,
+        "fiscalyear_lock_date",
+        Some(d(2024, 1, 31)),
+    )
+    .await;
     // matching an item of a locked period is allowed: it changes no accounting date or amount
     let items = items_on(&mut tx, &[&january, &february, &pay], b.receivable).await;
     try_call(&items, &mut tx, "reconcile").await.unwrap();
-    assert_eq!(decimal(&january, &mut tx, "amount_residual").await, num("0"));
+    assert_eq!(
+        decimal(&january, &mut tx, "amount_residual").await,
+        num("0")
+    );
     let february_item = items_on(&mut tx, &[&february], b.receivable).await.ids()[0];
     let pay_item = items_on(&mut tx, &[&pay], b.receivable).await.ids()[0];
     let rows = tx
@@ -850,7 +892,10 @@ async fn walk_body() {
     assert_eq!(left, 2);
     set_lock(&mut tx, company, "fiscalyear_lock_date", None).await;
     try_unlink(&partial, &mut tx).await.unwrap();
-    assert_eq!(decimal(&february, &mut tx, "amount_residual").await, num("200"));
+    assert_eq!(
+        decimal(&february, &mut tx, "amount_residual").await,
+        num("200")
+    );
     tx.rollback().await.unwrap();
     drop(orm);
     db.cleanup().await.unwrap();

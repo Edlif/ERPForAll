@@ -526,7 +526,10 @@ const MATCHED_ITEMS: &str = "EXISTS (SELECT 1 FROM account_move_line l WHERE l.m
 
 /// What else hangs on the entries of `move_ids`, by entry: matched items and the payment whose
 /// entry it is. Entries with neither are left out.
-async fn consequences(tx: &mut Transaction, move_ids: &[i64]) -> Result<BTreeMap<i64, Vec<String>>> {
+async fn consequences(
+    tx: &mut Transaction,
+    move_ids: &[i64],
+) -> Result<BTreeMap<i64, Vec<String>>> {
     let rows = tx
         .query(
             &format!(
