@@ -9,10 +9,10 @@
     <field name="priority" eval="10"/>
     <field name="arch" type="xml">
       <list>
-        <field name="product_id"/>
+        <field name="product_id" readonly="qty_received or qty_invoiced"/>
         <field name="name"/>
         <field name="product_qty"/>
-        <field name="uom_id"/>
+        <field name="uom_id" readonly="qty_received or qty_invoiced"/>
         <field name="date_planned" invisible="1"/>
         <field name="price_unit"/>
         <field name="discount" string="Disc. %"/>
@@ -38,11 +38,11 @@
           <field name="purchase_line_warn_msg" readonly="1" invisible="not purchase_line_warn_msg" groups="purchase.group_warning_purchase"/>
           <group>
             <group string="Product and delivery">
-              <!-- received goods keep their product and unit -->
-              <field name="product_id" readonly="qty_received"/>
+              <!-- received or billed goods keep their product and unit -->
+              <field name="product_id" readonly="qty_received or qty_invoiced"/>
               <field name="name"/>
               <field name="product_qty"/>
-              <field name="uom_id" readonly="qty_received"/>
+              <field name="uom_id" readonly="qty_received or qty_invoiced"/>
               <field name="date_planned"/>
               <field name="qty_received" readonly="1"/>
               <field name="qty_invoiced" readonly="1"/>

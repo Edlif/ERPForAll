@@ -311,7 +311,7 @@ pub struct SaleOrder {
 
 /// The header fields a locked order refuses besides its protected fields: the salesperson and the
 /// sales team.
-pub const LOCKED_ONLY: [&str; 2] = ["user_id", "team_id"];
+const LOCKED_ONLY: [&str; 2] = ["user_id", "team_id"];
 
 /// The fields of `M` a locked order protects (R7): built from field handles of `M`, so a
 /// field that does not exist cannot be named. A satellite adds its own fields in its override of

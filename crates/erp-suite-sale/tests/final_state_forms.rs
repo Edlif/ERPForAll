@@ -428,6 +428,61 @@ fn final_state_forms_show_read_only_exactly_what_the_server_refuses() {
                 }
             }
         }
+        // The server half for the orders, whose allow-list is empty: a cancelled order refuses a
+        // write of each field its draft form lets the reader edit.
+        let partner = tx
+            .env()
+            .records("res.partner")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("name", Cell::Str("Final-state partner".into()))],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        for (model, cancel) in [
+            ("sale.order", "action_cancel"),
+            ("purchase.order", "button_cancel"),
+        ] {
+            let order = tx
+                .env()
+                .records(model)
+                .unwrap()
+                .create(
+                    &mut tx,
+                    vec![RawVals::new().set_cell("partner_id", Cell::Id(partner))],
+                )
+                .await
+                .unwrap();
+            order.call::<(), ()>(&mut tx, cancel, ()).await.unwrap();
+            let guard = guarded()
+                .into_iter()
+                .find(|guard| guard.model == model && guard.view.is_none())
+                .unwrap();
+            for (field, readonly) in form_readonly(&mut tx, &guard, "draft").await {
+                if readonly {
+                    continue;
+                }
+                // the value it already has: the refusal is for the write, not for the value
+                let vals = match order.cell(&mut tx, &field).await.unwrap() {
+                    Cell::Ids(_) => RawVals::new().set_commands(field.clone(), Vec::new()),
+                    value => RawVals::new().set_cell(field.clone(), value),
+                };
+                let target = order.clone();
+                let written = tx
+                    .savepoint(async move |tx| {
+                        target.write(tx, vals).await?;
+                        tx.flush().await
+                    })
+                    .await;
+                if written.is_ok() {
+                    disagreements.push(format!(
+                        "{model} cancel: {field} is read-only on the form but accepted by the server"
+                    ));
+                }
+            }
+        }
         assert!(disagreements.is_empty(), "{disagreements:#?}");
         tx.rollback().await.unwrap();
         db.cleanup().await.unwrap();

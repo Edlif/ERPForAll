@@ -25,6 +25,43 @@ impl DirectBill {
              OR m.company_id IS DISTINCT FROM s.company_id OR m.currency_id IS DISTINCT FROM p.currency_id
              OR m.partner_id IS DISTINCT FROM p.partner_id) LIMIT 1").await
     }
+
+    /// Posting refuses a vendor bill whose purchase order is not confirmed (cancelled or back to a
+    /// request for quotation): what it bills would no longer match an order. The orders are
+    /// share-locked, so a cancel of one of them at the same time waits for the posting or fails.
+    /// Nothing about the order is named: the poster may not read it.
+    #[method(override)]
+    async fn action_post(
+        this: &RecordSet<AccountMove>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
+        let moves = this.as_records();
+        if !moves.is_empty() {
+            moves.check_access(tx, Operation::Write).await?;
+            tx.flush().await?;
+            let rows = tx
+                .query(
+                    "SELECT p.state::text FROM purchase_order p WHERE p.id IN ( \
+                         SELECT s.order_id FROM purchase_direct_bill_line s WHERE s.bill_id = ANY($1)) \
+                     ORDER BY p.id FOR SHARE",
+                    &[&moves.ids()],
+                )
+                .await?;
+            for row in rows {
+                let state: Option<String> = row.try_get(0).map_err(|error| {
+                    Error::db("Reading the purchase order of a vendor bill failed.")
+                        .with_source(error)
+                })?;
+                if state.as_deref() != Some("purchase") {
+                    return Err(Error::user(
+                        "This vendor bill comes from a purchase order that is cancelled or back to a request for quotation, so it cannot be posted. Confirm the order again, or remove its lines from the bill.",
+                    ));
+                }
+            }
+        }
+        sup.call(tx, moves, ()).await
+    }
 }
 
 #[extend(AccountMoveLine, addon = "purchase")]

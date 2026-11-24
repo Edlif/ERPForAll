@@ -367,13 +367,13 @@ impl PurchaseOrderLine {
     }
 }
 
-/// Per line: number, order number, product, unit, received quantity and billed quantity (draft
-/// and posted bills, refunds subtracted).
+/// Per line: description, order number, product, unit, received quantity, billed quantity (draft
+/// and posted vendor bills; a linked bill is always a vendor bill) and ordered quantity.
 const LINE_CONSEQUENCES: &str = "SELECT l.id::int8, COALESCE(l.name, ''), o.name, l.product_id::int8, \
-    l.uom_id::int8, COALESCE(l.qty_received, 0)::numeric, COALESCE(b.billed, 0)::numeric \
+    l.uom_id::int8, COALESCE(l.qty_received, 0)::numeric, COALESCE(b.billed, 0)::numeric, \
+    COALESCE(l.product_qty, 0)::numeric \
     FROM purchase_order_line l JOIN purchase_order o ON o.id = l.order_id \
-    LEFT JOIN (SELECT k.purchase_line_id, SUM(CASE m.move_type WHEN 'in_refund' \
-        THEN -i.quantity ELSE i.quantity END) AS billed FROM purchase_direct_bill_line k \
+    LEFT JOIN (SELECT k.purchase_line_id, SUM(i.quantity) AS billed FROM purchase_direct_bill_line k \
         JOIN account_move_line i ON i.id = k.bill_line_id JOIN account_move m ON m.id = i.move_id \
         WHERE m.state IN ('draft', 'posted') GROUP BY k.purchase_line_id) b \
     ON b.purchase_line_id = l.id WHERE l.id = ANY($1) ORDER BY l.id";
@@ -399,25 +399,40 @@ async fn refuse_consequences(tx: &mut Transaction, lines: &Records, vals: &RawVa
     tx.flush().await?;
     for row in tx.query(LINE_CONSEQUENCES, &[&lines.ids()]).await? {
         let line: String = row.try_get(1).map_err(db_error)?;
+        // the first line of the description names the line, when it has one
+        let line = match line.lines().next() {
+            Some(first) if !first.trim().is_empty() => format!(" {first}"),
+            _ => String::new(),
+        };
         let order: String = row.try_get(2).map_err(db_error)?;
         let product: Option<i64> = row.try_get(3).map_err(db_error)?;
         let unit: Option<i64> = row.try_get(4).map_err(db_error)?;
         let received: Decimal = row.try_get(5).map_err(db_error)?;
         let billed: Decimal = row.try_get(6).map_err(db_error)?;
+        let ordered: Decimal = row.try_get(7).map_err(db_error)?;
         if received.is_zero() && billed.is_zero() {
             continue;
         }
         let moved = (vals.contains("product_id") && id_of("product_id") != product)
             || (vals.contains("uom_id") && id_of("uom_id") != unit);
         if moved {
-            return Err(Error::validation(format!(
-                "The purchase order line {line} of {order} has received or billed goods: its product and unit can no longer change."
+            return Err(Error::user(format!(
+                "The purchase order line{line} of {order} has received or billed goods: its product and unit can no longer change."
             )));
         }
+        // a raise or an unchanged quantity passes, even while still below the floor
         let floor = received.max(billed);
-        if quantity.is_some_and(|quantity| quantity < floor) {
-            return Err(Error::validation(format!(
-                "The quantity of the purchase order line {line} of {order} cannot go below {floor} ({received} received, {billed} billed); return or refund the rest instead."
+        if let Some(asked) = quantity.filter(|asked| *asked < floor && *asked < ordered) {
+            let hint = if received >= billed {
+                "return the goods first"
+            } else {
+                "correct the bill first"
+            };
+            return Err(Error::user(format!(
+                "The quantity of the purchase order line{line} of {order} cannot go below what was received or billed ({} asked, {} received, {} billed); {hint}.",
+                asked.normalize(),
+                received.normalize(),
+                billed.normalize()
             )));
         }
     }
