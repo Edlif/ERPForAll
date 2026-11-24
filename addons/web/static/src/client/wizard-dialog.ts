@@ -12,6 +12,7 @@ import { RecordForm, formFocus } from "./record-form.js";
 import type { RecordState } from "./record.js";
 import { ClientError, type RpcClient } from "./transport.js";
 import { viewButton, ButtonDebouncer, ButtonHotkeys } from "./view-button.js";
+import type { ViewLoader } from "./registry.js";
 
 type FormElement = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement;
 
@@ -42,6 +43,8 @@ export class WizardDialog {
     profileTitle?: boolean; messages?: MessageServices; editorLocale?: EditorLocale; numericLocale?: import("./numeric-values.js").NumericLocale;debug?:boolean;uid?:number;action?(id:number,context:Record<string,unknown>):Promise<void>;url?(href:string):Promise<void>; name: string; state: RecordState; view: View; rpc: RpcClient; context: Record<string, unknown>;
     report(error: unknown): void; notice(message: string): void;
     openRecord(model: string, id: number): Promise<void>;
+    /** The page's cached view loader for the dialog's field widgets. */
+    views?: ViewLoader;
     result(value: unknown, context?:Record<string,unknown>, button?:string, resubmit?:Resubmission): Promise<void>; closed(): Promise<void>;
   }) {
     const heading = el("h2", env.name); heading.id = "wizard-dialog-heading";
@@ -62,7 +65,7 @@ export class WizardDialog {
     this.notification.hidden = true;
     this.notification.setAttribute("data-wizard-notice", "");
     this.dialog.append(head, this.statusRow, this.notification, sheet, footer);
-    this.surface = new RecordForm({ ...(env.profileTitle ? { profileTitle: true } : {}), ...(env.messages ? { messages: env.messages } : {}), editorLocale: env.editorLocale, numericLocale: env.numericLocale, notify: message => env.messages ? env.messages.notifications.add(message, { level: "danger" }) : env.notice(message), signal: this.abort.signal, form: this.form, state: env.state, view: env.view, rpc: env.rpc, context: env.context,
+    this.surface = new RecordForm({ ...(env.profileTitle ? { profileTitle: true } : {}), ...(env.messages ? { messages: env.messages } : {}), editorLocale: env.editorLocale, numericLocale: env.numericLocale, notify: message => env.messages ? env.messages.notifications.add(message, { level: "danger" }) : env.notice(message), signal: this.abort.signal, form: this.form, state: env.state, view: env.view, rpc: env.rpc, context: env.context, ...(env.views ? { views: env.views } : {}),
       run: job => {
         if (this.dead || this.pending || this.commitPending !== undefined || this.uncertain || this.saveUncertain) return;
         void job().catch(error => env.report(error));

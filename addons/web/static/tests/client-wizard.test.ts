@@ -157,6 +157,19 @@ test("method result opens an independent dialog and cancel writes nothing, refre
   expect(calls.some(c => c.path.includes("test.wizard/web_save") || c.path.endsWith("confirm_loan"))).toBe(false);
 });
 
+test("a dialog opened again from the same record reads its views from the page cache", async () => {
+  const { root, calls } = await setup();
+  dialogButton("Cancel wizard").click();
+  await vi.waitFor(() => expect(document.querySelector(".wizard-dialog")).toBeNull());
+  await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>(".form-header-btn")!.disabled).toBe(false));
+  root.querySelector<HTMLButtonElement>(".form-header-btn")!.click();
+  await vi.waitFor(() => expect(document.querySelector("dialog")?.textContent).toContain("Lend this book?"));
+  choice("Lend");
+  await vi.waitFor(() => expect(document.querySelector(".wizard-dialog")).not.toBeNull());
+  expect(calls.filter(c => c.path.endsWith("/lend"))).toHaveLength(2);
+  expect(calls.filter(c => c.path.includes("test.wizard/get_views"))).toHaveLength(1);
+});
+
 /// (partial: mounted client with explicit HTTP fixtures; installed backend acceptance remains)
 test("confirm saves new wizard before method and closes with one caller reload", async () => {
   const { calls, url } = await setup();
@@ -452,7 +465,8 @@ test("relational defaults flow through shared initial onchange as ORM commands",
 
 test("failed replacement metadata preserves the original scope read-only", async () => {
   let descriptions = 0;
-  const { calls } = await setup({...wizard,name:"Next step"}, undefined, path => path.includes("test.wizard/get_views") && ++descriptions > 1
+  // Another scope than the first dialog's: the page's view cache holds the first one's views, not these.
+  const { calls } = await setup({...wizard,name:"Next step",context:{default_name:"Next borrower"}}, undefined, path => path.includes("test.wizard/get_views") && ++descriptions > 1
     ? new Response(JSON.stringify({name:"erp.exceptions.AccessError",message:"Next view denied."}),{status:403,headers:{"Content-Type":"application/json"}}) : undefined);
   dialogButton("Confirm loan").click();
   await vi.waitFor(() => expect(presented).toEqual([expect.objectContaining({kind:"permission",message:"Next view denied."})]));
@@ -1296,18 +1310,33 @@ test("an interrupted resubmission is reported as unknown and not sent a third ti
 });
 
 /// Second review pass: the way back from a related form keeps the related list identity and the origin record crumb.
-test("a form opened from a related list keeps the origin crumb and returns to the same related list", async () => {
+test("a form opened from a related list keeps every step in the trail and returns to the same related list", async () => {
   const {root} = await relatedSetup();
   await openRelated(root);
   await vi.waitFor(()=>expect(root.querySelector(".list-table")).not.toBeNull());
   const actionId = new URL(location.href).searchParams.get("method_action");
   expect(actionId).not.toBeNull();
+  // The related list went on top of the record whose button opened it.
+  expect(drawnTrail(root)).toEqual(["Books", "Dune", "Related loans"]);
   root.querySelector<HTMLButtonElement>('.list-table tbody button.link')!.click();
   await vi.waitFor(()=>expect(root.querySelector('input[name="name"]')).not.toBeNull());
-  expect(root.querySelector(".breadcrumb-origin")).not.toBeNull();
-  // The origin sits on the back link's line, inside its wrapper: the two-line header places that wrapper, nothing else.
-  expect(root.querySelector(".breadcrumb-previous > .breadcrumb-origin + .form-breadcrumb-divider + .breadcrumb-back")).not.toBeNull();
+  expect(drawnTrail(root)).toEqual(["Books", "Dune", "Related loans", "Visible"]);
+  // The source record is a crumb of the trail, so no separate origin link is drawn.
+  expect(root.querySelector(".breadcrumb-origin")).toBeNull();
   root.querySelector<HTMLButtonElement>(".breadcrumb-back")!.click();
   await vi.waitFor(()=>expect(root.querySelector(".list-table")).not.toBeNull());
   expect(new URL(location.href).searchParams.get("method_action")).toBe(actionId);
+  expect(drawnTrail(root)).toEqual(["Books", "Dune", "Related loans"]);
+  root.querySelector<HTMLButtonElement>(".breadcrumb-previous .breadcrumb-back")!.click();
+  await vi.waitFor(()=>expect(new URL(location.href).searchParams.get("id")).toBe("5"));
+  expect(new URL(location.href).searchParams.get("method_action")).toBeNull();
+  expect(drawnTrail(root)).toEqual(["Books", "Dune"]);
 });
+
+/** The trail as drawn: the older entries (oldest first), the previous entry, the current one. */
+function drawnTrail(root: HTMLElement): (string | null | undefined)[] {
+  const crumbs = root.querySelector("[data-control-breadcrumbs]")!;
+  const older = [...crumbs.querySelectorAll(".breadcrumb-dropdown-item")].map(item => item.textContent).reverse();
+  const previous = crumbs.querySelector(".breadcrumb-previous .breadcrumb-back")?.textContent;
+  return [...older, ...(previous ? [previous] : []), crumbs.querySelector(".breadcrumb-current")?.textContent];
+}
