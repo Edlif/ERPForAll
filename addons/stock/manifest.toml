@@ -15,6 +15,7 @@ data = [
     "views/settings_views.xml",
     "views/stock_picking_type_kanban.xml",
     "views/stock_picking_views.xml",
+    "views/res_partner_views.xml",
     "views/stock_reports.xml",
     "data/stock_link_defaults.xml",
     "data/stock_warehouse_data.xml",

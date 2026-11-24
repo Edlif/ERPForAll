@@ -231,6 +231,15 @@ pub struct PurchaseOrderLine {
         string = "Received Qty"
     )]
     pub qty_received: Decimal,
+    /// Non-blocking purchase warning message from the line product.
+    #[field(
+        text,
+        compute = "_compute_purchase_line_warn_msg",
+        readonly = true,
+        copy = false,
+        string = "Product Warning"
+    )]
+    pub purchase_line_warn_msg: Option<Arc<str>>,
 }
 
 #[methods(PurchaseOrderLine, addon = "purchase")]

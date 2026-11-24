@@ -28,12 +28,6 @@ const FEATURES: &[(&str, &str, &str, &str)] = &[
         GROUPS,
     ),
     (
-        "stock.group_warning_stock",
-        "Partner stock warnings",
-        "Operations",
-        GROUPS,
-    ),
-    (
         "stock.group_stock_sign_delivery",
         "Delivery signatures",
         "Shipping",
@@ -103,6 +97,12 @@ const GROUP_TOGGLES: &[(&str, &str, &str, &str)] = &[
         "Consignment",
         "Operations",
         "stock.group_tracking_owner",
+    ),
+    (
+        "stock.group_warning_stock",
+        "Partner stock warnings",
+        "Operations",
+        "stock.group_warning_stock",
     ),
 ];
 // Each shortcut opens the ordinary menu of the records that own the policy.

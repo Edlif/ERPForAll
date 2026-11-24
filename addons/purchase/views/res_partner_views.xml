@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="res_partner_form_purchase_warnings" model="ir.ui.view">
+    <field name="name">res.partner.form.purchase.warnings</field>
+    <field name="model">res.partner</field>
+    <field name="inherit_id" ref="base.partner_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//page[@name='details']" position="inside">
+        <group name="purchase_warnings" string="Warning on Purchase Orders" groups="purchase.group_warning_purchase">
+          <field name="purchase_warn_msg" placeholder="e.g. Confirm lead time before ordering."/>
+        </group>
+      </xpath>
+    </field>
+  </record>
+</erp>

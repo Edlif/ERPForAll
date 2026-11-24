@@ -67,6 +67,7 @@ pub mod storage;
 pub mod tracking;
 pub mod warehouse;
 mod warehouse_setup;
+mod warnings;
 
 pub use error::StockError;
 pub use location::{ProductRemoval, StockLocation, StockLocationPolicy};

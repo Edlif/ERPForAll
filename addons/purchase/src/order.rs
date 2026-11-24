@@ -208,6 +208,15 @@ pub struct PurchaseOrder {
         string = "Total in Company Currency"
     )]
     pub amount_total_cc: Decimal,
+    /// Non-blocking vendor, parent company, and product warning messages for this order.
+    #[field(
+        text,
+        compute = "_compute_purchase_warning_text",
+        readonly = true,
+        copy = false,
+        string = "Purchase Warning"
+    )]
+    pub purchase_warning_text: Option<Arc<str>>,
 }
 
 #[methods(PurchaseOrder, addon = "purchase")]
