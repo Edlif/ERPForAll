@@ -301,6 +301,64 @@ fn stock_security_installed_role_matrix_and_model_coverage() {
     });
 }
 
+/// The batch actions need the batch feature group: an Inventory operator without it is refused by name,
+/// and the same operator with it is let through.
+#[test]
+fn stock_batch_actions_need_the_batch_group() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let installed = install(&db).await;
+        let users = roles(&installed).await;
+        let group = xid(&installed, "stock", "group_stock_picking_batch").await;
+        for granted in [false, true] {
+            if granted {
+                let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+                tx.env()
+                    .records("res.users")
+                    .unwrap()
+                    .browse([users[2]])
+                    .unwrap()
+                    .write(
+                        &mut tx,
+                        RawVals::new().set_commands(
+                            "group_ids",
+                            [Command::link(RecId::from_real(group).unwrap())],
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            }
+            let orm = secure(&db, &installed).await;
+            let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
+            let batch = tx
+                .env()
+                .records("stock.picking.batch")
+                .unwrap()
+                .browse([1])
+                .unwrap();
+            let result = batch
+                .call::<(), erp_sdk::Value>(&mut tx, "action_add_transfers", ())
+                .await;
+            if granted {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::Access, "{error:?}");
+                assert!(
+                    error
+                        .message()
+                        .contains("Batch transfers are not turned on"),
+                    "{}",
+                    error.message()
+                );
+            }
+            tx.rollback().await.unwrap();
+        }
+        db.cleanup().await.unwrap();
+    });
+}
+
 #[test]
 fn stock_security_orm_denials_and_quant_guard_survive_grants() {
     run(async {

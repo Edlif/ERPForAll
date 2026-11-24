@@ -329,6 +329,27 @@ no tab and its content is not rendered, and a selected page that hides gives way
 `invisible="1"` still removes the page from the description. A page is not a security boundary: use `groups` to keep
 its fields from users who may not read them.
 
+### Batch transfers (the `stock` addon)
+
+A batch transfer groups transfers of one company and one operation type so that a person confirms, reserves and
+validates them together. Switch the feature on under Settings, Inventory, Batch transfers; it adds the Batch Transfers
+menu under Operations and an Add to Batch button on the transfer form. Every batch action checks the feature group
+`stock.group_stock_picking_batch`.
+
+- A batch is Draft, In progress, Done or Cancelled. Transfers join through the Add to Batch dialog (a new batch, or an
+  existing draft or in-progress one): a transfer that does not fit (another company, another operation type, already in a
+  batch, wrong state) is named in the refusal and nothing is added. Confirm confirms the draft transfers; Check
+  Availability reserves them; Cancel lets the open transfers go and keeps the done ones.
+- Validate does not run in one transaction. It queues the job `stock.batch_validate`; each chunk validates up to
+  `stock.batch_validate_chunk` transfers (system parameter, default 20, from 1 to 500), every transfer in its own
+  savepoint, and writes one result row per transfer and run (`stock.picking.batch.result`: done, failed with the reason,
+  or removed from the batch when nothing is reserved). A failed transfer stays in the batch; Validate again retries it
+  as a new run. While a live job holds the batch, nothing joins, cancels or validates it again; if the job is gone, the
+  batch is free again.
+- `batch_id` of a transfer, and the status, type, company and transfer list of a batch, are written by the batch actions
+  only; a direct write is refused.
+- Not yet: waves, automatic batching, merging batches, the batch report, scheduled date and responsible propagation.
+
 ## The web client
 
 The client is TypeScript, compiled ahead of time:
