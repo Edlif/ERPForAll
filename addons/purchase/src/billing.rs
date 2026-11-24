@@ -97,17 +97,27 @@ impl PurchaseBillControl {
 /// new link), without flushing unrelated compute graphs.
 async fn flush_bill_inputs(tx: &mut Transaction, env: &Env) -> Result<()> {
     for (model, names) in [
-        ("purchase.direct.bill.line", &["purchase_line_id", "order_id", "bill_id", "bill_line_id"][..]),
-        ("account.move.line", &["quantity", "display_type", "move_id"][..]),
+        (
+            "purchase.direct.bill.line",
+            &["purchase_line_id", "order_id", "bill_id", "bill_line_id"][..],
+        ),
+        (
+            "account.move.line",
+            &["quantity", "display_type", "move_id"][..],
+        ),
         ("account.move", &["state", "move_type"][..]),
     ] {
         let records = env.records(model)?;
         let fields = names
             .iter()
             .map(|name| {
-                records.spec().field(name).map(|field| field.id).ok_or_else(|| {
-                    Error::programming(format!("The billed quantity reads {model}.{name}."))
-                })
+                records
+                    .spec()
+                    .field(name)
+                    .map(|field| field.id)
+                    .ok_or_else(|| {
+                        Error::programming(format!("The billed quantity reads {model}.{name}."))
+                    })
             })
             .collect::<Result<Vec<_>>>()?;
         tx.flush_fields(records.model_id(), &fields).await?;
