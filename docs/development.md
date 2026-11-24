@@ -445,13 +445,14 @@ with the page it was drawn for (same action, related list and record). What is r
 characters, a title of at most 512 characters, an address the route parser admits) and an entry that fails is left
 out, as is any entry past the cap of 32. Nothing in it is evaluated: an entry is only an address, which opens through
 the normal navigation, so the server checks it again when the user goes to it. An entry that no longer opens (the
-record is gone, the user may no longer read it) drops out of the trail with the failure shown, and the other entries
+record is gone, the read finds no row for it, the user may no longer read it) drops out of the trail with the failure shown, and the other entries
 stay usable; an entry that fails for another reason (a lost connection, a server failure) stays to be tried again. A
 navigation that fails leaves the trail as it was for the page that stays. An address opened afresh (a pasted link, a new
 tab, a full page load such as the company switcher's) has no history entry and starts its own trail; its entries are
 numbered past the ones the tab keeps, so Back to an older entry still finds that entry's trail. A record saved on the way
 out (the leave prompt, a crumb's autosave) is in the trail as the saved record, and a new record discarded there leaves
-the trail.
+the trail. When that save happens on a Back or Forward step whose page then fails to open, the browser returns to the
+record's entry and the entry takes the saved record's address.
 
 A list a button opened (a current-window action result) has no address of its own: its address names it by an id of
 the page (`method_action`). The same key keeps, for each such list, what the server answered for it (title, model,
@@ -468,7 +469,9 @@ same checks as a list (the model, the view, the defaults) and then checks that t
 may read it; a record the user may not read and one that does not exist are refused alike (`AccessError`), and a
 malformed result (a domain next to `res_id`, a list view, an id that is not a positive integer) is refused by name
 (`ValidationError`). The answer carries `res_id` and the domain `[["id", "=", res_id]]`. The client opens the form on
-top of the page the button is on, so the breadcrumb leads back to it, and it survives a reload like a list a button
+top of the page the button is on, so the breadcrumb leads back to it (opened from a page with no trail of its own, such
+as a client screen, the form starts the trail; a result with no list view has no crumb for the action, which would open
+a blank form), and it survives a reload like a list a button
 opened. The count buttons of sales, purchase, invoicing and stock (an order's invoices, vendor bills, deliveries and
 receipts, and the way back from an invoice, a bill or a transfer to its order) open the form directly when they count
 exactly one document, and the list otherwise.
