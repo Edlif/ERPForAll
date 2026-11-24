@@ -968,13 +968,13 @@ async fn hard_body() {
     .await;
     sync_lock_dates(&mut tx, company).await.unwrap();
     let january: i64 = tx
-        .query_one(
+        .query(
             "SELECT id::int8 FROM account_fiscal_period WHERE company_id = $1 AND kind = 'regular' \
              AND $2 BETWEEN date_from AND date_to",
             &[&company, &d(2024, 1, 12)],
         )
         .await
-        .unwrap()
+        .unwrap()[0]
         .get(0);
     let set = PeriodSet::of(&mut tx, january).await.unwrap();
     let run = hard_lock_begin(&mut tx, &set).await.unwrap();
