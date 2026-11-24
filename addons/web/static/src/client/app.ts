@@ -43,7 +43,7 @@ import { askButtonPrompt } from "./button-prompt.js";
 import { viewButton, ButtonDebouncer, ButtonHotkeys } from "./view-button.js";
 import { runUrlButton } from "./button-url.js";
 import { CurrencyDisplayCache } from "./field-currency.js";
-import { fieldWidgets, resolveFieldWidget, type ActionRequest, type RecordEvent, type ShellNavigation } from "./registry.js";
+import { fieldWidgets, resolveFieldWidget, type ActionRequest, type RecordEvent, type ShellNavigation, type ViewLoader } from "./registry.js";
 import { ListGroupModel, type ListGroupNode } from "./list-group-model.js";
 import type { ListGroupState } from "./list-group-state.js";
 import type { NumericLocale } from "./numeric-values.js";
@@ -103,6 +103,12 @@ function listRouteOf(route: Route): Route {
   delete list.id;
   delete list.view_type;
   return list;
+}
+
+/** The trail identity of a list or record page: its action, the related list it belongs to, and the record. */
+function crumbId(route: Route, id?: number | string): string {
+  const via = route.method_action ? `-via-${route.method_action}` : "";
+  return `action-${route.action}${via}-${id === undefined ? "list" : `form-${id}`}`;
 }
 
 type SwitchableView = "list" | "form" | "pivot" | "calendar" | "graph" | "kanban";
@@ -1404,38 +1410,66 @@ export class HumanApp {
 
   private async windowBundle(id: number, options: CallOptions = {}): Promise<Record<string, unknown>> {
     const args = { ids: [id], context: this.context };
-    return object(await this.metadata.read(`action ${JSON.stringify(args)}`, async () => {
+    return object(await this.metadata.read(this.bundleKey(id), async () => {
       const generation = this.metadata.generation;
       const bundle = object(await this.rpc.call("ir.actions.act_window", "erp_load_web_action_views",
         { ...args, wire_major: 1, options: { mobile: false } }, options));
       if (Object.keys(bundle).length !== 2 || !("action" in bundle) || !("views" in bundle)) {
         throw new ClientError("validation", "Invalid action and view metadata bundle.");
       }
-      const action = object(bundle["action"]);
-      if (action["wire_major"] !== 1 || action["target"] !== "current" || action["id"] !== id) {
-        throw new ClientError("unsupported", "Unsupported or mismatched window action.");
-      }
-      const model = text(action["model"], "action model"), views = actionViews(action);
-      // Admit both members before publishing either cache identity.
-      describeViews(bundle["views"], model, this.registry);
-      const described = object(bundle["views"]);
-      const actionOwned = array(described["views"], "views").some(raw => {
-        const view = object(raw), root = array(view["nodes"], "view nodes")[integer(view["root"], "view root")];
-        const node = object(root, "view root");
-        return view["type"] === "list" && (Object.hasOwn(node, "search_panel") || Object.hasOwn(node, "page_limit"));
-      });
-      // Legacy identical view requests may still share their companion; action-owned search/limit
-      // metadata stays in the full bundle cached under this action's own identity.
-      if (!actionOwned) this.metadata.seed(this.viewKey(model, views), bundle["views"], generation);
-      return bundle;
+      return this.admitBundle(bundle, id, generation);
     }));
   }
 
-  /** Related-record discovery must not describe unrelated actions' views. */
-  private async windowActionOnly(id: number): Promise<Record<string, unknown>> {
-    const args = { ids: [id], context: this.context };
-    return object(await this.metadata.read(`action-only ${JSON.stringify(args)}`,
-      () => this.rpc.call("ir.actions.act_window", "erp_load_web_action", args)));
+  private bundleKey(id: number): string {
+    return `action ${JSON.stringify({ ids: [id], context: this.context })}`;
+  }
+
+  /** Checks an action and its views as one answer, then shares the views with plain view requests of the same views. */
+  private admitBundle(bundle: Record<string, unknown>, id: number, generation: object): Record<string, unknown> {
+    const action = object(bundle["action"]);
+    if (action["wire_major"] !== 1 || action["target"] !== "current" || action["id"] !== id) {
+      throw new ClientError("unsupported", "Unsupported or mismatched window action.");
+    }
+    const model = text(action["model"], "action model"), views = actionViews(action);
+    // Admit both members before publishing either cache identity.
+    describeViews(bundle["views"], model, this.registry);
+    const described = object(bundle["views"]);
+    const actionOwned = array(described["views"], "views").some(raw => {
+      const view = object(raw), root = array(view["nodes"], "view nodes")[integer(view["root"], "view root")];
+      const node = object(root, "view root");
+      return view["type"] === "list" && (Object.hasOwn(node, "search_panel") || Object.hasOwn(node, "page_limit"));
+    });
+    // Legacy identical view requests may still share their companion; action-owned search/limit
+    // metadata stays in the full bundle cached under this action's own identity.
+    if (!actionOwned) this.metadata.seed(this.viewKey(model, views), bundle["views"], generation);
+    return bundle;
+  }
+
+  /** The menu and action that open record `id` of `model`, resolved by the server in one call. The answer is kept for
+   *  the page when it holds for every record of the model, and the action's views go into the metadata cache, so the
+   *  navigation that follows reads neither again. Undefined when no accessible form action opens the record. */
+  private async relatedTarget(model: string, id: number): Promise<{ action: number; menu: number } | undefined> {
+    const modelKey = `related ${JSON.stringify({ model, context: this.context })}`;
+    const known = this.metadata.peek(modelKey);
+    if (known) {
+      const target = object(await known);
+      return { action: integer(target["action"], "related action"), menu: integer(target["menu"], "related menu") };
+    }
+    const generation = this.metadata.generation;
+    const answer = await this.rpc.call("ir.actions.act_window", "erp_resolve_record_action",
+      { model, record_id: id, wire_major: 1, options: { mobile: false }, context: this.context });
+    if (answer === null) return undefined;
+    const found = object(answer, "related record action");
+    if (Object.keys(found).length !== 4 || typeof found["any_record"] !== "boolean") {
+      throw new ClientError("validation", "Invalid related record action.");
+    }
+    const action = integer(object(found["action"])["id"], "related action"), menu = integer(found["menu"], "related menu");
+    const bundle = this.admitBundle({ action: found["action"], views: found["views"] }, action, generation);
+    if (object(bundle["action"])["model"] !== model) throw new ClientError("validation", "The related action opens another model.");
+    this.metadata.seed(this.bundleKey(action), bundle, generation);
+    if (found["any_record"]) this.metadata.seed(modelKey, { action, menu }, generation);
+    return { action, menu };
   }
 
   private viewArgs(views: unknown[][], context = this.context): Record<string, unknown> {
@@ -1445,6 +1479,9 @@ export class HumanApp {
   private viewKey(model: string, views: unknown[][], context = this.context): string {
     return `views ${model} ${JSON.stringify(this.viewArgs(views, context))}`;
   }
+
+  /** Plain view requests (dialogs, line views, relation editors) through the same page-lifetime cache. */
+  private readonly viewLoader: ViewLoader = (model, views, context) => this.viewDescriptions(model, views, {}, context);
 
   /** The view descriptions of one action, shared through the page-lifetime metadata cache. */
   private async viewDescriptions(model: string, views: unknown[][], options: CallOptions = {}, context = this.context, actionId?: number): Promise<unknown> {
@@ -2134,7 +2171,7 @@ export class HumanApp {
     }
   }
 
-  private async navigate(route: Route, initial = false, fromHistory = false, invocation?: { caller: RecordState; generation: number }, options?: { autosave?: boolean; target?: "current" | "main" | "new"; showRefusedPage?: boolean }): Promise<void> {
+  private async navigate(route: Route, initial = false, fromHistory = false, invocation?: { caller: RecordState; generation: number }, options?: { autosave?: boolean; target?: "current" | "main" | "new"; showRefusedPage?: boolean; stack?: boolean }): Promise<void> {
     if(this.debug)route={...route,debug:"1"};
     // The page's companies stay in the address: a route that names none (a menu, a breadcrumb, addon code) keeps
     // them, so a reload or a copied link opens the same companies. A history entry is restored as it was recorded.
@@ -2301,7 +2338,7 @@ export class HumanApp {
           } : view;
           nextRecord = new RecordState(this.rpc, model, formViewMeta.fields, context);
           await nextRecord.load(route.id ? rpcId(route.id) : undefined);
-          nextDispose = this.formView(staging, controls, panel, actionTitle, nextRecord, formViewMeta, route, views as [number | null, string][], context);
+          nextDispose = this.formView(staging, controls, panel, actionTitle, nextRecord, formViewMeta, route, views as [number | null, string][], context, options?.stack === true);
           stagedDisposers.push(nextDispose);
         }
       }
@@ -2478,8 +2515,7 @@ export class HumanApp {
       this.breadcrumbs.clear();
       this.breadcrumbs.push({
         id: `action-${route.action}-pivot`, title: actionTitle, isFormView: false,
-        get route() { return { ...route }; }, get url() { return routeUrl(route); },
-        onSelected: async () => { await this.navigate({ ...route }, false, false, undefined, { autosave: true }); }
+        get route() { return { ...route }; }, get url() { return routeUrl(route); }
       });
       const title = el("h1", actionTitle, "breadcrumb-current");
       title.setAttribute("aria-current", "page");
@@ -2623,8 +2659,7 @@ export class HumanApp {
       this.breadcrumbs.clear();
       this.breadcrumbs.push({
         id: `action-${route.action}-calendar`, title: actionTitle, isFormView: false,
-        get route() { return { ...route }; }, get url() { return routeUrl(route); },
-        onSelected: async () => { await this.navigate({ ...route }, false, false, undefined, { autosave: true }); }
+        get route() { return { ...route }; }, get url() { return routeUrl(route); }
       });
       const title = el("h1", actionTitle, "breadcrumb-current");
       title.setAttribute("aria-current", "page");
@@ -2735,8 +2770,7 @@ export class HumanApp {
       this.breadcrumbs.clear();
       this.breadcrumbs.push({
         id: `action-${route.action}-graph`, title: actionTitle, isFormView: false,
-        get route() { return { ...route }; }, get url() { return routeUrl(route); },
-        onSelected: async () => { await this.navigate({ ...route }, false, false, undefined, { autosave: true }); }
+        get route() { return { ...route }; }, get url() { return routeUrl(route); }
       });
       const title = el("h1", actionTitle, "breadcrumb-current");
       title.setAttribute("aria-current", "page");
@@ -2858,8 +2892,7 @@ export class HumanApp {
       this.breadcrumbs.clear();
       this.breadcrumbs.push({
         id: `action-${route.action}-kanban`, title: actionTitle, isFormView: false,
-        get route() { return { ...route }; }, get url() { return routeUrl(route); },
-        onSelected: async () => { await this.navigate({ ...route }, false, false, undefined, { autosave: true }); }
+        get route() { return { ...route }; }, get url() { return routeUrl(route); }
       });
       const title = el("h1", actionTitle, "breadcrumb-current");
       title.setAttribute("aria-current", "page");
@@ -3090,23 +3123,33 @@ export class HumanApp {
 
     const breadcrumbs = panel.querySelector<HTMLElement>("[data-control-breadcrumbs]") || panel.querySelector<HTMLElement>("h1");
     if (breadcrumbs) {
-      this.breadcrumbs.clear();
-      this.breadcrumbs.push({
-        id: `action-${route.action}-list`,
+      const listCrumb = {
+        id: crumbId(route),
         title: actionTitle,
         // Getters: the list's search facets are written into `route` after this crumb exists.
         get route() { return listRouteOf(route); },
         get url() { return routeUrl(listRouteOf(route)); },
-        isFormView: false,
-        onSelected: async () => {
-          await this.navigate(listRouteOf(route), false, false, undefined, { autosave: true });
-        }
-      });
+        isFormView: false
+      };
+      const related = route.method_action ? this.methodActions.get(route.method_action) : undefined;
+      // A list opened by a form's button goes on top of that form; its own crumb (or browser Back) cuts the trail back to it.
+      const returning = !!related && this.breadcrumbs.items.some(item => item.id === listCrumb.id);
+      const stacked = !!related && !returning && this.breadcrumbs.current?.id === crumbId(related.origin, related.origin.id ?? "new");
+      if (returning) { this.breadcrumbs.truncateTo(listCrumb.id); this.breadcrumbs.replaceCurrent(listCrumb); }
+      else {
+        if (!stacked) this.breadcrumbs.clear();
+        this.breadcrumbs.push(listCrumb);
+      }
       const title = el("h1", actionTitle, "breadcrumb-current");
       title.setAttribute("aria-current", "page");
       breadcrumbs.replaceChildren(title);
-      const related = route.method_action ? this.methodActions.get(route.method_action) : undefined;
-      if (related) {
+      if (returning || stacked) {
+        renderBreadcrumbs(breadcrumbs, this.breadcrumbs, {
+          isSmall: document.documentElement.dataset["mobile"] === "true",
+          onNavigate: async item => this.run(() => this.navigate(item.route, false, false, undefined, { autosave: true })),
+          report: error => this.reportError(error)
+        });
+      } else if (related) {
         // A list opened by a form button keeps the way back: menu path, the source record, this list.
         const trail = el("div", undefined, "form-breadcrumb-path");
         const menus = this.menuTrail(related.origin);
@@ -4001,38 +4044,16 @@ export class HumanApp {
     throw new ClientError("unsupported", `This client action cannot open the requested ${normalized.kind} result.`);
   }
 
-  /** Resolve only actions advertised by the authorized menu tree; normal navigation rechecks access and dirty state. */
+  /** Opens a record a form links to, on top of that form: its crumb leads back to it. The server resolves the action
+   *  among the caller's menus; normal navigation rechecks access and dirty state. */
   private async openRelatedRecord(model: string, id: number): Promise<void> {
-    const generation = this.generation, checked = new Set<number>();
-    for (const menu of this.menus.values()) {
-      if (menu.action === null || menu.kind === "client" || checked.has(menu.action)) continue;
-      checked.add(menu.action);
-      const action = await this.windowActionOnly(menu.action);
-      // A later user navigation cancels this read-only action discovery.
-      if (generation !== this.generation) return;
-      if (action["wire_major"] !== 1 || action["id"] !== menu.action || action["target"] !== "current") {
-        throw new ClientError("unsupported", "Unsupported or mismatched related-record action.");
-      }
-      const actionModel = text(action["model"], "action model");
-      const hasForm = array(action["views"], "action views").some(raw => object(raw)["type"] === "form");
-      if (actionModel === model && hasForm) {
-        if (action["domain"]) {
-          const context = { ...this.context, ...this.actionContext(action) };
-          const domain = this.actionDomain(action, context);
-          if (domain.length) {
-            const matches = integer(await this.rpc.call(model, "search_count", {
-              domain: [["id", "=", id], ...domain], context
-            }), "related record count");
-            if (generation !== this.generation || this.expired) return;
-            if (matches === 0) continue;
-            if (matches > 1) throw new ClientError("server", "Multiple records matched a single related record ID.");
-          }
-        }
-        await this.navigate({action:String(menu.action),menu:String(menu.id),model,id:String(id),view_type:"form"});
-        return;
-      }
-    }
-    throw new ClientError("unsupported", `No accessible form action is available for ${model}.`);
+    const generation = this.generation;
+    const target = await this.relatedTarget(model, id);
+    // A later user navigation cancels this read-only resolution.
+    if (generation !== this.generation || this.expired) return;
+    if (!target) throw new ClientError("unsupported", `No accessible form action is available for ${model}.`);
+    await this.navigate({ action: String(target.action), menu: String(target.menu), model, id: String(id), view_type: "form" },
+      false, false, undefined, { stack: true });
   }
 
   /** Opens the neighbour of a record in the list, loading the adjacent page when the record sits on a page edge. */
@@ -4215,15 +4236,11 @@ export class HumanApp {
     if (previous && ((previous !== source && previous.busy) || !await previous.canLeave(previous === source))) return;
     const context = { ...callerContext, ...(caller ? { active_model: caller.model, active_id: caller.id,
       active_ids: caller.id === undefined ? [] : [caller.id] } : {}), ...result.context };
-    const description = describeViews(await this.rpc.call(result.model, "get_views", {
-      views: result.views.map(view => [view.id, view.type]), wire_major: 1, options: { mobile: false }, context
-    }), result.model, this.registry);
+    const description = describeViews(await this.viewLoader(result.model, result.views.map((view): [number | null, string] => [view.id, view.type]), context), result.model, this.registry);
     if (!this.live(binding)) return;
     const view = description.views.get("form");
     if (!view || view.mode !== "record") throw new ClientError("unsupported", "A wizard requires a record form.");
-    await attachSubviews(description, view, async (relation, refs) => describeViews(await this.rpc.call(relation, "get_views", {
-      views: [[null, "list"], [null, "form"]], wire_major: 1, options: { mobile: false }, context: refs ? { ...context, ...refs } : context
-    }), relation, this.registry));
+    await attachSubviews(description, view, async (relation, refs) => describeViews(await this.viewLoader(relation, [[null, "list"], [null, "form"]], refs ? { ...context, ...refs } : context), relation, this.registry));
     if (!this.live(binding)) return;
     const state = new RecordState(this.rpc, result.model, view.fields, context);
     await state.load(result.res_id ?? undefined);
@@ -4232,7 +4249,7 @@ export class HumanApp {
     scope = new WizardDialog({ profileTitle, numericLocale: this.numericLocale, name: result.name, state, view, rpc: this.rpc, context,debug:this.debug,uid:this.userId,
       action:(id,effective)=>this.declaredButtonAction(id,state,view.fields,effective,binding,refresh,scope),
       url:href=>runUrlButton(href,{baseUrl:location.href,navigate:async route=>{if(!await scope.canLeave(true))return;await scope.close();await this.navigate(route);},openExternal:(url,target,features)=>{window.open(url,target,features);}}),
-      openRecord: async (model, id) => { if (this.live(binding)) await this.openRelatedRecord(model, id); },
+      openRecord: async (model, id) => { if (this.live(binding)) await this.openRelatedRecord(model, id); }, views: this.viewLoader,
       report: error => this.hotkeyError(error, !this.live(binding)), notice: this.notice, messages: this.messages, editorLocale: this.editorLocale,
       result: async (value,effective=context,button,resubmit) => {
         const normalized = actionResult(await this.rpc.call(state.model, "erp_normalize_action_result", { wire_major: 1, result: value, context:effective }));
@@ -4310,7 +4327,7 @@ export class HumanApp {
     if(this.live(binding))await this.consumeAction(normalized,state,binding,refresh,source,activeContext);
   }
 
-  private formView(staging: HTMLElement, controls: HTMLElement, panel: HTMLElement, actionTitle: string, state: RecordState, view: View, route: Route, availableViews?: [number | null, string][], context = this.context): () => void {
+  private formView(staging: HTMLElement, controls: HTMLElement, panel: HTMLElement, actionTitle: string, state: RecordState, view: View, route: Route, availableViews?: [number | null, string][], context = this.context, stack = false): () => void {
     const titleField = view.fields.find(f => f.name === "name" && f.kind === "char") || view.fields.find(f => f.kind === "char");
     // Built while its navigation stages, so the current generation is this form's.
     const fieldNavigation = this.pageNavigation(this.generation, route, () => {
@@ -4420,38 +4437,21 @@ export class HumanApp {
       const displayName = labelField ? state.values[labelField.name] : undefined;
       const currentName = !state.id ? "New" : typeof displayName === "string" && displayName ? displayName : (typeof title === "string" && title ? title : `#${state.id}`);
 
-      // Maintain BreadcrumbTrail for
-      if (this.breadcrumbs.items.length === 0 || this.breadcrumbs.current?.route.action !== route.action) {
-        this.breadcrumbs.clear();
-        this.breadcrumbs.push({
-          id: `action-${route.action}-list`,
-          title: actionTitle,
-          route: listRouteOf(route),
-          url: routeUrl(listRouteOf(route)),
-          isFormView: false,
-          onSelected: async () => {
-            await this.navigate(listRouteOf(route), false, false, undefined, { autosave: true });
-          }
-        });
-      }
-      if (this.breadcrumbs.current?.isFormView) {
-        this.breadcrumbs.replaceCurrent({
-          id: `action-${route.action}-form-${state.id ?? "new"}`,
-          title: currentName,
-          route: { ...route },
-          url: routeUrl(route),
-          isFormView: true,
-          onSelected: async () => {}
-        });
-      } else {
-        this.breadcrumbs.push({
-          id: `action-${route.action}-form-${state.id ?? "new"}`,
-          title: currentName,
-          route: { ...route },
-          url: routeUrl(route),
-          isFormView: true,
-          onSelected: async () => {}
-        });
+      const crumb = { id: crumbId(route, state.id ?? "new"), title: currentName, route: { ...route }, url: routeUrl(route), isFormView: true };
+      // A form already in the trail (its crumb, browser Back) cuts the trail back to itself.
+      const returning = this.breadcrumbs.items.some(item => item.id === crumb.id);
+      if (returning) this.breadcrumbs.truncateTo(crumb.id);
+      // A record opened from a form goes on top of that form, once: later renders (after a save) replace it.
+      const stacked = stack && !returning && this.breadcrumbs.current?.isFormView === true;
+      stack = false;
+      if (stacked) this.breadcrumbs.push(crumb);
+      else {
+        if (this.breadcrumbs.items.length === 0 || this.breadcrumbs.current?.route.action !== route.action) {
+          this.breadcrumbs.clear();
+          this.breadcrumbs.push({ id: crumbId(route), title: actionTitle, route: listRouteOf(route), url: routeUrl(listRouteOf(route)), isFormView: false });
+        }
+        if (this.breadcrumbs.current?.isFormView) this.breadcrumbs.replaceCurrent(crumb);
+        else this.breadcrumbs.push(crumb);
       }
 
       const isSmall = document.documentElement.dataset["mobile"] === "true";
@@ -4470,7 +4470,9 @@ export class HumanApp {
       // The same view too: the list of an action is not its pivot or chart as it was left.
       const backIsOrigin = !!origin && !!back && !back.method_action && back.action === origin.origin.action && back.id === origin.origin.id
         && back.view_type === origin.origin.view_type;
-      const previous = origin && !backIsOrigin ? breadcrumbs.querySelector(".breadcrumb-previous") : null;
+      // A trail that already holds the source record (the list went on top of it) shows it there.
+      const originInTrail = !!origin && this.breadcrumbs.items.some(item => item.id === crumbId(origin.origin, origin.origin.id ?? "new"));
+      const previous = origin && !backIsOrigin && !originInTrail ? breadcrumbs.querySelector(".breadcrumb-previous") : null;
       if (origin && previous) {
         const divider = el("span", "›", "form-breadcrumb-divider"); divider.setAttribute("aria-hidden", "true");
         previous.prepend(this.originCrumb(origin), divider);
@@ -4836,7 +4838,7 @@ export class HumanApp {
       messagingStore: this.getMessagingStore(), uid: this.userId, userName: this.userName,
       run: this.run, report: error => this.reportError(error), messages: this.messages, editorLocale: this.editorLocale,
       notify: message => this.messages.notifications.add(message, { level: "warning" }),
-      openRecord: (model, id) => this.openRelatedRecord(model, id), button: renderButton, navigation: fieldNavigation,
+      openRecord: (model, id) => this.openRelatedRecord(model, id), views: this.viewLoader, button: renderButton, navigation: fieldNavigation,
       changeValues: (changes, focus) => this.run(async () => {
         if (this.uncertainMethod || this.expired) throw new ClientError("ambiguous", uncertainMethodMessage);
         const changeGeneration = this.generation;

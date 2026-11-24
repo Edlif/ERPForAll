@@ -9,6 +9,7 @@ import { RecordState } from "./record.js";
 import { checkedRelationChoice, type RelationChoice } from "./relation-picker.js";
 import { ClientError, type CallOptions, type RpcClient } from "./transport.js";
 import { attachSubviews } from "./x2many.js";
+import type { ViewLoader } from "./registry.js";
 import "./fields.js";
 
 export interface RelationEditorOptions {
@@ -16,6 +17,10 @@ export interface RelationEditorOptions {
   readonly messages?: MessageServices; readonly editorLocale?: EditorLocale; readonly numericLocale?: import("./numeric-values.js").NumericLocale;
   readonly context: Record<string, unknown>; readonly id?: number;
   readonly report: (error: unknown) => void; readonly signal?: AbortSignal;
+  /** The page's cached view loader; absent, the editor asks the server for its views. */
+  readonly views?: ViewLoader;
+  /** Opens a related record on the page; the editor closes first. Absent, opening is refused. */
+  readonly openRecord?: (model: string, id: number) => Promise<void>;
 }
 /** Embedded record creation/editing through the same validated metadata, widgets and save path as a root form. */
 export function editRelation(options: RelationEditorOptions): Promise<RelationChoice | undefined> {
@@ -94,14 +99,17 @@ export function editRelation(options: RelationEditorOptions): Promise<RelationCh
     }
   };
   void (async () => {
-    const raw = await rpc.call(options.model, "get_views", { wire_major: 1, views: [[null, "form"]], options: { mobile: window.innerWidth < 640 }, context });
+    const describe = (model: string, views: [number | null, string][], scope: Record<string, unknown>): Promise<unknown> => options.views
+      ? options.views(model, views, scope)
+      : rpc.call(model, "get_views", { wire_major: 1, views, options: { mobile: window.innerWidth < 640 }, context: scope });
+    const raw = await describe(options.model, [[null, "form"]], context);
     if (dead) return;
     const registry = text(object(raw, "view description")["registry_version"], "registry version");
     const description = describeViews(raw, options.model, registry), view = description.views.get("form");
     if (!view || view.mode !== "record") throw new ClientError("unsupported", "The relation editor requires a record form.");
     rejectCommands(view.nodes);
     await attachSubviews(description, view, async (relation, refs) => {
-      const child = describeViews(await rpc.call(relation, "get_views", { wire_major: 1, views: [[null, "list"], [null, "form"]], options: { mobile: window.innerWidth < 640 }, context: refs ? { ...context, ...refs } : context }), relation, registry);
+      const child = describeViews(await describe(relation, [[null, "list"], [null, "form"]], refs ? { ...context, ...refs } : context), relation, registry);
       const childForm = child.views.get("form"); if (childForm) rejectCommands(childForm.nodes);
       return child;
     });
@@ -111,7 +119,14 @@ export function editRelation(options: RelationEditorOptions): Promise<RelationCh
     const current = state;
     surface = new RecordForm({ form, state: current, view, rpc, context, signal: scope.signal, messages: options.messages, editorLocale: options.editorLocale, numericLocale: options.numericLocale,
       notify: message => { status.setAttribute("role", "alert"); status.textContent = message; }, run, report,
-      openRecord: async () => { throw new ClientError("unsupported", "Nested relation-editor navigation is not available here; open the related record from its own screen."); },
+      ...(options.views ? { views: options.views } : {}),
+      openRecord: async (model, id) => {
+        if (!options.openRecord) throw new ClientError("unsupported", "Nested relation-editor navigation is not available here; open the related record from its own screen.");
+        // Leaving would drop what was typed here: the record is saved or cancelled first.
+        if (uncertain || savePerformed || current.dirty) throw new ClientError("validation", "Save or cancel this record before opening another one.");
+        handle.close();
+        await options.openRecord(model, id);
+      },
       changeValues: (changes, focus) => run(async () => { if (surface!.needsCommit()) await surface!.commit(); current.changeMany(changes); await current.onchange(Object.keys(changes)); if (!dead) render(focus); }),
       stage: (name, value) => {
         if (dead || uncertain || savePerformed) throw new ClientError("validation", "The relation editor cannot be edited during this operation.");

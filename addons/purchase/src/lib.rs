@@ -7,6 +7,7 @@ erp_sdk::addon!(
     exact_only = true
 );
 
+mod bill_buttons;
 mod bill_history;
 mod bill_source_review;
 pub mod billing;

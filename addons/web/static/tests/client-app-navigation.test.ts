@@ -169,8 +169,7 @@ test("Breadcrumb trail bounds stack depth to avoid memory leaks", () => {
       title: `Step ${i}`,
       route: { action: "20", id: String(i) },
       url: `/erp/action-20?id=${i}`,
-      isFormView: true,
-      onSelected: async () => {}
+      isFormView: true
     });
   }
   expect(trail.items.length).toBe(5);
@@ -202,12 +201,10 @@ test("Breadcrumbs render current, previous link, and older collapsed dropdown on
 
 test("Older collapsed breadcrumbs render in reverse order in dropdown and navigate on selection", async () => {
   const trail = new BreadcrumbTrail(10);
-  const selected: string[] = [];
-
-  trail.push({ id: "1", title: "App Home", route: { action: "10" }, url: "/erp/action-10", isFormView: false, onSelected: async () => { selected.push("App Home"); } });
-  trail.push({ id: "2", title: "Category", route: { action: "11" }, url: "/erp/action-11", isFormView: false, onSelected: async () => { selected.push("Category"); } });
-  trail.push({ id: "3", title: "Notes List", route: { action: "20" }, url: "/erp/action-20", isFormView: false, onSelected: async () => { selected.push("Notes List"); } });
-  trail.push({ id: "4", title: "Meeting Agenda", route: { action: "20", id: "5" }, url: "/erp/action-20?id=5", isFormView: true, onSelected: async () => { selected.push("Meeting Agenda"); } });
+  trail.push({ id: "1", title: "App Home", route: { action: "10" }, url: "/erp/action-10", isFormView: false });
+  trail.push({ id: "2", title: "Category", route: { action: "11" }, url: "/erp/action-11", isFormView: false });
+  trail.push({ id: "3", title: "Notes List", route: { action: "20" }, url: "/erp/action-20", isFormView: false });
+  trail.push({ id: "4", title: "Meeting Agenda", route: { action: "20", id: "5" }, url: "/erp/action-20?id=5", isFormView: true });
 
   expect(trail.current?.title).toBe("Meeting Agenda");
   expect(trail.previous?.title).toBe("Notes List");
@@ -295,12 +292,12 @@ test("collapsed breadcrumbs dropdown keyboard roving focus and Escape dismissal"
   document.body.append(container);
 
   const trail = new BreadcrumbTrail(10);
-  trail.push({ id: "1", title: "Orders", route: {} as any, url: "/orders", onSelected: async () => {} });
-  trail.push({ id: "2", title: "SO001", route: {} as any, url: "/orders/1", onSelected: async () => {} });
-  trail.push({ id: "3", title: "Deliveries", route: {} as any, url: "/orders/1/delivery", onSelected: async () => {} });
-  trail.push({ id: "4", title: "WH/OUT/001", route: {} as any, url: "/delivery/1", onSelected: async () => {} });
+  trail.push({ id: "1", title: "Orders", route: {} as any, url: "/orders" });
+  trail.push({ id: "2", title: "SO001", route: {} as any, url: "/orders/1" });
+  trail.push({ id: "3", title: "Deliveries", route: {} as any, url: "/orders/1/delivery" });
+  trail.push({ id: "4", title: "WH/OUT/001", route: {} as any, url: "/delivery/1" });
 
-  renderBreadcrumbs(container, trail);
+  renderBreadcrumbs(container, trail, { onNavigate: async () => {} });
 
   const toggle = container.querySelector<HTMLButtonElement>(".breadcrumb-collapsed-toggle")!;
   const menu = container.querySelector<HTMLElement>(".breadcrumb-dropdown-menu")!;
@@ -405,9 +402,9 @@ test("service teardown follows committed and superseded navigation, preserving a
 test("a form breadcrumb draws no menu path, in any theme", () => {
   const container = document.createElement("div");
   const trail = new BreadcrumbTrail(10);
-  trail.push({ id: "1", title: "Orders", route: {} as any, url: "/orders", onSelected: async () => {} });
-  trail.push({ id: "2", title: "SO001", route: {} as any, url: "/orders/1", onSelected: async () => {} });
-  renderBreadcrumbs(container, trail, { isSmall: false, ancestorLabels: ["Sales", "Orders"] } as never);
+  trail.push({ id: "1", title: "Orders", route: {} as any, url: "/orders" });
+  trail.push({ id: "2", title: "SO001", route: {} as any, url: "/orders/1" });
+  renderBreadcrumbs(container, trail, { isSmall: false, onNavigate: async () => {}, ancestorLabels: ["Sales", "Orders"] } as never);
   expect(container.querySelector(".breadcrumb-ancestor-label, .list-menu-path")).toBeNull();
   expect(container.querySelector(".form-breadcrumb-path")?.textContent).not.toContain("Sales");
 });

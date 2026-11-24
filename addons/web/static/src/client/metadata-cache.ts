@@ -32,6 +32,12 @@ export class MetadataCache {
     return entry.then(value => structuredClone(value));
   }
 
+  /** The entry under `key` (a copy, as `read` gives), or undefined when there is none; never starts a load. */
+  peek(key: string): Promise<unknown> | undefined {
+    const entry = this.entries.get(key);
+    return entry && this.read(key, () => entry);
+  }
+
   /** Token for one invalidation lifetime; callers capture it before loading a bundle. */
   get generation(): object { return this.epoch; }
 

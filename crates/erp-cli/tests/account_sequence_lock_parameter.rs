@@ -167,13 +167,13 @@ async fn upgrade_body() {
     let error = next_request.query("SELECT 1", &[]).await.unwrap_err();
     assert!(error.is_superseded());
     let audit = ["migration:account@1.9 1200>1800 @7"];
-    assert_store(&client, "1800", "1800", "1.10.0", &audit).await;
+    assert_store(&client, "1800", "1800", "1.11.0", &audit).await;
     let repeated = system
         .button_immediate_upgrade(&service, &account)
         .await
         .unwrap();
     assert!(repeated.post_commit.is_clean());
-    assert_store(&client, "1800", "1800", "1.10.0", &audit).await;
+    assert_store(&client, "1800", "1800", "1.11.0", &audit).await;
 
     let orm = policy_orm(&db, &repeated.orm).await;
     let mut tx = orm.begin(UserId::new(reader).unwrap()).await.unwrap();

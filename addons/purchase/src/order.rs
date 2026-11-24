@@ -199,6 +199,10 @@ pub struct PurchaseOrder {
         string = "Total"
     )]
     pub amount_total: Decimal,
+    /// How many vendor bills and refunds of the order the caller may read
+    /// (`crate::bill_buttons`).
+    #[field(integer, compute = "_compute_invoice_count", string = "Bill Count")]
+    pub invoice_count: i32,
     /// The total converted to the company currency at the deadline's date; the approval
     /// question compares it with the company's minimum amount (BUG-132).
     #[field(

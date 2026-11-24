@@ -120,13 +120,13 @@ async fn upgrade() {
         "account.journal_code_max_length@7 20>6",
         "account.tax_repartition_lines_max@7 18>3",
     ];
-    assert_stores(&client, "1.10.0", [("6", "6"), ("3", "3")], &audit).await;
+    assert_stores(&client, "1.11.0", [("6", "6"), ("3", "3")], &audit).await;
     let upgraded = lifecycle
         .button_immediate_upgrade(&caller, &account)
         .await
         .unwrap();
     assert!(upgraded.post_commit.is_clean());
-    assert_stores(&client, "1.10.0", [("6", "6"), ("3", "3")], &audit).await;
+    assert_stores(&client, "1.11.0", [("6", "6"), ("3", "3")], &audit).await;
 
     let orm = policy_orm(&db, &upgraded.orm).await;
     let mut tx = orm.begin(UserId::new(manager).unwrap()).await.unwrap();
@@ -195,7 +195,7 @@ async fn upgrade() {
     );
     tx.rollback().await.unwrap();
     drop(tx);
-    assert_stores(&client, "1.10.0", [("6", "6"), ("3", "3")], &audit).await;
+    assert_stores(&client, "1.11.0", [("6", "6"), ("3", "3")], &audit).await;
 }
 
 #[test]

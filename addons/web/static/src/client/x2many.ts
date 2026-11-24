@@ -39,8 +39,9 @@ function viewRefs(field: Field): ViewRefs | undefined {
  */
 export async function attachSubviews(description: Description, view: View, load: (model: string, refs?: ViewRefs) => Promise<Description>,
   chain: ReadonlySet<string> = new Set([description.model]), byModel = new Map<string, Promise<Description>>(), depth = 0): Promise<void> {
-  for (const field of view.fields) {
-    if (field.kind !== "one2many" || field.relation === null) continue;
+  // Every comodel of one level (and each one's own lines) is requested together, not one after another.
+  await Promise.all(view.fields.map(async field => {
+    if (field.kind !== "one2many" || field.relation === null) return;
     const relation = field.relation, refs = viewRefs(field), key = refs ? `${relation} ${JSON.stringify(refs)}` : relation;
     let comodel = byModel.get(key);
     if (!comodel) { comodel = load(relation, refs); byModel.set(key, comodel); }
@@ -72,7 +73,7 @@ export async function attachSubviews(description: Description, view: View, load:
       if (subview) target.subview = subview;
       if (error !== undefined) target.subviewError = error;
     }
-  }
+  }));
 }
 
 function lineList(value: unknown): Line[] {
@@ -403,6 +404,13 @@ async function openLine(environment: WidgetEnvironment, items: readonly Line[], 
           values = { ...values, ...changes }; for (const name of Object.keys(changes)) changed.add(name); render();
         },
         rpc, context: lineContext, run, report, signal, messages: environment.messages, editorLocale: environment.editorLocale,
+        ...(environment.views ? { views: environment.views } : {}),
+        ...(environment.openRecord ? { openRecord: async (model: string, id: number) => {
+          // The line's own edits reach the parent form first, then the dialog closes: leaving the form asks about them.
+          if (changed.size && !readonly) commit();
+          close();
+          await environment.openRecord!(model, id);
+        } } : {}),
         change: next => { values = { ...values, [node.field.name]: next }; changed.add(node.field.name); render(); }
       });
       widgetHandles.push({ name: node.field.name, represented: values[node.field.name], handle });

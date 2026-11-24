@@ -243,11 +243,11 @@ describe("pager, breadcrumbs and home menu", () => {
     const failing = new Error("crumb failed");
     const trail = new BreadcrumbTrail();
     const route = {};
-    trail.push({ id: "list", title: "List", route, url: "/erp", onSelected: async () => { throw failing; } });
-    trail.push({ id: "form", title: "Form", route, url: "/erp", isFormView: true, onSelected: async () => {} });
+    trail.push({ id: "list", title: "List", route, url: "/erp" });
+    trail.push({ id: "form", title: "Form", route, url: "/erp", isFormView: true });
     const container = document.createElement("div");
     document.body.append(container);
-    renderBreadcrumbs(container, trail, { isSmall: false, report });
+    renderBreadcrumbs(container, trail, { isSmall: false, report, onNavigate: async item => { if (item.id === "list") throw failing; } });
     container.querySelector<HTMLButtonElement>(".breadcrumb-back")!.click();
     await vi.waitFor(() => expect(report).toHaveBeenCalledWith(failing));
   });
