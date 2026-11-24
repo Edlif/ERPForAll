@@ -851,11 +851,15 @@ export async function settingsView(
     declarations = nextDeclarations; items = nextItems; baseline = nextValues; revision = nextRevision; scope = immutableScope; showScope(scopeKey(scope)); edits.clear(); ambiguous = false; draw();
   };
 
-  // A redraw replaces the row: keyboard focus goes back to the toggle, found again by its settings key.
+  // A redraw replaces the row: keyboard focus goes back to the toggle (or its label when the row is disabled), found again by its settings key.
   const focusToggle = (key: string): void => {
     if (disposed) return;
     const row = [...form.querySelectorAll<HTMLElement>(".setting-block[data-setting-key]")].find(candidate => candidate.dataset["settingKey"] === key);
-    row?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus();
+    const checkbox = row?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    if (checkbox && !checkbox.disabled) { checkbox.focus(); return; }
+    // The row came back unavailable (disabled controls cannot take focus): the label keeps focus on the row.
+    const label = row?.querySelector<HTMLElement>(".setting-label-text");
+    if (label) { label.tabIndex = -1; label.focus(); }
   };
 
   // After a failed install or uninstall the page may be stale; say so when it cannot be read again (the caller rethrows).

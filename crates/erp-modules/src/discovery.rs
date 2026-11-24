@@ -185,6 +185,11 @@ impl AddonIndex {
         self.dev_mode
     }
 
+    /// The developer directories added so far, in order.
+    pub fn dev_paths(&self) -> &[PathBuf] {
+        &self.dev_paths
+    }
+
     /// Add a developer directory (either a single addon folder or an addons path containing addon subdirectories).
     pub fn add_dev_path(&mut self, path: impl Into<PathBuf>) {
         self.dev_paths.push(path.into());

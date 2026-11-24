@@ -1482,7 +1482,18 @@ fn inventory_group_toggle_made_heavy_in_the_groups_form_is_unavailable_on_its_ro
         let long = format!("stock.{}", "x".repeat(130));
         let refused = toggle_group(&env, &mut tx, &long, true).await.unwrap_err();
         assert_eq!(refused.kind(), ErrorKind::Validation);
-        assert_eq!(refused.message(), "A setting key is at most 128 bytes.");
+        assert_eq!(
+            refused.message(),
+            "A setting key is at most 128 bytes and has no control characters."
+        );
+        let refused = toggle_group(&env, &mut tx, "stock.a\nb", true)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Validation);
+        assert_eq!(
+            refused.message(),
+            "A setting key is at most 128 bytes and has no control characters."
+        );
         // Another row still switches.
         assert_eq!(
             toggle_group(&env, &mut tx, "stock.group_stock_tracking_owner", true)
@@ -1494,6 +1505,165 @@ fn inventory_group_toggle_made_heavy_in_the_groups_form_is_unavailable_on_its_ro
         drop(tx);
         assert!(!holds(&db, &installed, internal, "stock.group_tracking_lot").await);
         assert!(holds(&db, &installed, internal, "stock.group_tracking_owner").await);
+    });
+}
+
+/// The described row of `key` as the Settings administrator `admin` sees the company page.
+async fn described_row(db: &TestDb, installed: &Orm, admin: i64, company: i64, key: &str) -> serde_json::Value {
+    let orm = super::security::secure(db, installed).await;
+    let mut tx = orm.begin(erp_orm::UserId::new(admin).unwrap()).await.unwrap();
+    let env = tx.env().with_company(company).unwrap();
+    let described = serde_json::to_value(describe(&env, &mut tx, company_scope(company)).await.unwrap()).unwrap();
+    tx.rollback().await.unwrap();
+    described["items"].as_array().unwrap().iter().find(|i| i["key"] == key).expect(key).clone()
+}
+
+// A row that is on and whose group is later made to imply a group that is not light says so, refuses to switch
+// on, and can still be switched off (removing the implication grants nothing).
+#[test]
+fn inventory_group_toggle_that_is_on_and_made_heavy_can_still_be_switched_off() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let installed = install(&db).await;
+        let actors = super::security::roles(&installed).await;
+        let (admin, internal) = (actors[0], actors[1]);
+        let company = super::security::xid(&installed, "base", "main_company").await;
+        let packages = super::security::xid(&installed, "stock", "group_tracking_lot").await;
+        let stock_user = super::security::xid(&installed, "stock", "group_stock_user").await;
+        const PACKAGES: &str = "stock.group_stock_tracking_lot";
+        const RULE: &str = "Setting item stock.group_stock_tracking_lot cannot toggle the group \
+                            stock.group_tracking_lot: it is or implies a group that is not a light feature group.";
+        let orm = super::security::secure(&db, &installed).await;
+        let switch = async |enabled: bool| {
+            let mut tx = orm.begin(erp_orm::UserId::new(admin).unwrap()).await.unwrap();
+            let env = tx.env().with_company(company).unwrap();
+            let result = toggle_group(&env, &mut tx, PACKAGES, enabled).await;
+            if result.is_ok() {
+                tx.commit().await.unwrap();
+            } else {
+                tx.rollback().await.unwrap();
+            }
+            result
+        };
+        assert_eq!(switch(true).await.unwrap(), GroupToggleState::Enabled);
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        tx.env()
+            .records("res.groups")
+            .unwrap()
+            .browse([packages])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "implied_ids",
+                    [erp_orm::Command::link(erp_fields::RecId::from_real(stock_user).unwrap())],
+                ),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+        let row = described_row(&db, &installed, admin, company, PACKAGES).await;
+        assert_eq!(row["state"], "not_available");
+        assert_eq!(row["reason"], format!("{RULE} It is on for every internal user."));
+        let refused = switch(true).await.unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Validation);
+        assert_eq!(refused.message(), format!("{RULE} It is on for every internal user."));
+        assert_eq!(switch(false).await.unwrap(), GroupToggleState::Disabled);
+        assert!(!holds(&db, &installed, internal, "stock.group_tracking_lot").await);
+        // Off, the row no longer says it is on.
+        let row = described_row(&db, &installed, admin, company, PACKAGES).await;
+        assert_eq!(row["reason"], RULE);
+        db.cleanup().await.unwrap();
+    });
+}
+
+// A group deleted in the Groups form (its external id gone) shows its row as not available with the reason; the
+// page and the other rows keep working.
+#[test]
+fn inventory_group_toggle_whose_group_was_deleted_is_unavailable_on_its_row_only() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let installed = install(&db).await;
+        let actors = super::security::roles(&installed).await;
+        let company = super::security::xid(&installed, "base", "main_company").await;
+        let packages = super::security::xid(&installed, "stock", "group_tracking_lot").await;
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        tx.execute("DELETE FROM ir_model_data WHERE model = 'res.groups' AND res_id = $1", &[&packages]).await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+        let row = described_row(&db, &installed, actors[0], company, "stock.group_stock_tracking_lot").await;
+        assert_eq!(row["state"], "not_available");
+        assert_eq!(
+            row["reason"],
+            "Setting item stock.group_stock_tracking_lot cannot toggle the group stock.group_tracking_lot: \
+             it does not exist."
+        );
+        let other = described_row(&db, &installed, actors[0], company, "stock.group_stock_tracking_owner").await;
+        assert_eq!(other["state"], "disabled");
+        db.cleanup().await.unwrap();
+    });
+}
+
+// The group that keeps a feature on is named by its display name when it has no external id.
+#[test]
+fn inventory_group_toggle_off_refusal_names_an_implying_group_without_external_id_by_display_name() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let installed = install(&db).await;
+        let actors = super::security::roles(&installed).await;
+        let company = super::security::xid(&installed, "base", "main_company").await;
+        let packages = super::security::xid(&installed, "stock", "group_tracking_lot").await;
+        let locations = super::security::xid(&installed, "stock", "group_stock_multi_locations").await;
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        tx.env()
+            .records("res.groups")
+            .unwrap()
+            .browse([locations])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "implied_ids",
+                    [erp_orm::Command::link(erp_fields::RecId::from_real(packages).unwrap())],
+                ),
+            )
+            .await
+            .unwrap();
+        // The internal-user group implies Multiple locations, which implies Packages; then Multiple locations
+        // loses its external id.
+        let internal_group = super::security::xid(&installed, "base", "group_user").await;
+        tx.env()
+            .records("res.groups")
+            .unwrap()
+            .browse([internal_group])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "implied_ids",
+                    [erp_orm::Command::link(erp_fields::RecId::from_real(locations).unwrap())],
+                ),
+            )
+            .await
+            .unwrap();
+        tx.execute("DELETE FROM ir_model_data WHERE model = 'res.groups' AND res_id = $1", &[&locations]).await.unwrap();
+        let display = erp_addon_base::group_graph::display_names(&mut tx, &[locations]).await.unwrap().remove(0).1;
+        tx.commit().await.unwrap();
+        drop(tx);
+        let orm = super::security::secure(&db, &installed).await;
+        let mut tx = orm.begin(erp_orm::UserId::new(actors[0]).unwrap()).await.unwrap();
+        let env = tx.env().with_company(company).unwrap();
+        let refused = toggle_group(&env, &mut tx, "stock.group_stock_tracking_lot", false)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Validation);
+        assert_eq!(
+            refused.message(),
+            format!("Packages stays on for every internal user through the group {display}; change that group instead.")
+        );
+        tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
     });
 }
 

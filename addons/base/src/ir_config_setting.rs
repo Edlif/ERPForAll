@@ -304,7 +304,14 @@ async fn authorize_scope(env: &Env, tx: &mut Transaction, scope: &SettingsScope)
 /// ("Setting item references an unavailable action or menu.") or invalid declarations, including
 /// the declared technical parameters (`Parameter <key> ...`).
 pub async fn validate_declarations(env: &Env, tx: &mut Transaction) -> Result<()> {
-    published(env, tx).await?;
+    let published = published(env, tx).await?;
+    // An addon's own shipped toggle that the database makes unavailable is logged, not refused (a Groups-form
+    // change must not stop module loads).
+    for (key, row) in &published.toggles.groups {
+        if let Err((_, reason)) = row {
+            tracing::warn!(target: "erp::settings", key = %key, "Settings group row unavailable: {reason}");
+        }
+    }
     // One key space with the declared technical parameters.
     crate::system_parameters::published(env).map(drop)
 }
@@ -933,8 +940,9 @@ async fn resolve_item(
 #[derive(Default)]
 struct ToggleGroups {
     internal: Option<(i64, BTreeSet<i64>)>,
-    // Each toggled group's id, or the refusal that makes its row unavailable.
-    groups: BTreeMap<String, std::result::Result<i64, String>>,
+    // Each toggled group's id, or the refusal that makes its row unavailable (with the group's id when the group
+    // exists, so that switching an implied one off stays possible).
+    groups: BTreeMap<String, std::result::Result<i64, (Option<i64>, String)>>,
 }
 impl ToggleGroups {
     async fn load(env: &Env, tx: &mut Transaction, registry: &SettingsRegistry) -> Result<Self> {
@@ -986,20 +994,39 @@ impl ToggleGroups {
                     "it is the portal or public group",
                 )));
             }
+            if [
+                "base.group_everyone",
+                "base.group_no_one",
+                "base.default_user_group",
+            ]
+            .contains(&group)
+            {
+                return Err(Error::validation(refused("it is a built-in base group")));
+            }
             if !light_xmlids.iter().any(|light| light == group) {
-                return Err(Error::validation(refused(NOT_LIGHT)));
+                return Err(Error::validation(refused(if id.is_none() {
+                    "it does not exist"
+                } else {
+                    NOT_LIGHT
+                })));
             }
             // What the database holds now: only this row is unavailable.
             let row = match id {
-                None => Err(refused("it does not exist")),
-                Some(id) if id == internal => Err(refused("it is the internal-user group itself")),
+                None => Err((None, refused("it does not exist"))),
+                Some(id) if id == internal => {
+                    Err((None, refused("it is the internal-user group itself")))
+                }
                 Some(id)
                     if graph
                         .up([id])
                         .iter()
                         .any(|implied| !light.contains(implied)) =>
                 {
-                    Err(refused(NOT_LIGHT))
+                    let mut reason = refused(NOT_LIGHT);
+                    if graph.up([internal]).contains(&id) {
+                        reason.push_str(" It is on for every internal user.");
+                    }
+                    Err((Some(id), reason))
                 }
                 Some(id) => Ok(id),
             };
@@ -1012,10 +1039,15 @@ impl ToggleGroups {
     }
     /// The toggled group's id and the internal-user group's id with what it implies; `Validation` with the reason
     /// when the row is unavailable.
-    fn rows(&self, group: &str) -> Result<(i64, i64, &BTreeSet<i64>)> {
+    /// Switching a group off is allowed for an unavailable row whose group exists: removing the implication grants
+    /// nothing.
+    fn rows(&self, group: &str, enabled: bool) -> Result<(i64, i64, &BTreeSet<i64>)> {
         match (self.groups.get(group), &self.internal) {
             (Some(Ok(id)), Some((internal, implied))) => Ok((*id, *internal, implied)),
-            (Some(Err(reason)), _) => Err(Error::validation(reason.clone())),
+            (Some(Err((Some(id), _))), Some((internal, implied))) if !enabled => {
+                Ok((*id, *internal, implied))
+            }
+            (Some(Err((_, reason))), _) => Err(Error::validation(reason.clone())),
             _ => Err(Error::invariant(format!(
                 "The group toggle of {group} was not loaded with the published registry."
             ))),
@@ -1023,10 +1055,10 @@ impl ToggleGroups {
     }
     /// The row's state and, for an unavailable row, why.
     fn state(&self, group: &str) -> Result<(wire::GroupToggleState, Option<String>)> {
-        if let Some(Err(reason)) = self.groups.get(group) {
+        if let Some(Err((_, reason))) = self.groups.get(group) {
             return Ok((wire::GroupToggleState::NotAvailable, Some(reason.clone())));
         }
-        let (id, _, implied) = self.rows(group)?;
+        let (id, _, implied) = self.rows(group, true)?;
         Ok((toggle_state(implied.contains(&id)), None))
     }
 }
@@ -1489,8 +1521,10 @@ pub async fn toggle_group(
         ));
     }
     // Every declared key fits; a longer one is refused before it is repeated in any message.
-    if key.len() > 128 {
-        return Err(Error::validation("A setting key is at most 128 bytes."));
+    if key.len() > 128 || key.chars().any(char::is_control) {
+        return Err(Error::validation(
+            "A setting key is at most 128 bytes and has no control characters.",
+        ));
     }
     tx.savepoint(async |tx| {
         // Publication may read the install catalogue; that happens before the scope lock is taken.
@@ -1508,7 +1542,7 @@ pub async fn toggle_group(
         let current: String = row.try_get(1).map_err(|_| corrupt())?;
         // The group rows are read again under the lock: another toggle may have changed them meanwhile.
         let toggles = ToggleGroups::load(env, tx, &published.registry).await?;
-        let (id, internal, implied) = toggles.rows(group)?;
+        let (id, internal, implied) = toggles.rows(group, enabled)?;
         let was = implied.contains(&id);
         if was == enabled {
             return Ok(toggle_state(was));
