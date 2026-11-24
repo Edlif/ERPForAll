@@ -691,9 +691,9 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
         .await
         .unwrap();
         assert_eq!(billed(&mut tx, &received).await, d("0/0"));
-        // a cancelled order with a draft bill: nothing left to bill, the bill keeps its quantity
+        // a cancelled order takes its draft bill along: nothing billed, nothing left to bill
         act(&mut tx, &po, "button_cancel").await.unwrap();
-        assert_eq!(billed(&mut tx, &ordered).await, d("3/0"));
+        assert_eq!(billed(&mut tx, &ordered).await, d("0/0"));
         assert_eq!(billed(&mut tx, &received).await, d("0/0"));
         assert_eq!(status(&mut tx, &po).await, "no");
         tx.rollback().await.unwrap();

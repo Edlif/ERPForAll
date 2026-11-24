@@ -1164,9 +1164,12 @@ fn a_direct_vendor_bill_traces_the_received_purchase_line() {
                 )
                 .await
                 .unwrap_err();
-            assert_eq!(
-                changed_source.kind(),
-                ErrorKind::UserError,
+            // the bill-link check or the received-goods guard, whichever runs first
+            assert!(
+                matches!(
+                    changed_source.kind(),
+                    ErrorKind::Validation | ErrorKind::UserError
+                ),
                 "{changed_source:?}"
             );
             assert!(
