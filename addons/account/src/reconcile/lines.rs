@@ -148,8 +148,8 @@ impl AccountMoveLine {
 #[methods(AccountPartialReconcile, addon = "account")]
 impl AccountPartialReconcile {
     /// Deleting a match is unmatching it: residuals, components, settlements and invoice statuses
-    /// follow ([`apply::unreconcile_partials`]).
-    #[method(override)]
+    /// follow ([`apply::unreconcile_partials`]). Sealed: no later override goes around it.
+    #[method(override, sealed)]
     async fn unlink(
         this: &RecordSet<AccountPartialReconcile>,
         tx: &mut Transaction,
@@ -162,7 +162,7 @@ impl AccountPartialReconcile {
 #[methods(AccountFullReconcile, addon = "account")]
 impl AccountFullReconcile {
     /// A settlement goes with its matches: deleting it alone is refused.
-    #[method(override)]
+    #[method(override, sealed)]
     async fn unlink(
         _this: &RecordSet<AccountFullReconcile>,
         _tx: &mut Transaction,

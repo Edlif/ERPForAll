@@ -12,6 +12,7 @@ use erp_sdk::Operation;
 use erp_sdk::money::{Increment, RateDateRule};
 use erp_sdk::prelude::*;
 
+use super::post::LockScope;
 use super::{
     TEXT_LINE_TYPES, check_balanced, id_cell, refuse_state, skip_balance_check, unchecked,
 };
@@ -524,6 +525,57 @@ fn refuse_line_inputs(vals: &RawVals) -> Result<()> {
     Ok(())
 }
 
+/// The fields of a matched item whose change would move what its matches settle: the amounts,
+/// the account, the currency and the partner, which its open-item row copies. Observed: the
+/// reference drops the matches of such an item; modified: the change is refused until the item is
+/// unmatched, on a draft as on a posted entry, for every caller.
+const MATCHED_ITEM_FIELDS: [&str; 7] = [
+    "account_id",
+    "balance",
+    "debit",
+    "credit",
+    "amount_currency",
+    "currency_id",
+    "partner_id",
+];
+
+/// Refuses a change of [`MATCHED_ITEM_FIELDS`] on an item of `ids` that has matches: a settled
+/// item carries its settlement, a partly matched one its open-item row (both written only by the
+/// reconciliation service), so one indexed read finds them.
+async fn refuse_matched_items(tx: &mut Transaction, ids: &[i64], vals: &RawVals) -> Result<()> {
+    let fields: Vec<&str> = MATCHED_ITEM_FIELDS
+        .iter()
+        .copied()
+        .filter(|f| vals.contains(f))
+        .collect();
+    if fields.is_empty() || ids.is_empty() {
+        return Ok(());
+    }
+    let rows = tx
+        .query(
+            "SELECT l.id::int8, COALESCE(m.name, m.id::text) FROM account_move_line l \
+             JOIN account_move m ON m.id = l.move_id \
+             WHERE l.id = ANY($1::int8[]) AND (l.full_reconcile_id IS NOT NULL \
+               OR EXISTS (SELECT 1 FROM account_open_item o WHERE o.line_id = l.id)) \
+             ORDER BY l.id LIMIT 1",
+            &[&ids],
+        )
+        .await?;
+    let Some(row) = rows.first() else {
+        return Ok(());
+    };
+    let read = |e: &dyn std::fmt::Display| {
+        Error::db(format!("A matched journal item could not be read: {e}"))
+    };
+    let id: i64 = row.try_get(0).map_err(|e| read(&e))?;
+    let entry: String = row.try_get(1).map_err(|e| read(&e))?;
+    Err(Error::user(format!(
+        "Journal item {id} of entry {entry} is matched with other items, so its {} cannot \
+         change; unmatch it first (Unreconcile).",
+        fields.join(", ")
+    )))
+}
+
 /// What a line reads from its entry: currency, company currency, company and date.
 #[derive(Clone, Copy)]
 struct EntryInfo {
@@ -687,8 +739,15 @@ impl AccountMoveLine {
         move_ids.sort_unstable();
         move_ids.dedup();
         // adding an item changes its entry: the caller needs write access on it
-        super::post::hold_draft_entries(tx, &env, &move_ids, Operation::Write, "add items to")
-            .await?;
+        super::post::hold_draft_entries(
+            tx,
+            &env,
+            &move_ids,
+            Operation::Write,
+            "add items to",
+            LockScope::Tax,
+        )
+        .await?;
         let entries = move_entries(tx, &env, &move_ids).await?;
         let mut conversions = Vec::new();
         let mut targets = Vec::new();
@@ -776,8 +835,11 @@ impl AccountMoveLine {
         let closed = super::post::closed_fields(&vals, &super::post::POSTED_LINE_WRITABLE);
         if !closed.is_empty() {
             let what = format!("change {} on the items of", closed.join(", "));
-            super::post::hold_draft_entries(tx, &env, &move_ids, Operation::Write, &what).await?;
+            let scope = super::post::line_lock_scope(&closed);
+            super::post::hold_draft_entries(tx, &env, &move_ids, Operation::Write, &what, scope)
+                .await?;
         }
+        refuse_matched_items(tx, &this.ids(), &vals).await?;
         let amounts = ["balance", "amount_currency", "currency_id"]
             .iter()
             .any(|f| vals.contains(f));
@@ -920,6 +982,7 @@ impl AccountMoveLine {
             &move_ids,
             Operation::Write,
             "delete the items of",
+            LockScope::Tax,
         )
         .await?;
         sup.call(tx, this.as_records(), ()).await?;
