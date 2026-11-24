@@ -165,8 +165,25 @@ fn guarded() -> Vec<Guarded> {
     ]
 }
 
-/// Every field of each guarded form, in each final state, is read-only exactly when the server
-/// refuses it.
+/// The form's read-only map of `guard.model` with its status field set to `state`.
+async fn form_readonly(
+    tx: &mut erp_orm::Transaction,
+    guard: &Guarded,
+    state: &str,
+) -> BTreeMap<String, bool> {
+    let env = tx.env();
+    erp_addon_web::metadata_test_support::test_form_readonly(
+        &env,
+        tx,
+        guard.model,
+        &[(guard.status, ExprValue::str(state))],
+    )
+    .await
+    .unwrap()
+}
+
+/// Every field of each guarded form that is editable in draft is, in each final state, read-only
+/// exactly when the server refuses it.
 #[test]
 fn final_state_forms_show_read_only_exactly_what_the_server_refuses() {
     run(async {
@@ -174,18 +191,16 @@ fn final_state_forms_show_read_only_exactly_what_the_server_refuses() {
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let mut disagreements = Vec::new();
         for guard in guarded() {
+            // A field read-only already in draft is never edited on the form, so the final-state
+            // allow-list says nothing about it.
+            let draft = form_readonly(&mut tx, &guard, "draft").await;
+            assert!(!draft.is_empty(), "{} has no form fields", guard.model);
             for (state, writable) in &guard.states {
-                let form: BTreeMap<String, bool> =
-                    erp_addon_web::metadata_test_support::test_form_readonly(
-                        &tx.env(),
-                        &mut tx,
-                        guard.model,
-                        &[(guard.status, ExprValue::str(*state))],
-                    )
-                    .await
-                    .unwrap();
-                assert!(!form.is_empty(), "{} has no form fields", guard.model);
+                let form = form_readonly(&mut tx, &guard, state).await;
                 for (field, readonly) in &form {
+                    if draft.get(field) == Some(&true) {
+                        continue;
+                    }
                     let allowed = writable.contains(&field.as_str());
                     if allowed == *readonly {
                         disagreements.push(format!(
