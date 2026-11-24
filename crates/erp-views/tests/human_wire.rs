@@ -712,6 +712,65 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
     let mut bad_state = sample_module;
     bad_state["state"] = json!("pending");
     assert!(serde_json::from_value::<SettingsItem>(bad_state).is_err());
+
+    // Group toggle items roundtrip in every state; the two ids are required members, null when not available.
+    for (state, wire_state, ids) in [
+        (GroupToggleState::Enabled, "enabled", Some((7, 3))),
+        (GroupToggleState::Disabled, "disabled", Some((7, 3))),
+        (GroupToggleState::NotAvailable, "not_available", None),
+    ] {
+        let id = |raw: u64| WireId::try_from(raw).unwrap();
+        let group_item = SettingsItem::Group {
+            key: "stock.group_stock_tracking_lot".into(),
+            label: "Packages".into(),
+            app: "stock".into(),
+            block: "Operations".into(),
+            sequence: 100,
+            group: "stock.group_tracking_lot".into(),
+            state,
+            group_id: ids.map(|(group, _)| id(group)),
+            internal_group_id: ids.map(|(_, user)| id(user)),
+        };
+        let encoded = serde_json::to_value(&group_item).unwrap();
+        assert_eq!(encoded["kind"], "group");
+        assert_eq!(encoded["group"], "stock.group_tracking_lot");
+        assert_eq!(encoded["state"], wire_state);
+        assert_eq!(
+            encoded["group_id"],
+            ids.map_or(json!(null), |(group, _)| json!(group))
+        );
+        assert_eq!(
+            encoded["internal_group_id"],
+            ids.map_or(json!(null), |(_, user)| json!(user))
+        );
+        roundtrip::<SettingsItem>(&encoded);
+    }
+    let sample_group = json!({
+        "kind": "group",
+        "key": "stock.group_stock_tracking_lot",
+        "label": "Packages",
+        "app": "stock",
+        "block": "Operations",
+        "sequence": 100,
+        "group": "stock.group_tracking_lot",
+        "state": "disabled",
+        "group_id": 7,
+        "internal_group_id": 3
+    });
+    let mut unknown = sample_group.clone();
+    unknown["extra"] = json!(true);
+    assert!(serde_json::from_value::<SettingsItem>(unknown).is_err());
+    for member in ["group", "state", "group_id", "internal_group_id"] {
+        let mut missing = sample_group.clone();
+        missing.as_object_mut().unwrap().remove(member);
+        assert!(
+            serde_json::from_value::<SettingsItem>(missing).is_err(),
+            "{member} is required"
+        );
+    }
+    let mut bad_state = sample_group;
+    bad_state["state"] = json!("on");
+    assert!(serde_json::from_value::<SettingsItem>(bad_state).is_err());
 }
 
 #[test]

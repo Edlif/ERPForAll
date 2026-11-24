@@ -543,11 +543,13 @@ export async function settingsView(
           const kind = text(declaration["kind"], "setting type");
           const item = itemByKey.get(key);
           if (item) {
-            if (item.kind === "module") {
-              const row = el("div", undefined, "setting-block settings-module-toggle");
+            if (item.kind === "module" || item.kind === "group") {
+              const row = el("div", undefined, `setting-block ${item.kind === "module" ? "settings-module-toggle" : "settings-group-toggle"}`);
               row.dataset["settingKey"] = key;
-              row.dataset["moduleAddon"] = item.addon;
-              row.dataset["moduleState"] = item.state;
+              if (item.kind === "module") { row.dataset["moduleAddon"] = item.addon; row.dataset["moduleState"] = item.state; }
+              else { row.dataset["group"] = item.group; row.dataset["groupState"] = item.state; }
+              const on = item.kind === "module" ? item.state === "installed" : item.state === "enabled";
+              const technical = item.kind === "module" ? item.addon : item.group;
               const unavailable = item.state === "not_available";
               if (unavailable) row.classList.add("is-unavailable");
               const leftPane = el("div", undefined, "setting-left-pane");
@@ -556,17 +558,17 @@ export async function settingsView(
               checkbox.type = "checkbox";
               checkbox.id = `setting-${key}`;
               checkbox.name = key;
-              checkbox.checked = item.state === "installed";
+              checkbox.checked = on;
               if (unavailable) {
                 checkbox.disabled = true;
                 checkbox.dataset["readonly"] = "true";
               }
               checkbox.addEventListener("change", () => {
-                const wantInstall = checkbox.checked;
-                // Keep the confirmed server state until the install or uninstall completes.
-                checkbox.checked = item.state === "installed";
+                const wanted = checkbox.checked;
+                // Keep the confirmed server state until the change completes.
+                checkbox.checked = on;
                 if (disposed || pending || unavailable) return;
-                run(() => toggleModule(item, wantInstall, checkbox));
+                run(() => item.kind === "module" ? toggleModule(item, wanted, checkbox) : toggleGroup(item, wanted));
               });
               const toggleLabel = labelled("", checkbox);
               toggleLabel.classList.add("settings-toggle");
@@ -579,7 +581,7 @@ export async function settingsView(
               let helpEl: HTMLElement | undefined;
               let helpText: string | undefined;
               if (unavailable) {
-                helpText = `Not available in this server (${item.addon}).`;
+                helpText = `Not available in this server (${technical}).`;
                 helpEl = el("div", helpText, "setting-help text-muted");
                 helpEl.id = `setting-help-${key}`;
                 checkbox.setAttribute("aria-describedby", helpEl.id);
@@ -594,7 +596,7 @@ export async function settingsView(
                 ...(helpEl ? { helpEl, helpText } : {}),
                 labelText: item.label,
                 keyText: key,
-                searchText: item.addon,
+                searchText: technical,
               };
               blockInfos.push(info);
               currentBlockInfos.push(info);
@@ -890,6 +892,21 @@ export async function settingsView(
           await load(scope, false, selectedApp ?? undefined, true).catch(() => {});
         }
       );
+    });
+  };
+
+  // An ordinary res.groups write on the internal-user group, so only users who may edit groups can make it. The
+  // whole application reloads: menus, views and fields follow the new groups.
+  const toggleGroup = async (item: Extract<SettingsItem, { kind: "group" }>, enable: boolean): Promise<void> => {
+    await operation(async () => {
+      const { group_id: group, internal_group_id: internal } = item;
+      if (group === null || internal === null) throw new ClientError("validation", `${item.label} is not available in this server.`);
+      if (edits.size && await choose("Unsaved changes", "Discard changes before changing a feature for all users?", ["Discard", "Cancel"]) !== "Discard") return;
+      const verb = enable ? "Turn on" : "Turn off";
+      if (await choose(`${verb} ${item.label}?`, `${verb} ${item.label} for every internal user? The application reloads afterwards.`, [verb, "Cancel"]) !== verb) return;
+      await rpc.call("res.groups", "write", { ids: [internal], vals: { implied_ids: [[enable ? 4 : 3, group]] }, context }, { write: true });
+      notice(`${item.label} turned ${enable ? "on" : "off"}. Reloading the application…`);
+      window.location.reload();
     });
   };
 

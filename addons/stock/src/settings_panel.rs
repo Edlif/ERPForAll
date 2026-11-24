@@ -10,24 +10,6 @@ const ROUTES: &str = "Unavailable until a later release supplies route activatio
 const ADDONS: &str = "Unavailable until a later release supplies this addon.";
 const FEATURES: &[(&str, &str, &str, &str)] = &[
     (
-        "stock.group_stock_multi_locations",
-        "Multiple locations",
-        "Warehouse",
-        GROUPS,
-    ),
-    (
-        "stock.group_stock_adv_location",
-        "Advanced routes",
-        "Warehouse",
-        GROUPS,
-    ),
-    (
-        "stock.group_stock_production_lot",
-        "Company-wide lot tracking",
-        "Traceability",
-        "Administrators grant access to lot and serial records in the user's Access Rights. Per-product tracking is unavailable.",
-    ),
-    (
         "stock.group_stock_lot_print_gs1",
         "GS1 tracking labels",
         "Traceability",
@@ -38,18 +20,6 @@ const FEATURES: &[(&str, &str, &str, &str)] = &[
         "Tracking details on delivery documents",
         "Traceability",
         TRACKING,
-    ),
-    (
-        "stock.group_stock_tracking_lot",
-        "Packages",
-        "Operations",
-        GROUPS,
-    ),
-    (
-        "stock.group_stock_tracking_owner",
-        "Consignment",
-        "Operations",
-        GROUPS,
     ),
     (
         "stock.group_stock_picking_batch",
@@ -99,6 +69,40 @@ const FEATURES: &[(&str, &str, &str, &str)] = &[
         "Quality worksheets",
         "Operations",
         ADDONS,
+    ),
+];
+// Feature groups that already show or hide menus, view elements or fields: the row turns the group on or
+// off for every internal user. `(key, label, block, group)`.
+const GROUP_TOGGLES: &[(&str, &str, &str, &str)] = &[
+    (
+        "stock.group_stock_multi_locations",
+        "Multiple locations",
+        "Warehouse",
+        "stock.group_stock_multi_locations",
+    ),
+    (
+        "stock.group_stock_adv_location",
+        "Advanced routes",
+        "Warehouse",
+        "stock.group_adv_location",
+    ),
+    (
+        "stock.group_stock_production_lot",
+        "Company-wide lot tracking",
+        "Traceability",
+        "stock.group_production_lot",
+    ),
+    (
+        "stock.group_stock_tracking_lot",
+        "Packages",
+        "Operations",
+        "stock.group_tracking_lot",
+    ),
+    (
+        "stock.group_stock_tracking_owner",
+        "Consignment",
+        "Operations",
+        "stock.group_tracking_owner",
     ),
 ];
 // Each shortcut opens the ordinary menu of the records that own the policy.
@@ -173,6 +177,14 @@ fn items() -> Result<Vec<PanelItemDecl>> {
                 .access(&["stock.group_stock_manager", "base.group_system"])?,
         );
     }
+    for (key, label, block, group) in GROUP_TOGGLES {
+        items.push(
+            PanelItemDecl::group_toggle(key, label, group)?
+                .block(block)?
+                .sequence(100)
+                .access(&["base.group_system"])?,
+        );
+    }
     for (key, label, block, addon) in MODULES {
         items.push(
             PanelItemDecl::module_toggle(key, label, addon)?
@@ -207,6 +219,7 @@ pub(super) fn require_linked() -> Result<()> {
         .map(|(key, _, _, _)| *key)
         .chain(CONFIGURATION.iter().map(|(key, _, _, _, _)| *key))
         .chain(MODULES.iter().map(|(key, _, _, _)| *key))
+        .chain(GROUP_TOGGLES.iter().map(|(key, _, _, _)| *key))
         .map(str::to_owned)
         .collect();
     let mut keys = std::collections::BTreeSet::new();

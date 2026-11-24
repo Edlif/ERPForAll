@@ -383,3 +383,79 @@ test("module toggle handles uninstall preview validation refusal and 409 conflic
   expect(notices).toContain("Database state changed since preview. A fresh confirmation is required.");
   expect(errors).toHaveLength(1);
 });
+
+test("group toggles render on, off and not available, and stay out of scalar RPCs", async () => {
+  const on: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "enabled", group_id: 41, internal_group_id: 1 };
+  const off: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_owner", label: "Consignment", app: "stock", block: "Operations", sequence: 110, group: "stock.group_tracking_owner", state: "disabled", group_id: 42, internal_group_id: 1 };
+  const missing: SettingsItem = { kind: "group", key: "stock.group_stock_multi_locations", label: "Multiple locations", app: "stock", block: "Warehouse", sequence: 100, group: "stock.group_stock_multi_locations", state: "not_available", group_id: null, internal_group_id: null };
+  const { host, controller, calls, jobs } = await mount([on, off, missing], [], "stock");
+  const box = (key: string) => host.querySelector<HTMLInputElement>(`[data-setting-key="${key}"] input[type="checkbox"]`)!;
+  expect([box(on.key).checked, box(on.key).disabled]).toEqual([true, false]);
+  expect([box(off.key).checked, box(off.key).disabled]).toEqual([false, false]);
+  expect([box(missing.key).checked, box(missing.key).disabled]).toEqual([false, true]);
+  const row = host.querySelector<HTMLElement>(`[data-setting-key="${missing.key}"]`)!;
+  expect(row.classList.contains("settings-group-toggle")).toBe(true);
+  expect(row.classList.contains("is-unavailable")).toBe(true);
+  expect(row.textContent).toContain("Not available in this server (stock.group_stock_multi_locations).");
+  // Still disabled after the screen is drawn again.
+  [...host.querySelectorAll<HTMLButtonElement>(".settings-toolbar button")].find(b => b.textContent === "Discard")!.click();
+  await Promise.all(jobs);
+  expect(box(missing.key).disabled).toBe(true);
+  expect(controller.dirty()).toBe(false);
+  expect(calls.find(c => c.method === "erp_read_values")?.args["keys"]).toEqual([]);
+  expect(calls.some(c => c.method === "erp_write_values" || c.method === "write")).toBe(false);
+});
+
+test("group toggles write the internal-user group's implication after confirmation, then reload the application", async () => {
+  stubDialogs();
+  let reloaded = 0;
+  Object.defineProperty(window, "location", { configurable: true, value: { reload: () => { reloaded++; } } });
+  let state: "enabled" | "disabled" = "disabled";
+  const writes: Record<string, unknown>[] = [];
+  const jobs: Promise<void>[] = [];
+  const rpc = new RpcClient(async (path, init) => {
+    const url = String(path), body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    if (url === "/erp/json/2/res.groups/write") { writes.push(body); return new Response("true", { headers: { "Content-Type": "application/json" } }); }
+    const response = url.endsWith("/erp_describe")
+      ? { wire_major: 1, registry_version: "r1", scope: body["scope"], declarations: [], items: [{ kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state, group_id: 41, internal_group_id: 1 }] }
+      : { wire_major: 1, scope: body["scope"], revision: "1", values: [] };
+    return new Response(JSON.stringify(response), { headers: { "Content-Type": "application/json" } });
+  }, () => {});
+  const host = document.createElement("div");
+  document.body.append(host);
+  await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job()); }, () => {}, {}, ["global"], "r1", undefined, undefined, "stock");
+  const flip = async (answer: string) => {
+    const box = host.querySelector<HTMLInputElement>('[data-setting-key="stock.group_stock_tracking_lot"] input')!;
+    const before = box.checked;
+    box.checked = !before;
+    box.dispatchEvent(new Event("change"));
+    // The confirmed server state stays until the change is made.
+    expect(box.checked).toBe(before);
+    await vi.waitFor(() => expect(document.querySelector(".message-dialog-footer button")).not.toBeNull());
+    [...document.querySelectorAll<HTMLButtonElement>(".message-dialog-footer button")].find(b => b.textContent === answer)!.click();
+    await Promise.all(jobs);
+  };
+  // Cancel writes nothing.
+  await flip("Cancel");
+  expect(writes).toHaveLength(0);
+  expect(reloaded).toBe(0);
+  // On: the internal-user group links the feature group.
+  await flip("Turn on");
+  expect(writes).toEqual([{ ids: [1], vals: { implied_ids: [[4, 41]] }, context: {} }]);
+  expect(reloaded).toBe(1);
+  // Off: the link is removed, the group itself stays.
+  state = "enabled";
+  host.remove();
+  const again = document.createElement("div");
+  document.body.append(again);
+  await settingsView(again, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job()); }, () => {}, {}, ["global"], "r1", undefined, undefined, "stock");
+  const box = again.querySelector<HTMLInputElement>('[data-setting-key="stock.group_stock_tracking_lot"] input')!;
+  expect(box.checked).toBe(true);
+  box.checked = false;
+  box.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(document.querySelector(".message-dialog-footer button")).not.toBeNull());
+  [...document.querySelectorAll<HTMLButtonElement>(".message-dialog-footer button")].find(b => b.textContent === "Turn off")!.click();
+  await Promise.all(jobs);
+  expect(writes[1]).toEqual({ ids: [1], vals: { implied_ids: [[3, 41]] }, context: {} });
+  expect(reloaded).toBe(2);
+});

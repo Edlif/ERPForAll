@@ -627,7 +627,8 @@ fn inventory_settings_denials_do_not_disclose_key_existence() {
         }
         tx.rollback().await.unwrap();
         drop(tx);
-        // Inventory managers read company values but cannot save them and do not see admin module toggles.
+        // Inventory managers read company values but cannot save them and do not see admin module and group
+        // toggles.
         let mut tx = orm.begin(uid).await.unwrap();
         let env = tx.env().with_company(company).unwrap();
         let manager_desc = describe(&env, &mut tx, company_scope(company))
@@ -639,6 +640,11 @@ fn inventory_settings_denials_do_not_disclose_key_existence() {
             "stock.module_stock_sms",
             "stock.module_delivery",
             "stock.module_stock_dropshipping",
+            "stock.group_stock_multi_locations",
+            "stock.group_stock_adv_location",
+            "stock.group_stock_production_lot",
+            "stock.group_stock_tracking_lot",
+            "stock.group_stock_tracking_owner",
         ] {
             assert!(
                 !manager_json["items"]
@@ -801,28 +807,53 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
         }
         let description = describe(&env, &mut tx, company_scope(a)).await.unwrap();
         let json = serde_json::to_value(&description).unwrap();
-        let item = json["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|i| i["key"] == "stock.group_stock_multi_locations")
-            .unwrap();
-        assert_eq!(item["kind"], "info");
-        assert_eq!(item["value"], "Multiple locations (unavailable)");
-        assert_eq!(
-            item["detail"],
-            "Unavailable until a later release supplies feature-group changes."
-        );
-        let tracking = json["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|i| i["key"] == "stock.group_stock_production_lot")
-            .unwrap();
-        assert_eq!(
-            tracking["detail"],
-            "Administrators grant access to lot and serial records in the user's Access Rights. Per-product tracking is unavailable."
-        );
+        // The feature groups that gate menus, view elements or fields are toggles, off on a fresh install, carrying
+        // the ids of the feature group and of the internal-user group.
+        let internal_group = super::security::xid(&orm, "base", "group_user").await;
+        for (key, label, group) in [
+            (
+                "stock.group_stock_multi_locations",
+                "Multiple locations",
+                "group_stock_multi_locations",
+            ),
+            (
+                "stock.group_stock_adv_location",
+                "Advanced routes",
+                "group_adv_location",
+            ),
+            (
+                "stock.group_stock_production_lot",
+                "Company-wide lot tracking",
+                "group_production_lot",
+            ),
+            (
+                "stock.group_stock_tracking_lot",
+                "Packages",
+                "group_tracking_lot",
+            ),
+            (
+                "stock.group_stock_tracking_owner",
+                "Consignment",
+                "group_tracking_owner",
+            ),
+        ] {
+            let item = json["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["key"] == key)
+                .expect(key);
+            assert_eq!(item["kind"], "group", "{key}");
+            assert_eq!(item["label"], label, "{key}");
+            assert_eq!(item["group"], format!("stock.{group}"), "{key}");
+            assert_eq!(item["state"], "disabled", "{key}");
+            assert_eq!(
+                item["group_id"],
+                super::security::xid(&orm, "stock", group).await,
+                "{key}"
+            );
+            assert_eq!(item["internal_group_id"], internal_group, "{key}");
+        }
         for (key, module, menu) in [
             (
                 "stock.backorder_policies",

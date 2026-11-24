@@ -1377,7 +1377,12 @@ choice!(ModuleToggleState {
     NotInstalled,
     NotAvailable
 });
-/// One read-only information row, link row, or module toggle of a settings page. Items are never
+choice!(GroupToggleState {
+    Enabled,
+    Disabled,
+    NotAvailable
+});
+/// One read-only information row, link row, module toggle or group toggle of a settings page. Items are never
 /// settings: their keys are refused by `erp_read_values` and `erp_write_values`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema-gen", erp_macros::wire_ts)]
@@ -1433,6 +1438,30 @@ pub enum SettingsItem {
         addon: String,
         /// Resolved availability and installation state of the addon.
         state: ModuleToggleState,
+    },
+    /// A toggle row that turns one feature group on or off for every internal user. The change is an
+    /// ordinary `res.groups` write of `implied_ids` on the internal-user group.
+    Group {
+        /// Addon-qualified identity.
+        key: String,
+        /// Display label.
+        label: String,
+        /// Settings app page.
+        app: String,
+        /// Block title within the page.
+        block: String,
+        /// Display sort sequence.
+        sequence: u32,
+        /// `<module>.<name>` identity of the feature group controlled by this row.
+        group: String,
+        /// Whether the internal-user group implies the feature group, or that either group is missing.
+        state: GroupToggleState,
+        /// Id of the feature group row; `null` exactly when the state is `not_available`.
+        #[serde(deserialize_with = "required_nullable")]
+        group_id: Option<WireId>,
+        /// Id of the internal-user group row; `null` exactly when the state is `not_available`.
+        #[serde(deserialize_with = "required_nullable")]
+        internal_group_id: Option<WireId>,
     },
 }
 object!(/// One visible native declaration; policy internals stay on the server.
