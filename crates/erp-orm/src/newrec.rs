@@ -169,6 +169,18 @@ impl Transaction {
             }
             let admitted = if matches!(field.ty, FieldType::Html) {
                 self.admit_html_cell(spec, field, cell.clone())?
+            } else if field.translate && matches!(cell, Cell::Str(_)) {
+                // the column of a translatable char holds the language map, not the text: the
+                // text is the value in the environment's language (a form's new line sends it so)
+                let text = new_record_cell(spec, field, cell.clone(), self)?;
+                let active = self.active_languages().await?;
+                crate::translated::apply_write_unchecked(
+                    field,
+                    None,
+                    &text,
+                    model.env().lang(),
+                    &active,
+                )?
             } else {
                 new_record_cell(spec, field, cell.clone(), self)?
             };
