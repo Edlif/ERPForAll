@@ -1166,7 +1166,7 @@ fn a_direct_vendor_bill_traces_the_received_purchase_line() {
                 .unwrap_err();
             assert_eq!(
                 changed_source.kind(),
-                ErrorKind::Validation,
+                ErrorKind::UserError,
                 "{changed_source:?}"
             );
             assert!(

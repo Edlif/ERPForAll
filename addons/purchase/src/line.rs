@@ -398,8 +398,11 @@ async fn refuse_consequences(tx: &mut Transaction, lines: &Records, vals: &RawVa
     tx.flush().await?;
     for row in tx.query(LINE_CONSEQUENCES, &[&lines.ids()]).await? {
         let line: String = row.try_get(1).map_err(db_error)?;
-        // the first line of the description names the line
-        let line = line.lines().next().unwrap_or_default();
+        // the first line of the description names the line, when it has one
+        let line = match line.lines().next() {
+            Some(first) if !first.trim().is_empty() => format!(" {first}"),
+            _ => String::new(),
+        };
         let order: String = row.try_get(2).map_err(db_error)?;
         let product: Option<i64> = row.try_get(3).map_err(db_error)?;
         let unit: Option<i64> = row.try_get(4).map_err(db_error)?;
@@ -413,7 +416,7 @@ async fn refuse_consequences(tx: &mut Transaction, lines: &Records, vals: &RawVa
             || (vals.contains("uom_id") && id_of("uom_id") != unit);
         if moved {
             return Err(Error::user(format!(
-                "The purchase order line {line} of {order} has received or billed goods: its product and unit can no longer change."
+                "The purchase order line{line} of {order} has received or billed goods: its product and unit can no longer change."
             )));
         }
         // a raise or an unchanged quantity passes, even while still below the floor
@@ -425,7 +428,7 @@ async fn refuse_consequences(tx: &mut Transaction, lines: &Records, vals: &RawVa
                 "correct the bill first"
             };
             return Err(Error::user(format!(
-                "The quantity of the purchase order line {line} of {order} cannot go below what was received or billed ({} asked, {} received, {} billed); {hint}.",
+                "The quantity of the purchase order line{line} of {order} cannot go below what was received or billed ({} asked, {} received, {} billed); {hint}.",
                 asked.normalize(),
                 received.normalize(),
                 billed.normalize()
