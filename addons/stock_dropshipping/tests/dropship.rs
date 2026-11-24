@@ -55,21 +55,15 @@ async fn company(tx: &mut Transaction, name: &str) -> i64 {
         Some(row) => row.get(0),
         None => erp_testkit::fixtures::seed_currency_in(tx).await.unwrap(),
     };
-    tx.env()
-        .records("res.company")
-        .unwrap()
-        .create(
-            tx,
-            vec![
-                RawVals::new()
-                    .set_cell("name", text(name))
-                    .set_cell("currency_id", Cell::Id(currency)),
-            ],
-        )
-        .await
-        .unwrap()
-        .rec_ids()[0]
-        .get()
+    tx.query(
+        "WITH n AS (SELECT nextval(pg_get_serial_sequence('res_company', 'id')) AS id) \
+         INSERT INTO res_company (tz, id, name, currency_id, parent_path, account_price_include, tax_calculation_rounding_method, anglo_saxon_accounting, expects_chart_of_accounts, fpos_revision, sale_invoice_policy, cost_method) \
+         SELECT 'UTC', id, $1, $2, id::text || '/', 'tax_excluded', 'round_globally', false, true, 0, 'order', 'standard' FROM n RETURNING id::int8",
+        &[&name, &currency],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
 }
 
 async fn location(tx: &mut Transaction, name: &str, usage: &str, company_id: Option<i64>) -> i64 {
