@@ -2582,6 +2582,113 @@ async fn assert_visible_menu_resolver_security(
     clean_tx.commit().await.unwrap();
 }
 
+/// `erp_resolve_record_action`: one call answers the menu, the action and its views for a record; a domain that
+/// leaves the record out, an action the caller may not read, an action without a form view and an unknown model all
+/// answer `null`; malformed arguments are refused.
+async fn assert_related_record_resolve(
+    orm: &Orm,
+    service: &RpcService,
+    admin: erp_orm::Principal,
+    ordinary: erp_orm::Principal,
+    action: i64,
+    note_menu: i64,
+) {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let note = tx
+        .env()
+        .records("acceptance_notes.note")
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", Cell::Str("Resolver note".into()))
+                    .set_cell("company_id", Cell::Id(admin.companies().current().unwrap().get()))
+                    .set_cell("owner_id", Cell::Id(admin.subject().get())),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    let row = tx
+        .query(
+            "SELECT view_mode, view_id FROM ir_act_window WHERE id = $1",
+            &[&action],
+        )
+        .await
+        .unwrap();
+    let (view_mode, view_id): (String, Option<i64>) = (row[0].get(0), row[0].get(1));
+    tx.commit().await.unwrap();
+    let resolve = |principal: &erp_orm::Principal, model: &str, id: i64| {
+        RpcCall::json2(
+            "/json/2/ir.actions.act_window/erp_resolve_record_action",
+            serde_json::to_vec(&serde_json::json!({"model":model,"record_id":id,"wire_major":1,"options":{"mobile":false}}))
+                .unwrap(),
+            Caller::Principal(principal.clone()),
+        )
+    };
+    let answer = |response: erp_rpc::RpcResponse| {
+        assert_eq!(response.status(), 200, "{}", String::from_utf8_lossy(response.body()));
+        result(&response)
+    };
+    let set_action = |vals: RawVals| async move {
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        tx.env()
+            .records("ir.actions.act_window")
+            .unwrap()
+            .browse([action])
+            .unwrap()
+            .write(&mut tx, vals)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    };
+
+    // Match: the visible menu, its action and the action's own views, valid for every note.
+    let found = answer(service.call(resolve(&admin, "acceptance_notes.note", note)).await);
+    assert_eq!(found["menu"], note_menu, "{found}");
+    assert_eq!(found["action"]["id"], action);
+    assert_eq!(found["action"]["model"], "acceptance_notes.note");
+    assert_eq!(found["any_record"], true);
+    assert_eq!(found["views"]["model"], "acceptance_notes.note");
+    assert!(found["views"]["views"].as_array().unwrap().iter().any(|view| view["type"] == "form"));
+    assert_eq!(found.as_object().unwrap().len(), 4);
+
+    // A domain that holds the note still matches, but only for that note; one that leaves it out answers null.
+    set_action(RawVals::new().set_cell("domain", Cell::Str(format!("[('id', '=', {note})]").into()))).await;
+    let found = answer(service.call(resolve(&admin, "acceptance_notes.note", note)).await);
+    assert_eq!(found["action"]["id"], action);
+    assert_eq!(found["any_record"], false);
+    set_action(RawVals::new().set_cell("domain", Cell::Str("[('id', '=', 0)]".into()))).await;
+    assert!(answer(service.call(resolve(&admin, "acceptance_notes.note", note)).await).is_null());
+    set_action(RawVals::new().set_cell("domain", Cell::Null)).await;
+
+    // An action the caller may not read and an unknown model answer the same null as no match.
+    assert!(answer(service.call(resolve(&ordinary, "acceptance_notes.note", note)).await).is_null());
+    assert!(answer(service.call(resolve(&admin, "no.such.model", note)).await).is_null());
+
+    // An action without a form view is no candidate.
+    set_action(RawVals::new().set_cell("view_mode", Cell::Str("list".into())).set_cell("view_id", Cell::Null)).await;
+    assert!(answer(service.call(resolve(&admin, "acceptance_notes.note", note)).await).is_null());
+    set_action(
+        RawVals::new()
+            .set_cell("view_mode", Cell::Str(view_mode.into()))
+            .set_cell("view_id", view_id.map_or(Cell::Null, Cell::Id)),
+    )
+    .await;
+
+    // Malformed arguments are refused by name.
+    for (model, id, message) in [
+        ("Not A Model", note, "Invalid model name."),
+        ("acceptance_notes.note", 0, "A record id must be a positive integer."),
+    ] {
+        let refused = service.call(resolve(&admin, model, id)).await;
+        assert_eq!(refused.status(), 422, "{}", String::from_utf8_lossy(refused.body()));
+        assert_eq!(result(&refused)["name"], "erp.exceptions.ValidationError");
+        assert_eq!(result(&refused)["message"], message);
+    }
+}
+
 async fn new_menu(
     tx: &mut erp_orm::Transaction,
     name: &str,
@@ -4162,6 +4269,7 @@ async fn installed_metadata_rpc_uses_authenticated_acl_and_field_groups_async() 
     assert_addons_entry(&orm, &service, admin.clone(), addons_menu, addons_action).await;
     assert_visible_menu_resolver_security(&orm, &service, admin.clone(), ordinary.clone()).await;
     assert_menu_closure_cases(&orm, &service, admin.clone(), ordinary.clone()).await;
+    assert_related_record_resolve(&orm, &service, admin.clone(), ordinary.clone(), action, note_menu).await;
 
     let action_call = |principal| {
         RpcCall::json2(

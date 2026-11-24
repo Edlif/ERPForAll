@@ -11,10 +11,11 @@ use serde_json::{Value as Json, json};
 fn fail(message: impl Into<String>) -> Error {
     Error::validation(message)
 }
-fn literal(expr: &erp_sdk::expr::Expr, uid: i64, depth: usize) -> Result<Json> {
+fn literal(expr: &erp_sdk::expr::Expr, uid: i64, depth: usize, label: &str) -> Result<Json> {
     use erp_sdk::expr::{Expr, Literal, UnaryOp};
+    let only = || fail(format!("{label} domains support literal criteria and uid only."));
     if depth > 32 {
-        return Err(fail("Dashboard domain exceeds the 32-level bound."));
+        return Err(fail(format!("{label} domain exceeds the 32-level bound.")));
     }
     Ok(match expr {
         Expr::Literal(Literal::None) => Json::Null,
@@ -29,36 +30,32 @@ fn literal(expr: &erp_sdk::expr::Expr, uid: i64, depth: usize) -> Result<Json> {
         } => match operand.as_ref() {
             Expr::Literal(Literal::Int(v)) => json!(
                 v.checked_neg()
-                    .ok_or_else(|| fail("Dashboard domain integer overflow."))?
+                    .ok_or_else(|| fail(format!("{label} domain integer overflow.")))?
             ),
             Expr::Literal(Literal::Float(v)) if v.is_finite() => json!(-v),
-            _ => {
-                return Err(fail(
-                    "Dashboard domains support literal criteria and uid only.",
-                ));
-            }
+            _ => return Err(only()),
         },
         Expr::List(items) | Expr::Tuple(items) => Json::Array(
             items
                 .iter()
-                .map(|e| literal(e, uid, depth + 1))
+                .map(|e| literal(e, uid, depth + 1, label))
                 .collect::<Result<_>>()?,
         ),
-        _ => {
-            return Err(fail(
-                "Dashboard domains support literal criteria and uid only.",
-            ));
-        }
+        _ => return Err(only()),
     })
 }
 fn domain(document: Option<&WireDocument>, uid: i64) -> Result<Domain> {
+    literal_domain(document, uid, "Dashboard")
+}
+/// A saved domain of literal criteria and `uid`; anything else is refused, named by `label`.
+pub(crate) fn literal_domain(document: Option<&WireDocument>, uid: i64, label: &str) -> Result<Domain> {
     match document {
         None => Ok(Domain::TRUE),
         Some(document) => {
             let ast = erp_sdk::expr::wire::ValidatedAst::try_from(document.clone())
                 .map_err(|e| fail(e.to_string()))?;
-            Domain::from_json(&literal(ast.as_expr(), uid, 0)?)
-                .map_err(|e| fail(format!("Invalid dashboard domain: {e}")))
+            Domain::from_json(&literal(ast.as_expr(), uid, 0, label)?)
+                .map_err(|e| fail(format!("Invalid {} domain: {e}", label.to_lowercase())))
         }
     }
 }

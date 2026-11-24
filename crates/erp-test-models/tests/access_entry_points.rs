@@ -1625,9 +1625,14 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "group, model and view-mode columns of the window action the caller opens; the caller's groups and read access on res_model are checked before any value leaves",
     ),
     (
-        "web/metadata.rs::load_action_views",
+        "web/metadata.rs::describe_action_views",
         1,
         "fixed search_view_id/limit presentation columns of the singleton action already admitted by load_action's record-read, action-group and target-model checks; the view descriptions keep the original caller environment and selected-view/field-group checks, while page limits remain validated",
+    ),
+    (
+        "web/metadata.rs::resolve_record_action",
+        1,
+        "the res_model column of the window actions the caller's own menu walk (load_menus) already kept, to skip actions of other models; each remaining candidate then passes load_action under the caller, its domain is matched against the record with the caller's rights, and only a model comparison leaves this read",
     ),
     (
         "web/metadata.rs::dashboard_description",

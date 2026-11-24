@@ -192,6 +192,24 @@ test("one2many metadata requires its inverse, and the comodel views hide it", as
   expect(node.querySelector(".x2many-add")).toBeNull();
 });
 
+test("the line views of one level are requested together, not one after another", async () => {
+  const books = field("book_ids", "one2many", { label: "Books", relation: "library.book", relationField: "author_id" });
+  const loans = field("loan_ids", "one2many", { label: "Loans", relation: "library.loan", relationField: "author_id" });
+  const form: View = { type: "form", mode: "record", fields: [books, loans], nodes: [] };
+  const asked: string[] = [], answers: (() => void)[] = [];
+  const load = (model: string): Promise<Description> => new Promise(resolve => {
+    asked.push(model);
+    answers.push(() => resolve({ model, fields: new Map(), views: new Map([["list", { type: "list", mode: "record", nodes: [], fields: [title] }]]) }));
+  });
+  const done = attachSubviews({ model: "library.author", fields: new Map(), views: new Map([["form", form]]) }, form, load);
+  // Both requests are out before either answers.
+  await vi.waitFor(() => expect(asked).toEqual(["library.book", "library.loan"]));
+  answers.forEach(answer => answer());
+  await done;
+  expect(books.subview?.model).toBe("library.book");
+  expect(loans.subview?.model).toBe("library.loan");
+});
+
 test("a line form's own one2many gets the comodel list columns; a model already on the chain keeps the name list", async () => {
   // Owner report 2026-11-04: Author → Books → open a book → its Loans showed only "Name" with
   // "sample_library.loan,21", because only the opened form's one2many fields had their views attached.

@@ -17,7 +17,7 @@ fn dashboard_exact_comparisons_handle_zero_and_negative_baselines() {
 #[test]
 fn dashboard_domains_refuse_execution() {
     let expr = erp_sdk::expr::parse("context.get('secret')").unwrap();
-    let error = literal(&expr, 7, 0).unwrap_err();
+    let error = literal(&expr, 7, 0, "Dashboard").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Validation);
     assert_eq!(
         error.message(),
@@ -29,7 +29,7 @@ fn dashboard_domains_refuse_execution() {
 fn dashboard_domains_admit_signed_literals_and_uid() {
     let expr = erp_sdk::expr::parse("[('amount', '>=', -2.5), ('owner', '=', uid)]").unwrap();
     assert_eq!(
-        literal(&expr, 7, 0).unwrap(),
+        literal(&expr, 7, 0, "Dashboard").unwrap(),
         json!([["amount", ">=", -2.5], ["owner", "=", 7]])
     );
 }
