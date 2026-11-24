@@ -1094,7 +1094,11 @@ impl SaleOrderLine {
             let frozen: Vec<LineFacts> = lines
                 .iter()
                 .filter(|line| {
-                    (if field == "product_id" { line.product } else { line.unit }) != value
+                    (if field == "product_id" {
+                        line.product
+                    } else {
+                        line.unit
+                    }) != value
                 })
                 .filter(|line| {
                     line.downpayment
@@ -1107,9 +1111,7 @@ impl SaleOrderLine {
                 .cloned()
                 .collect();
             refuse(tx, &env, &frozen, |listed| {
-                format!(
-                    "The {what} of these sales order lines can no longer be changed: {listed}."
-                )
+                format!("The {what} of these sales order lines can no longer be changed: {listed}.")
             })
             .await?;
         }

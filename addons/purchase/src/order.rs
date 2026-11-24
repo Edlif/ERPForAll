@@ -213,7 +213,11 @@ pub struct PurchaseOrder {
     pub invoice_count: i32,
     /// True while Cancel would be refused: a vendor bill of the order is posted, or a bridge's
     /// downstream document holds it (`_cancel_blocked`). The form hides Cancel with it.
-    #[field(boolean, compute = "_compute_cancel_blocked", string = "Cancel Blocked")]
+    #[field(
+        boolean,
+        compute = "_compute_cancel_blocked",
+        string = "Cancel Blocked"
+    )]
     pub cancel_blocked: bool,
     /// The total converted to the company currency at the deadline's date; the approval
     /// question compares it with the company's minimum amount (BUG-132).

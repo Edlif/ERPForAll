@@ -251,7 +251,11 @@ impl SaleOrder {
     async fn _action_cancel(this: &RecordSet<SaleOrder>, tx: &mut Transaction) -> Result<()> {
         let records = this.as_records();
         tx.flush().await?;
-        if let Some(row) = tx.query(POSTED_INVOICES, &[&stored(records)]).await?.first() {
+        if let Some(row) = tx
+            .query(POSTED_INVOICES, &[&stored(records)])
+            .await?
+            .first()
+        {
             let order: String = row.try_get(1).map_err(decode)?;
             let invoice: Option<String> = row.try_get(2).map_err(decode)?;
             return Err(Error::user(format!(

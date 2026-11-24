@@ -1538,7 +1538,10 @@ fn delivered_and_invoiced_sales_keep_what_happened_downstream() {
             .unwrap()
             .browse([line_id])
             .unwrap();
-        assert!(!cancel_blocked(&mut tx, &order).await, "a quotation cancels");
+        assert!(
+            !cancel_blocked(&mut tx, &order).await,
+            "a quotation cancels"
+        );
         let location: i64 = tx
             .query(
                 "SELECT lot_stock_id FROM stock_warehouse WHERE company_id=$1",
@@ -1586,7 +1589,10 @@ fn delivered_and_invoiced_sales_keep_what_happened_downstream() {
             .call::<(), ()>(&mut tx, "action_cancel", ())
             .await
             .unwrap_err();
-        assert!(kept.message().contains("Cancel the linked transfer"), "{kept}");
+        assert!(
+            kept.message().contains("Cancel the linked transfer"),
+            "{kept}"
+        );
         assert_eq!(text(&mut tx, &order, "state").await, "sale");
         let below = write(
             &mut tx,

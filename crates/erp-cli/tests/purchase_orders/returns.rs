@@ -779,7 +779,8 @@ fn a_short_direct_receipt_counts_completed_goods_in_the_purchase_unit() {
         .unwrap_err();
         assert_eq!(unit.kind(), ErrorKind::Validation, "{unit:?}");
         assert!(
-            unit.message().contains("product and unit can no longer change"),
+            unit.message()
+                .contains("product and unit can no longer change"),
             "{unit:?}"
         );
         // Model the previous installed version: its completed receipt exists but the quantity
@@ -1223,7 +1224,10 @@ fn received_purchases_keep_what_happened_downstream() {
                 ),
         )
         .await;
-        assert!(!cancel_blocked(&mut tx, &source).await, "a request for quotation");
+        assert!(
+            !cancel_blocked(&mut tx, &source).await,
+            "a request for quotation"
+        );
         act(&mut tx, &source, "button_confirm").await.unwrap();
         assert!(
             !cancel_blocked(&mut tx, &source).await,

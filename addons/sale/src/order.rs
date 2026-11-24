@@ -234,7 +234,11 @@ pub struct SaleOrder {
     /// True while Cancel would be refused: an invoice of the order is posted, or a bridge's
     /// downstream document holds it ([`crate::order_ops`], `_cancel_blocked`). The form hides
     /// Cancel with it.
-    #[field(boolean, compute = "_compute_cancel_blocked", string = "Cancel Blocked")]
+    #[field(
+        boolean,
+        compute = "_compute_cancel_blocked",
+        string = "Cancel Blocked"
+    )]
     pub cancel_blocked: bool,
     /// The pricelist new lines are priced from; none: the products' sales prices. Not changed
     /// once the order is confirmed.
@@ -1112,11 +1116,7 @@ impl SaleOrder {
             } else {
                 &[]
             };
-            let locked_only: &[&str] = if order.locked {
-                &LOCKED_ONLY
-            } else {
-                &[]
-            };
+            let locked_only: &[&str] = if order.locked { &LOCKED_ONLY } else { &[] };
             let refused: Vec<String> = frozen
                 .iter()
                 .chain(locked_only)
