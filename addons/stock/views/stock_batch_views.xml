@@ -42,7 +42,6 @@
               <field name="scheduled_date"/>
               <field name="priority"/>
               <field name="company_id" readonly="1"/>
-              <field name="validating"/>
             </group>
           </group>
           <notebook>
