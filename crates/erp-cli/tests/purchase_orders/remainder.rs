@@ -148,6 +148,53 @@ fn short_receipt(always: bool) {
                 backorder.cell(&mut tx, "purchase_order_id").await.unwrap(),
                 Cell::Id(parent)
             );
+            // The Receipt button counts the receipt and its backorder; the way back opens the order.
+            let order_row = orders(&tx, &[company]).browse([parent]).unwrap();
+            assert_eq!(
+                order_row.cell(&mut tx, "receipt_count").await.unwrap(),
+                Cell::Int(2)
+            );
+            assert_eq!(
+                backorder
+                    .cell(&mut tx, "purchase_order_count")
+                    .await
+                    .unwrap(),
+                Cell::Int(1)
+            );
+            let blind =
+                order_row.with_env(tx.env().with_user(buyer).with_company(company).unwrap());
+            assert_eq!(
+                blind.cell(&mut tx, "receipt_count").await.unwrap(),
+                Cell::Int(2),
+                "a purchase user reads incoming transfers, so the count is the real one"
+            );
+            let shown: Value = order_row
+                .call(&mut tx, "action_view_receipt", ())
+                .await
+                .unwrap();
+            let shown: Value = order_row
+                .call(&mut tx, "erp_normalize_action_result", (1_u64, shown))
+                .await
+                .expect("the web action normalizer accepts the receipts action");
+            let Value::Json(shown) = shown else {
+                panic!("a web action envelope")
+            };
+            assert_eq!(shown["result"]["kind"], "current_window");
+            assert_eq!(shown["result"]["model"], "stock.picking");
+            assert_eq!(shown["result"]["domain"][0][2].as_array().unwrap().len(), 2);
+            let back: Value = backorder
+                .call(&mut tx, "action_view_purchase_order", ())
+                .await
+                .unwrap();
+            let back: Value = backorder
+                .call(&mut tx, "erp_normalize_action_result", (1_u64, back))
+                .await
+                .expect("the web action normalizer accepts the purchase order action");
+            let Value::Json(back) = back else {
+                panic!("a web action envelope")
+            };
+            assert_eq!(back["result"]["model"], "purchase.order");
+            assert_eq!(back["result"]["domain"][0][2][0], parent);
             returns::validate(&mut tx, child).await.unwrap();
             let retry = returns::validate(&mut tx, receipt).await.unwrap_err();
             assert!(retry.message().contains("validated earlier"), "{retry}");
