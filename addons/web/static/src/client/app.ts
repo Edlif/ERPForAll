@@ -72,7 +72,8 @@ import { attachSubviews } from "./x2many.js";
 import { loadDatabaseTheme, loadUserColorScheme, officeShell } from "./theme.js";
 import { MetadataCache, invalidatesMetadata } from "./metadata-cache.js";
 import { ExpiredMethodAction, MethodActions, type MethodAction } from "./method-actions.js";
-import { BreadcrumbTrail, renderBreadcrumbs } from "./navigation.js";
+import { BreadcrumbTrail, renderBreadcrumbs, type BreadcrumbItem } from "./navigation.js";
+import { NavigationStore } from "./navigation-store.js";
 import { commandProviders, commandCategories, commandSetups, systrayItems, userMenuItems, debugSections, debugItemProviders } from "./registry.js";
 import { openCommandPalette } from "./command-palette.js";
 import type { ActivityWindowAction } from "./activity-menu.js";
@@ -255,6 +256,8 @@ export class HumanApp {
   private expired = false;
   private readonly debug = new URL(location.href).searchParams.get("debug") === "1";
   private readonly breadcrumbs = new BreadcrumbTrail(32);
+  /** The trail of each history entry of this tab, kept across a reload (`navigation-store.ts`). */
+  private readonly navigationStore: NavigationStore;
   private homeMenuOpen = false;
   private releaseHomeScroll?: (restore: boolean) => void;
   private mobileDrawer?: MobileDrawer;
@@ -341,6 +344,8 @@ export class HumanApp {
     this.noticeElement.removeAttribute("role"); this.noticeElement.removeAttribute("aria-live");
     this.messages = new MessageServices(this.noticeElement, error => this.reportError(error));
     this.errors = new ErrorDialog(this.messages.dialogs);
+    this.navigationStore = new NavigationStore(this.userId, this.breadcrumbs.cap, error =>
+      this.messages.notifications.add(`The breadcrumb trail cannot be kept across a reload in this tab: ${errorMessage(error)}`, { level: "warning" }));
     this.navigation = region("[data-client-navigation]");
     this.header = region("[data-client-header]");
     this.loading = requestLoading(host);
@@ -408,12 +413,19 @@ export class HumanApp {
               restore(target);
               return;
             }
+            // The entry comes back with the trail it had; its page then cuts the trail to itself as usual.
+            const before = [...this.breadcrumbs.items];
             try {
-              await this.navigate(parseRoute(target.url), true, true);
+              const route = parseRoute(target.url);
+              const kept = target.index === undefined ? undefined : this.navigationStore.trail(target.index, route);
+              if (kept) this.breadcrumbs.replace(kept);
+              await this.navigate(route, true, true);
               if (target.index !== undefined) {
                 this.historyIndex = target.index;
+                this.saveTrail();
               }
             } catch (error) {
+              this.breadcrumbs.replace(before);
               this.traversalPending ??= target;
               throw error;
             }
@@ -1231,6 +1243,14 @@ export class HumanApp {
     this.headerMenuSearchReady?.();
 
     const initialRoute = parseRoute(new URL(window.location.href));
+    // A reload keeps this entry's place in the tab's history and its trail; an address opened afresh has neither.
+    const state: unknown = history.state;
+    const index = typeof state === "object" && state !== null ? (state as Record<string, unknown>)["erpIndex"] : undefined;
+    if (typeof index === "number" && Number.isSafeInteger(index) && index >= 0) {
+      this.historyIndex = index;
+      const kept = this.navigationStore.trail(index, initialRoute);
+      if (kept) this.breadcrumbs.replace(kept);
+    }
     if (initialRoute.action === undefined && await this.openHomeAction(initialRoute)) return;
     if (this.lifetime.signal.aborted) return;
     try { await this.navigate(initialRoute, true); }
@@ -2171,6 +2191,27 @@ export class HumanApp {
     }
   }
 
+  /** Keeps the trail on screen for the current history entry. */
+  private saveTrail(): void {
+    this.navigationStore.saveTrail(this.historyIndex, this.breadcrumbs.items);
+  }
+
+  /** Opens a trail entry through the normal, server-checked navigation. An entry that cannot be opened again (its record
+   *  is gone, the user may no longer open it, the tab no longer holds its related list) drops out of the trail and
+   *  `redraw` draws the rest, which stays usable; the failure is still reported. A lost connection drops nothing. */
+  private async openCrumb(item: BreadcrumbItem, redraw: () => void): Promise<void> {
+    const before = [...this.breadcrumbs.items], generation = this.generation;
+    try { await this.navigate(item.route, false, false, undefined, { autosave: true, showRefusedPage: false }); }
+    catch (error) {
+      if (generation === this.generation && !this.expired && !(error instanceof ClientError && (error.kind === "network" || error.kind === "ambiguous"))) {
+        this.breadcrumbs.replace(before.filter(entry => entry.id !== item.id));
+        this.saveTrail();
+        redraw();
+      }
+      throw error;
+    }
+  }
+
   private async navigate(route: Route, initial = false, fromHistory = false, invocation?: { caller: RecordState; generation: number }, options?: { autosave?: boolean; target?: "current" | "main" | "new"; showRefusedPage?: boolean; stack?: boolean }): Promise<void> {
     if(this.debug)route={...route,debug:"1"};
     // The page's companies stay in the address: a route that names none (a menu, a breadcrumb, addon code) keeps
@@ -2369,6 +2410,7 @@ export class HumanApp {
       if (!fromHistory) {
         if (initial) history.replaceState({ erpIndex: this.historyIndex }, "", this.currentUrl);
         else history.pushState({ erpIndex: ++this.historyIndex }, "", this.currentUrl);
+        this.saveTrail();
       }
       this.notice("");
       this.messages.navigation();
@@ -2423,6 +2465,7 @@ export class HumanApp {
     this.currentUrl = routeUrl(home);
     if (initial || fromHistory) history.replaceState({ erpIndex: this.historyIndex }, "", this.currentUrl);
     else history.pushState({ erpIndex: ++this.historyIndex }, "", this.currentUrl);
+    if (!fromHistory) this.saveTrail();
     this.notice("");
     this.messages.navigation();
     this.content.setAttribute("data-navigation-focus", "");
@@ -3144,11 +3187,12 @@ export class HumanApp {
       title.setAttribute("aria-current", "page");
       breadcrumbs.replaceChildren(title);
       if (returning || stacked) {
-        renderBreadcrumbs(breadcrumbs, this.breadcrumbs, {
+        const draw = (): void => renderBreadcrumbs(breadcrumbs, this.breadcrumbs, {
           isSmall: document.documentElement.dataset["mobile"] === "true",
-          onNavigate: async item => this.run(() => this.navigate(item.route, false, false, undefined, { autosave: true })),
+          onNavigate: async item => this.run(() => this.openCrumb(item, draw)),
           report: error => this.reportError(error)
         });
+        draw();
       } else if (related) {
         // A list opened by a form button keeps the way back: menu path, the source record, this list.
         const trail = el("div", undefined, "form-breadcrumb-path");
@@ -4457,9 +4501,7 @@ export class HumanApp {
       const isSmall = document.documentElement.dataset["mobile"] === "true";
       renderBreadcrumbs(breadcrumbs, this.breadcrumbs, {
         isSmall,
-        onNavigate: async item => this.run(async () => {
-          await this.navigate(item.route, false, false, undefined, { autosave: true });
-        }),
+        onNavigate: async item => this.run(() => this.openCrumb(item, updateBreadcrumbs)),
         report: error => this.reportError(error)
       });
       // A form opened from a related list keeps the way back to the record whose button opened it.
