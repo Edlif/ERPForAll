@@ -41,12 +41,12 @@ async fn second_bind_is_kept_for_the_same_system_or_directories_and_refused_othe
     let refused = bind_settings_catalogue(system_over(&db, other_dir)).unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::Programming);
     assert!(
-        refused.message().contains("/settings-bind/first"),
+        refused.message().contains(first_dir.to_str().unwrap()),
         "{}",
         refused.message()
     );
     assert!(
-        refused.message().contains("/settings-bind/other"),
+        refused.message().contains(other_dir.to_str().unwrap()),
         "{}",
         refused.message()
     );
