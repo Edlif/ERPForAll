@@ -3476,6 +3476,19 @@ struct RecordAction {
     views: wire::ViewDescription,
 }
 
+/// Whether a candidate action that failed to load is passed over by [`resolve_record_action`]: one the caller may
+/// not open or whose data cannot be described; a database, concurrency or internal failure ends the call.
+fn passable(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::Access
+            | ErrorKind::Validation
+            | ErrorKind::UserError
+            | ErrorKind::Missing
+            | ErrorKind::ResourceExhausted
+    )
+}
+
 /// The first window action of the caller's visible menus (in menu order) that targets the current page, has a form
 /// view of `model` and whose domain holds `record_id`. `None` for anything the caller may not see: an unknown or
 /// unreadable model, no visible menu, no matching action, a record outside every domain.
@@ -3548,9 +3561,13 @@ async fn resolve_record_action(
             continue;
         }
         let records = env.records("ir.actions.act_window")?.browse([action_id])?;
-        let action = match load_action(&records, tx, admission).await {
+        // each candidate on its own budget: only the one answered is charged to the response
+        let mut charged = ResponseAdmission::new();
+        let action = match load_action(&records, tx, &mut charged).await {
             Ok(action) => action,
-            Err(error) if error.kind() == ErrorKind::Access => continue,
+            // a candidate the caller may not open, or one that cannot be loaded, is passed over;
+            // a failure of the transaction itself still ends the call
+            Err(error) if passable(error.kind()) => continue,
             Err(error) => return Err(error),
         };
         if !matches!(action.target, wire::ActionTarget::Current)
@@ -3571,7 +3588,7 @@ async fn resolve_record_action(
             else {
                 passed_over = true;
                 if fallback.is_none() {
-                    fallback = Some((menu, records, action));
+                    fallback = Some((menu, records, action, charged));
                 }
                 continue;
             };
@@ -3592,6 +3609,7 @@ async fn resolve_record_action(
             }
         }
         let any_record = !passed_over && action.domain.is_none();
+        *admission = charged;
         let bundle =
             describe_action_views(&records, tx, action, wire_major, options, admission).await?;
         return Ok(Some(RecordAction {
@@ -3601,7 +3619,7 @@ async fn resolve_record_action(
             views: bundle.views,
         }));
     }
-    let Some((menu, records, action)) = fallback else {
+    let Some((menu, records, action, charged)) = fallback else {
         return Ok(None);
     };
     // The same answer as no match for a record the caller may not read.
@@ -3615,6 +3633,7 @@ async fn resolve_record_action(
     {
         return Ok(None);
     }
+    *admission = charged;
     let bundle =
         describe_action_views(&records, tx, action, wire_major, options, admission).await?;
     Ok(Some(RecordAction {

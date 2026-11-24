@@ -210,6 +210,16 @@ pub(crate) fn outside<'a>(vals: &'a RawVals, writable: &[&str]) -> Option<&'a st
         .find(|name| !writable.contains(name))
 }
 
+/// The caller-named transfers `ids` must be readable before a refusal tells done from cancelled.
+async fn readable_transfers(records: &Records, tx: &mut Transaction, ids: &[i64]) -> Result<()> {
+    records
+        .env()
+        .records("stock.picking")?
+        .browse(ids.iter().copied())?
+        .check_access(tx, Operation::Read)
+        .await
+}
+
 /// Refuse a move create that adds a move to a done or cancelled transfer (the state itself is refused for every
 /// caller by the move guards). Runs after the create access check.
 pub(crate) async fn check_move_create(
@@ -234,6 +244,7 @@ pub(crate) async fn check_move_create(
     }
     if let Some(state) = final_state(tx, FINAL_PICKING, &pickings).await? {
         records.check_access(tx, Operation::Create).await?;
+        readable_transfers(records, tx, &pickings).await?;
         return Err(fixed(tx, "stock.picking", "transfer", &state, "move_ids")?);
     }
     Ok(())
@@ -253,6 +264,7 @@ pub(crate) async fn check_move_write(
         && let Some(state) = final_state(tx, FINAL_PICKING, &[picking]).await?
     {
         records.check_access(tx, Operation::Write).await?;
+        readable_transfers(records, tx, &[picking]).await?;
         return Err(fixed(tx, "stock.picking", "transfer", &state, "move_ids")?);
     }
     let Some(field) = outside(vals, &DONE_MOVE_WRITABLE) else {

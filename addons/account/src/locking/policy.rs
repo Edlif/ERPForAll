@@ -28,6 +28,9 @@ pub struct LockCheck {
     pub(crate) date: Date,
     pub(crate) journal: JournalClass,
     pub(crate) tax: TaxImpact,
+    /// Whether the hard lock (date and hard-locked period) binds this check; only the unmatch
+    /// route leaves it out, so a match made into a hard-locked period can still be undone.
+    pub(crate) hard: bool,
 }
 impl LockCheck {
     /// Build a check from already authorized business records.
@@ -49,7 +52,16 @@ impl LockCheck {
             date,
             journal,
             tax,
+            hard: true,
         })
+    }
+
+    /// The same check without the hard lock: only the lock dates an administrator can lower again.
+    pub(crate) fn without_hard_lock(self) -> Self {
+        Self {
+            hard: false,
+            ..self
+        }
     }
 }
 // PostgreSQL's DATE wire domain, as in erp-fields/src/pg.rs, expressed relative to 1970.
@@ -154,7 +166,8 @@ impl EffectiveDates {
         let mut violations = Vec::new();
         for (i, field) in FIELDS.iter().enumerate() {
             let applies = match field {
-                LockField::FiscalYear | LockField::Hard => true,
+                LockField::FiscalYear => true,
+                LockField::Hard => input.hard,
                 LockField::Sale => input.journal == JournalClass::Sale,
                 LockField::Purchase => input.journal == JournalClass::Purchase,
                 LockField::Tax => input.tax == TaxImpact::Report,

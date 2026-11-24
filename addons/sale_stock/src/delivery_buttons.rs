@@ -39,7 +39,9 @@ pub struct SalesOrderDeliveries {
 
 #[methods(SaleOrder, addon = "sale_stock")]
 impl SalesOrderDeliveries {
-    #[compute(depends = ["state", "company_id"], depends_context = ["uid", "allowed_company_ids"])]
+    /// A completed transfer changes the delivered quantities, and a backorder is only made then;
+    /// the link row itself is written by SQL, which drops this value ([`crate::delivery`]).
+    #[compute(depends = ["state", "company_id", "order_line.qty_delivered"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_delivery_count(
         this: &RecordSet<SaleOrder>,
         tx: &mut Transaction,

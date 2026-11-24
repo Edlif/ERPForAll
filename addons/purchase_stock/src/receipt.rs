@@ -460,12 +460,12 @@ impl ReceiptPlan {
              SELECT $1, move_id, line_id FROM unnest($2::int8[], $3::int8[]) AS link(move_id, line_id)",
             &[&company, &move_ids, &lines],
         ).await?;
-        tx.invalidate_records(&picking, Some(&["purchase_order_id"]))
+        tx.invalidate_records(&picking, Some(&["purchase_order_id", "purchase_order_count"]))
             .await?;
         crate::received_quantity::refresh(tx, &env.records("purchase.order.line")?.browse(lines)?)
             .await?;
         let order = env.records("purchase.order")?.browse([self.order.order])?;
-        tx.invalidate_records(&order, Some(&["direct_receipt_id"]))
+        tx.invalidate_records(&order, Some(&["direct_receipt_id", "receipt_count"]))
             .await
     }
 }

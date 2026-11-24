@@ -2716,6 +2716,52 @@ async fn assert_related_record_resolve(
         )
         .is_null()
     );
+    // A note the company rule hides from the caller answers null on both branches: a literal
+    // domain that names it, and the fallback of a domain that reads the context.
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = admin.companies().current().unwrap().get();
+    let other_company: i64 = tx
+        .query(
+            "INSERT INTO res_company(tz, name, currency_id) SELECT 'UTC', 'Resolver other company', \
+             currency_id FROM res_company WHERE id = $1 RETURNING id",
+            &[&company],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let hidden: i64 = tx
+        .query(
+            "INSERT INTO acceptance_notes_note(name, company_id, owner_id, active) \
+             VALUES ('Resolver hidden note', $1, $2, true) RETURNING id",
+            &[&other_company, &admin.subject().get()],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    tx.commit().await.unwrap();
+    for domain in [
+        format!("[('id', '=', {hidden})]"),
+        "[('name', '=', context.get('missing_name'))]".to_owned(),
+    ] {
+        set_action(RawVals::new().set_cell("domain", Cell::Str(domain.clone().into()))).await;
+        assert!(
+            answer(
+                service
+                    .call(resolve(&admin, "acceptance_notes.note", hidden))
+                    .await
+            )
+            .is_null(),
+            "{domain}"
+        );
+    }
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    tx.execute(
+        "DELETE FROM acceptance_notes_note WHERE id = $1",
+        &[&hidden],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     set_action(RawVals::new().set_cell("domain", Cell::Null)).await;
 
     // An action the caller may not read and an unknown model answer the same null as no match.

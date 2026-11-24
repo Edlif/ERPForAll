@@ -1211,10 +1211,7 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
             .call(&mut tx, "action_create_draft_invoice", ())
             .await
             .unwrap();
-        // A request reads the count in a new transaction; inside this one the read is cached.
-        tx.invalidate_records(&order, Some(&["invoice_count"]))
-            .await
-            .unwrap();
+        // The count read before follows the new invoice in the same transaction.
         assert_eq!(
             order.cell(&mut tx, "invoice_count").await.unwrap(),
             Cell::Int(2)
@@ -1234,6 +1231,38 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
         assert_eq!(shown["result"]["views"].as_array().unwrap().len(), 2);
         assert!(shown["result"].get("res_id").is_none());
         assert_eq!(shown["result"]["domain"][0][2].as_array().unwrap().len(), 2);
+        // Both counts follow a removed source in the same transaction: the first invoice bills
+        // no order any more, and the order keeps one invoice.
+        let sourced: Vec<i64> = tx
+            .query(
+                "SELECT l.id::int8 FROM account_move_line l \
+                 JOIN sale_invoice_item k ON k.invoice_item_id = l.id WHERE l.move_id = $1",
+                &[&invoice],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        assert!(!sourced.is_empty());
+        write(
+            &mut tx,
+            &env.records("account.move.line")
+                .unwrap()
+                .browse(sourced)
+                .unwrap(),
+            RawVals::new().set_cell("sale_line_id", Cell::Null),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            doc.cell(&mut tx, "sale_order_count").await.unwrap(),
+            Cell::Int(0)
+        );
+        assert_eq!(
+            order.cell(&mut tx, "invoice_count").await.unwrap(),
+            Cell::Int(1)
+        );
         tx.rollback().await.unwrap();
     });
 }
