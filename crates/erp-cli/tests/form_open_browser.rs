@@ -168,6 +168,24 @@ async fn form_open_times_in_the_browser() {
     let zero = order_with_lines(&fixture, company, partner, &products, 0);
     let fifty = order_with_lines(&fixture, company, partner, &products, FIFTY);
     let many = order_with_lines(&fixture, company, partner, &products, MANY);
+    // the least chart a draft invoice needs: an income and a receivable account and a sales journal
+    let accounts = create(
+        &fixture,
+        "account.account",
+        company,
+        vec![
+            json!({"code": "FO400", "name": "Form Open Income", "account_type": "income"}),
+            json!({"code": "FO121", "name": "Form Open Receivable", "account_type": "asset_receivable"}),
+        ],
+    );
+    create(
+        &fixture,
+        "account.journal",
+        company,
+        vec![
+            json!({"name": "Form Open Invoices", "code": "FOI", "type": "sale", "company_id": company, "default_account_id": accounts[0]}),
+        ],
+    );
     let invoiced = order_with_lines(&fixture, company, partner, &products, 3);
     call(
         &fixture,
