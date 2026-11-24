@@ -179,6 +179,16 @@ pub fn describe() -> String {
     render(collected())
 }
 
+/// Technical names of every addon linked into this binary via `addon!`.
+#[must_use]
+pub fn linked_addon_names() -> std::collections::BTreeSet<String> {
+    collected()
+        .into_iter()
+        .filter(|c| c.kind == ContributionKind::Addon)
+        .map(|c| c.addon.to_owned())
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "test assertions")]
 mod tests {

@@ -668,6 +668,50 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
     let decoded: SettingsDescription = serde_json::from_value(older).unwrap();
     assert!(decoded.items.is_empty());
     assert_eq!(decoded.declarations.len(), 1);
+
+    // Module toggle items roundtrip across all three states and reject missing/unknown fields or bad state.
+    for (state, wire_state) in [
+        (ModuleToggleState::Installed, "installed"),
+        (ModuleToggleState::NotInstalled, "not_installed"),
+        (ModuleToggleState::NotAvailable, "not_available"),
+    ] {
+        let module_item = SettingsItem::Module {
+            key: "stock.module_delivery".into(),
+            label: "Carriers".into(),
+            app: "stock".into(),
+            block: "Shipping".into(),
+            sequence: 200,
+            addon: "delivery".into(),
+            state,
+        };
+        let encoded_mod = serde_json::to_value(&module_item).unwrap();
+        assert_eq!(encoded_mod["kind"], "module");
+        assert_eq!(encoded_mod["addon"], "delivery");
+        assert_eq!(encoded_mod["state"], wire_state);
+        roundtrip::<SettingsItem>(&encoded_mod);
+    }
+    let sample_module = json!({
+        "kind": "module",
+        "key": "stock.module_delivery",
+        "label": "Carriers",
+        "app": "stock",
+        "block": "Shipping",
+        "sequence": 200,
+        "addon": "delivery",
+        "state": "not_installed"
+    });
+    let mut unknown = sample_module.clone();
+    unknown["extra"] = json!(true);
+    assert!(serde_json::from_value::<SettingsItem>(unknown).is_err());
+    let mut missing_addon = sample_module.clone();
+    missing_addon.as_object_mut().unwrap().remove("addon");
+    assert!(serde_json::from_value::<SettingsItem>(missing_addon).is_err());
+    let mut missing_state = sample_module.clone();
+    missing_state.as_object_mut().unwrap().remove("state");
+    assert!(serde_json::from_value::<SettingsItem>(missing_state).is_err());
+    let mut bad_state = sample_module;
+    bad_state["state"] = json!("pending");
+    assert!(serde_json::from_value::<SettingsItem>(bad_state).is_err());
 }
 
 #[test]

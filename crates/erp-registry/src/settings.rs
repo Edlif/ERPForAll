@@ -459,7 +459,35 @@ impl LinkTarget {
         }
     }
 }
-/// What a panel item shows: a read-only value or a link.
+/// Resolved state of a module toggle panel item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ModuleToggleState {
+    /// The addon is installed in the current database.
+    Installed,
+    /// The addon is linked into this binary and can be installed.
+    NotInstalled,
+    /// The addon is not linked into this binary and cannot be installed from Settings.
+    NotAvailable,
+}
+impl ModuleToggleState {
+    /// Resolve `addon` against the installed database addons and the addons linked into this binary.
+    #[must_use]
+    pub fn resolve(
+        addon: &str,
+        installed: &BTreeSet<String>,
+        linked: &BTreeSet<String>,
+    ) -> Self {
+        if installed.contains(addon) {
+            Self::Installed
+        } else if linked.contains(addon) {
+            Self::NotInstalled
+        } else {
+            Self::NotAvailable
+        }
+    }
+}
+/// What a panel item shows: a read-only value, a link, or a module toggle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PanelItemKind {
@@ -467,9 +495,15 @@ pub enum PanelItemKind {
     Info,
     /// An arrow link to a window action or a menu.
     Link(LinkTarget),
+    /// A toggle that installs or uninstalls one addon by technical name.
+    #[non_exhaustive]
+    Module {
+        /// Technical name of the addon controlled by this row.
+        addon: String,
+    },
 }
-/// A read-only information row or a link row on a Settings app page: a sibling of [`SettingDecl`], never a
-/// setting. It has no default, no write groups and no stored value.
+/// A read-only information row, link row, or module toggle on a Settings app page: a sibling of
+/// [`SettingDecl`], never a setting. It has no default, no write groups and no stored value.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct PanelItemDecl {
@@ -551,6 +585,21 @@ impl PanelItemDecl {
             key,
             label,
             PanelItemKind::Link(LinkTarget::Menu { xmlid: menu.into() }),
+        )
+    }
+    /// Declare a module toggle row that installs or uninstalls `addon`.
+    /// # Errors
+    /// Invalid key, label or addon technical name.
+    pub fn module_toggle(key: &str, label: &str, addon: &str) -> Result<Self> {
+        if !name(addon) || addon.len() > 128 {
+            return Err(invalid());
+        }
+        Self::new(
+            key,
+            label,
+            PanelItemKind::Module {
+                addon: addon.into(),
+            },
         )
     }
     /// Set the required read groups (ANY of a nonempty list of external identities).

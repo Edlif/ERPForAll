@@ -495,11 +495,13 @@ pub async fn resolve_link(
     link_available(env, &rows, addon, target).ok_or_else(|| Error::validation(UNAVAILABLE_LINK))
 }
 
-/// The settings registry with its panel items, each item's resolver and its link row ids.
+/// The settings registry with its panel items, each item's resolver, link row ids, and addon sets.
 struct Published {
     registry: SettingsRegistry,
     resolvers: BTreeMap<String, PanelResolver>,
     links: LinkRows,
+    installed: BTreeSet<String>,
+    linked: BTreeSet<String>,
 }
 async fn published(env: &Env, tx: &mut Transaction) -> Result<Published> {
     let installed = installed_addons(env);
@@ -542,7 +544,7 @@ async fn published(env: &Env, tx: &mut Transaction) -> Result<Published> {
     let mut targets = Vec::new();
     for item in items.iter().flat_map(|(_, declarations)| declarations) {
         match item.kind() {
-            PanelItemKind::Info => {}
+            PanelItemKind::Info | PanelItemKind::Module { .. } => {}
             PanelItemKind::Link(target) => targets.push(target),
             _ => return Err(unsupported_item()),
         }
@@ -561,10 +563,13 @@ async fn published(env: &Env, tx: &mut Transaction) -> Result<Published> {
     crate::jobs_settings::require(&registry)?;
     crate::approval_settings::require(&registry)?;
     crate::report_settings::require(&registry)?;
+    let linked = erp_sdk::linked_addon_names();
     Ok(Published {
         registry,
         resolvers,
         links,
+        installed,
+        linked,
     })
 }
 fn dependency_contains(env: &Env, source: &str, target: &str) -> bool {
@@ -887,6 +892,33 @@ async fn describe_item(
                 block: item.block_title().into(),
                 sequence: item.display_sequence(),
                 target,
+            }))
+        }
+        PanelItemKind::Module { addon, .. } => {
+            let state = match erp_sdk::settings::ModuleToggleState::resolve(
+                addon,
+                &published.installed,
+                &published.linked,
+            ) {
+                erp_sdk::settings::ModuleToggleState::Installed => {
+                    wire::ModuleToggleState::Installed
+                }
+                erp_sdk::settings::ModuleToggleState::NotInstalled => {
+                    wire::ModuleToggleState::NotInstalled
+                }
+                erp_sdk::settings::ModuleToggleState::NotAvailable => {
+                    wire::ModuleToggleState::NotAvailable
+                }
+                _ => return Err(unsupported_item()),
+            };
+            Ok(Some(wire::SettingsItem::Module {
+                key: key.into(),
+                label: item.label().into(),
+                app: item.target_app().into(),
+                block: item.block_title().into(),
+                sequence: item.display_sequence(),
+                addon: addon.clone(),
+                state,
             }))
         }
         _ => Err(unsupported_item()),
