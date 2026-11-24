@@ -46,7 +46,7 @@ pub use erp_fields::html::{
 
 mod descriptor;
 
-pub use descriptor::{DESCRIBE_SCHEMA, describe, linked_addon_names};
+pub use descriptor::{DESCRIBE_SCHEMA, describe};
 
 /// Network ranges for rules over a request's client address (both backends).
 pub mod net;

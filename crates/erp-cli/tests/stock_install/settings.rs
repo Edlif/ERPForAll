@@ -1398,3 +1398,157 @@ fn inventory_group_toggle_turns_a_feature_on_and_off_for_every_internal_user() {
         assert!(holds(&db, &installed, internal, "stock.group_tracking_lot").await);
     });
 }
+
+// A change an administrator makes in the Groups form (here: Packages made to imply a group that is not a light
+// feature group) leaves the Settings page and module loads working: only that row is unavailable, with the
+// declaration rule's reason, and only its switch refuses.
+#[test]
+fn inventory_group_toggle_made_heavy_in_the_groups_form_is_unavailable_on_its_row_only() {
+    run(async {
+        let db = TestDb::create().await.unwrap();
+        let installed = install(&db).await;
+        let actors = super::security::roles(&installed).await;
+        let (admin, internal) = (actors[0], actors[1]);
+        let company = super::security::xid(&installed, "base", "main_company").await;
+        let packages = super::security::xid(&installed, "stock", "group_tracking_lot").await;
+        let stock_user = super::security::xid(&installed, "stock", "group_stock_user").await;
+        const PACKAGES: &str = "stock.group_stock_tracking_lot";
+        const RULE: &str = "Setting item stock.group_stock_tracking_lot cannot toggle the group \
+                            stock.group_tracking_lot: it is or implies a group that is not a light feature group.";
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        tx.env()
+            .records("res.groups")
+            .unwrap()
+            .browse([packages])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "implied_ids",
+                    [erp_orm::Command::link(
+                        erp_fields::RecId::from_real(stock_user).unwrap(),
+                    )],
+                ),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let orm = super::security::secure(&db, &installed).await;
+        let mut tx = orm
+            .begin(erp_orm::UserId::new(admin).unwrap())
+            .await
+            .unwrap();
+        let env = tx.env().with_company(company).unwrap();
+        // The registration check that every module load runs still passes.
+        erp_addon_base::ir_config_setting::validate_declarations(&env, &mut tx)
+            .await
+            .unwrap();
+        let described = serde_json::to_value(
+            describe(&env, &mut tx, company_scope(company))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let row = |key: &str| {
+            described["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["key"] == key)
+                .expect(key)
+                .clone()
+        };
+        let packages_row = row(PACKAGES);
+        assert_eq!(packages_row["state"], "not_available");
+        assert_eq!(packages_row["reason"], RULE);
+        let other = row("stock.group_stock_tracking_owner");
+        assert_eq!(other["state"], "disabled");
+        assert!(other["reason"].is_null());
+        // The switch of that row refuses with the same reason; nothing changes.
+        let refused = toggle_group(&env, &mut tx, PACKAGES, true)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Validation);
+        assert_eq!(refused.message(), RULE);
+        // A key no declaration can have is refused before it is repeated.
+        let long = format!("stock.{}", "x".repeat(130));
+        let refused = toggle_group(&env, &mut tx, &long, true).await.unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Validation);
+        assert_eq!(refused.message(), "A setting key is at most 128 bytes.");
+        // Another row still switches.
+        assert_eq!(
+            toggle_group(&env, &mut tx, "stock.group_stock_tracking_owner", true)
+                .await
+                .unwrap(),
+            GroupToggleState::Enabled
+        );
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert!(!holds(&db, &installed, internal, "stock.group_tracking_lot").await);
+        assert!(holds(&db, &installed, internal, "stock.group_tracking_owner").await);
+    });
+}
+
+// The group switch through the real JSON-2 dispatch: a stock manager (no Settings administrator) is refused with
+// Access before anything changes.
+#[test]
+fn inventory_group_switch_through_rpc_refuses_a_stock_manager() {
+    run(async {
+        use erp_security::auth::{Auth, ClientAddr, CredentialOptions, HashPool, LoginRequest};
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let installed = install(&db).await;
+        let actors = super::security::roles(&installed).await;
+        let orm = super::security::secure(&db, &installed).await;
+        let auth = Auth::new(
+            orm.clone(),
+            erp_security::auth::AuthConfig::DEFAULT,
+            HashPool::global(),
+        )
+        .await
+        .unwrap();
+        let service = erp_rpc::RpcService::new(
+            orm.clone(),
+            super::security::Host,
+            erp_rpc::RpcConfig::default(),
+        );
+        // The stock manager of the role fixture.
+        let login = "stock-security-3";
+        let logged = auth
+            .authenticate(LoginRequest::new(
+                login,
+                format!("{login}-fixture-password"),
+                ClientAddr::InProcess("stock-settings-test"),
+            ))
+            .await
+            .unwrap();
+        let mut begun = auth
+            .begin_session(logged.session().secret(), CredentialOptions::new())
+            .await
+            .unwrap();
+        let principal = begun.tx.env().principal().clone();
+        begun.tx.rollback().await.unwrap();
+        drop(begun);
+        let response = service
+            .call(erp_rpc::RpcCall::json2(
+                "/json/2/ir.config.setting/erp_toggle_group",
+                serde_json::to_vec(&serde_json::json!({
+                    "key": "stock.group_stock_tracking_lot",
+                    "enabled": true
+                }))
+                .unwrap(),
+                erp_rpc::Caller::Principal(principal),
+            ))
+            .await;
+        let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+        assert_eq!(response.status(), 403, "{body}");
+        assert_eq!(body["name"], "erp.exceptions.AccessError");
+        assert_eq!(
+            body["message"],
+            "Only Settings administrators may turn a feature on or off for every user."
+        );
+        assert!(!holds(&db, &installed, actors[1], "stock.group_tracking_lot").await);
+        db.cleanup().await.unwrap();
+    });
+}
