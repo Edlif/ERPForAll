@@ -20,7 +20,7 @@ export function withRelationPicker(control:FieldControl, env:WidgetEnvironment):
     if(dead||scope.signal.aborted||picker?.dialog.isConnected)return;
     picker=selectCreateDialog({dialogs:messages.dialogs,rpc:env.rpc,model:field.relation!,title:`Choose ${field.label}`,query,domain:effective.domain,context:effective.context,
       select:choice=>{if(!dead&&!scope.signal.aborted)env.change(choice);},
-      ...(field.options?.no_create || field.options?.no_create_edit ? {} : { createEdit:(input: { context: Record<string, unknown> })=>editRelation({dialogs:messages.dialogs,messages,editorLocale:env.editorLocale,numericLocale:env.numericLocale,rpc:env.rpc,model:field.relation!,context:input.context,report:env.report,signal:scope.signal}) }),
+      ...(field.options?.no_create || field.options?.no_create_edit ? {} : { createEdit:(input: { context: Record<string, unknown> })=>editRelation({dialogs:messages.dialogs,messages,editorLocale:env.editorLocale,numericLocale:env.numericLocale,rpc:env.rpc,model:field.relation!,context:input.context,report:env.report,signal:scope.signal,...(env.views?{views:env.views}:{}),...(env.openRecord?{openRecord:env.openRecord}:{})}) }),
       report:env.report,signal:scope.signal});
   },'relation-search-more');
   // An icon control keeps the field quiet; the accessible name and tooltip still say what it opens.

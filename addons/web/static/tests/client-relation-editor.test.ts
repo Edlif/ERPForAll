@@ -116,3 +116,50 @@ test("relation Save keeps ordinary fields disabled after a slow code onchange", 
   expect(document.querySelector<HTMLInputElement>("dialog input[name='name']")?.disabled).toBe(true);
   releaseSave(); await expect(result).resolves.toEqual({ id: 17, display_name: "Partner" }); expect(errors).toEqual([]);
 });
+
+/** The form with a read-only link to another partner, the case a record opened from the editor starts from. */
+const linked = () => {
+  const d = description();
+  Object.assign(d.fields[model], { parent_id: { ...field, type: "many2one", label: "Parent", required: false, readonly: true, relation: model } });
+  d.views[0]!.nodes[0]!.children!.push(2);
+  d.views[0]!.nodes.push({ kind: "field", force_save: false, field: { model, name: "parent_id" }, widget: "many2one", options: {}, modifiers: { readonly: null, required: null, invisible: null }, label: "Parent" });
+  return d;
+};
+
+test("the page's view loader describes the editor's form, so the editor sends no get_views of its own", async () => {
+  const methods: string[] = [];
+  const rpc = new RpcClient(async url => { const method = String(url).split("/").at(-1)!; methods.push(method); return json([{ id: 5, name: "Existing" }]); }, () => {});
+  const asked: unknown[] = [];
+  const views = async (target: string, requested: [number | null, string][], scope: Record<string, unknown>): Promise<unknown> => { asked.push([target, requested, scope]); return description(); };
+  const result = editRelation({ dialogs, rpc, model, context: { lang: "en_US" }, id: 5, views, report: error => errors.push(error) });
+  await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("dialog input")?.value).toBe("Existing"));
+  expect(asked).toEqual([[model, [[null, "form"]], { lang: "en_US" }]]);
+  expect(methods).not.toContain("get_views");
+  control("Cancel").click(); await expect(result).resolves.toBeUndefined(); expect(errors).toEqual([]);
+});
+
+test("a related record opened from the editor closes the editor first, and is refused while it holds an edit", async () => {
+  const rpc = new RpcClient(async url => {
+    const method = String(url).split("/").at(-1);
+    return json(method === "get_views" ? linked() : method === "onchange" ? { value: {} } : [{ id: 5, name: "Existing", parent_id: { id: 6, display_name: "Parent partner" } }]);
+  }, () => {});
+  const opened: [string, number, boolean][] = [];
+  const openRecord = async (target: string, id: number): Promise<void> => { opened.push([target, id, document.querySelector("dialog") !== null]); };
+  const open = (): HTMLButtonElement => document.querySelector<HTMLButtonElement>('dialog [aria-label="Open Parent: Parent partner"]')!;
+  // An edit in progress is not dropped: the editor stays open and says why.
+  const first = editRelation({ dialogs, rpc, model, context: {}, id: 5, openRecord, report: error => errors.push(error) });
+  await vi.waitFor(() => expect(open()).not.toBeNull());
+  const input = document.querySelector<HTMLInputElement>("dialog input[name='name']")!; input.value = "Edited"; input.dispatchEvent(new Event("change", { bubbles: true }));
+  await vi.waitFor(() => expect(control("Save").disabled).toBe(false));
+  open().click();
+  await vi.waitFor(() => expect(errors).toEqual([expect.objectContaining({ kind: "validation", message: "Save or cancel this record before opening another one." })]));
+  expect(opened).toEqual([]); expect(document.querySelector("dialog")).not.toBeNull();
+  control("Cancel").click(); await expect(first).resolves.toBeUndefined(); errors.length = 0;
+  // Without an edit the editor closes, then the record opens on the page.
+  const second = editRelation({ dialogs, rpc, model, context: {}, id: 5, openRecord, report: error => errors.push(error) });
+  await vi.waitFor(() => expect(open()).not.toBeNull());
+  open().click();
+  await expect(second).resolves.toBeUndefined();
+  await vi.waitFor(() => expect(opened).toEqual([[model, 6, false]]));
+  expect(errors).toEqual([]);
+});
