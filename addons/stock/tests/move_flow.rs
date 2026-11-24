@@ -1940,6 +1940,134 @@ async fn done_work_is_fixed_for_every_caller() {
     assert_eq!(f.quant(&mut tx, f.p).await, Some((dec("3"), Decimal::ZERO)));
 }
 
+/// A cancelled transfer and its cancelled moves are fixed like done ones, for every caller: the
+/// fields outside the allow-lists are refused by name, no move joins the transfer, the allow-listed
+/// fields still write, cancelling again changes nothing, and they may still be deleted.
+#[tokio::test]
+async fn cancelled_work_is_fixed_for_every_caller() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    f.stock(&mut tx, f.p, "10").await;
+    tx.commit().await.unwrap();
+    let mut tx = f.h.begin().await.unwrap();
+    let (picking, mv) = f.ready_delivery(&mut tx, f.p, "2").await;
+    f.call(&mut tx, picking, "action_cancel").await.unwrap();
+    assert_eq!(picking_state(&mut tx, picking).await, "cancel");
+    assert_eq!(move_done(&mut tx, mv).await.0, "cancel");
+
+    for sudo in [false, true] {
+        for vals in [
+            RawVals::new().set_cell("uom_id", Cell::Id(f.dozen)),
+            RawVals::new().set_cell("product_uom_qty", Cell::Decimal(dec("9"))),
+            RawVals::new().set_cell("location_dest_id", Cell::Id(f.vendor)),
+        ] {
+            let error = f
+                .write_as(&mut tx, "stock.move", &[mv], vals, sudo)
+                .await
+                .unwrap_err();
+            user_error(&error, "of a cancelled stock move cannot be changed");
+        }
+        for vals in [
+            RawVals::new().set_cell("location_id", Cell::Id(f.vendor)),
+            RawVals::new().set_cell("partner_id", Cell::Null),
+            RawVals::new().set_cell("scheduled_date", Cell::Null),
+        ] {
+            let error = f
+                .write_as(&mut tx, "stock.picking", &[picking], vals, sudo)
+                .await
+                .unwrap_err();
+            user_error(&error, "of a cancelled transfer cannot be changed");
+        }
+    }
+    let error = f
+        .write_as(
+            &mut tx,
+            "stock.picking",
+            &[picking],
+            RawVals::new().set_commands(
+                "move_ids",
+                vec![Command::Update(
+                    RecId::from_real(mv).unwrap(),
+                    RawVals::new().set_cell("product_uom_qty", Cell::Decimal(dec("9"))),
+                )],
+            ),
+            false,
+        )
+        .await
+        .unwrap_err();
+    user_error(&error, "of a cancelled transfer cannot be changed");
+    let error = tx
+        .savepoint(async |tx| {
+            f.env(tx)
+                .records("stock.move")?
+                .create(
+                    tx,
+                    vec![
+                        RawVals::new()
+                            .set_cell("picking_id", Cell::Id(picking))
+                            .set_cell("product_id", Cell::Id(f.p))
+                            .set_cell("product_uom_qty", Cell::Decimal(dec("1"))),
+                    ],
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    user_error(&error, "of a cancelled transfer cannot be changed");
+    // the allow-lists still write, and the error names the field's label
+    f.write_as(
+        &mut tx,
+        "stock.picking",
+        &[picking],
+        RawVals::new()
+            .set_cell("note", text("customer withdrew"))
+            .set_cell("origin", text("SO9")),
+        false,
+    )
+    .await
+    .unwrap();
+    f.write_as(
+        &mut tx,
+        "stock.move",
+        &[mv],
+        RawVals::new().set_cell("origin", text("SO9")),
+        false,
+    )
+    .await
+    .unwrap();
+    let error = f
+        .write_as(
+            &mut tx,
+            "stock.picking",
+            &[picking],
+            RawVals::new().set_cell("location_id", Cell::Id(f.vendor)),
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.message().starts_with("Source Location"),
+        "{}",
+        error.message()
+    );
+    // cancelling again leaves it as it is; the stock was given back once
+    f.call(&mut tx, picking, "action_cancel").await.unwrap();
+    assert_eq!(
+        f.quant(&mut tx, f.p).await,
+        Some((dec("10"), Decimal::ZERO))
+    );
+    // a cancelled transfer and its moves may still be deleted
+    f.unlink_as(&mut tx, "stock.picking", &[picking])
+        .await
+        .unwrap();
+    let left: i64 = tx
+        .query("SELECT count(*) FROM stock_move WHERE id = $1", &[&mv])
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(left, 0);
+}
+
 #[tokio::test]
 async fn a_row_added_in_the_save_that_changes_the_header_takes_the_new_header() {
     let f = fixture().await;

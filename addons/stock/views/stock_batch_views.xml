@@ -31,16 +31,17 @@
           <field name="state" widget="statusbar" statusbar_visible="draft,in_progress,done"/>
         </header>
         <sheet>
-          <div class="oe_title"><h1><field name="name"/></h1></div>
+          <!-- a done or cancelled batch is the record of what was processed: nothing on it changes -->
+          <div class="oe_title"><h1><field name="name" readonly="state in ('done', 'cancel')"/></h1></div>
           <group>
             <group>
-              <field name="description"/>
-              <field name="user_id"/>
+              <field name="description" readonly="state in ('done', 'cancel')"/>
+              <field name="user_id" readonly="state in ('done', 'cancel')"/>
               <field name="picking_type_id" readonly="state != 'draft'"/>
             </group>
             <group>
-              <field name="scheduled_date"/>
-              <field name="priority"/>
+              <field name="scheduled_date" readonly="state in ('done', 'cancel')"/>
+              <field name="priority" readonly="state in ('done', 'cancel')"/>
               <field name="company_id" readonly="1"/>
             </group>
           </group>

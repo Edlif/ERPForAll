@@ -775,6 +775,105 @@ async fn a_done_batch_stays_and_a_cancelled_batch_releases_its_transfers() {
     assert_eq!(picking_state(&mut tx, c).await, "assigned");
 }
 
+/// A done or cancelled batch is the record of what was processed: every field outside its (empty)
+/// allow-list is refused by name, while a batch that is not final still takes them. Cancelling a
+/// batch still lets a transfer that was cancelled on its own leave it.
+#[tokio::test]
+async fn a_done_or_cancelled_batch_refuses_every_field() {
+    assert!(erp_addon_stock::batch::FINAL_BATCH_WRITABLE.is_empty());
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let a = f.transfer(&mut tx, true, "1").await;
+    let done = f.batch(&mut tx).await.unwrap();
+    f.add(&mut tx, done, &[a]).await.unwrap();
+    f.call_batch(&mut tx, done, "action_confirm").await.unwrap();
+    f.call_batch(&mut tx, done, "action_done").await.unwrap();
+    assert!(f.step(&mut tx, done, 1).await.finished);
+    assert_eq!(batch_row(&mut tx, done).await.0, "done");
+
+    let c = f.transfer(&mut tx, true, "1").await;
+    let cancelled = f.batch(&mut tx).await.unwrap();
+    f.add(&mut tx, cancelled, &[c]).await.unwrap();
+    // the transfer is cancelled on its own first; cancelling the batch still takes it out
+    f.call(&mut tx, c, "action_cancel").await.unwrap();
+    assert_eq!(picking_state(&mut tx, c).await, "cancel");
+    f.call_batch(&mut tx, cancelled, "action_cancel")
+        .await
+        .unwrap();
+    assert_eq!(batch_row(&mut tx, cancelled).await.0, "cancel");
+    assert_eq!(picking_batch(&mut tx, c).await, None);
+
+    for (batch, needle) in [
+        (done, "of a done batch transfer cannot be changed"),
+        (cancelled, "of a cancelled batch transfer cannot be changed"),
+    ] {
+        for (field, cell, label) in [
+            ("description", text("Late wave"), "Description"),
+            ("priority", text("1"), "Priority"),
+            ("scheduled_date", Cell::Null, "Scheduled Date"),
+        ] {
+            let records = f.batches(&tx, batch);
+            let error = tx
+                .savepoint(async move |tx| {
+                    records
+                        .write(tx, RawVals::new().set_cell(field, cell))
+                        .await
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::UserError, "{error:?}");
+            assert!(
+                error.message().starts_with(label) && error.message().contains(needle),
+                "{}",
+                error.message()
+            );
+        }
+    }
+    // the upsert by reference would run none of these checks: it is refused, also for a final batch
+    let name: String = tx
+        .query(
+            "SELECT name FROM stock_picking_batch WHERE id = $1",
+            &[&done],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let model = f.env(&tx).records("stock.picking.batch").unwrap();
+    let error = tx
+        .savepoint(async |tx| {
+            model
+                .upsert(
+                    tx,
+                    erp_sdk::UpsertCall::new("_name_uniq")
+                        .with_rows([RawVals::new()
+                            .set_cell("name", text(&name))
+                            .set_cell("company_id", Cell::Id(f.company))
+                            .set_cell("description", text("Late wave"))])
+                        .with_update(["description"]),
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError, "{error:?}");
+    assert!(
+        error.message().contains("not by an upsert"),
+        "{}",
+        error.message()
+    );
+    // a batch that is not final still takes the same fields
+    let open = f.batch(&mut tx).await.unwrap();
+    f.batches(&tx, open)
+        .write(
+            &mut tx,
+            RawVals::new()
+                .set_cell("description", text("Late wave"))
+                .set_cell("priority", text("1")),
+        )
+        .await
+        .unwrap();
+}
+
 /// The dialog's new-batch mode creates the batch for the transfers' company and confirms it unless
 /// it is kept as a draft.
 #[tokio::test]

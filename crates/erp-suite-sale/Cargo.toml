@@ -18,6 +18,9 @@ erp-addon-base = { workspace = true }
 erp-addon-mail = { workspace = true }
 erp-addon-product = { workspace = true }
 erp-addon-product-mail = { workspace = true }
+erp-addon-purchase = { workspace = true }
+erp-addon-purchase-mail = { workspace = true }
+erp-addon-purchase_stock = { workspace = true }
 erp-addon-reporting = { workspace = true }
 erp-addon-sale = { workspace = true }
 erp-addon-sale_stock = { workspace = true }
