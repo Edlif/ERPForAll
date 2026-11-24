@@ -175,7 +175,11 @@ impl PurchaseOrderBills {
 #[extend(AccountMove, addon = "purchase")]
 pub struct PurchaseBillOrders {
     /// How many readable purchase orders the bill belongs to.
-    #[field(integer, compute = "_compute_purchase_order_count", string = "Purchase Order Count")]
+    #[field(
+        integer,
+        compute = "_compute_purchase_order_count",
+        string = "Purchase Order Count"
+    )]
     pub purchase_order_count: i32,
 }
 
@@ -206,6 +210,11 @@ impl PurchaseBillOrders {
         records.check_access(tx, Operation::Read).await?;
         records.ensure_one()?;
         let found = readable_links(tx, &records, BILL_ORDERS, "purchase.order").await?;
-        Ok(window("Purchase Orders", "purchase.order", Vec::new(), flat(found)))
+        Ok(window(
+            "Purchase Orders",
+            "purchase.order",
+            Vec::new(),
+            flat(found),
+        ))
     }
 }

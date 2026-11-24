@@ -172,7 +172,11 @@ impl SaleOrder {
 #[extend(AccountMove, addon = "sale")]
 pub struct SalesInvoiceOrders {
     /// How many readable sales orders the invoice bills.
-    #[field(integer, compute = "_compute_sale_order_count", string = "Sales Order Count")]
+    #[field(
+        integer,
+        compute = "_compute_sale_order_count",
+        string = "Sales Order Count"
+    )]
     pub sale_order_count: i32,
 }
 
@@ -203,6 +207,11 @@ impl SalesInvoiceOrders {
         records.check_access(tx, Operation::Read).await?;
         records.ensure_one()?;
         let found = readable_links(tx, &records, INVOICE_ORDERS, "sale.order").await?;
-        Ok(window("Sales Orders", "sale.order", Vec::new(), flat(found)))
+        Ok(window(
+            "Sales Orders",
+            "sale.order",
+            Vec::new(),
+            flat(found),
+        ))
     }
 }

@@ -1160,7 +1160,10 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
         let Value::Map(none) = none else {
             panic!("an action dictionary")
         };
-        assert!(!format!("{:?}", none["domain"]).contains("Int("), "{none:?}");
+        assert!(
+            !format!("{:?}", none["domain"]).contains("Int("),
+            "{none:?}"
+        );
         let shown: Value = order
             .call(&mut tx, "action_view_invoice", ())
             .await

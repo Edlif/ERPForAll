@@ -177,7 +177,10 @@ fn short_receipt(always: bool) {
             let Value::Map(none) = none else {
                 panic!("an action dictionary")
             };
-            assert!(!format!("{:?}", none["domain"]).contains("Int("), "{none:?}");
+            assert!(
+                !format!("{:?}", none["domain"]).contains("Int("),
+                "{none:?}"
+            );
             let shown: Value = po.call(&mut tx, "action_view_invoice", ()).await.unwrap();
             let shown: Value = po
                 .call(&mut tx, "erp_normalize_action_result", (1_u64, shown))
