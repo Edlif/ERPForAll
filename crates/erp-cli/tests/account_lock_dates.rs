@@ -17,6 +17,9 @@
 mod accounting;
 
 use accounting::*;
+use erp_addon_account::fiscal::status::{
+    LockOutcome, PeriodSet, hard_lock_begin, hard_lock_complete, sync_lock_dates,
+};
 use erp_data::impex::ImpexExt;
 use erp_sdk::prelude::*;
 use erp_sdk::{Command, ErrorKind, SUPERUSER_ID};
@@ -934,10 +937,64 @@ async fn hard_body() {
         d(2024, 2, 12),
     )
     .await;
-    let name = string(&invoice, &mut tx, "name").await;
-    // the hard lock date cannot be lowered again: matching into its period is allowed, and so its
-    // undoing must stay possible
-    set_lock(&mut tx, company, "hard_lock_date", Some(d(2024, 1, 31))).await;
+    let later = posted_invoice(
+        &mut tx,
+        &b,
+        "out_invoice",
+        b.customer,
+        "300",
+        d(2024, 2, 10),
+    )
+    .await;
+    let later_pay = posted_entry(
+        &mut tx,
+        &b,
+        b.receivable,
+        b.bank,
+        Some(b.customer),
+        "-300",
+        d(2024, 3, 10),
+    )
+    .await;
+    let later_name = string(&later, &mut tx, "name").await;
+    // January closed by the fiscal-year lock date, then hard-locked by the hard lock operation; the
+    // fiscal-year date can no longer be lowered across it
+    set_lock(
+        &mut tx,
+        company,
+        "fiscalyear_lock_date",
+        Some(d(2024, 1, 31)),
+    )
+    .await;
+    sync_lock_dates(&mut tx, company).await.unwrap();
+    let january: i64 = tx
+        .query(
+            "SELECT id::int8 FROM account_fiscal_period WHERE company_id = $1 AND kind = 'regular' \
+             AND $2 BETWEEN date_from AND date_to",
+            &[&company, &d(2024, 1, 12)],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let set = PeriodSet::of(&mut tx, january).await.unwrap();
+    let run = hard_lock_begin(&mut tx, &set).await.unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut tx = orm
+        .begin_opts(
+            erp_sdk::BeginOptions::new(SUPERUSER_ID).isolation(erp_sdk::Isolation::ReadCommitted),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        hard_lock_complete(&mut tx, &run).await.unwrap(),
+        LockOutcome::Applied
+    );
+    tx.commit().await.unwrap();
+    drop(tx);
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    // matching into the hard-locked period is allowed, so its undoing stays possible: neither the
+    // hard lock nor the fiscal-year date that cannot be lowered across that period binds it
     let items = items_on(&mut tx, &[&invoice, &pay], b.receivable).await;
     try_call(&items, &mut tx, "reconcile").await.unwrap();
     assert_eq!(
@@ -951,8 +1008,30 @@ async fn hard_body() {
         decimal(&invoice, &mut tx, "amount_residual").await,
         num("400")
     );
-    // a lock date that can be lowered still refuses the unmatch, naming only that lock
+    // outside that period a lock date that can be lowered refuses the unmatch until it is lowered
+    let items = items_on(&mut tx, &[&later, &later_pay], b.receivable).await;
     try_call(&items, &mut tx, "reconcile").await.unwrap();
+    set_lock(
+        &mut tx,
+        company,
+        "fiscalyear_lock_date",
+        Some(d(2024, 2, 29)),
+    )
+    .await;
+    sync_lock_dates(&mut tx, company).await.unwrap();
+    let error = try_call(&items, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap_err();
+    locked(
+        &error,
+        &later_name,
+        "fiscalyear_lock_date through 2024-02-29",
+    );
+    assert!(
+        !error.message().contains("hard_lock_date"),
+        "{}",
+        error.message()
+    );
     set_lock(
         &mut tx,
         company,
@@ -960,22 +1039,13 @@ async fn hard_body() {
         Some(d(2024, 1, 31)),
     )
     .await;
-    let error = try_call(&items, &mut tx, "remove_move_reconcile")
-        .await
-        .unwrap_err();
-    locked(&error, &name, "fiscalyear_lock_date through 2024-01-31");
-    assert!(
-        !error.message().contains("hard_lock_date"),
-        "{}",
-        error.message()
-    );
-    set_lock(&mut tx, company, "fiscalyear_lock_date", None).await;
+    sync_lock_dates(&mut tx, company).await.unwrap();
     try_call(&items, &mut tx, "remove_move_reconcile")
         .await
         .unwrap();
     assert_eq!(
-        decimal(&invoice, &mut tx, "amount_residual").await,
-        num("400")
+        decimal(&later, &mut tx, "amount_residual").await,
+        num("300")
     );
     // a posted date without a fiscal period (posting creates it, so only a direct write removes
     // it) refuses the unmatch instead of letting it through
@@ -984,7 +1054,7 @@ async fn hard_body() {
         .execute(
             "DELETE FROM account_fiscal_period WHERE company_id = $1 AND kind = 'regular' \
              AND $2 BETWEEN date_from AND date_to",
-            &[&company, &d(2024, 1, 12)],
+            &[&company, &d(2024, 2, 10)],
         )
         .await
         .unwrap();
@@ -995,14 +1065,11 @@ async fn hard_body() {
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Validation, "{}", error.message());
     assert!(
-        error.message().contains(&name) && error.message().contains("No fiscal period"),
+        error.message().contains(&later_name) && error.message().contains("No fiscal period"),
         "{}",
         error.message()
     );
-    assert_eq!(
-        decimal(&invoice, &mut tx, "amount_residual").await,
-        num("0")
-    );
+    assert_eq!(decimal(&later, &mut tx, "amount_residual").await, num("0"));
     tx.rollback().await.unwrap();
     drop(orm);
     db.cleanup().await.unwrap();

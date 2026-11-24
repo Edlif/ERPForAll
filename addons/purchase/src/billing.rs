@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use erp_addon_product::ProductTemplate;
+use erp_sdk::Operation;
 use erp_sdk::prelude::*;
 
 use crate::line::PurchaseOrderLine;
@@ -47,10 +48,28 @@ fn real_ids(ids: &[RecId]) -> Vec<i64> {
 
 #[methods(ProductTemplate, addon = "purchase")]
 impl PurchaseBillControl {
-    /// A service bills ordered quantities; any other product takes the setting's, as the
-    /// reference does on every type change (so a service that becomes goods no longer bills its
-    /// order). It runs when the type changes and when the column is filled at install or upgrade;
-    /// a value chosen by hand afterwards stays until the next type change.
+    /// A write that names `type` with the value a product already has is no type change: the
+    /// current types are loaded first, and the write passes over a value equal to the loaded one,
+    /// so a bill control chosen by hand stays.
+    #[method(override)]
+    async fn write(
+        this: &RecordSet<ProductTemplate>,
+        tx: &mut Transaction,
+        vals: RawVals,
+        sup: Super,
+    ) -> Result<()> {
+        if vals.contains("type") {
+            this.as_records().check_access(tx, Operation::Write).await?;
+            this.mapped(tx, ProductTemplate::TYPE).await?;
+        }
+        sup.call(tx, this.as_records(), (vals,)).await
+    }
+
+    /// A service bills ordered quantities; any other product takes the setting's. This runs on
+    /// every change of the type, not only when a product leaves service (goods that become a
+    /// combo take the setting's control again too), because the reference does the same; a write
+    /// that names the current type is no change ([`Self::write`]). It also runs when the column
+    /// is filled at install or upgrade; a value chosen by hand stays until the next type change.
     #[compute(depends = ["type"])]
     async fn _compute_purchase_method(
         this: &RecordSet<ProductTemplate>,

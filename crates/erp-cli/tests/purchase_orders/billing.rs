@@ -138,6 +138,28 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
             cell(&mut tx, &repair, "purchase_method").await,
             text("receive")
         );
+        // a write that names the type it already has is no type change: a control chosen by hand
+        // stays, also when nothing of the product is loaded yet (a fresh client call)
+        write(
+            &mut tx,
+            &repair,
+            RawVals::new().set_cell("purchase_method", text("purchase")),
+        )
+        .await
+        .unwrap();
+        tx.flush().await.unwrap();
+        tx.invalidate_all().await.unwrap();
+        write(
+            &mut tx,
+            &repair,
+            RawVals::new().set_cell("type", text("consu")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cell(&mut tx, &repair, "purchase_method").await,
+            text("purchase")
+        );
         let po = order(
             &mut tx,
             &[company],
