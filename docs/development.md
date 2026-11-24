@@ -346,8 +346,9 @@ menu under Operations and an Add to Batch button on the transfer form. Every bat
   or removed from the batch when nothing is reserved). A failed transfer stays in the batch; Validate again retries it
   as a new run. While a live job holds the batch, nothing joins, cancels or validates it again; if the job is gone, the
   batch is free again.
-- `batch_id` of a transfer, and the status, type, company and transfer list of a batch, are written by the batch actions
-  only; a direct write is refused.
+- `batch_id` of a transfer, and the status and transfer list of a batch, are written by the batch actions only. The type
+  and company of a batch, and of a transfer in a batch, cannot change while the batch holds transfers. Create, edit,
+  delete and every action of a batch need the feature group.
 - Not yet: waves, automatic batching, merging batches, the batch report, scheduled date and responsible propagation.
 
 ## The web client

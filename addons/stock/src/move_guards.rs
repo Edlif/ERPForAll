@@ -510,6 +510,12 @@ impl StockPicking {
             records.check_access(tx, Operation::Create).await?;
             crate::batch::refuse_link(tx)?;
         }
+        // a stored default never joins a batch: the batch actions are the only way in
+        for vals in vals_list.iter_mut() {
+            if !vals.contains("batch_id") {
+                vals.insert("batch_id".into(), Cell::Null);
+            }
+        }
         fill_from_types(records, tx, &mut vals_list).await?;
         let mut sources: Vec<i64> = vals_list
             .iter()
@@ -558,6 +564,25 @@ impl StockPicking {
         if vals.contains("batch_id") {
             records.check_access(tx, Operation::Write).await?;
             crate::batch::refuse_link(tx)?;
+        }
+        if !records.is_empty()
+            && ["picking_type_id", "company_id"]
+                .iter()
+                .any(|field| vals.contains(field))
+        {
+            records.check_access(tx, Operation::Write).await?;
+            tx.flush().await?;
+            let joined = tx
+                .query(
+                    "SELECT 1 FROM stock_picking WHERE id = ANY($1) AND batch_id IS NOT NULL LIMIT 1",
+                    &[&records.ids()],
+                )
+                .await?;
+            if !joined.is_empty() {
+                return Err(Error::validation(
+                    "The operation type and company of a transfer in a batch cannot change: take it out of the batch first.",
+                ));
+            }
         }
         check_picking_write(records, tx, &vals).await?;
         let reevaluate = !records.is_empty() && STATE_INPUT_FIELDS.iter().any(|f| vals.contains(f));

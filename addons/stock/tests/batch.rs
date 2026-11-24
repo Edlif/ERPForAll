@@ -9,13 +9,36 @@
     reason = "tests"
 )]
 
-use erp_addon_stock::{QuantChange, QuantKey, apply_quant_changes};
+use erp_addon_stock::{QuantChange, QuantKey, StockPicking, apply_quant_changes};
 use erp_sdk::ErrorKind;
 use erp_sdk::jobs::{StepArgs, StepOutcome};
 use erp_sdk::prelude::*;
 use erp_testkit::Harness;
 
 erp_sdk::addon!(name = "test_stock_batch", depends = ["stock"]);
+
+/// Test stand-in for a failing database or programming error: validating a transfer named
+/// `BOOM...` fails with an error no person can act on.
+#[extend(StockPicking, addon = "test_stock_batch")]
+struct BoomPicking {}
+
+#[methods(StockPicking, addon = "test_stock_batch")]
+impl BoomPicking {
+    #[method(override)]
+    async fn button_validate(
+        this: &RecordSet<StockPicking>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
+        let records = this.as_records();
+        if let Cell::Str(name) = records.cell(tx, "name").await?
+            && name.starts_with("BOOM")
+        {
+            return Err(Error::programming("injected failure"));
+        }
+        sup.call(tx, records, ()).await
+    }
+}
 
 /// A test stand-in for `ir.model.data` (the real model lives in `erp-data`); the same as the other
 /// stock tests.
@@ -838,6 +861,19 @@ async fn links_and_batch_identity_are_not_written_directly() {
     assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
     assert_eq!(picking_batch(&mut tx, a).await, Some(batch));
     assert_eq!(picking_batch(&mut tx, b).await, None);
+    // a transfer in a batch keeps its type and company
+    let error = env
+        .records("stock.picking")
+        .unwrap()
+        .browse([a])
+        .unwrap()
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("picking_type_id", Cell::Id(f.delivery_type)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
     // a batch is not created with transfers
     let error = env
         .records("stock.picking.batch")
@@ -912,7 +948,13 @@ async fn a_lost_validation_job_does_not_hold_the_batch() {
         error.message()
     );
     for method in ["action_cancel", "action_done", "action_assign"] {
-        f.call_batch(&mut tx, batch, method).await.unwrap_err();
+        let error = f.call_batch(&mut tx, batch, method).await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UserError, "{method}: {error:?}");
+        assert!(
+            error.message().contains("being validated"),
+            "{method}: {}",
+            error.message()
+        );
     }
     // the job dies: the flag no longer holds the batch
     tx.execute(
@@ -1139,6 +1181,50 @@ async fn a_transfer_of_another_company_does_not_join() {
         .rec_ids()[0]
         .get();
     let batch = f.batch(&mut tx).await.unwrap();
-    f.add(&mut tx, batch, &[foreign]).await.unwrap_err();
+    let error = f.add(&mut tx, batch, &[foreign]).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError, "{error:?}");
+    assert!(error.message().contains("FOREIGN-1"), "{}", error.message());
     assert_eq!(picking_batch(&mut tx, foreign).await, None);
+}
+
+/// An error no person can act on is returned to the queue, not stored as the transfer's result.
+#[tokio::test]
+async fn an_error_nobody_can_act_on_goes_back_to_the_queue() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let boom = f.transfer(&mut tx, true, "1").await;
+    f.env(&tx)
+        .records("stock.picking")
+        .unwrap()
+        .browse([boom])
+        .unwrap()
+        .write(&mut tx, RawVals::new().set_cell("name", text("BOOM-1")))
+        .await
+        .unwrap();
+    let batch = f.batch(&mut tx).await.unwrap();
+    f.add(&mut tx, batch, &[boom]).await.unwrap();
+    f.call_batch(&mut tx, batch, "action_confirm")
+        .await
+        .unwrap();
+    f.call_batch(&mut tx, batch, "action_done").await.unwrap();
+    let args = StepArgs {
+        payload: f.queued(&mut tx, batch, 1).await,
+        progress: None,
+        attempt: 1,
+    };
+    let error = f
+        .env(&tx)
+        .records("stock.picking.batch")
+        .unwrap()
+        .call::<(StepArgs,), StepOutcome>(&mut tx, "run_validate_step", (args,))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Programming, "{error:?}");
+    assert!(
+        error.message().contains("injected failure"),
+        "{}",
+        error.message()
+    );
+    assert!(results(&mut tx, batch, 1).await.is_empty());
+    assert_ne!(picking_state(&mut tx, boom).await, "done");
 }
