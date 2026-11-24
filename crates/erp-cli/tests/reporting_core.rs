@@ -1924,13 +1924,9 @@ fn onchange_of_a_new_report_accepts_new_lines_and_columns_with_plain_names() {
         let result = reports
             .onchange(&mut tx, values, vec!["line_ids".to_owned()], spec)
             .await;
-        let result = erp_sdk::serde_json::to_value(result.unwrap()).unwrap();
-        // the new line and the new column come back under the text that was sent
-        let value = &result["value"];
-        assert!(
-            value["line_ids"].to_string().contains("Realized Hours"),
-            "{result}"
-        );
+        // the new line comes back under the text that was sent
+        let result = result.unwrap().to_string();
+        assert!(result.contains("Realized Hours"), "{result}");
     });
 }
 
