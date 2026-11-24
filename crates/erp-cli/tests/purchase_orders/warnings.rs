@@ -670,13 +670,7 @@ async fn create_one(tx: &mut Transaction, company: i64, model: &str, vals: RawVa
 }
 
 /// One record of `model` as seen by user `uid` working in `companies`.
-fn record_as(
-    tx: &Transaction,
-    uid: UserId,
-    companies: &[i64],
-    model: &str,
-    id: i64,
-) -> Records {
+fn record_as(tx: &Transaction, uid: UserId, companies: &[i64], model: &str, id: i64) -> Records {
     tx.env()
         .with_user(uid)
         .with_context([(
@@ -708,7 +702,10 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             .await
             .unwrap()[0]
             .get(0);
-        let other_company = create_one(&mut tx, company, "res.company",
+        let other_company = create_one(
+            &mut tx,
+            company,
+            "res.company",
             RawVals::new()
                 .set_cell("name", text("Notice Other Company"))
                 .set_cell("currency_id", Cell::Id(currency)),
@@ -730,20 +727,29 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         let narrow_buyer = user(&mut tx, "notice-narrow", &[buyer_group], &[company]).await;
         let manager = user(&mut tx, "notice-manager", &[manager_group], &[company]).await;
 
-        let parent = create_one(&mut tx, company, "res.partner",
+        let parent = create_one(
+            &mut tx,
+            company,
+            "res.partner",
             RawVals::new()
                 .set_cell("name", text("Parent Holdings"))
                 .set_cell("is_company", Cell::Bool(true))
                 .set_cell("purchase_warn_msg", text("Parent requires PO reference")),
         )
         .await;
-        let child = create_one(&mut tx, company, "res.partner",
+        let child = create_one(
+            &mut tx,
+            company,
+            "res.partner",
             RawVals::new()
                 .set_cell("name", text("Silent Branch"))
                 .set_cell("parent_id", Cell::Id(parent)),
         )
         .await;
-        let blank = create_one(&mut tx, company, "res.partner",
+        let blank = create_one(
+            &mut tx,
+            company,
+            "res.partner",
             RawVals::new()
                 .set_cell("name", text("Blank Note Vendor"))
                 .set_cell("purchase_warn_msg", text("   ")),
@@ -754,7 +760,10 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             ("Visible Valve", "Visible note"),
             ("Guarded Valve", "Guarded note"),
         ] {
-            let template = create_one(&mut tx, company, "product.template",
+            let template = create_one(
+                &mut tx,
+                company,
+                "product.template",
                 RawVals::new()
                     .set_cell("name", text(name))
                     .set_cell("purchase_line_warn_msg", text(note)),
@@ -792,7 +801,10 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         .await
         .ids()[0];
         for product in [visible, guarded] {
-            create_one(&mut tx, company, "purchase.order.line",
+            create_one(
+                &mut tx,
+                company,
+                "purchase.order.line",
                 RawVals::new()
                     .set_cell("order_id", Cell::Id(notice_order))
                     .set_cell("product_id", Cell::Id(product))
@@ -851,7 +863,13 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         let wide_text = format!("{narrow_text}\n{guarded_name} - Guarded note");
 
         // Two callers, one transaction: each one's text follows that caller's own rights.
-        let narrow_order = record_as(&tx, narrow_buyer, &[company], "purchase.order", notice_order);
+        let narrow_order = record_as(
+            &tx,
+            narrow_buyer,
+            &[company],
+            "purchase.order",
+            notice_order,
+        );
         let wide_order = record_as(
             &tx,
             wide_buyer,
@@ -889,7 +907,13 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             .await
             .unwrap()[0]
             .get(0);
-        let narrow_line = record_as(&tx, narrow_buyer, &[company], "purchase.order.line", guarded_line);
+        let narrow_line = record_as(
+            &tx,
+            narrow_buyer,
+            &[company],
+            "purchase.order.line",
+            guarded_line,
+        );
         let wide_line = record_as(
             &tx,
             wide_buyer,
@@ -912,7 +936,8 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             text("Guarded note")
         );
         // A note of spaces only gives no banner.
-        let blank_as_narrow = record_as(&tx, narrow_buyer, &[company], "purchase.order", blank_order);
+        let blank_as_narrow =
+            record_as(&tx, narrow_buyer, &[company], "purchase.order", blank_order);
         assert_eq!(
             blank_as_narrow
                 .cell(&mut tx, "purchase_warning_text")
@@ -962,7 +987,10 @@ fn purchase_notice_length_follows_the_system_parameter() {
         let orm = install(&db).await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         let company = xmlid(&mut tx, "base", "main_company").await;
-        let vendor = create_one(&mut tx, company, "res.partner",
+        let vendor = create_one(
+            &mut tx,
+            company,
+            "res.partner",
             RawVals::new().set_cell("name", text("Short Notice Vendor")),
         )
         .await;
@@ -1036,7 +1064,11 @@ fn purchase_uninstall_with_the_notice_switch_on() {
         let installed = Box::pin(system.button_immediate_install(&env, &[purchase.clone()]))
             .await
             .unwrap();
-        assert!(installed.post_commit.is_clean(), "{:?}", installed.post_commit);
+        assert!(
+            installed.post_commit.is_clean(),
+            "{:?}",
+            installed.post_commit
+        );
 
         let mut tx = installed.orm.begin(SUPERUSER_ID).await.unwrap();
         let user_group = xmlid(&mut tx, "base", "group_user").await;
