@@ -400,12 +400,12 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         //    every internal user.
         let mut tx = orm.begin(manager).await.unwrap();
         let env = tx.env().with_company(company).unwrap();
-        let refused = toggle_group(&env, &mut tx, "purchase.group_warning_purchase", true)
+        let toggle_refusal = toggle_group(&env, &mut tx, "purchase.group_warning_purchase", true)
             .await
             .unwrap_err();
-        assert_eq!(refused.kind(), ErrorKind::Access);
+        assert_eq!(toggle_refusal.kind(), ErrorKind::Access);
         assert_eq!(
-            refused.message(),
+            toggle_refusal.message(),
             "Only Settings administrators may turn a feature on or off for every user."
         );
         tx.rollback().await.unwrap();
