@@ -232,6 +232,8 @@ test("a kept entry the server no longer opens drops out of the trail and the res
   expect(location.pathname).toBe("/erp/action-20");
   expect(trail()).toEqual(["Notes", "Source record", "Parent record"]);
   expect(stored()!.trails.at(-1)![1].map(entry => entry.title)).toEqual(["Notes", "Source record", "Parent record"]);
+  document.querySelector<HTMLButtonElement>("dialog.client-error-dialog [data-error-close]")!.click();
+  await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")).toBeNull());
   back();
   await opened("Source record");
   expect(trail()).toEqual(["Notes", "Source record"]);
