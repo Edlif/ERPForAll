@@ -4,5 +4,5 @@ category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
 version = "1.0.0"
-depends = ["purchase_stock", "sale_stock"]
-data = []
+depends = ["base", "purchase_stock", "sale_stock"]
+data = ["data/route.xml"]
