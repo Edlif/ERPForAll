@@ -20,7 +20,10 @@ pub mod chart_defaults;
 pub fn bind_settings_catalogue(
     system: std::sync::Arc<erp_modules::system::ModuleSystem>,
 ) -> erp_sdk::Result<()> {
-    type First = (std::sync::Arc<erp_modules::system::ModuleSystem>, Vec<PathBuf>);
+    type First = (
+        std::sync::Arc<erp_modules::system::ModuleSystem>,
+        Vec<PathBuf>,
+    );
     static BOUND: std::sync::Mutex<Option<First>> = std::sync::Mutex::new(None);
     let mut bound = BOUND.lock().map_err(|_| {
         erp_sdk::Error::internal("The Settings catalogue binding lock is poisoned.")
