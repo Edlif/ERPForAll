@@ -1068,10 +1068,10 @@ async fn batch_actions_are_for_the_feature_group() {
     let batch = f.batch(&mut tx).await.unwrap();
     f.add(&mut tx, batch, &[a]).await.unwrap();
     let outsider = tx.env().with_user(7).with_company(f.company).unwrap();
-    for method in ["action_confirm", "action_assign", "action_cancel", "action_done", "action_add_transfers"] {
+    for method in ["action_confirm", "action_assign", "action_cancel", "action_done"] {
         let records = outsider.records("stock.picking.batch").unwrap().browse([batch]).unwrap();
         let error = tx
-            .savepoint(async move |tx| records.call::<(), erp_sdk::Value>(tx, method, ()).await)
+            .savepoint(async move |tx| records.call::<(), ()>(tx, method, ()).await)
             .await
             .unwrap_err();
         assert!(
@@ -1079,6 +1079,12 @@ async fn batch_actions_are_for_the_feature_group() {
             "{method}: {error:?}"
         );
     }
+    let records = outsider.records("stock.picking.batch").unwrap().browse([batch]).unwrap();
+    let error = tx
+        .savepoint(async move |tx| records.call::<(), Value>(tx, "action_add_transfers", ()).await)
+        .await
+        .unwrap_err();
+    assert!(matches!(error.kind(), ErrorKind::Access | ErrorKind::AccessDenied), "{error:?}");
     assert_eq!(batch_row(&mut tx, batch).await.0, "draft");
 }
 
