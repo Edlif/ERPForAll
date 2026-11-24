@@ -86,7 +86,7 @@ try {
   const arrived = want => {
     const url = new URL(location.href), form = url.searchParams.get("view_type") === "form" && document.querySelector("form.record-form") !== null;
     const there = want.kind === "form" ? form && url.searchParams.get("id") === want.id
-      : want.kind === "other-form" ? form && document.querySelector('button[aria-label^="Open Customer: "]') === null
+      : want.kind === "other-form" ? form && document.querySelector('button[aria-label^="Open Customer"]') === null
       : !url.searchParams.has("id") && document.querySelector(".list-table tbody tr") !== null;
     if (!there || window.__formOpenClick === undefined) return false;
     window.__formOpenPaint ??= performance.timeOrigin + performance.now();
@@ -119,7 +119,7 @@ try {
   const form = id => ({ kind: "form", id: String(id) }), list = { kind: "list" };
   const back = async want => { await page.goBack(); await reach(want); };
   const openRow = id => page.locator(`[data-record-open="${id}"]`).first();
-  const customer = () => page.getByRole("button", { name: /^Open Customer: / });
+  const customer = () => page.getByRole("button", { name: /^Open Customer(: |$)/ });
   for (let rep = 1; rep <= reps; rep++) {
     // a list row to its form: first in a fresh page (nothing cached), then again after going back
     for (const [name, id] of [["0", orders.zero], [String(lines.fifty), orders.fifty], [String(lines.many), orders.many]]) {
