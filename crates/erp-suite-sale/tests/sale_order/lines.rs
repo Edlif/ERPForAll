@@ -1069,6 +1069,10 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
             .expect_err("sales-only cannot create accounting documents");
         assert_eq!(denied.kind(), ErrorKind::Access, "{denied}");
         let order = order.with_env(env.with_user(clerk).with_company(world.company).unwrap());
+        assert_eq!(
+            order.cell(&mut tx, "invoice_count").await.unwrap(),
+            Cell::Int(0)
+        );
         let action: Value = order
             .call(&mut tx, "action_create_draft_invoice", ())
             .await
@@ -1131,6 +1135,76 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
             .unwrap()[0]
             .get(0);
         assert_eq!(count, 1);
+        // The count button and its way back: one invoice, shown to the clerk, hidden from sales.
+        assert_eq!(
+            order.cell(&mut tx, "invoice_count").await.unwrap(),
+            Cell::Int(1)
+        );
+        assert_eq!(
+            seller_order.cell(&mut tx, "invoice_count").await.unwrap(),
+            Cell::Int(0)
+        );
+        assert_eq!(
+            doc.cell(&mut tx, "sale_order_count").await.unwrap(),
+            Cell::Int(1)
+        );
+        let hidden = doc.with_env(env.with_user(seller).with_company(world.company).unwrap());
+        assert_eq!(
+            hidden.cell(&mut tx, "sale_order_count").await.unwrap(),
+            Cell::Int(0)
+        );
+        let none: Value = seller_order
+            .call(&mut tx, "action_view_invoice", ())
+            .await
+            .unwrap();
+        let Value::Map(none) = none else {
+            panic!("an action dictionary")
+        };
+        assert!(!format!("{:?}", none["domain"]).contains("Int("), "{none:?}");
+        let shown: Value = order
+            .call(&mut tx, "action_view_invoice", ())
+            .await
+            .unwrap();
+        let shown: Value = order
+            .call(&mut tx, "erp_normalize_action_result", (1_u64, shown))
+            .await
+            .expect("the web action normalizer accepts the invoices action");
+        let Value::Json(shown) = shown else {
+            panic!("a web action envelope")
+        };
+        assert_eq!(shown["result"]["kind"], "window");
+        assert_eq!(shown["result"]["model"], "account.move");
+        assert_eq!(shown["result"]["views"][0]["type"], "list");
+        assert_eq!(shown["result"]["views"][1]["type"], "form");
+        let back: Value = doc
+            .with_env(env.with_user(clerk).with_company(world.company).unwrap())
+            .call(&mut tx, "action_view_sale_orders", ())
+            .await
+            .unwrap();
+        let back: Value = order
+            .call(&mut tx, "erp_normalize_action_result", (1_u64, back))
+            .await
+            .expect("the web action normalizer accepts the sales orders action");
+        let Value::Json(back) = back else {
+            panic!("a web action envelope")
+        };
+        assert_eq!(back["result"]["model"], "sale.order");
+        // A second invoice for added quantity makes the count two, still one order.
+        write(
+            &mut tx,
+            &sale_line,
+            RawVals::new().set_cell("product_uom_qty", Cell::Decimal(Decimal::from(6))),
+        )
+        .await
+        .unwrap();
+        let _: Value = order
+            .call(&mut tx, "action_create_draft_invoice", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            order.cell(&mut tx, "invoice_count").await.unwrap(),
+            Cell::Int(2)
+        );
         tx.rollback().await.unwrap();
     });
 }
