@@ -984,7 +984,7 @@ fn module_toggle_items_validate_addon_names_publish_and_resolve_states() {
             .with_items(
                 vec![(
                     "stock".into(),
-                    vec![toggle_with_access.app("sale").unwrap()],
+                    vec![toggle_with_access.clone().app("sale").unwrap()],
                 )],
                 &installed,
                 |_| true,
