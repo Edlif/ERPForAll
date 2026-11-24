@@ -40,6 +40,12 @@ const SEQUENCE_CODE: &str = "stock.picking.batch";
 const MAX_MESSAGE: usize = 500;
 /// Fields only the batch's own actions write.
 const OWN_FIELDS: [&str; 3] = ["state", "validation_run", "validating"];
+/// The fields a done or cancelled batch may still change outside its own actions: none. It is the
+/// record of what was processed; the form shows every field read-only in those states.
+pub const FINAL_BATCH_WRITABLE: [&str; 0] = [];
+/// The final state among the batches `$1`, `done` before `cancel`.
+const FINAL_BATCHES: &str = "SELECT state FROM stock_picking_batch WHERE id = ANY($1) \
+     AND state IN ('done', 'cancel') ORDER BY state DESC LIMIT 1";
 
 fn current_user(ctx: &DefaultContext) -> Value {
     Value::Int(ctx.uid)
@@ -663,8 +669,9 @@ impl StockPickingBatch {
         sup.call(tx, records, (vals_list,)).await
     }
 
-    /// Status fields and the transfer list are changed by the actions only, and the operation type
-    /// and company of a batch that holds transfers do not change.
+    /// Status fields and the transfer list are changed by the actions only, the operation type
+    /// and company of a batch that holds transfers do not change, and a done or cancelled batch
+    /// changes only within [`FINAL_BATCH_WRITABLE`].
     #[method(override)]
     async fn write(
         this: &RecordSet<StockPickingBatch>,
@@ -681,6 +688,23 @@ impl StockPickingBatch {
                 ));
             }
             let records = this.as_records();
+            if !records.is_empty()
+                && let Some(field) = crate::done::outside(&vals, &FINAL_BATCH_WRITABLE)
+            {
+                tx.flush().await?;
+                if let Some(state) =
+                    crate::done::final_state(tx, FINAL_BATCHES, &records.ids()).await?
+                {
+                    records.check_access(tx, Operation::Write).await?;
+                    return Err(crate::done::fixed(
+                        tx,
+                        "stock.picking.batch",
+                        "batch transfer",
+                        &state,
+                        field,
+                    )?);
+                }
+            }
             if !records.is_empty()
                 && ["picking_type_id", "company_id"]
                     .iter()

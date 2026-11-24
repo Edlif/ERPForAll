@@ -340,7 +340,7 @@ pub fn view_type_contributions() -> [erp_sdk::views::ViewTypeContribution; 1] {
 #[cfg(feature = "test-support")]
 pub mod metadata_test_support {
     pub use crate::metadata::{
-        test_get_views, test_load_action, test_load_action_probed, test_load_action_views,
+        test_form_readonly, test_get_views, test_load_action, test_load_action_probed, test_load_action_views,
         test_load_client_action, test_load_menus, test_load_menus_probed,
         test_normalize_action_result,
     };

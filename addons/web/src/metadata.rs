@@ -4945,6 +4945,60 @@ pub async fn test_get_views(
     .await
 }
 
+/// Trusted test helper: every field of `model`'s default form, with whether the client shows it
+/// read-only on a record whose fields `names` hold the given values. The rule is the client's
+/// (`field-modifiers.ts`): the field's own read-only flag, or its `readonly` expression evaluated
+/// on the record. A field placed twice is read-only only when every placement is. An expression
+/// that reads a name missing from `names` fails the call.
+#[cfg(feature = "test-support")]
+pub async fn test_form_readonly(
+    env: &Env,
+    tx: &mut Transaction,
+    model: &str,
+    names: &[(&str, erp_sdk::expr::ExprValue)],
+) -> Result<BTreeMap<String, bool>> {
+    use erp_sdk::expr::{EvalContext, eval_ast, wire::ValidatedAst};
+    let form = Value::list([Value::False, Value::str("form")]);
+    let description = test_get_views(env, tx, model, vec![form], 32 * 1024 * 1024).await?;
+    let description = serde_json::to_value(&description)
+        .map_err(|e| Error::internal("The view description could not be encoded.").with_source(e))?;
+    let mut ctx = EvalContext::standard();
+    for (name, value) in names {
+        ctx.set(*name, value.clone());
+    }
+    let nodes = description["views"]
+        .as_array()
+        .and_then(|views| views.iter().find(|view| view["nodes"][0]["kind"] == "form"))
+        .and_then(|view| view["nodes"].as_array())
+        .ok_or_else(|| Error::internal(format!("{model} has no form view")))?;
+    let mut result = BTreeMap::new();
+    for node in nodes.iter().filter(|node| {
+        node["kind"] == "field" && node["field"]["model"].as_str() == Some(model)
+    }) {
+        let Some(name) = node["field"]["name"].as_str() else {
+            return Err(Error::internal("A form field node has no name."));
+        };
+        let own = description["fields"][model][name]["readonly"] == true;
+        let readonly = match &node["modifiers"]["readonly"] {
+            serde_json::Value::Null => own,
+            document => {
+                let bytes = serde_json::to_vec(document).map_err(|e| {
+                    Error::internal("A modifier could not be encoded.").with_source(e)
+                })?;
+                let ast = ValidatedAst::from_json(&bytes).map_err(|e| {
+                    Error::internal(format!("readonly of {name}: {}", e.message()))
+                })?;
+                let value = eval_ast(ast.as_expr(), &ctx)
+                    .map_err(|e| Error::internal(format!("readonly of {name}: {e}")))?;
+                value.is_truthy() || own
+            }
+        };
+        let entry = result.entry(name.to_owned()).or_insert(true);
+        *entry = *entry && readonly;
+    }
+    Ok(result)
+}
+
 /// Trusted test instrumentation: the actual menu result and executed static producer checkpoints.
 #[cfg(feature = "test-support")]
 pub async fn test_load_menus_probed(

@@ -170,6 +170,23 @@ pub enum StockError {
         /// `stock move` or `transfer`.
         what: &'static str,
     },
+    /// A write of a cancelled move, transfer or batch named a field outside its allow-list, or a
+    /// move was added to a cancelled transfer.
+    ///
+    /// ```
+    /// let error: erp_sdk::Error = erp_addon_stock::StockError::CancelledRecordFixed {
+    ///     what: "transfer",
+    ///     field: "Source Location".into(),
+    /// }
+    /// .into();
+    /// assert_eq!(error.kind(), erp_sdk::ErrorKind::UserError);
+    /// ```
+    CancelledRecordFixed {
+        /// `stock move`, `transfer` or `batch transfer`.
+        what: &'static str,
+        /// The label of the field named.
+        field: String,
+    },
     /// Validate named only transfers that are done already.
     AlreadyDone,
     /// Validate named a cancelled transfer.
@@ -340,6 +357,9 @@ impl fmt::Display for StockError {
                 f,
                 "A done {what} cannot be deleted: its stock has already moved."
             ),
+            Self::CancelledRecordFixed { what, field } => {
+                write!(f, "{field} of a cancelled {what} cannot be changed.")
+            }
             Self::AlreadyDone => f.write_str("Nothing to validate: the transfer was validated earlier."),
             Self::ValidateCancelled => f.write_str("A cancelled transfer cannot be validated."),
             Self::CancelDone => f.write_str("A done transfer cannot be cancelled."),
@@ -407,6 +427,7 @@ impl From<StockError> for erp_sdk::Error {
             | StockError::DoneLineChange
             | StockError::DoneRecordFixed { .. }
             | StockError::DoneDelete { .. }
+            | StockError::CancelledRecordFixed { .. }
             | StockError::AlreadyDone
             | StockError::ValidateCancelled
             | StockError::CancelDone

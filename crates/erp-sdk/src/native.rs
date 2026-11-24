@@ -207,8 +207,8 @@ pub mod expr {
     pub use erp_expr::ExprError;
     pub use erp_expr::wire;
     pub use erp_expr::{
-        EvalLimits, Expr, Literal, SourceParsePreflight, SubscriptKind, UnaryOp, parse,
-        parse_with_limits, source_preflight,
+        EvalContext, EvalLimits, Expr, ExprValue, Literal, SourceParsePreflight, SubscriptKind,
+        UnaryOp, eval_ast, parse, parse_with_limits, source_preflight,
     };
 }
 

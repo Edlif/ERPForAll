@@ -29,7 +29,10 @@
 //! product, locations, state and links for every caller, sudo included: a write naming a field
 //! outside [`DONE_MOVE_WRITABLE`] or [`DONE_PICKING_WRITABLE`] is refused by name, also when it comes
 //! as x2many commands; a move is not added to a done transfer (in the values or as the context
-//! default); done moves and transfers are not deleted; and no create, write or context default sets
+//! default); done moves and transfers are not deleted; a cancelled move and a cancelled transfer
+//! are fixed the same way (a cancelled transfer allows [`CANCELLED_PICKING_WRITABLE`]), and may be
+//! deleted. Cancel, validation and the batch actions write their own columns in SQL statements or
+//! within the allow-lists, so none of them meets these refusals; and no create, write or context default sets
 //! a move to done: validation is the only way there. Done lines were already refused by the line
 //! statements (`move_lines`).
 //!
@@ -62,7 +65,7 @@ use crate::warehouse_setup::without_defaults;
 
 /// The fields a done move may still change: descriptions, ordering and chain links, nothing that
 /// moves stock. The one allow-list of done moves.
-pub(crate) const DONE_MOVE_WRITABLE: [&str; 8] = [
+pub const DONE_MOVE_WRITABLE: [&str; 8] = [
     "description_picking_manual",
     "origin",
     "priority",
@@ -75,13 +78,26 @@ pub(crate) const DONE_MOVE_WRITABLE: [&str; 8] = [
 
 /// The fields a done transfer may still change: notes and bookkeeping, nothing that moves stock.
 /// The one allow-list of done transfers.
-pub(crate) const DONE_PICKING_WRITABLE: [&str; 6] = [
+pub const DONE_PICKING_WRITABLE: [&str; 6] = [
     "note",
     "origin",
     "user_id",
     "printed",
     "is_locked",
     "priority",
+];
+
+/// The fields a cancelled transfer may still change: those of a done one, and the batch link that
+/// only the batch actions write (`crate::batch::refuse_link`), so a cancelled batch lets its
+/// cancelled transfers go. A cancelled move keeps [`DONE_MOVE_WRITABLE`].
+pub const CANCELLED_PICKING_WRITABLE: [&str; 7] = [
+    "note",
+    "origin",
+    "user_id",
+    "printed",
+    "is_locked",
+    "priority",
+    "batch_id",
 ];
 
 /// The transfers of `$1` with their state, move count and backorder policy, locked first.
@@ -129,6 +145,11 @@ const PICKINGS_DONE: &str = "UPDATE stock_picking SET date_done = (now() AT TIME
 const DONE_MOVES: &str = "SELECT count(*) FROM stock_move WHERE id = ANY($1) AND state = 'done'";
 const DONE_PICKINGS: &str =
     "SELECT count(*) FROM stock_picking WHERE id = ANY($1) AND state = 'done'";
+/// The final state among the moves or transfers `$1`, `done` before `cancel`.
+const FINAL_MOVE: &str = "SELECT state FROM stock_move WHERE id = ANY($1) \
+     AND state IN ('done', 'cancel') ORDER BY state DESC LIMIT 1";
+const FINAL_PICKING: &str = "SELECT state FROM stock_picking WHERE id = ANY($1) \
+     AND state IN ('done', 'cancel') ORDER BY state DESC LIMIT 1";
 
 fn decode(e: impl std::error::Error + Send + Sync + 'static) -> Error {
     Error::db("A transfer, stock move or move line could not be read for validation.")
@@ -152,15 +173,34 @@ async fn count(tx: &mut Transaction, sql: &str, ids: &[i64]) -> Result<i64> {
         .map_err(decode)
 }
 
+/// The final state (`done` before `cancel`) among the rows `ids` of `sql`'s table, if any.
+pub(crate) async fn final_state(tx: &mut Transaction, sql: &str, ids: &[i64]) -> Result<Option<String>> {
+    match tx.query(sql, &[&ids]).await?.first() {
+        Some(row) => row.try_get(0).map(Some).map_err(decode),
+        None => Ok(None),
+    }
+}
+
+/// The refusal of `field` (a field name of `model`) on a record of `what` in the final `state`.
+pub(crate) fn fixed(tx: &Transaction, model: &str, what: &'static str, state: &str, field: &str) -> Result<Error> {
+    let field = label(tx, model, field)?;
+    Ok(if state == "done" {
+        StockError::DoneRecordFixed { what, field }
+    } else {
+        StockError::CancelledRecordFixed { what, field }
+    }
+    .into())
+}
+
 /// The first field `vals` names (as a value or as x2many commands) outside `writable`.
-fn outside<'a>(vals: &'a RawVals, writable: &[&str]) -> Option<&'a str> {
+pub(crate) fn outside<'a>(vals: &'a RawVals, writable: &[&str]) -> Option<&'a str> {
     vals.iter()
         .map(|(name, _)| name)
         .chain(vals.iter_commands().map(|(name, _)| name))
         .find(|name| !writable.contains(name))
 }
 
-/// Refuse a move create that adds a move to a done transfer (the state itself is refused for every
+/// Refuse a move create that adds a move to a done or cancelled transfer (the state itself is refused for every
 /// caller by the move guards). Runs after the create access check.
 pub(crate) async fn check_move_create(
     records: &Records,
@@ -179,18 +219,18 @@ pub(crate) async fn check_move_create(
             None => default_picking,
         })
         .collect();
-    if !pickings.is_empty() && count(tx, DONE_PICKINGS, &pickings).await? > 0 {
+    if pickings.is_empty() {
+        return Ok(());
+    }
+    if let Some(state) = final_state(tx, FINAL_PICKING, &pickings).await? {
         records.check_access(tx, Operation::Create).await?;
-        return Err(StockError::DoneRecordFixed {
-            what: "transfer",
-            field: label(tx, "stock.picking", "move_ids")?,
-        }
-        .into());
+        return Err(fixed(tx, "stock.picking", "transfer", &state, "move_ids")?);
     }
     Ok(())
 }
 
-/// Refuse a move write that moves a move into a done transfer or changes a done move outside [`DONE_MOVE_WRITABLE`]. Runs after the write access check.
+/// Refuse a move write that moves a move into a done or cancelled transfer, or changes a done or
+/// cancelled move outside [`DONE_MOVE_WRITABLE`]. Runs after the write access check.
 pub(crate) async fn check_move_write(
     records: &Records,
     tx: &mut Transaction,
@@ -200,32 +240,24 @@ pub(crate) async fn check_move_write(
         return Ok(());
     }
     if let Some(picking) = vals.get("picking_id").and_then(cell_id)
-        && count(tx, DONE_PICKINGS, &[picking]).await? > 0
+        && let Some(state) = final_state(tx, FINAL_PICKING, &[picking]).await?
     {
         records.check_access(tx, Operation::Write).await?;
-        return Err(StockError::DoneRecordFixed {
-            what: "transfer",
-            field: label(tx, "stock.picking", "move_ids")?,
-        }
-        .into());
+        return Err(fixed(tx, "stock.picking", "transfer", &state, "move_ids")?);
     }
     let Some(field) = outside(vals, &DONE_MOVE_WRITABLE) else {
         return Ok(());
     };
     tx.flush().await?;
-    if count(tx, DONE_MOVES, &records.ids()).await? > 0 {
+    if let Some(state) = final_state(tx, FINAL_MOVE, &records.ids()).await? {
         records.check_access(tx, Operation::Write).await?;
-        return Err(StockError::DoneRecordFixed {
-            what: "stock move",
-            field: label(tx, "stock.move", field)?,
-        }
-        .into());
+        return Err(fixed(tx, "stock.move", "stock move", &state, field)?);
     }
     Ok(())
 }
 
-/// Refuse a write of a done transfer outside [`DONE_PICKING_WRITABLE`]. Runs after the write access
-/// check.
+/// Refuse a write of a done transfer outside [`DONE_PICKING_WRITABLE`] and of a cancelled one
+/// outside [`CANCELLED_PICKING_WRITABLE`]. Runs after the write access check.
 pub(crate) async fn check_picking_write(
     records: &Records,
     tx: &mut Transaction,
@@ -238,15 +270,17 @@ pub(crate) async fn check_picking_write(
         return Ok(());
     };
     tx.flush().await?;
-    if count(tx, DONE_PICKINGS, &records.ids()).await? > 0 {
-        records.check_access(tx, Operation::Write).await?;
-        return Err(StockError::DoneRecordFixed {
-            what: "transfer",
-            field: label(tx, "stock.picking", field)?,
-        }
-        .into());
-    }
-    Ok(())
+    let field = match final_state(tx, FINAL_PICKING, &records.ids()).await? {
+        None => return Ok(()),
+        Some(state) if state == "done" => (state, field),
+        // the batch link is the one field a cancelled transfer allows beyond a done one
+        Some(state) => match outside(vals, &CANCELLED_PICKING_WRITABLE) {
+            Some(field) => (state, field),
+            None => return Ok(()),
+        },
+    };
+    records.check_access(tx, Operation::Write).await?;
+    Err(fixed(tx, "stock.picking", "transfer", &field.0, field.1)?)
 }
 
 /// Refuse deleting done moves (`model` `stock.move`) or done transfers (`stock.picking`). Runs

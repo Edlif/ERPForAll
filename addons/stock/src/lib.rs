@@ -120,6 +120,9 @@ mod confirm;
 mod backorder;
 mod backorder_choice;
 mod done;
+/// What a done or cancelled move or transfer may still change; the forms keep every other field
+/// read-only in those states.
+pub use done::{CANCELLED_PICKING_WRITABLE, DONE_MOVE_WRITABLE, DONE_PICKING_WRITABLE};
 
 // The transfer's own rules: defaults and reference from the operation type, cancel, delete.
 mod picking_flow;
