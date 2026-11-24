@@ -986,7 +986,13 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             text("Guarded note")
         );
         // The vendor of the other company adds no notice for the narrow caller, its note for the wide one.
-        let narrow_foreign = record_as(&tx, narrow_buyer, &[company], "purchase.order", foreign_order);
+        let narrow_foreign = record_as(
+            &tx,
+            narrow_buyer,
+            &[company],
+            "purchase.order",
+            foreign_order,
+        );
         let wide_foreign = record_as(
             &tx,
             wide_buyer,

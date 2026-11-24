@@ -1941,7 +1941,9 @@ fn new_record_default_of_a_translatable_char_reads_back_the_text() {
     run(async {
         let f = fixture().await;
         let mut tx = f.orm.begin(f.admin).await.unwrap();
-        let env = tx.env().with_context([("default_name", Value::str("Defaulted"))]);
+        let env = tx
+            .env()
+            .with_context([("default_name", Value::str("Defaulted"))]);
         let reports = env.records("reporting.report").unwrap();
         let new = tx
             .new_record(&reports, erp_orm::RawVals::new(), None, None)
