@@ -73,6 +73,139 @@ interface AppGroupInfo {
   blockGroups: SettingBlockGroupInfo[];
 }
 
+const UNINSTALL_UNAVAILABLE = "Uninstalling this addon from this page is not available yet.";
+
+function confirmUninstallDialog(
+  rpc: RpcClient,
+  addon: { name: string; label: string },
+  impact: Record<string, unknown>,
+  opener: HTMLElement,
+  onSuccess: () => Promise<void> | void,
+  onError: (error: unknown) => Promise<void> | void
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const dialog = el("dialog", undefined, "addon-uninstall-dialog");
+    // Decoded before anything is shown: an impact without its fingerprint cannot be confirmed.
+    const fingerprint = text(impact["fingerprint"], "uninstall impact fingerprint");
+    const heading = el("h2", `Uninstall ${addon.label}?`, "addon-uninstall-title");
+    heading.id = "addon-uninstall-heading";
+    dialog.setAttribute("aria-labelledby", heading.id);
+
+    const warning = el("div", "Uninstalling modules can be risky. We recommend testing on a staging environment first. All data associated with these modules will be permanently deleted.", "alert alert-warning addon-uninstall-warning");
+
+    const body = el("div", undefined, "addon-uninstall-body");
+    body.append(warning);
+
+    const resolved = array(impact["resolved"], "resolved modules").map(item => text(item, "resolved module"));
+    const modulesSection = el("div", undefined, "addon-impact-section");
+    modulesSection.append(el("h3", "Affected modules:", "addon-impact-subtitle"));
+    const moduleList = el("ul", undefined, "addon-impact-modules");
+    for (const mod of resolved) {
+      moduleList.append(el("li", mod));
+    }
+    modulesSection.append(moduleList);
+    body.append(modulesSection);
+
+    const droppedModels = array(impact["dropped_models"], "dropped models").map(item => object(item));
+    if (droppedModels.length > 0) {
+      const modelsSection = el("div", undefined, "addon-impact-section");
+      modelsSection.append(el("h3", "Models and records to be deleted:", "addon-impact-subtitle"));
+      const table = el("table", undefined, "addon-impact-models-table");
+      const thead = el("thead");
+      const headerRow = el("tr");
+      headerRow.append(el("th", "Model"), el("th", "Table"), el("th", "# Records"));
+      thead.append(headerRow);
+      const tbody = el("tbody");
+      for (const m of droppedModels) {
+        const tr = el("tr");
+        tr.append(
+          el("td", text(m["model"], "dropped model name")),
+          el("td", text(m["table"], "dropped model table")),
+          el("td", text(m["row_count"], "dropped model record count"), "numeric")
+        );
+        tbody.append(tr);
+      }
+      table.append(thead, tbody);
+      modelsSection.append(table);
+      body.append(modelsSection);
+    }
+
+    const targetCount = text(impact["target_count"], "uninstall impact target count");
+    if (targetCount) {
+      body.append(el("p", `Total affected records: ${targetCount}`, "addon-impact-summary muted"));
+    }
+
+    const footer = el("footer", undefined, "addon-uninstall-footer");
+    const cancelBtn = button("Cancel", () => dialog.close(), "btn btn-secondary addon-uninstall-cancel");
+    let subPending = false;
+    let settled = false;
+    const confirmBtn = button("Confirm Uninstall", async () => {
+      if (subPending) return;
+      subPending = true;
+      cancelBtn.disabled = true;
+      confirmBtn.disabled = true;
+      try {
+        await rpc.post("/erp/module/uninstall", {
+          modules: [addon.name],
+          impact: fingerprint,
+        }, { write: true });
+      } catch (error) {
+        settled = true;
+        dialog.close();
+        await onError(error);
+        reject(error);
+        return;
+      }
+      settled = true;
+      dialog.close();
+      try {
+        await onSuccess();
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    }, "danger addon-uninstall-confirm");
+
+    footer.append(cancelBtn, confirmBtn);
+    dialog.append(heading, body, footer);
+
+    dialog.addEventListener("keydown", event => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!subPending) dialog.close();
+      } else if (event.key === "Tab") {
+        const focusable = [cancelBtn, confirmBtn].filter(b => !b.disabled);
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!first || !last) return;
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    });
+
+    // The browser's own Escape handling too: the dialog stays open while the uninstall request runs.
+    dialog.addEventListener("cancel", event => { if (subPending) event.preventDefault(); });
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      if (opener.isConnected) opener.focus();
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    });
+
+    document.body.append(dialog);
+    dialog.showModal();
+    cancelBtn.focus();
+  });
+}
+
 export async function settingsView(
   host: HTMLElement,
   rpc: RpcClient,
@@ -88,6 +221,7 @@ export async function settingsView(
   options: SettingsViewOptions = {}
 ): Promise<ServiceController> {
   let scope: Record<string, unknown> = { kind: "global" }, revision = "", baseline = new Map<string, unknown>(), edits = new Map<string, unknown>(), pending = false, ambiguous = false, generation = 0;
+  let currentRegistry = expectedRegistry;
   let declarations: Record<string, unknown>[] = [];
   // An app without a root
   // menu takes its addon's manifest icon from the catalogue, read once; when that read fails it keeps its letter.
@@ -409,6 +543,63 @@ export async function settingsView(
           const kind = text(declaration["kind"], "setting type");
           const item = itemByKey.get(key);
           if (item) {
+            if (item.kind === "module") {
+              const row = el("div", undefined, "setting-block settings-module-toggle");
+              row.dataset["settingKey"] = key;
+              row.dataset["moduleAddon"] = item.addon;
+              row.dataset["moduleState"] = item.state;
+              const unavailable = item.state === "not_available";
+              if (unavailable) row.classList.add("is-unavailable");
+              const leftPane = el("div", undefined, "setting-left-pane");
+              const rightPane = el("div", undefined, "setting-right-pane");
+              const checkbox = el("input");
+              checkbox.type = "checkbox";
+              checkbox.id = `setting-${key}`;
+              checkbox.name = key;
+              checkbox.checked = item.state === "installed";
+              if (unavailable) {
+                checkbox.disabled = true;
+                checkbox.dataset["readonly"] = "true";
+              }
+              checkbox.addEventListener("change", () => {
+                const wantInstall = checkbox.checked;
+                // Keep the confirmed server state until the install or uninstall completes.
+                checkbox.checked = item.state === "installed";
+                if (disposed || pending || unavailable) return;
+                run(() => toggleModule(item, wantInstall, checkbox));
+              });
+              const toggleLabel = labelled("", checkbox);
+              toggleLabel.classList.add("settings-toggle");
+              leftPane.append(toggleLabel);
+              const titleRow = el("div", undefined, "setting-title-row");
+              const labelEl = el("label", item.label, "setting-label-text");
+              labelEl.htmlFor = checkbox.id;
+              titleRow.append(labelEl);
+              rightPane.append(titleRow);
+              let helpEl: HTMLElement | undefined;
+              let helpText: string | undefined;
+              if (unavailable) {
+                helpText = `Not available in this server (${item.addon}).`;
+                helpEl = el("div", helpText, "setting-help text-muted");
+                helpEl.id = `setting-help-${key}`;
+                checkbox.setAttribute("aria-describedby", helpEl.id);
+                rightPane.append(helpEl);
+              }
+              row.append(leftPane, rightPane);
+              blocksContainer.append(row);
+              infoBox = undefined;
+              const info: SettingBlockInfo = {
+                element: row,
+                titleEl: labelEl,
+                ...(helpEl ? { helpEl, helpText } : {}),
+                labelText: item.label,
+                keyText: key,
+                searchText: item.addon,
+              };
+              blockInfos.push(info);
+              currentBlockInfos.push(info);
+              continue;
+            }
             const row = el("div", undefined, "setting-block settings-panel-item");
             row.dataset["settingKey"] = key;
             const body = el("div", undefined, "setting-right-pane");
@@ -602,9 +793,10 @@ export async function settingsView(
     }
   };
 
-  const describe = async (immutableScope: Record<string, unknown>) => {
+  const describe = async (immutableScope: Record<string, unknown>, acceptNewRegistry = false) => {
     const description = object(await rpc.call("ir.config.setting", "erp_describe", { scope: immutableScope, context }));
-    if (description["wire_major"] !== 1 || expectedRegistry !== undefined && description["registry_version"] !== expectedRegistry) throw new ClientError("unsupported", "Settings changed. Reload the application.");
+    if (description["wire_major"] !== 1 || currentRegistry !== undefined && !acceptNewRegistry && description["registry_version"] !== currentRegistry) throw new ClientError("unsupported", "Settings changed. Reload the application.");
+    if (acceptNewRegistry && currentRegistry !== undefined) currentRegistry = text(description["registry_version"], "settings registry version");
     checkScope(description["scope"], immutableScope);
     const nextDeclarations = array(description["declarations"], "setting declarations").map(value => object(value));
     const keys = nextDeclarations.map(value => text(value["key"], "setting key"));
@@ -620,9 +812,9 @@ export async function settingsView(
     return { nextDeclarations, nextItems, keys, apps };
   };
 
-  const load = async (requested: Record<string, unknown>, entry = false, preferredApp?: string): Promise<void> => {
+  const load = async (requested: Record<string, unknown>, entry = false, preferredApp?: string, acceptNewRegistry = false): Promise<void> => {
     const request = ++generation;
-    let immutableScope = { ...requested }, current = await describe(immutableScope);
+    let immutableScope = { ...requested }, current = await describe(immutableScope, acceptNewRegistry);
     appsByScope.set(scopeKey(immutableScope), current.apps);
     const alternate = scopeChoices.find(choice => choice.value !== scopeKey(immutableScope));
     if (entry && alternate) {
@@ -654,6 +846,51 @@ export async function settingsView(
     if (disposed || request !== generation) return;
     if (preferredApp) selectedApp = preferredApp;
     declarations = nextDeclarations; items = nextItems; baseline = nextValues; revision = nextRevision; scope = immutableScope; showScope(scopeKey(scope)); edits.clear(); ambiguous = false; draw();
+  };
+
+  const toggleModule = async (item: Extract<SettingsItem, { kind: "module" }>, install: boolean, opener: HTMLElement): Promise<void> => {
+    await operation(async () => {
+      if (edits.size && await choose("Unsaved changes", "Discard changes before installing or uninstalling an addon?", ["Discard", "Cancel"]) !== "Discard") return;
+      if (install) {
+        if (await choose("Install addon?", `Install ${item.label} and its dependencies?`, ["Install", "Cancel"]) !== "Install") return;
+        try {
+          await rpc.post("/erp/module/install", { modules: [item.addon] }, { write: true });
+          await load(scope, false, selectedApp ?? undefined, true);
+          if (!disposed) notice(`${item.label} installed.`);
+        } catch (error) {
+          notice("Installation status may have changed. Reloading settings…");
+          await load(scope, false, selectedApp ?? undefined, true).catch(() => {});
+          throw error;
+        }
+        return;
+      }
+      let impact: Record<string, unknown>;
+      try {
+        impact = object(await rpc.call("ir.module.module", "erp_preview_uninstall", { modules: [item.addon], context }));
+      } catch (error) {
+        if (error instanceof ClientError && error.kind === "validation") { notice(UNINSTALL_UNAVAILABLE); return; }
+        notice(`Uninstall preview failed: ${(error as Error).message || "Unable to compute uninstall impact."}`);
+        throw error;
+      }
+      await confirmUninstallDialog(
+        rpc,
+        { name: item.addon, label: item.label },
+        impact,
+        opener,
+        async () => {
+          await load(scope, false, selectedApp ?? undefined, true);
+          if (!disposed) notice(`${item.label} uninstalled.`);
+        },
+        async (error) => {
+          if (error instanceof ClientError && (error.status === 409 || (error as { kind?: string }).kind === "conflict")) {
+            notice("Database state changed since preview. A fresh confirmation is required.");
+          } else {
+            notice("Uninstall status may have changed. Reloading settings…");
+          }
+          await load(scope, false, selectedApp ?? undefined, true).catch(() => {});
+        }
+      );
+    });
   };
 
   const save = async (): Promise<void> => {
@@ -802,8 +1039,6 @@ function addonRow(raw: unknown): AddonRow {
     ...(addon["icon"] === undefined ? {} : { icon: text(addon["icon"], "addon icon") }),
   };
 }
-
-const UNINSTALL_UNAVAILABLE = "Uninstalling this addon from this page is not available yet.";
 
 export async function addonsView(
   host: HTMLElement,
@@ -1110,130 +1345,25 @@ export async function addonsView(
     }
   };
 
-  const confirmUninstall = (row: AddonRow, impact: Record<string, unknown>, opener: HTMLElement): Promise<void> => {
-    return new Promise<void>((resolve, reject) => {
-      const dialog = el("dialog", undefined, "addon-uninstall-dialog");
-      // Decoded before anything is shown: an impact without its fingerprint cannot be confirmed.
-      const fingerprint = text(impact["fingerprint"], "uninstall impact fingerprint");
-      const heading = el("h2", `Uninstall ${row.label}?`, "addon-uninstall-title");
-      heading.id = "addon-uninstall-heading";
-      dialog.setAttribute("aria-labelledby", heading.id);
-
-      const warning = el("div", "Uninstalling modules can be risky. We recommend testing on a staging environment first. All data associated with these modules will be permanently deleted.", "alert alert-warning addon-uninstall-warning");
-
-      const body = el("div", undefined, "addon-uninstall-body");
-      body.append(warning);
-
-      const resolved = array(impact["resolved"], "resolved modules").map(item => text(item, "resolved module"));
-      const modulesSection = el("div", undefined, "addon-impact-section");
-      modulesSection.append(el("h3", "Affected modules:", "addon-impact-subtitle"));
-      const moduleList = el("ul", undefined, "addon-impact-modules");
-      for (const mod of resolved) {
-        moduleList.append(el("li", mod));
+  const confirmUninstall = (row: AddonRow, impact: Record<string, unknown>, opener: HTMLElement): Promise<void> =>
+    confirmUninstallDialog(
+      rpc,
+      row,
+      impact,
+      opener,
+      () => {
+        notice("Addon uninstalled. Reloading the application…");
+        window.location.reload();
+      },
+      async (error) => {
+        if (error instanceof ClientError && (error.status === 409 || (error as { kind?: string }).kind === "conflict")) {
+          notice("Database state changed since preview. A fresh confirmation is required.");
+        } else {
+          notice("Uninstall status may have changed. Reload the catalog before trying again.");
+        }
+        await render();
       }
-      modulesSection.append(moduleList);
-      body.append(modulesSection);
-
-      const droppedModels = array(impact["dropped_models"], "dropped models").map(item => object(item));
-      if (droppedModels.length > 0) {
-        const modelsSection = el("div", undefined, "addon-impact-section");
-        modelsSection.append(el("h3", "Models and records to be deleted:", "addon-impact-subtitle"));
-        const table = el("table", undefined, "addon-impact-models-table");
-        const thead = el("thead");
-        const headerRow = el("tr");
-        headerRow.append(el("th", "Model"), el("th", "Table"), el("th", "# Records"));
-        thead.append(headerRow);
-        const tbody = el("tbody");
-        for (const m of droppedModels) {
-          const tr = el("tr");
-          tr.append(
-            el("td", text(m["model"], "dropped model name")),
-            el("td", text(m["table"], "dropped model table")),
-            el("td", text(m["row_count"], "dropped model record count"), "numeric")
-          );
-          tbody.append(tr);
-        }
-        table.append(thead, tbody);
-        modelsSection.append(table);
-        body.append(modelsSection);
-      }
-
-      const targetCount = text(impact["target_count"], "uninstall impact target count");
-      if (targetCount) {
-        body.append(el("p", `Total affected records: ${targetCount}`, "addon-impact-summary muted"));
-      }
-
-      const footer = el("footer", undefined, "addon-uninstall-footer");
-      const cancelBtn = button("Cancel", () => dialog.close(), "btn btn-secondary addon-uninstall-cancel");
-      let subPending = false;
-      let settled = false;
-      const confirmBtn = button("Confirm Uninstall", async () => {
-        if (subPending) return;
-        subPending = true;
-        cancelBtn.disabled = true;
-        confirmBtn.disabled = true;
-        try {
-          await rpc.post("/erp/module/uninstall", {
-            modules: [row.name],
-            impact: fingerprint,
-          }, { write: true });
-          settled = true;
-          dialog.close();
-          notice("Addon uninstalled. Reloading the application…");
-          window.location.reload();
-          resolve();
-        } catch (error) {
-          settled = true;
-          dialog.close();
-          if (error instanceof ClientError && (error.status === 409 || (error as { kind?: string }).kind === "conflict")) {
-            notice("Database state changed since preview. A fresh confirmation is required.");
-          } else {
-            notice("Uninstall status may have changed. Reload the catalog before trying again.");
-          }
-          await render();
-          reject(error);
-        }
-      }, "danger addon-uninstall-confirm");
-
-      footer.append(cancelBtn, confirmBtn);
-      dialog.append(heading, body, footer);
-
-      dialog.addEventListener("keydown", event => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          if (!subPending) dialog.close();
-        } else if (event.key === "Tab") {
-          const focusable = [cancelBtn, confirmBtn].filter(b => !b.disabled);
-          if (focusable.length === 0) return;
-          const first = focusable[0];
-          const last = focusable[focusable.length - 1];
-          if (!first || !last) return;
-          if (event.shiftKey && document.activeElement === first) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault();
-            first.focus();
-          }
-        }
-      });
-
-      // The browser's own Escape handling too: the dialog stays open while the uninstall request runs.
-      dialog.addEventListener("cancel", event => { if (subPending) event.preventDefault(); });
-      dialog.addEventListener("close", () => {
-        dialog.remove();
-        if (opener.isConnected) opener.focus();
-        if (!settled) {
-          settled = true;
-          resolve();
-        }
-      });
-
-      document.body.append(dialog);
-      dialog.showModal();
-      cancelBtn.focus();
-    });
-  };
+    );
 
   const card = (row: AddonRow): HTMLElement => {
     const tile = el("article", undefined, "addon-card addon-tile");

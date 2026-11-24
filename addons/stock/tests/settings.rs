@@ -289,28 +289,28 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
             "{key} must be an info row"
         );
     }
-    for (key, expected_label) in [
+    for (key, expected_label, expected_addon) in [
         (
             "stock.module_product_expiry",
-            "Set up expiry dates in Addons",
+            "Expiry dates",
+            "product_expiry",
         ),
-        ("stock.module_stock_sms", "Set up text delivery in Addons"),
-        ("stock.module_delivery", "Set up carriers in Addons"),
+        ("stock.module_stock_sms", "Text delivery", "stock_sms"),
+        ("stock.module_delivery", "Carriers", "delivery"),
         (
             "stock.module_stock_dropshipping",
-            "Set up direct supplier delivery in Addons",
+            "Direct supplier delivery",
+            "stock_dropshipping",
         ),
     ] {
         let item = items.iter().find(|i| i.key() == key).expect(key);
-        assert!(
-            matches!(
-                item.kind(),
-                erp_sdk::settings::PanelItemKind::Link(
-                    erp_sdk::settings::LinkTarget::Action { .. }
-                )
-            ),
-            "{key} must be an action link"
-        );
+        match item.kind() {
+            erp_sdk::settings::PanelItemKind::Module { addon, .. } => {
+                assert_eq!(addon, expected_addon, "{key} addon");
+            }
+            other => panic!("{key} must be a module toggle, got {other:?}"),
+        }
         assert_eq!(item.label(), expected_label);
+        assert_eq!(item.read_groups(), ["base.group_system"]);
     }
 }

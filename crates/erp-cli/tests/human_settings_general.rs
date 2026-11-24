@@ -17,7 +17,7 @@ use erp_sdk::settings::{
     LinkTarget, PanelItemDecl, PanelItemKind, PanelItemValue, ScopeKind, SettingsScope,
 };
 use erp_sdk::views::wire::{
-    SettingValue, SettingsDescription, SettingsItem, SettingsLinkTarget, WireId,
+    ModuleToggleState, SettingValue, SettingsDescription, SettingsItem, SettingsLinkTarget, WireId,
 };
 use erp_sdk::{Env, Value};
 use std::sync::Arc;
@@ -43,7 +43,19 @@ const PROBE_REFUSED_AFTER_FAILED_STATEMENT: u8 = 1;
 const PROBE_FAILS: u8 = 2;
 const PROBE_WRONG_KIND: u8 = 3;
 const PROBE_RECORD_LINK_WRONG_KIND: u8 = 4;
+const PROBE_MODULE_KEYS: [&str; 3] = [
+    "base.test_mod_installed",
+    "base.test_mod_not_available",
+    "base.test_mod_not_installed",
+];
+fn linked_uninstalled_addon() -> String {
+    erp_sdk::linked_addon_names()
+        .into_iter()
+        .find(|name| name != "base" && name != "uom")
+        .expect("at least one linked addon besides base and uom")
+}
 fn probe_items() -> erp_sdk::Result<Vec<PanelItemDecl>> {
+    let not_installed = linked_uninstalled_addon();
     Ok(vec![
         PanelItemDecl::info("base.test_probe", "Probe")?
             .block("Probe")?
@@ -59,6 +71,23 @@ fn probe_items() -> erp_sdk::Result<Vec<PanelItemDecl>> {
         PanelItemDecl::info("base.test_company_only", "Company only")?
             .scope(ScopeKind::Company)
             .access(&["base.group_system"])?,
+        PanelItemDecl::module_toggle("base.test_mod_installed", "Base module", "base")?
+            .block("Probe")?
+            .access(&["base.group_system"])?,
+        PanelItemDecl::module_toggle(
+            "base.test_mod_not_installed",
+            "Linked uninstalled module",
+            &not_installed,
+        )?
+        .block("Probe")?
+        .access(&["base.group_system"])?,
+        PanelItemDecl::module_toggle(
+            "base.test_mod_not_available",
+            "Unlinked module",
+            "unlinked_test_addon",
+        )?
+        .block("Probe")?
+        .access(&["base.group_system"])?,
     ])
 }
 fn probe<'a>(
@@ -110,7 +139,9 @@ fn menu(xmlid: &str) -> LinkTarget {
 }
 fn item<'a>(description: &'a SettingsDescription, key: &str) -> Option<&'a SettingsItem> {
     description.items.iter().find(|item| match item {
-        SettingsItem::Info { key: k, .. } | SettingsItem::Link { key: k, .. } => k == key,
+        SettingsItem::Info { key: k, .. }
+        | SettingsItem::Link { key: k, .. }
+        | SettingsItem::Module { key: k, .. } => k == key,
         other => panic!("unknown item {other:?}"),
     })
 }
@@ -119,7 +150,9 @@ fn keys(description: &SettingsDescription) -> Vec<&str> {
         .items
         .iter()
         .map(|item| match item {
-            SettingsItem::Info { key, .. } | SettingsItem::Link { key, .. } => key.as_str(),
+            SettingsItem::Info { key, .. }
+            | SettingsItem::Link { key, .. }
+            | SettingsItem::Module { key, .. } => key.as_str(),
             other => panic!("unknown item {other:?}"),
         })
         // This suite inventories the General overview and its private probes; jobs policy has its own suite.
@@ -368,9 +401,33 @@ async fn general_section() {
         .copied()
         .filter(|key| !matches!(*key, "base.company_info" | "base.company_update"))
         .chain(["base.test_probe", "base.test_record_link"])
+        .chain(PROBE_MODULE_KEYS)
         .collect();
     expected_keys.sort_unstable();
     assert_eq!(keys(&initial), expected_keys);
+    // Module toggle items resolve installed, linked-but-uninstalled, and unlinked states accurately.
+    let expected_uninstalled = linked_uninstalled_addon();
+    for (key, expected_addon, expected_state) in [
+        ("base.test_mod_installed", "base", ModuleToggleState::Installed),
+        (
+            "base.test_mod_not_installed",
+            expected_uninstalled.as_str(),
+            ModuleToggleState::NotInstalled,
+        ),
+        (
+            "base.test_mod_not_available",
+            "unlinked_test_addon",
+            ModuleToggleState::NotAvailable,
+        ),
+    ] {
+        match item(&initial, key) {
+            Some(SettingsItem::Module { addon, state, .. }) => {
+                assert_eq!(addon, expected_addon, "{key}");
+                assert_eq!(*state, expected_state, "{key}");
+            }
+            other => panic!("expected module toggle for {key}, got {other:?}"),
+        }
+    }
     // A fresh database: no active internal user (only the inactive `__system__`), one language, one company.
     for (key, sql, singular, plural, fresh) in [
         (
@@ -578,6 +635,7 @@ async fn general_section() {
         .iter()
         .copied()
         .chain(["base.test_probe", "base.test_record_link"])
+        .chain(PROBE_MODULE_KEYS)
         .collect();
     expected_keys.sort_unstable();
     assert_eq!(keys(&global), expected_keys);
@@ -692,6 +750,7 @@ async fn general_section() {
             "base.test_probe",
             "base.test_record_link",
         ])
+        .chain(PROBE_MODULE_KEYS)
         .collect();
     expected_keys.sort_unstable();
     assert_eq!(keys(&scoped), expected_keys);
@@ -774,6 +833,7 @@ async fn general_section() {
         .unwrap();
     let mut expected_keys = BASE_KEYS.to_vec();
     expected_keys.push("base.test_record_link");
+    expected_keys.extend(PROBE_MODULE_KEYS);
     expected_keys.sort_unstable();
     assert_eq!(keys(&refused), expected_keys);
     assert_eq!(

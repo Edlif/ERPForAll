@@ -627,9 +627,28 @@ fn inventory_settings_denials_do_not_disclose_key_existence() {
         }
         tx.rollback().await.unwrap();
         drop(tx);
-        // Inventory managers read company values but cannot save them.
+        // Inventory managers read company values but cannot save them and do not see admin module toggles.
         let mut tx = orm.begin(uid).await.unwrap();
         let env = tx.env().with_company(company).unwrap();
+        let manager_desc = describe(&env, &mut tx, company_scope(company))
+            .await
+            .unwrap();
+        let manager_json = serde_json::to_value(&manager_desc).unwrap();
+        for key in [
+            "stock.module_product_expiry",
+            "stock.module_stock_sms",
+            "stock.module_delivery",
+            "stock.module_stock_dropshipping",
+        ] {
+            assert!(
+                !manager_json["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|i| i["key"] == key),
+                "non-admin stock manager must not see {key}"
+            );
+        }
         read_values(
             &env,
             &mut tx,
@@ -838,17 +857,18 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
             route["detail"],
             "Unavailable until a later release supplies route activation."
         );
-        let action = super::security::xid(&orm, "stock", "inventory_addons_action").await;
-        for (key, label) in [
+        for (key, label, addon) in [
             (
                 "stock.module_product_expiry",
-                "Set up expiry dates in Addons",
+                "Expiry dates",
+                "product_expiry",
             ),
-            ("stock.module_stock_sms", "Set up text delivery in Addons"),
-            ("stock.module_delivery", "Set up carriers in Addons"),
+            ("stock.module_stock_sms", "Text delivery", "stock_sms"),
+            ("stock.module_delivery", "Carriers", "delivery"),
             (
                 "stock.module_stock_dropshipping",
-                "Set up direct supplier delivery in Addons",
+                "Direct supplier delivery",
+                "stock_dropshipping",
             ),
         ] {
             let item = json["items"]
@@ -857,9 +877,20 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
                 .iter()
                 .find(|i| i["key"] == key)
                 .unwrap();
-            assert_eq!(item["kind"], "link");
+            assert_eq!(item["kind"], "module");
             assert_eq!(item["label"], label);
-            assert_eq!(item["target"]["id"], action);
+            assert_eq!(item["addon"], addon);
+            assert_eq!(item["state"], "not_available");
+            let error = write_values(
+                &env,
+                &mut tx,
+                company_scope(a),
+                "1".into(),
+                vec![(key.into(), Value::Bool(true))],
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Access);
         }
         for (key, label) in [
             ("stock.module_stock_fleet", "Transport"),
