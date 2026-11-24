@@ -1053,6 +1053,48 @@ fn short_sales_delivery(always: bool, ask: bool) {
             .unwrap()
             .browse([picking_id])
             .unwrap();
+        // The Delivery button and the way back from the transfer.
+        assert_eq!(
+            order.cell(&mut tx, "delivery_count").await.unwrap(),
+            Cell::Int(1)
+        );
+        assert_eq!(
+            picking.cell(&mut tx, "sale_order_count").await.unwrap(),
+            Cell::Int(1)
+        );
+        let seller = order.with_env(env.with_user(salesperson).with_company(world.company).unwrap());
+        assert_eq!(
+            seller.cell(&mut tx, "delivery_count").await.unwrap(),
+            Cell::Int(0),
+            "a salesperson without Inventory rights sees no transfers"
+        );
+        let shown: Value = order
+            .call(&mut tx, "action_view_delivery", ())
+            .await
+            .unwrap();
+        let shown: Value = order
+            .call(&mut tx, "erp_normalize_action_result", (1_u64, shown))
+            .await
+            .expect("the web action normalizer accepts the delivery action");
+        let Value::Json(shown) = shown else {
+            panic!("a web action envelope")
+        };
+        assert_eq!(shown["result"]["kind"], "current_window");
+        assert_eq!(shown["result"]["model"], "stock.picking");
+        assert_eq!(shown["result"]["domain"][0][2][0], picking_id);
+        let back: Value = picking
+            .call(&mut tx, "action_view_sale_order", ())
+            .await
+            .unwrap();
+        let back: Value = picking
+            .call(&mut tx, "erp_normalize_action_result", (1_u64, back))
+            .await
+            .expect("the web action normalizer accepts the sales order action");
+        let Value::Json(back) = back else {
+            panic!("a web action envelope")
+        };
+        assert_eq!(back["result"]["model"], "sale.order");
+        assert_eq!(back["result"]["domain"][0][2][0], order_id);
         picking
             .call::<(), ()>(&mut tx, "action_assign", ())
             .await
