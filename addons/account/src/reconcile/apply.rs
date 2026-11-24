@@ -664,6 +664,8 @@ async fn settle(tx: &mut Transaction, graph: &Graph, close: bool) -> Result<()> 
 ///
 /// `Access` without [`RECONCILER_GROUP`], the right to delete the matches (as the reference asks:
 /// unmatching deletes them, from either entry point) or write access to their items;
+/// `Validation` when the entry of a matched item is dated in a locked period (the lock dates of
+/// [`crate::moves::refuse_locked_items`]);
 /// `Missing` for a match that no longer exists; serialization failures as [`reconcile_lines`].
 pub async fn unreconcile_partials(tx: &mut Transaction, partials: &Records) -> Result<()> {
     if partials.is_empty() {
@@ -701,6 +703,10 @@ pub async fn unreconcile_partials(tx: &mut Transaction, partials: &Records) -> R
         let graph = closure(tx, &endpoints).await?;
         hold(tx, &graph).await?;
         let lines: Vec<i64> = graph.lines.iter().copied().collect();
+        // every item the removal changes is the whole match walk (its settlements go, its residuals
+        // are rebuilt), not only the two ends: the lock dates of all their entries, read after the
+        // headers are held
+        crate::moves::refuse_locked_items(tx, &lines, "unmatch the items of").await?;
         unsettle(tx, &lines).await?;
         let companies: Vec<_> = companies.into_iter().collect();
         let days = erp_addon_base::company_calendar::business_days(tx, &env, &companies).await?;
