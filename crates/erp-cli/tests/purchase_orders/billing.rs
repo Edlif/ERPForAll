@@ -627,9 +627,12 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
 }
 
 async fn bill_state(tx: &mut Transaction, bill: i64) -> String {
-    tx.query("SELECT state::text FROM account_move WHERE id = $1", &[&bill])
-        .await
-        .unwrap()[0]
+    tx.query(
+        "SELECT state::text FROM account_move WHERE id = $1",
+        &[&bill],
+    )
+    .await
+    .unwrap()[0]
         .get(0)
 }
 
@@ -725,7 +728,8 @@ fn cancelled_purchases_take_their_draft_bills_along_and_keep_the_billed_floor() 
         drop(tx);
 
         let mut tx = orm.begin(buyer).await.unwrap();
-        let quantity = |value: &str| RawVals::new().set_cell("product_qty", Cell::Decimal(dec(value)));
+        let quantity =
+            |value: &str| RawVals::new().set_cell("product_qty", Cell::Decimal(dec(value)));
         // a posted bill: refused, naming the order but not the bill; Cancel is hidden, also on an
         // onchange snapshot of the order
         let po = orders(&tx, &[company]).browse([posted.0]).unwrap();

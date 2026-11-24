@@ -392,7 +392,12 @@ pub async fn cancel_document_drafts(tx: &mut Transaction, env: &Env, drafts: &[i
     } else {
         env.sudo(true)
     };
-    cancel_moves(tx, &env.records("account.move")?.browse(drafts.iter().copied())?).await
+    cancel_moves(
+        tx,
+        &env.records("account.move")?
+            .browse(drafts.iter().copied())?,
+    )
+    .await
 }
 
 /// Asks the caller's `operation` right on the entries of `move_ids`. It runs before any statement

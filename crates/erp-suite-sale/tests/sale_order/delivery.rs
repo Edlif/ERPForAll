@@ -1767,9 +1767,12 @@ async fn invoice_of(tx: &mut Transaction, line: i64) -> i64 {
 }
 
 async fn move_state(tx: &mut Transaction, invoice: i64) -> String {
-    tx.query("SELECT state::text FROM account_move WHERE id = $1", &[&invoice])
-        .await
-        .unwrap()[0]
+    tx.query(
+        "SELECT state::text FROM account_move WHERE id = $1",
+        &[&invoice],
+    )
+    .await
+    .unwrap()[0]
         .get(0)
 }
 
@@ -1868,14 +1871,20 @@ fn cancelled_sales_take_their_draft_invoices_along_and_keep_the_line_floor() {
             .await
             .unwrap();
         let number: String = tx
-            .query("SELECT name FROM account_move WHERE id = $1", &[&posted_invoice])
+            .query(
+                "SELECT name FROM account_move WHERE id = $1",
+                &[&posted_invoice],
+            )
             .await
             .unwrap()[0]
             .get(0);
         // a delivered quantity entered by hand, above the ordered 3
         write(
             &mut tx,
-            &env.records("sale.order.line").unwrap().browse([manual.1]).unwrap(),
+            &env.records("sale.order.line")
+                .unwrap()
+                .browse([manual.1])
+                .unwrap(),
             RawVals::new().set_cell("qty_delivered", Cell::Decimal(Decimal::from(5))),
         )
         .await
@@ -1891,9 +1900,13 @@ fn cancelled_sales_take_their_draft_invoices_along_and_keep_the_line_floor() {
             RawVals::new().set_cell("product_uom_qty", Cell::Decimal(Decimal::from(value)))
         };
         // a posted invoice: refused, naming the order but not the invoice
-        let kept = act(&mut tx, &orders.browse([posted.0]).unwrap(), "action_cancel")
-            .await
-            .unwrap_err();
+        let kept = act(
+            &mut tx,
+            &orders.browse([posted.0]).unwrap(),
+            "action_cancel",
+        )
+        .await
+        .unwrap_err();
         assert_eq!(kept.kind(), ErrorKind::UserError, "{kept:?}");
         assert!(
             kept.message().contains(&format!(
@@ -1945,7 +1958,11 @@ fn cancelled_sales_take_their_draft_invoices_along_and_keep_the_line_floor() {
             "The product of these sales order lines can no longer be changed",
         );
         let deleted = tx.savepoint(async |tx| line.unlink(tx).await).await;
-        refused(deleted, ErrorKind::UserError, "set its quantity to 0 instead");
+        refused(
+            deleted,
+            ErrorKind::UserError,
+            "set its quantity to 0 instead",
+        );
         tx.commit().await.unwrap();
         drop(tx);
 

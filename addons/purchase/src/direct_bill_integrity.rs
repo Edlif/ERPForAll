@@ -50,7 +50,8 @@ impl DirectBill {
                 .await?;
             for row in rows {
                 let state: Option<String> = row.try_get(0).map_err(|error| {
-                    Error::db("Reading the purchase order of a vendor bill failed.").with_source(error)
+                    Error::db("Reading the purchase order of a vendor bill failed.")
+                        .with_source(error)
                 })?;
                 if state.as_deref() != Some("purchase") {
                     return Err(Error::user(

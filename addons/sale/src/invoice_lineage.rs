@@ -240,7 +240,11 @@ impl SalesInvoiceHeader {
     /// share-locked, so a cancel of one of them at the same time waits for the posting or fails.
     /// Nothing about the order is named: the poster may not read it.
     #[method(override)]
-    async fn action_post(this: &RecordSet<AccountMove>, tx: &mut Transaction, sup: Super) -> Result<()> {
+    async fn action_post(
+        this: &RecordSet<AccountMove>,
+        tx: &mut Transaction,
+        sup: Super,
+    ) -> Result<()> {
         let moves = this.as_records();
         if !moves.is_empty() {
             moves.check_access(tx, Operation::Write).await?;
