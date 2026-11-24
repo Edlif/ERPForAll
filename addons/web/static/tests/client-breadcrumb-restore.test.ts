@@ -52,8 +52,12 @@ let root: HTMLElement;
 /** Records the server refuses to read (`web_read` answers 403). */
 let refused: Set<number>;
 const calls: string[] = [];
+const showModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "showModal");
+const closeDialog = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "close");
 
 beforeEach(() => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value(this: HTMLDialogElement) { this.open = true; } });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value(this: HTMLDialogElement) { this.open = false; } });
   refused = new Set();
   calls.length = 0;
   configureClientTemplates([{
@@ -94,6 +98,10 @@ beforeEach(() => {
 afterEach(() => {
   app?.dispose();
   app = undefined;
+  if (showModal) Object.defineProperty(HTMLDialogElement.prototype, "showModal", showModal);
+  else Reflect.deleteProperty(HTMLDialogElement.prototype, "showModal");
+  if (closeDialog) Object.defineProperty(HTMLDialogElement.prototype, "close", closeDialog);
+  else Reflect.deleteProperty(HTMLDialogElement.prototype, "close");
   vi.restoreAllMocks();
   document.body.replaceChildren();
   vi.unstubAllGlobals();
