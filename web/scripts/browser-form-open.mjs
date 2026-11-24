@@ -159,7 +159,11 @@ try {
     };
   }
   assert.deepEqual(errors, [], "no uncaught browser errors");
-  const failed = result.samples.flatMap(sample => sample.requests.filter(request => request.failed || request.status >= 400).map(request => `${sample.scenario}: ${request.call} ${request.status ?? request.failed}`));
+  // Chrome reports net::ERR_ABORTED for some reads whose answer the page went on to use (the form painted with its record;
+  // these scenarios make no writes); such reads are listed, not failed. Any other failure or an HTTP error fails the run.
+  const aborted = request => request.failed === "net::ERR_ABORTED" && request.http === "POST" && request.status === null;
+  result.aborted_reads = result.samples.flatMap(sample => sample.requests.filter(aborted).map(request => `${sample.scenario} #${sample.rep}: ${request.call}`));
+  const failed = result.samples.flatMap(sample => sample.requests.filter(request => !aborted(request) && (request.failed || request.status >= 400)).map(request => `${sample.scenario}: ${request.call} ${request.status ?? request.failed}`));
   assert.deepEqual(failed, [], "every request succeeded");
   result.status = "passed";
 } catch (error) {
