@@ -155,15 +155,14 @@ fn short_receipt(always: bool) {
                 Cell::Int(2)
             );
             assert_eq!(
-                backorder.cell(&mut tx, "purchase_order_count").await.unwrap(),
+                backorder
+                    .cell(&mut tx, "purchase_order_count")
+                    .await
+                    .unwrap(),
                 Cell::Int(1)
             );
-            let blind = order_row.with_env(
-                tx.env()
-                    .with_user(buyer)
-                    .with_company(company)
-                    .unwrap(),
-            );
+            let blind =
+                order_row.with_env(tx.env().with_user(buyer).with_company(company).unwrap());
             assert_eq!(
                 blind.cell(&mut tx, "receipt_count").await.unwrap(),
                 Cell::Int(0),

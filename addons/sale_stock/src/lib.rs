@@ -10,8 +10,8 @@ use erp_sdk::Result;
 use erp_sdk::settings::ParameterDecl;
 
 mod delivered;
-mod delivery_buttons;
 mod delivery;
+mod delivery_buttons;
 mod route;
 
 const ROW_LIMIT: &str = "sale_stock.max_confirmation_source_rows";

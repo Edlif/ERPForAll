@@ -1062,7 +1062,11 @@ fn short_sales_delivery(always: bool, ask: bool) {
             picking.cell(&mut tx, "sale_order_count").await.unwrap(),
             Cell::Int(1)
         );
-        let seller = order.with_env(env.with_user(salesperson).with_company(world.company).unwrap());
+        let seller = order.with_env(
+            env.with_user(salesperson)
+                .with_company(world.company)
+                .unwrap(),
+        );
         assert_eq!(
             seller.cell(&mut tx, "delivery_count").await.unwrap(),
             Cell::Int(0),

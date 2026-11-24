@@ -29,7 +29,11 @@ const PICKING_ORDERS: &str = "SELECT l.picking_id::int8, l.order_id::int8 FROM s
 #[extend(SaleOrder, addon = "sale_stock")]
 pub struct SalesOrderDeliveries {
     /// How many readable transfers the order has, backorders included.
-    #[field(integer, compute = "_compute_delivery_count", string = "Delivery Count")]
+    #[field(
+        integer,
+        compute = "_compute_delivery_count",
+        string = "Delivery Count"
+    )]
     pub delivery_count: i32,
 }
 
@@ -68,7 +72,11 @@ impl SalesOrderDeliveries {
 #[extend(StockPicking, addon = "sale_stock")]
 pub struct SalesPickingOrders {
     /// 1 when the transfer, or the transfer it is a backorder of, delivers a readable order.
-    #[field(integer, compute = "_compute_sale_order_count", string = "Sales Order Count")]
+    #[field(
+        integer,
+        compute = "_compute_sale_order_count",
+        string = "Sales Order Count"
+    )]
     pub sale_order_count: i32,
 }
 
