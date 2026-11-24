@@ -3605,7 +3605,8 @@ async fn resolve_record_action(
         return Ok(None);
     };
     // The same answer as no match for a record the caller may not read.
-    let own = Domain::from_json(&serde_json::json!([["id", "=", record_id]])).map_err(Error::from)?;
+    let own =
+        Domain::from_json(&serde_json::json!([["id", "=", record_id]])).map_err(Error::from)?;
     if require_model_read(env, tx, model)
         .await?
         .search_count(tx, &own, Some(1))

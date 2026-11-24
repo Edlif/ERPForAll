@@ -33,7 +33,7 @@ export function actionResult(raw: unknown): ActionResult {
       const views = rawViews.map((rawView, index): ActionView => {
         const view = object(rawView, "current-window view"); closed(view, ["id", "type"]);
         const type = view["type"];
-        if (single ? type !== "form" : !(index === 0 && type === "list" || index === 1 && type === "form")) throw new ClientError("unsupported", shape);
+        if (type !== "list" && type !== "form" || (single || index === 1 ? type !== "form" : type !== "list")) throw new ClientError("unsupported", shape);
         const id = view["id"] === null ? null : integer(view["id"], "current-window view id");
         if (id === 0) throw new ClientError("server", "Invalid current-window view id.");
         return { id, type };

@@ -381,7 +381,9 @@ fn window(members: &Map<String, Json>, lookup: &dyn ModelLookup) -> Result<wire:
 }
 
 fn single_form() -> Error {
-    fail("A current window that opens one record (res_id) requires exactly one [id|false, 'form'] view.")
+    fail(
+        "A current window that opens one record (res_id) requires exactly one [id|false, 'form'] view.",
+    )
 }
 
 fn current_window(
@@ -1021,15 +1023,35 @@ mod tests {
         );
         let single = "A current window that opens one record (res_id) requires exactly one [id|false, 'form'] view.";
         for (key, bad, expected) in [
-            ("res_id", json!(0), "Current-window res_id must be a positive JSON-safe integer."),
-            ("res_id", json!("7"), "Current-window res_id must be a positive JSON-safe integer."),
-            ("res_id", json!(9_007_199_254_740_992_u64), "Current-window integer literal exceeds the browser's safe range."),
+            (
+                "res_id",
+                json!(0),
+                "Current-window res_id must be a positive JSON-safe integer.",
+            ),
+            (
+                "res_id",
+                json!("7"),
+                "Current-window res_id must be a positive JSON-safe integer.",
+            ),
+            (
+                "res_id",
+                json!(9_007_199_254_740_992_u64),
+                "Current-window integer literal exceeds the browser's safe range.",
+            ),
             ("views", json!([[false, "list"], [false, "form"]]), single),
             ("views", json!([[false, "list"]]), single),
             ("views", json!([]), single),
             ("views", json!("form"), single),
-            ("views", json!([[0, "form"]]), "Current-window view identity must be a positive JSON-safe integer."),
-            ("domain", json!([["id", "=", 7]]), "A current window that opens one record (res_id) takes no domain."),
+            (
+                "views",
+                json!([[0, "form"]]),
+                "Current-window view identity must be a positive JSON-safe integer.",
+            ),
+            (
+                "domain",
+                json!([["id", "=", 7]]),
+                "A current window that opens one record (res_id) takes no domain.",
+            ),
         ] {
             let mut value = one.clone();
             value[key] = bad;

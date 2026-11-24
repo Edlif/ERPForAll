@@ -2696,12 +2696,10 @@ async fn assert_related_record_resolve(
     // A domain that reads the context cannot be checked against one record: the action is still
     // taken when no checkable one holds the record, for that record only, and never for a record
     // that does not exist.
-    set_action(
-        RawVals::new().set_cell(
-            "domain",
-            Cell::Str("[('name', '=', context.get('missing_name'))]".into()),
-        ),
-    )
+    set_action(RawVals::new().set_cell(
+        "domain",
+        Cell::Str("[('name', '=', context.get('missing_name'))]".into()),
+    ))
     .await;
     let found = answer(
         service
@@ -3339,7 +3337,10 @@ async fn assert_current_list_scope(
     let accepted = result(&accepted);
     assert_eq!(accepted["result"]["kind"], "current_window");
     assert_eq!(accepted["result"]["res_id"], ids[0]);
-    assert_eq!(accepted["result"]["views"], json!([{"id":null,"type":"form"}]));
+    assert_eq!(
+        accepted["result"]["views"],
+        json!([{"id":null,"type":"form"}])
+    );
     assert_eq!(accepted["result"]["domain"], json!([["id", "=", ids[0]]]));
     let missing = ids.iter().max().unwrap() + 1_000_000;
     for id in [ids[1], ids[2], missing] {
@@ -3359,9 +3360,21 @@ async fn assert_current_list_scope(
         );
     }
     for (key, bad, message) in [
-        ("domain", json!([["id","=",ids[0]]]), "A current window that opens one record (res_id) takes no domain."),
-        ("views", json!([[false,"list"],[false,"form"]]), "A current window that opens one record (res_id) requires exactly one [id|false, 'form'] view."),
-        ("res_id", json!(-3), "Current-window res_id must be a positive JSON-safe integer."),
+        (
+            "domain",
+            json!([["id", "=", ids[0]]]),
+            "A current window that opens one record (res_id) takes no domain.",
+        ),
+        (
+            "views",
+            json!([[false, "list"], [false, "form"]]),
+            "A current window that opens one record (res_id) requires exactly one [id|false, 'form'] view.",
+        ),
+        (
+            "res_id",
+            json!(-3),
+            "Current-window res_id must be a positive JSON-safe integer.",
+        ),
     ] {
         let mut malformed = single(ids[0]);
         malformed[key] = bad;

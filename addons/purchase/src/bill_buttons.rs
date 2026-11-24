@@ -92,7 +92,10 @@ pub fn window(name: &str, model: &str, views: Vec<(i64, &str)>, ids: Vec<i64>) -
             ("res_model".to_owned(), Value::str(model)),
             ("target".to_owned(), Value::str("current")),
             ("res_id".to_owned(), Value::Int(*id)),
-            ("views".to_owned(), Value::list([Value::list([form, Value::str("form")])])),
+            (
+                "views".to_owned(),
+                Value::list([Value::list([form, Value::str("form")])]),
+            ),
             ("context".to_owned(), Value::Map(Arc::new(context))),
         ])));
     }
