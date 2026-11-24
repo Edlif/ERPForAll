@@ -35,7 +35,6 @@ erp_sdk::addon!(
 );
 
 mod barcode;
-pub mod batch;
 pub mod error;
 mod link_defaults;
 pub mod location;
@@ -69,7 +68,6 @@ pub mod tracking;
 pub mod warehouse;
 mod warehouse_setup;
 
-pub use batch::{StockPickingBatch, StockPickingBatchResult, StockPickingToBatch};
 pub use error::StockError;
 pub use location::{ProductRemoval, StockLocation, StockLocationPolicy};
 pub use lot::{StockLot, StockLotNameScope};
