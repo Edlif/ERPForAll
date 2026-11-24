@@ -1144,9 +1144,15 @@ fn a_direct_vendor_bill_traces_the_received_purchase_line() {
         tx.rollback().await.unwrap();
         drop(tx);
         // Re-selecting the same product alone also runs its default-unit logic.
-        for change in [
-            RawVals::new().set_cell("uom_id", Cell::Id(k.unit)),
-            RawVals::new().set_cell("product_id", Cell::Id(k.bolt)),
+        for (change, answer) in [
+            (
+                RawVals::new().set_cell("uom_id", Cell::Id(k.unit)),
+                ErrorKind::UserError,
+            ),
+            (
+                RawVals::new().set_cell("product_id", Cell::Id(k.bolt)),
+                ErrorKind::Validation,
+            ),
         ] {
             let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
             let source = tx
@@ -1164,14 +1170,9 @@ fn a_direct_vendor_bill_traces_the_received_purchase_line() {
                 )
                 .await
                 .unwrap_err();
-            // the bill-link check or the received-goods guard, whichever runs first
-            assert!(
-                matches!(
-                    changed_source.kind(),
-                    ErrorKind::Validation | ErrorKind::UserError
-                ),
-                "{changed_source:?}"
-            );
+            // a new unit is refused by the received-goods guard of the line (a user error); a new
+            // product, with its default unit, by the bill-link check (a validation error)
+            assert_eq!(changed_source.kind(), answer, "{changed_source:?}");
             assert!(
                 changed_source.message().contains("purchase order"),
                 "{changed_source:?}"

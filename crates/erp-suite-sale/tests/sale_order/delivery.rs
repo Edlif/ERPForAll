@@ -2086,3 +2086,98 @@ fn invoice_and_transfer_forms_describe_with_the_sales_count_buttons() {
         db.cleanup().await.unwrap();
     });
 }
+
+/// One draft invoice billing two orders: cancelling order A cancels the whole document, order B's
+/// invoiced quantity and status recompute, and an accountant can reset the document to draft.
+#[test]
+fn cancelling_one_order_cancels_a_draft_shared_with_another_order() {
+    run(async move {
+        let (db, installed) = cloned_sales_with_pool(8, true).await;
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        admin(&mut tx).await;
+        let world = world(&mut tx).await;
+        let env = tx.env().with_company(world.company).unwrap();
+        super::lines::invoice_chart(&mut tx, &env, world.company).await;
+        let salesperson = user(&mut tx, "shared-draft-sales", "group_sale_salesman").await;
+        let accountant = user(&mut tx, "shared-draft-accountant", "group_sale_salesman").await;
+        let manager = id(xmlid(&mut tx, "account", "group_account_manager").await);
+        tx.env()
+            .records("res.users")
+            .unwrap()
+            .browse(vec![accountant])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands("group_ids", [Command::link(manager)]),
+            )
+            .await
+            .unwrap();
+        let service = product(&mut tx, "Shared draft service", "service").await;
+        let orders = env.records("sale.order").unwrap();
+        let mut made = Vec::new();
+        for _ in 0..2 {
+            let (order, line, _) =
+                order_with_product(&mut tx, &world, salesperson, service, RawVals::new()).await;
+            let order = orders.browse([order]).unwrap();
+            act(&mut tx, &order, "action_confirm").await.unwrap();
+            let _: Value = order
+                .call(&mut tx, "action_create_draft_invoice", ())
+                .await
+                .unwrap();
+            made.push((order.ids()[0], line, invoice_of(&mut tx, line).await));
+        }
+        let [a, b] = <[(i64, i64, i64); 2]>::try_from(made).unwrap();
+        // an accountant merged B's items into A's draft: one document bills both orders
+        tx.execute(
+            "UPDATE account_move_line SET move_id = $1 WHERE move_id = $2",
+            &[&a.2, &b.2],
+        )
+        .await
+        .unwrap();
+        tx.execute("DELETE FROM account_move WHERE id = $1", &[&b.2])
+            .await
+            .unwrap();
+        assert_eq!(invoice_of(&mut tx, b.1).await, a.2);
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let orm = policy_orm(&db, &installed).await;
+        let mut tx = orm.begin(UserId::new(salesperson).unwrap()).await.unwrap();
+        let orders = tx.env().records("sale.order").unwrap();
+        act(&mut tx, &orders.browse([a.0]).unwrap(), "action_cancel")
+            .await
+            .unwrap();
+        assert_eq!(move_state(&mut tx, a.2).await, "cancel");
+        let line = tx
+            .env()
+            .records("sale.order.line")
+            .unwrap()
+            .browse([b.1])
+            .unwrap();
+        assert_eq!(
+            line.cell(&mut tx, "qty_invoiced").await.unwrap(),
+            Cell::Decimal(Decimal::ZERO)
+        );
+        assert_eq!(
+            text(&mut tx, &orders.browse([b.0]).unwrap(), "invoice_status").await,
+            "to invoice"
+        );
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(UserId::new(accountant).unwrap()).await.unwrap();
+        tx.env()
+            .with_company(world.company)
+            .unwrap()
+            .records("account.move")
+            .unwrap()
+            .browse([a.2])
+            .unwrap()
+            .call::<(), ()>(&mut tx, "button_draft", ())
+            .await
+            .unwrap();
+        assert_eq!(move_state(&mut tx, a.2).await, "draft");
+        tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
+    });
+}

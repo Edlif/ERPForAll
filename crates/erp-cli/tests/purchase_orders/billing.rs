@@ -878,6 +878,13 @@ fn cancelled_purchases_take_their_draft_bills_along_and_keep_the_billed_floor() 
             );
         }
         assert_eq!(bill_state(&mut tx, redrafted.1).await, "draft");
+        // confirmed again, the order gets a new first bill, not the one its cancel cancelled
+        let po = orders(&tx, &[company]).browse([drafted.0]).unwrap();
+        act(&mut tx, &po, "button_confirm").await.unwrap();
+        let again = bill(&mut tx, &po, "action_create_vendor_bill").await;
+        assert_ne!(again, drafted.1);
+        assert_eq!(bill_state(&mut tx, again).await, "draft");
+        assert_eq!(bill_state(&mut tx, drafted.1).await, "cancel");
         tx.rollback().await.unwrap();
         db.cleanup().await.unwrap();
     })

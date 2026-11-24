@@ -476,10 +476,12 @@ fn final_state_forms_show_read_only_exactly_what_the_server_refuses() {
                         tx.flush().await
                     })
                     .await;
-                if written.is_ok() {
-                    disagreements.push(format!(
-                        "{model} cancel: {field} is read-only on the form but accepted by the server"
-                    ));
+                // the refusal of a cancelled order names it as cancelled; any other answer disagrees
+                match written {
+                    Err(refused) if refused.message().contains("cancelled") => {}
+                    other => disagreements.push(format!(
+                        "{model} cancel: {field} is read-only on the form but the server answered {other:?}"
+                    )),
                 }
             }
         }
