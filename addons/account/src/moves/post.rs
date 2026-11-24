@@ -378,7 +378,9 @@ pub async fn cancel_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
 }
 
 /// Cancel the draft entries `drafts` that belong to a commercial document being cancelled (a
-/// sales or purchase order), through [`cancel_moves`]. The order's own write right is the
+/// sales or purchase order), through [`cancel_moves`]. The whole entry is cancelled, also when it
+/// carries items of another order or items linked to no order: those orders' invoiced quantities
+/// recompute, and an accountant can reset the entry to draft. The order's own write right is the
 /// caller's to check before; a caller without accounting rights is elevated for this one state
 /// change only, so a user of the sales or purchase app can cancel an order whose only invoices
 /// are drafts. Nothing is returned to the caller.
