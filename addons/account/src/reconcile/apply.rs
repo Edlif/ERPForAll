@@ -664,8 +664,8 @@ async fn settle(tx: &mut Transaction, graph: &Graph, close: bool) -> Result<()> 
 ///
 /// `Access` without [`RECONCILER_GROUP`], the right to delete the matches (as the reference asks:
 /// unmatching deletes them, from either entry point) or write access to their items;
-/// `Validation` when the entry of a matched item is dated in a locked period (the lock dates of
-/// [`crate::moves::refuse_locked_items`]);
+/// `Validation` when the entry of an item of the match walk is dated in a locked period (the lock
+/// dates of [`crate::moves::refuse_locked_items`]);
 /// `Missing` for a match that no longer exists; serialization failures as [`reconcile_lines`].
 pub async fn unreconcile_partials(tx: &mut Transaction, partials: &Records) -> Result<()> {
     if partials.is_empty() {
@@ -706,7 +706,7 @@ pub async fn unreconcile_partials(tx: &mut Transaction, partials: &Records) -> R
         // every item the removal changes is the whole match walk (its settlements go, its residuals
         // are rebuilt), not only the two ends: the lock dates of all their entries, read after the
         // headers are held
-        crate::moves::refuse_locked_items(tx, &lines, "unmatch the items of").await?;
+        crate::moves::refuse_locked_items(tx, &env, &lines, "unmatch the items of").await?;
         unsettle(tx, &lines).await?;
         let companies: Vec<_> = companies.into_iter().collect();
         let days = erp_addon_base::company_calendar::business_days(tx, &env, &companies).await?;
@@ -942,8 +942,11 @@ async fn invalidate(tx: &mut Transaction) -> Result<()> {
         ]),
     )
     .await?;
-    tx.invalidate_model("account.move", Some(&["amount_residual", "payment_state"]))
-        .await?;
+    tx.invalidate_model(
+        "account.move",
+        Some(&["amount_residual", "payment_state", "reset_blocked"]),
+    )
+    .await?;
     for model in [
         "account.partial.reconcile",
         "account.full.reconcile",

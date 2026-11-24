@@ -242,6 +242,7 @@ pub struct PurchaseOrderLine {
         inverse_name = "purchase_line_id",
         readonly = true,
         copy = false,
+        // no `groups`: the order's bill count, which a buyer reads, depends on this field
         string = "Vendor Bill Items"
     )]
     pub direct_bill_line_ids: Vec<RecId>,
@@ -737,7 +738,11 @@ fn refuse_line_fields(vals: &RawVals, on_write: bool) -> Result<()> {
              be written; change the unit price instead.",
         ));
     }
-    if let Some(field) = COMPUTED.iter().find(|f| vals.contains(f)) {
+    // a value or x2many commands: the bill links are a one2many
+    if let Some(field) = COMPUTED
+        .iter()
+        .find(|f| vals.contains(f) || vals.commands(f).is_some())
+    {
         return Err(Error::validation(format!(
             "The field {field} of a purchase order line is computed from the line and its order, \
              not written."

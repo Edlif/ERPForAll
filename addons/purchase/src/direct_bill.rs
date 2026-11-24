@@ -424,5 +424,8 @@ async fn link_items(
         .create(tx, links)
         .await?;
     tx.flush().await?;
+    let linked = tx.env().records("account.move")?.browse([bill])?;
+    tx.invalidate_records(&linked, Some(&["purchase_order_count"]))
+        .await?;
     crate::line::invalidate_bill_comparisons(tx).await
 }

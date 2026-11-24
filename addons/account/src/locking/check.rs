@@ -92,15 +92,14 @@ pub async fn check_lock_dates(
             let state = states
                 .get(&input.company)
                 .ok_or_else(|| Error::access(crate::fiscal::ensure::NOT_ALLOWED))?;
-            // An in-flight hard lock has not published its company date; it still binds every check.
-            if matches!(
-                period,
-                PeriodVerdict::HardLock { .. } | PeriodVerdict::NoPeriod { .. }
-            ) {
+            // An in-flight hard lock has not published its company date; it still binds every check
+            // that asks for the hard lock.
+            let hard_period = matches!(period, PeriodVerdict::HardLock { .. });
+            if matches!(period, PeriodVerdict::NoPeriod { .. }) || (hard_period && input.hard) {
                 return Ok(LockVerdict::Refused(LockRefusal::Period(period)));
             }
             let scalar = state.check(input);
-            if matches!(scalar, LockVerdict::Allowed) && !period.is_open() {
+            if matches!(scalar, LockVerdict::Allowed) && !period.is_open() && !hard_period {
                 Ok(LockVerdict::Refused(LockRefusal::Period(period)))
             } else {
                 Ok(scalar)

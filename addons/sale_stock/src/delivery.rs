@@ -537,10 +537,10 @@ impl Plan {
             &[&self.company, &moves, &lines],
         ).await?;
         crate::delivered::refresh(tx, &env.records("sale.order.line")?.browse(lines)?).await?;
-        tx.invalidate_records(&picking, Some(&["sale_order_id"]))
+        tx.invalidate_records(&picking, Some(&["sale_order_id", "sale_order_count"]))
             .await?;
         let order = caller.records("sale.order")?.browse([self.order])?;
-        tx.invalidate_records(&order, Some(&["direct_delivery_id"]))
+        tx.invalidate_records(&order, Some(&["direct_delivery_id", "delivery_count"]))
             .await
     }
 }

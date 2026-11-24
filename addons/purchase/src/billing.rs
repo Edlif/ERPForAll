@@ -21,8 +21,9 @@ pub const RECEIVED: &str = "receive";
 /// `product.template` with its bill control.
 #[extend(ProductTemplate, addon = "purchase")]
 pub struct PurchaseBillControl {
-    /// Bill the ordered or the received quantities of this product. Services bill ordered
-    /// quantities; any other new product takes the Purchase setting "Bill control".
+    /// Bill the ordered or the received quantities of this product. A service bills ordered
+    /// quantities; any other product takes the Purchase setting "Bill control" when it is created
+    /// or its type changes, and keeps a value chosen afterwards.
     #[field(
         selection,
         selection = [("purchase", "On ordered quantities"), ("receive", "On received quantities")],
@@ -46,40 +47,21 @@ fn real_ids(ids: &[RecId]) -> Vec<i64> {
 
 #[methods(ProductTemplate, addon = "purchase")]
 impl PurchaseBillControl {
-    /// A service bills ordered quantities. Another product keeps its bill control; one without
-    /// any (new, or existing when the addon is installed or upgraded) takes the setting's.
+    /// A service bills ordered quantities; any other product takes the setting's, as the
+    /// reference does on every type change (so a service that becomes goods no longer bills its
+    /// order). It runs when the type changes and when the column is filled at install or upgrade;
+    /// a value chosen by hand afterwards stays until the next type change.
     #[compute(depends = ["type"])]
     async fn _compute_purchase_method(
         this: &RecordSet<ProductTemplate>,
         tx: &mut Transaction,
         out: &mut Assign<'_, ProductTemplate>,
     ) -> Result<()> {
-        let ids: Vec<i64> = this
-            .as_records()
-            .rec_ids()
-            .iter()
-            .filter_map(|id| id.as_real().map(|id| id.get()))
-            .collect();
-        let mut stored = BTreeSet::new();
-        if !ids.is_empty() {
-            for row in tx
-                .query(
-                    "SELECT id FROM product_template WHERE id = ANY($1) AND purchase_method IS NOT NULL",
-                    &[&ids],
-                )
-                .await?
-            {
-                stored.insert(row.try_get::<_, i64>(0).map_err(decode)?);
-            }
-        }
         let kinds = this.mapped(tx, ProductTemplate::TYPE).await?;
         let mut default: Option<Arc<str>> = None;
-        let rec_ids = this.as_records().rec_ids().to_vec();
-        for (index, (id, kind)) in rec_ids.iter().zip(kinds).enumerate() {
+        for (index, kind) in kinds.into_iter().enumerate() {
             let policy: Arc<str> = if kind.as_deref() == Some("service") {
                 ORDERED.into()
-            } else if id.as_real().is_some_and(|id| stored.contains(&id.get())) {
-                continue;
             } else if let Some(policy) = &default {
                 policy.clone()
             } else {
@@ -101,9 +83,17 @@ async fn flush_bill_inputs(tx: &mut Transaction, env: &Env) -> Result<()> {
             "purchase.direct.bill.line",
             &["purchase_line_id", "order_id", "bill_id", "bill_line_id"][..],
         ),
+        // the type with the account and amounts its CHECKs tie to it, never one of them alone
         (
             "account.move.line",
-            &["quantity", "display_type", "move_id"][..],
+            &[
+                "quantity",
+                "display_type",
+                "account_id",
+                "balance",
+                "amount_currency",
+                "move_id",
+            ][..],
         ),
         ("account.move", &["state", "move_type"][..]),
     ] {

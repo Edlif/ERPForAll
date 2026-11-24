@@ -404,7 +404,11 @@ fn final_state_forms_show_read_only_exactly_what_the_server_refuses() {
             // A field read-only already in draft is never edited on the form, so the final-state
             // allow-list says nothing about it.
             let draft = form_readonly(&mut tx, &guard, "draft").await;
-            assert!(!draft.is_empty(), "{} has no form fields", guard.model);
+            assert!(
+                draft.values().any(|readonly| !readonly),
+                "{} has no field editable in draft",
+                guard.model
+            );
             for (state, rule) in &guard.states {
                 let form = form_readonly(&mut tx, &guard, state).await;
                 for (field, readonly) in &form {

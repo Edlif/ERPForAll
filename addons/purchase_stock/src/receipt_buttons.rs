@@ -36,7 +36,9 @@ pub struct PurchaseOrderReceipts {
 
 #[methods(PurchaseOrder, addon = "purchase_stock")]
 impl PurchaseOrderReceipts {
-    #[compute(depends = ["state", "company_id"], depends_context = ["uid", "allowed_company_ids"])]
+    /// A completed receipt changes the received quantities, and a backorder is only made then;
+    /// the link row itself is written by SQL, which drops this value ([`crate::receipt`]).
+    #[compute(depends = ["state", "company_id", "order_line.qty_received"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_receipt_count(
         this: &RecordSet<PurchaseOrder>,
         tx: &mut Transaction,

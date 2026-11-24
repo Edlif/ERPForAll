@@ -130,6 +130,11 @@ fn short_receipt(always: bool) {
         let first = bill_id(&mut tx, &po, "action_create_vendor_bill").await;
         let row=&tx.query("SELECT l.id,l.quantity FROM purchase_direct_bill_line s JOIN account_move_line l ON l.id=s.bill_line_id WHERE s.bill_id=$1",&[&first]).await.unwrap()[0];
         assert_eq!(row.get::<_, Decimal>(1), dec("2"));
+        // the count read before the bill follows it in the same transaction
+        assert_eq!(
+            po.cell(&mut tx, "invoice_count").await.unwrap(),
+            Cell::Int(1)
+        );
         if always {
             let remainder = tx.query("SELECT p.id,m.product_uom_qty FROM stock_picking p JOIN stock_move m ON m.picking_id=p.id WHERE p.backorder_id=$1", &[&receipt]).await.unwrap();
             assert_eq!(remainder.len(), 1);
