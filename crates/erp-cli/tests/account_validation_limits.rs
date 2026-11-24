@@ -260,7 +260,7 @@ fn account_version() -> &'static str {
         .lines()
         .find_map(|line| line.strip_prefix("version = \""))
         .and_then(|rest| rest.strip_suffix('"'))
-        .expect("addons/account/manifest.toml states its version")
+        .unwrap()
 }
 
 async fn assert_stores(
