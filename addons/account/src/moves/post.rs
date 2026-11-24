@@ -22,6 +22,7 @@ use erp_sdk::prelude::*;
 use erp_sdk::sequence::{FiscalYear, SequencePattern, SequenceReset};
 
 use super::{AccountMove, TEXT_LINE_TYPES};
+use crate::fiscal::PeriodVerdict;
 use crate::fiscal::calendar::{add_months, next_day, previous_day};
 use crate::fiscal::settings::FiscalCalendar;
 use crate::journal::{AccountJournal, JournalSequence};
@@ -69,6 +70,38 @@ impl AccountMove {
     #[rpc(effect = write)]
     pub async fn button_draft(this: &RecordSet<AccountMove>, tx: &mut Transaction) -> Result<()> {
         reset_moves(tx, this.as_records()).await
+    }
+
+    /// Whether Reset to Draft is refused ([`reset_moves`]): every entry but a cancelled one, and
+    /// a cancelled one with a matched item or a payment ([`refuse_consequences`]).
+    #[compute(depends = ["state"])]
+    async fn _compute_reset_blocked(
+        this: &RecordSet<AccountMove>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, AccountMove>,
+    ) -> Result<()> {
+        let states = this.mapped(tx, AccountMove::STATE).await?;
+        let cancelled: Vec<i64> = this
+            .as_records()
+            .rec_ids()
+            .iter()
+            .zip(&states)
+            .filter(|(_, state)| state.as_deref() == Some("cancel"))
+            .filter_map(|(id, _)| id.as_real().map(|real| real.get()))
+            .collect();
+        let blocked = if cancelled.is_empty() {
+            BTreeMap::new()
+        } else {
+            consequences(tx, &cancelled).await?
+        };
+        for (index, (id, state)) in this.as_records().rec_ids().iter().zip(&states).enumerate() {
+            let free = state.as_deref() == Some("cancel")
+                && id
+                    .as_real()
+                    .is_some_and(|real| !blocked.contains_key(&real.get()));
+            out.set(index, AccountMove::RESET_BLOCKED, !free)?;
+        }
+        Ok(())
     }
 
     /// Cancels draft entries. A posted entry is refused: the company posting policy is
@@ -269,14 +302,20 @@ pub async fn reset_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
     tx.savepoint(async |tx| {
         tx.flush().await?;
         let states = lock_headers(tx, &ids).await?;
-        if states.iter().any(|(_, state, _)| state == "posted") {
-            return Err(reversal_only());
+        let posted: Vec<i64> = states
+            .iter()
+            .filter(|(_, state, _)| state == "posted")
+            .map(|(id, _, _)| *id)
+            .collect();
+        if !posted.is_empty() {
+            return Err(posted_refusal(tx, &posted, "reset to draft").await?);
         }
         if states.iter().any(|(_, state, _)| state != "cancel") {
             return Err(Error::user(
                 "Only a posted or cancelled entry can go back to draft; the selection holds a draft.",
             ));
         }
+        refuse_consequences(tx, &ids, "reset to draft").await?;
         let pairs: Vec<(i64, Date)> = states.iter().map(|(id, _, date)| (*id, *date)).collect();
         set_state(tx, &pairs, "draft").await?;
         tx.track_external(
@@ -307,14 +346,20 @@ pub async fn cancel_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
     tx.savepoint(async |tx| {
         tx.flush().await?;
         let states = lock_headers(tx, &ids).await?;
-        if states.iter().any(|(_, state, _)| state == "posted") {
-            return Err(reversal_only());
+        let posted: Vec<i64> = states
+            .iter()
+            .filter(|(_, state, _)| state == "posted")
+            .map(|(id, _, _)| *id)
+            .collect();
+        if !posted.is_empty() {
+            return Err(posted_refusal(tx, &posted, "cancel").await?);
         }
         if states.iter().any(|(_, state, _)| state != "draft") {
             return Err(Error::user(
                 "Cancelling applies to draft entries only; the selection holds an entry that is not a draft.",
             ));
         }
+        refuse_consequences(tx, &ids, "cancel").await?;
         let pairs: Vec<(i64, Date)> = states.iter().map(|(id, _, date)| (*id, *date)).collect();
         set_state(tx, &pairs, "cancel").await?;
         tx.track_external(
@@ -345,46 +390,346 @@ async fn authorize_entries(
         .await
 }
 
+/// Which lock dates a change of a posted entry asks before the posted-entry refusal, so the
+/// refusal of a change in a locked period names the lock date. Observed: the reference checks the
+/// fiscal dates on the entry and the tax date on its tax-report lines when a posted entry's date
+/// or name changes, it is deleted or leaves `posted`, and when a line's protected fields change.
+/// A cancelled or draft entry asks no lock date (a draft is re-dated when it is posted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LockScope {
+    /// The change touches no lock-protected field: only the posted-entry refusal applies.
+    Unprotected,
+    /// The fiscal-year, sale or purchase (by journal) and hard lock dates.
+    Fiscal,
+    /// [`Self::Fiscal`] and, for an entry with a line that reaches the tax report, the tax lock
+    /// date (the scope of a date, a name, an amount, a tax, an added or a deleted line).
+    Tax,
+}
+
+/// The fields of a journal item whose change a lock date protects (the reference's fiscal list,
+/// with this addon's `debit`, `credit` and tax distribution line, which set the balance and the
+/// tax report). The first [`LINE_TAX_FIELDS`] also reach the tax report.
+const LINE_LOCKED_FIELDS: [&str; 12] = [
+    "balance",
+    "debit",
+    "credit",
+    "tax_ids",
+    "tax_line_id",
+    "tax_repartition_line_id",
+    "tax_tag_ids",
+    "account_id",
+    "journal_id",
+    "amount_currency",
+    "currency_id",
+    "partner_id",
+];
+const LINE_TAX_FIELDS: usize = 7;
+
+/// The lock scope of a change of `fields` on the items of a posted entry.
+pub(crate) fn line_lock_scope(fields: &[&str]) -> LockScope {
+    let protected = |range: &[&str]| fields.iter().any(|f| range.contains(f));
+    if protected(&LINE_LOCKED_FIELDS[..LINE_TAX_FIELDS]) {
+        LockScope::Tax
+    } else if protected(&LINE_LOCKED_FIELDS) {
+        LockScope::Fiscal
+    } else {
+        LockScope::Unprotected
+    }
+}
+
 /// Refuses `what` on the entries of `move_ids` that are posted or cancelled (
-/// -066, -069, -070), after the caller's `operation` right on those entries was checked.
+/// -066, -069, -070), after the caller's `operation` right on those entries was checked. A posted
+/// entry is first checked against the lock dates of `scope` at its date and, when the change
+/// gives one, at `new_date`, so a change in a locked period names the lock date.
 ///
 /// # Errors
 ///
-/// `Access` when the caller lacks `operation` on one of the entries; `UserError` naming the first
-/// posted or cancelled entry; database errors.
+/// `Access` when the caller lacks `operation` on one of the entries; `Validation` naming the
+/// first posted entry in a locked period and its lock dates; `UserError` naming the first posted
+/// or cancelled entry; database errors.
 pub(crate) async fn refuse_closed_entries(
     tx: &mut Transaction,
     env: &Env,
     move_ids: &[i64],
     operation: Operation,
     what: &str,
+    scope: LockScope,
+    new_date: Option<Date>,
 ) -> Result<()> {
     if move_ids.is_empty() {
         return Ok(());
     }
     authorize_entries(tx, env, move_ids, operation).await?;
-    closed_refusal(tx, move_ids, what).await
+    closed_refusal(tx, move_ids, what, scope, new_date).await
 }
 
-/// The refusal of [`refuse_closed_entries`], for entries the caller was authorized on.
-async fn closed_refusal(tx: &mut Transaction, move_ids: &[i64], what: &str) -> Result<()> {
+/// What a refusal reads of one posted or cancelled entry.
+struct ClosedEntry {
+    id: i64,
+    state: String,
+    name: Option<String>,
+    company: i64,
+    date: Date,
+    journal_type: String,
+    taxed: bool,
+}
+
+impl ClosedEntry {
+    fn label(&self) -> String {
+        self.name.clone().unwrap_or_else(|| format!("{}", self.id))
+    }
+
+    fn journal_class(&self) -> JournalClass {
+        match self.journal_type.as_str() {
+            "sale" => JournalClass::Sale,
+            "purchase" => JournalClass::Purchase,
+            _ => JournalClass::Other,
+        }
+    }
+}
+
+/// The posted and cancelled entries of `move_ids`, in id order, in one read (a batch of drafts
+/// reads nothing more).
+async fn read_closed(tx: &mut Transaction, move_ids: &[i64]) -> Result<Vec<ClosedEntry>> {
     let rows = tx
         .query(
-            "SELECT id::int8, state::text, name::text FROM account_move \
-             WHERE id = ANY($1::int8[]) AND state <> 'draft' ORDER BY id LIMIT 1",
+            "SELECT m.id::int8, m.state::text, m.name::text, m.company_id::int8, m.date, \
+             j.type::text, EXISTS (SELECT 1 FROM account_move_line l WHERE l.move_id = m.id \
+               AND (l.tax_line_id IS NOT NULL OR l.tax_repartition_line_id IS NOT NULL \
+                    OR EXISTS (SELECT 1 FROM account_move_line_account_tax_rel r \
+                               WHERE r.account_move_line_id = l.id))) \
+             FROM account_move m JOIN account_journal j ON j.id = m.journal_id \
+             WHERE m.id = ANY($1::int8[]) AND m.state <> 'draft' ORDER BY m.id",
             &[&move_ids],
         )
         .await?;
-    let Some(row) = rows.first() else {
+    rows.iter()
+        .map(|row| {
+            Ok(ClosedEntry {
+                id: row.try_get(0).map_err(db)?,
+                state: row.try_get(1).map_err(db)?,
+                name: row.try_get(2).map_err(db)?,
+                company: row.try_get(3).map_err(db)?,
+                date: row.try_get(4).map_err(db)?,
+                journal_type: row.try_get(5).map_err(db)?,
+                taxed: row.try_get(6).map_err(db)?,
+            })
+        })
+        .collect()
+}
+
+/// The SQL condition "an item of entry `m` is matched": a settled item carries its settlement, a
+/// partly matched one its open-item row (both written only by the reconciliation service).
+const MATCHED_ITEMS: &str = "EXISTS (SELECT 1 FROM account_move_line l WHERE l.move_id = m.id \
+     AND (l.full_reconcile_id IS NOT NULL \
+          OR EXISTS (SELECT 1 FROM account_open_item o WHERE o.line_id = l.id)))";
+
+/// What else hangs on the entries of `move_ids`, by entry: matched items and the payment whose
+/// entry it is. Entries with neither are left out.
+async fn consequences(
+    tx: &mut Transaction,
+    move_ids: &[i64],
+) -> Result<BTreeMap<i64, Vec<String>>> {
+    let rows = tx
+        .query(
+            &format!(
+                "SELECT m.id::int8, {MATCHED_ITEMS}, COALESCE(p.name, p.id::text) \
+                 FROM account_move m LEFT JOIN account_payment p ON p.id = m.origin_payment_id \
+                 WHERE m.id = ANY($1::int8[]) AND ({MATCHED_ITEMS} OR p.id IS NOT NULL) \
+                 ORDER BY m.id"
+            ),
+            &[&move_ids],
+        )
+        .await?;
+    let mut found = BTreeMap::new();
+    for row in &rows {
+        let id: i64 = row.try_get(0).map_err(db)?;
+        let matched: bool = row.try_get(1).map_err(db)?;
+        let payment: Option<String> = row.try_get(2).map_err(db)?;
+        let mut reasons = Vec::new();
+        if matched {
+            reasons.push(
+                "an item of it is matched with other items (unmatch it with Unreconcile first)"
+                    .to_owned(),
+            );
+        }
+        if let Some(payment) = payment {
+            reasons.push(format!("it is the journal entry of payment {payment}"));
+        }
+        found.insert(id, reasons);
+    }
+    Ok(found)
+}
+
+/// Refuses `what` on a draft or cancelled entry of `move_ids` that has a matched item or is a
+/// payment's entry (neither happens through the services today: matching takes posted items only
+/// and a payment's entry is posted when it is created), naming the entry and what blocks it.
+///
+/// # Errors
+///
+/// `UserError` naming the first such entry; database errors.
+pub(crate) async fn refuse_consequences(
+    tx: &mut Transaction,
+    move_ids: &[i64],
+    what: &str,
+) -> Result<()> {
+    match consequences(tx, move_ids).await?.into_iter().next() {
+        None => Ok(()),
+        Some((id, reasons)) => Err(Error::user(format!(
+            "You cannot {what} the entry {id}: {}.",
+            reasons.join("; ")
+        ))),
+    }
+}
+
+/// The refusal of [`refuse_closed_entries`], for entries the caller was authorized on: a lock date
+/// first (it names the lock), then the closed entry with what else hangs on it.
+async fn closed_refusal(
+    tx: &mut Transaction,
+    move_ids: &[i64],
+    what: &str,
+    scope: LockScope,
+    new_date: Option<Date>,
+) -> Result<()> {
+    let entries = read_closed(tx, move_ids).await?;
+    let Some(first) = entries.first() else {
         return Ok(());
     };
-    let id: i64 = row.try_get(0).map_err(db)?;
-    let state: String = row.try_get(1).map_err(db)?;
-    let name: Option<String> = row.try_get(2).map_err(db)?;
-    let label = name.unwrap_or_else(|| format!("{id}"));
+    refuse_locked(tx, &entries, what, scope, new_date).await?;
+    let mut reasons = consequences(tx, &[first.id])
+        .await?
+        .remove(&first.id)
+        .unwrap_or_default();
+    reasons.push(
+        "a posted entry is corrected by a reversal (which is not available yet), a cancelled one \
+         by resetting it to draft first"
+            .to_owned(),
+    );
     Err(Error::user(format!(
-        "You cannot {what} the {state} entry {label}: a posted entry is corrected by a reversal \
-         (which is not available yet), a cancelled one by resetting it to draft first."
+        "You cannot {what} the {} entry {}: {}.",
+        first.state,
+        first.label(),
+        reasons.join("; ")
+    )))
+}
+
+/// The first posted entry of `entries` dated, or re-dated to `new_date`, on or before a lock date
+/// of `scope`, or in a fiscal period that is not open, with the refusal.
+async fn first_locked<'a>(
+    tx: &mut Transaction,
+    entries: &'a [ClosedEntry],
+    scope: LockScope,
+    new_date: Option<Date>,
+) -> Result<Option<(&'a ClosedEntry, LockRefusal)>> {
+    if scope == LockScope::Unprotected {
+        return Ok(None);
+    }
+    let mut checks = Vec::new();
+    let mut owners = Vec::new();
+    for entry in entries.iter().filter(|e| e.state == "posted") {
+        let tax = if scope == LockScope::Tax && entry.taxed {
+            TaxImpact::Report
+        } else {
+            TaxImpact::None
+        };
+        let moved = new_date.filter(|date| *date != entry.date);
+        for date in std::iter::once(entry.date).chain(moved) {
+            checks.push(LockCheck::new(
+                entry.company,
+                date,
+                entry.journal_class(),
+                tax,
+            )?);
+            owners.push(entry);
+        }
+    }
+    for (entry, verdict) in owners.into_iter().zip(check_lock_dates(tx, &checks).await?) {
+        match verdict {
+            LockVerdict::Allowed => {}
+            // shortcut: posting creates the period of every posted date, so none is missing in
+            // practice; the refusal of the closed entry that follows still refuses the change.
+            LockVerdict::Refused(LockRefusal::Period(PeriodVerdict::NoPeriod { .. })) => {}
+            LockVerdict::Refused(refusal) => return Ok(Some((entry, refusal))),
+        }
+    }
+    Ok(None)
+}
+
+/// Refuses `what` when [`first_locked`] finds a posted entry in a locked period, naming the entry
+/// and its lock dates.
+async fn refuse_locked(
+    tx: &mut Transaction,
+    entries: &[ClosedEntry],
+    what: &str,
+    scope: LockScope,
+    new_date: Option<Date>,
+) -> Result<()> {
+    match first_locked(tx, entries, scope, new_date).await? {
+        None => Ok(()),
+        Some((entry, refusal)) => Err(Error::validation(format!(
+            "You cannot {what} the posted entry {}: {refusal}",
+            entry.label()
+        ))
+        .with_source(refusal)),
+    }
+}
+
+/// Refuses `what` on the journal items `line_ids`, and on the items settled together with them,
+/// when the posted entry of one of them is dated on or before a lock date (fiscal year, sale or
+/// purchase by journal, hard, and the tax lock date for an entry that reaches the tax report) or
+/// in a fiscal period that is not open. Unmatching asks it for every item it changes: matches of
+/// a locked period stay as they are (stricter than the reference, which unmatches and dates the
+/// follow-up entries on the first open day).
+///
+/// # Errors
+///
+/// `Validation` naming the entry and its lock dates; database errors.
+pub(crate) async fn refuse_locked_items(
+    tx: &mut Transaction,
+    line_ids: &[i64],
+    what: &str,
+) -> Result<()> {
+    let rows = tx
+        .query(
+            "SELECT DISTINCT move_id::int8 FROM account_move_line WHERE id = ANY($1::int8[]) \
+             OR full_reconcile_id IN (SELECT full_reconcile_id FROM account_move_line \
+                 WHERE id = ANY($1::int8[]) AND full_reconcile_id IS NOT NULL) \
+             ORDER BY 1",
+            &[&line_ids],
+        )
+        .await?;
+    let move_ids = rows
+        .iter()
+        .map(|row| row.try_get(0).map_err(db))
+        .collect::<Result<Vec<i64>>>()?;
+    let entries = read_closed(tx, &move_ids).await?;
+    refuse_locked(tx, &entries, what, LockScope::Tax, None).await
+}
+
+/// The refusal of Reset to Draft or Cancel (`what`) of posted entries: the first one is named with
+/// everything that blocks it (its lock dates, matched items, its payment, the posting policy).
+async fn posted_refusal(tx: &mut Transaction, posted: &[i64], what: &str) -> Result<Error> {
+    let entries = read_closed(tx, posted).await?;
+    let first = entries
+        .first()
+        .ok_or_else(|| Error::invariant("a posted entry was not read back"))?;
+    let mut reasons = Vec::new();
+    if let Some((_, refusal)) =
+        first_locked(tx, std::slice::from_ref(first), LockScope::Tax, None).await?
+    {
+        reasons.push(refusal.to_string().trim_end_matches('.').to_owned());
+    }
+    reasons.extend(
+        consequences(tx, &[first.id])
+            .await?
+            .remove(&first.id)
+            .unwrap_or_default(),
+    );
+    reasons.push(REVERSAL_ONLY.to_owned());
+    Ok(Error::user(format!(
+        "You cannot {what} the posted entry {}: {}.",
+        first.label(),
+        reasons.join("; ")
     )))
 }
 
@@ -418,6 +763,7 @@ pub(crate) async fn hold_draft_entries(
     move_ids: &[i64],
     operation: Operation,
     what: &str,
+    scope: LockScope,
 ) -> Result<()> {
     if move_ids.is_empty() {
         return Ok(());
@@ -430,7 +776,7 @@ pub(crate) async fn hold_draft_entries(
         &[&move_ids],
     )
     .await?;
-    closed_refusal(tx, move_ids, what).await
+    closed_refusal(tx, move_ids, what, scope, None).await
 }
 
 /// The database ids of `moves`, sorted and without repeats: every statement below reads and
@@ -442,13 +788,9 @@ fn sorted_ids(moves: &Records) -> Vec<i64> {
     ids
 }
 
-fn reversal_only() -> Error {
-    Error::user(
-        "A posted journal entry cannot be reset to draft or cancelled: this company's posting \
-         policy only allows a reversal, which is not available yet. A policy that allows \
-         resetting a posted entry is not available yet either.",
-    )
-}
+/// The posting-policy part of the refusal of Reset to Draft and Cancel on a posted entry.
+const REVERSAL_ONLY: &str = "this company's posting policy only allows a reversal, which is not \
+     available yet (a policy that allows resetting a posted entry is not available yet either)";
 
 async fn authorize(tx: &mut Transaction, moves: &Records, what: &str) -> Result<()> {
     let env = moves.env().clone();

@@ -19,6 +19,7 @@
 
 mod apply;
 mod coverage;
+mod guards;
 pub mod history_guard;
 mod lines;
 pub(crate) mod plan;
@@ -34,7 +35,8 @@ pub use crate::moves::POSTER_GROUP as RECONCILER_GROUP;
 /// A match of part or all of a debit item with a credit item.
 ///
 /// Rows are written only by the reconciliation service ([`reconcile_lines`]); deleting one goes
-/// through [`unreconcile_partials`].
+/// through [`unreconcile_partials`]. Every other ORM change is refused, for a superuser too
+/// (`guards.rs`).
 #[model(
     name = "account.partial.reconcile",
     description = "Partial Reconcile",
