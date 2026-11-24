@@ -8,7 +8,7 @@ use erp_addon_base::ir_config_setting::{describe, write_values};
 fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
     run(async {
         let db = TestDb::builder().pool_size(8).create().await.unwrap();
-        let system = purchase_module_system(&db);
+        let system = std::sync::Arc::new(purchase_module_system(&db));
         erp_cli::module::bind_settings_catalogue(std::sync::Arc::clone(&system)).unwrap();
         let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
             .await
