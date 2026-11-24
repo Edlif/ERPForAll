@@ -28,12 +28,10 @@
     <field name="model">account.move</field>
     <field name="inherit_id" ref="account.view_invoice_form"/>
     <field name="arch" type="xml">
-      <xpath expr="//div[hasclass('oe_title')]" position="before">
-        <div class="oe_button_box" name="button_box_purchase">
-          <button name="action_view_purchase_orders" type="object" class="oe_stat_button" invisible="purchase_order_count == 0">
-            <field name="purchase_order_count" widget="statinfo" string="Purchase Orders"/>
-          </button>
-        </div>
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button name="action_view_purchase_orders" type="object" class="oe_stat_button" invisible="purchase_order_count == 0">
+          <field name="purchase_order_count" widget="statinfo" string="Purchase Orders"/>
+        </button>
       </xpath>
     </field>
   </record>
