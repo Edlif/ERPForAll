@@ -1012,3 +1012,97 @@ fn module_toggle_items_validate_addon_names_publish_and_resolve_states() {
         ModuleToggleState::NotAvailable
     );
 }
+
+#[test]
+fn group_toggle_items_validate_group_identities_publish_and_resolve_states() {
+    use erp_registry::settings::{
+        GroupToggleState, LinkTarget, PanelItemDecl, PanelItemKind, SettingsRegistry,
+    };
+    use std::collections::BTreeSet;
+
+    let toggle = PanelItemDecl::group_toggle(
+        "stock.group_stock_tracking_lot",
+        "Packages",
+        "stock.group_tracking_lot",
+    )
+    .unwrap();
+    assert_eq!(toggle.key(), "stock.group_stock_tracking_lot");
+    assert_eq!(toggle.label(), "Packages");
+    assert_eq!(toggle.target_app(), "stock");
+    assert!(toggle.read_groups().is_empty());
+    match toggle.kind() {
+        PanelItemKind::Group { group, .. } => assert_eq!(group, "stock.group_tracking_lot"),
+        other => panic!("unexpected kind {other:?}"),
+    }
+    // The group identity follows the read-group rule: `<module>.<name>`, lowercase, at most 128 bytes.
+    let too_long = format!("stock.{}", "g".repeat(123));
+    for bad_group in [
+        "",
+        "group_tracking_lot",
+        "stock.",
+        ".group",
+        "Stock.group",
+        "stock.group-lot",
+        "stock.group\n",
+        too_long.as_str(),
+    ] {
+        invalid_declaration_message(
+            &PanelItemDecl::group_toggle("stock.bad", "Bad", bad_group).unwrap_err(),
+        );
+    }
+    let longest = format!("stock.{}", "g".repeat(122));
+    assert!(PanelItemDecl::group_toggle("stock.long", "Long", &longest).is_ok());
+
+    let toggle = toggle.access(&["base.group_system"]).unwrap();
+    let installed = BTreeSet::from(["base".to_owned(), "stock".to_owned()]);
+    let publish = |item: PanelItemDecl| {
+        SettingsRegistry::build(vec![], &installed, |_| true)
+            .unwrap()
+            .with_items(
+                vec![("stock".into(), vec![item])],
+                &installed,
+                |group| group == "base.group_system",
+                |_: &str, _: &LinkTarget| false,
+            )
+    };
+    let registry = publish(toggle.clone()).unwrap();
+    assert!(matches!(
+        registry.item("stock.group_stock_tracking_lot").unwrap().kind(),
+        PanelItemKind::Group { group, .. } if group == "stock.group_tracking_lot"
+    ));
+    // A group of a module that is not installed is refused at publication; access is still required.
+    invalid_declaration_message(
+        &publish(
+            PanelItemDecl::group_toggle("stock.sale_group", "Sale", "sale.group_feature")
+                .unwrap()
+                .access(&["base.group_system"])
+                .unwrap(),
+        )
+        .unwrap_err(),
+    );
+    invalid_declaration_message(
+        &publish(
+            PanelItemDecl::group_toggle("stock.no_access", "No access", "stock.group_a").unwrap(),
+        )
+        .unwrap_err(),
+    );
+
+    // On exactly when the internal-user group implies the group; a missing row is never "off".
+    let implied = BTreeSet::from([1, 7, 9]);
+    assert_eq!(
+        GroupToggleState::resolve(Some(7), Some(&implied)),
+        GroupToggleState::Enabled
+    );
+    assert_eq!(
+        GroupToggleState::resolve(Some(8), Some(&implied)),
+        GroupToggleState::Disabled
+    );
+    assert_eq!(
+        GroupToggleState::resolve(None, Some(&implied)),
+        GroupToggleState::NotAvailable
+    );
+    assert_eq!(
+        GroupToggleState::resolve(Some(7), None),
+        GroupToggleState::NotAvailable
+    );
+}

@@ -313,4 +313,57 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
         assert_eq!(item.label(), expected_label);
         assert_eq!(item.read_groups(), ["base.group_system"]);
     }
+    // Groups that already show or hide menus, view elements or fields are switched for all internal users.
+    for (key, expected_label, expected_group) in [
+        (
+            "stock.group_stock_multi_locations",
+            "Multiple locations",
+            "stock.group_stock_multi_locations",
+        ),
+        (
+            "stock.group_stock_adv_location",
+            "Advanced routes",
+            "stock.group_adv_location",
+        ),
+        (
+            "stock.group_stock_production_lot",
+            "Company-wide lot tracking",
+            "stock.group_production_lot",
+        ),
+        (
+            "stock.group_stock_tracking_lot",
+            "Packages",
+            "stock.group_tracking_lot",
+        ),
+        (
+            "stock.group_stock_tracking_owner",
+            "Consignment",
+            "stock.group_tracking_owner",
+        ),
+    ] {
+        let item = items.iter().find(|i| i.key() == key).expect(key);
+        match item.kind() {
+            erp_sdk::settings::PanelItemKind::Group { group, .. } => {
+                assert_eq!(group, expected_group, "{key} group");
+            }
+            other => panic!("{key} must be a group toggle, got {other:?}"),
+        }
+        assert_eq!(item.label(), expected_label);
+        assert_eq!(item.read_groups(), ["base.group_system"]);
+        assert_eq!(item.scope_restriction(), None, "{key}: groups are database-wide");
+    }
+    // Groups that gate nothing yet stay information rows.
+    for key in [
+        "stock.group_stock_lot_print_gs1",
+        "stock.group_lot_on_delivery_slip",
+        "stock.group_stock_picking_batch",
+        "stock.group_warning_stock",
+        "stock.group_stock_sign_delivery",
+    ] {
+        let item = items.iter().find(|i| i.key() == key).expect(key);
+        assert!(
+            matches!(item.kind(), erp_sdk::settings::PanelItemKind::Info),
+            "{key} must be an info row"
+        );
+    }
 }

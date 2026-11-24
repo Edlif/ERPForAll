@@ -89,6 +89,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         SettingsDescription,
         SettingsLinkTarget,
         ModuleToggleState,
+        GroupToggleState,
         SettingsItem,
         SettingDescription,
         ValueSource,

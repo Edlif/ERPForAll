@@ -520,6 +520,12 @@ async fn published(env: &Env, tx: &mut Transaction) -> Result<Published> {
                 return Err(invalid());
             }
             collect_groups(env, entry.addon.name, item.read_groups(), &mut references)?;
+            // A toggled group, like a read group, must come from the contributor's dependency closure.
+            if let PanelItemKind::Group { group, .. } = item.kind()
+                && !dependency_contains(env, entry.addon.name, group.split_once('.').ok_or_else(invalid)?.0)
+            {
+                return Err(invalid());
+            }
             if resolvers
                 .insert(item.key().to_owned(), entry.resolve)
                 .is_some()
@@ -544,7 +550,7 @@ async fn published(env: &Env, tx: &mut Transaction) -> Result<Published> {
     let mut targets = Vec::new();
     for item in items.iter().flat_map(|(_, declarations)| declarations) {
         match item.kind() {
-            PanelItemKind::Info | PanelItemKind::Module { .. } => {}
+            PanelItemKind::Info | PanelItemKind::Module { .. } | PanelItemKind::Group { .. } => {}
             PanelItemKind::Link(target) => targets.push(target),
             _ => return Err(unsupported_item()),
         }
@@ -771,12 +777,13 @@ pub async fn describe(
     // kind skips it, because inside a resolver the same `Access` error would only leave items out. The
     // superuser's empty company list passes.
     tx.companies(env).await?;
+    let toggles = ToggleGroups::load(tx, registry).await?;
     let mut items = Vec::new();
     for item in registry.items().filter(|item| item.shows_in(kind)) {
         if !permits(env, tx, item.read_groups()).await? {
             continue;
         }
-        if let Some(row) = describe_item(env, tx, &scope, &published, item).await? {
+        if let Some(row) = describe_item(env, tx, &scope, &published, &toggles, item).await? {
             items.push(row);
         }
     }
@@ -825,11 +832,49 @@ async fn resolve_item(
         failed @ erp_sdk::SavepointOutcome::RollbackFailed { .. } => failed.into_result().map(Some),
     }
 }
+/// The rows of the groups the published group toggles name, read once per description: the internal-user
+/// group with the groups it implies, and each toggled group's id (`None` when it has no row).
+#[derive(Default)]
+struct ToggleGroups {
+    internal: Option<(i64, BTreeSet<i64>)>,
+    groups: BTreeMap<String, Option<i64>>,
+}
+impl ToggleGroups {
+    async fn load(tx: &mut Transaction, registry: &SettingsRegistry) -> Result<Self> {
+        let toggled: Vec<&str> = registry
+            .items()
+            .filter_map(|item| match item.kind() {
+                PanelItemKind::Group { group, .. } => Some(group.as_str()),
+                _ => None,
+            })
+            .collect();
+        if toggled.is_empty() {
+            return Ok(Self::default());
+        }
+        let mut xmlids = vec![crate::group_graph::GROUP_USER];
+        xmlids.extend(&toggled);
+        let ids = crate::group_graph::groups_by_xmlid(tx, &xmlids).await?;
+        let graph = crate::group_graph::Graph::load(tx).await?;
+        Ok(Self {
+            internal: ids
+                .first()
+                .copied()
+                .flatten()
+                .map(|user| (user, graph.up([user]))),
+            groups: toggled
+                .into_iter()
+                .map(str::to_owned)
+                .zip(ids.into_iter().skip(1))
+                .collect(),
+        })
+    }
+}
 async fn describe_item(
     env: &Env,
     tx: &mut Transaction,
     scope: &SettingsScope,
     published: &Published,
+    toggles: &ToggleGroups,
     item: &PanelItemDecl,
 ) -> Result<Option<wire::SettingsItem>> {
     let key = item.key();
@@ -919,6 +964,37 @@ async fn describe_item(
                 sequence: item.display_sequence(),
                 addon: addon.clone(),
                 state,
+            }))
+        }
+        PanelItemKind::Group { group, .. } => {
+            let id = toggles.groups.get(group).copied().flatten();
+            let internal = toggles.internal.as_ref();
+            let state = match erp_sdk::settings::GroupToggleState::resolve(
+                id,
+                internal.map(|(_, implied)| implied),
+            ) {
+                erp_sdk::settings::GroupToggleState::Enabled => wire::GroupToggleState::Enabled,
+                erp_sdk::settings::GroupToggleState::Disabled => wire::GroupToggleState::Disabled,
+                erp_sdk::settings::GroupToggleState::NotAvailable => {
+                    wire::GroupToggleState::NotAvailable
+                }
+                _ => return Err(unsupported_item()),
+            };
+            // Both ids exactly when both rows exist, which is when the state is not "not available".
+            let ids = match (id, internal) {
+                (Some(group), Some((user, _))) => Some((wire_id(group)?, wire_id(*user)?)),
+                _ => None,
+            };
+            Ok(Some(wire::SettingsItem::Group {
+                key: key.into(),
+                label: item.label().into(),
+                app: item.target_app().into(),
+                block: item.block_title().into(),
+                sequence: item.display_sequence(),
+                group: group.clone(),
+                state,
+                group_id: ids.map(|(group, _)| group),
+                internal_group_id: ids.map(|(_, user)| user),
             }))
         }
         _ => Err(unsupported_item()),
