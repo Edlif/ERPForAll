@@ -60,7 +60,7 @@ const descriptionOf = (nodes: unknown[]) => ({
     app?.dispose(); app = undefined; delete document.documentElement.dataset["theme"];
     if (modalDescriptor) Object.defineProperty(HTMLDialogElement.prototype, "showModal", modalDescriptor);
     if (closeDescriptor) Object.defineProperty(HTMLDialogElement.prototype, "close", closeDescriptor);
-    vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/");
+    vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/"); sessionStorage.clear();
   });
   const host = (): HTMLElement => {
     const root = document.createElement("div");
@@ -646,6 +646,8 @@ test("a copied method-action URL in a fresh page fails loudly without opening an
   const url=location.href;
   const before=calls.filter(call=>call.path.includes("test.loan/web_search_read")).length;
   app!.dispose(); root.remove();
+  // Another tab has its own session storage: nothing kept by this one (`navigation-store.ts`) reaches it.
+  sessionStorage.clear();
   const fresh=host();
   history.replaceState(null,"",url);
   app=new HumanApp(fresh,bootstrap);

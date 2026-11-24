@@ -391,8 +391,13 @@ test("a one-record result the server refuses opens nothing, and a kept one this 
   document.querySelector<HTMLButtonElement>("dialog.client-error-dialog [data-error-close]")!.click();
   await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")).toBeNull());
 
+  // The method ran but its result was refused, so the record stays locked until the page is read again.
+  expect(headerButton("Open company").disabled).toBe(true);
+
   // Admitted once, refused when a reload sends it again: the form does not open.
   refused.delete(9);
+  await load();
+  await opened("Source record");
   await vi.waitFor(() => expect(headerButton("Open company").disabled).toBe(false));
   headerButton("Open company").click();
   await opened("Company record");
