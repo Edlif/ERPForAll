@@ -9,10 +9,11 @@
     <field name="priority" eval="10"/>
     <field name="arch" type="xml">
       <list>
-        <field name="product_id" readonly="qty_received or qty_invoiced"/>
+        <!-- the line form and the server keep a received or billed line's product and unit -->
+        <field name="product_id"/>
         <field name="name"/>
         <field name="product_qty"/>
-        <field name="uom_id" readonly="qty_received or qty_invoiced"/>
+        <field name="uom_id"/>
         <field name="date_planned" invisible="1"/>
         <field name="price_unit"/>
         <field name="discount" string="Disc. %"/>
