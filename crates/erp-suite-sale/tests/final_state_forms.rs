@@ -201,41 +201,146 @@ async fn policy_orm(db: &TestDb, installed: &Orm) -> Orm {
         .unwrap()
 }
 
-/// One guarded model: its form, the field that holds its status, and per final state the fields
-/// the server still accepts.
+/// What the server accepts on a record in a final state: only the listed fields, or every field
+/// but the listed ones.
+#[derive(Clone, Copy)]
+enum Rule {
+    Allow(&'static [&'static str]),
+    Deny(&'static [&'static str]),
+}
+
+impl Rule {
+    fn accepts(self, field: &str) -> bool {
+        match self {
+            Self::Allow(fields) => fields.contains(&field),
+            Self::Deny(fields) => !fields.contains(&field),
+        }
+    }
+}
+
+/// One guarded form: its model, the form (`None` for the model's default one), the field that
+/// holds the status, the other names its modifiers read, and per final state what the server
+/// accepts.
 struct Guarded {
     model: &'static str,
+    view: Option<&'static str>,
     status: &'static str,
-    states: Vec<(&'static str, &'static [&'static str])>,
+    names: Vec<(&'static str, ExprValue)>,
+    states: Vec<(&'static str, Rule)>,
+}
+
+/// Fields of a payment that the server refuses once it is no longer a draft.
+fn payment_fixed() -> &'static [&'static str] {
+    static FIXED: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    FIXED.get_or_init(|| {
+        let mut fixed = erp_addon_account::payment::ENTRY_FIELDS.to_vec();
+        fixed.extend(erp_addon_account::payment::SERVICE_OWNED);
+        fixed
+    })
 }
 
 fn guarded() -> Vec<Guarded> {
-    vec![
+    let no = || ExprValue::Bool(false);
+    let picking_names = vec![
+        ("picking_warning_text", no()),
+        ("sale_order_id", no()),
+        ("purchase_order_id", no()),
+        ("direct_delivery_id", no()),
+        ("direct_receipt_id", no()),
+    ];
+    let entry = Rule::Allow(&erp_addon_account::moves::POSTED_MOVE_WRITABLE);
+    let item = Rule::Allow(&erp_addon_account::moves::POSTED_LINE_WRITABLE);
+    let invoice_names = |kind: &str| {
+        vec![
+            ("move_type", ExprValue::str(kind)),
+            ("name", no()),
+            ("payment_state", ExprValue::str("not_paid")),
+            ("sale_order_count", ExprValue::Int(0)),
+            ("purchase_order_count", ExprValue::Int(0)),
+        ]
+    };
+    let mut forms = vec![
         Guarded {
             model: "stock.picking",
+            view: None,
             status: "state",
+            names: picking_names,
             states: vec![
-                ("done", &erp_addon_stock::DONE_PICKING_WRITABLE),
-                ("cancel", &erp_addon_stock::CANCELLED_PICKING_WRITABLE),
+                ("done", Rule::Allow(&erp_addon_stock::DONE_PICKING_WRITABLE)),
+                (
+                    "cancel",
+                    Rule::Allow(&erp_addon_stock::CANCELLED_PICKING_WRITABLE),
+                ),
             ],
         },
         Guarded {
             model: "stock.move",
+            view: None,
             status: "state",
+            names: vec![],
             states: vec![
-                ("done", &erp_addon_stock::DONE_MOVE_WRITABLE),
-                ("cancel", &erp_addon_stock::DONE_MOVE_WRITABLE),
+                ("done", Rule::Allow(&erp_addon_stock::DONE_MOVE_WRITABLE)),
+                ("cancel", Rule::Allow(&erp_addon_stock::DONE_MOVE_WRITABLE)),
             ],
         },
         Guarded {
             model: "stock.picking.batch",
+            view: None,
             status: "state",
+            names: vec![("batch_id", no()), ("mode", ExprValue::str("existing"))],
             states: vec![
-                ("done", &erp_addon_stock::batch::FINAL_BATCH_WRITABLE),
-                ("cancel", &erp_addon_stock::batch::FINAL_BATCH_WRITABLE),
+                (
+                    "done",
+                    Rule::Allow(&erp_addon_stock::batch::FINAL_BATCH_WRITABLE),
+                ),
+                (
+                    "cancel",
+                    Rule::Allow(&erp_addon_stock::batch::FINAL_BATCH_WRITABLE),
+                ),
             ],
         },
-    ]
+        Guarded {
+            model: "account.move",
+            view: None,
+            status: "state",
+            names: invoice_names("entry"),
+            states: vec![("posted", entry), ("cancel", entry)],
+        },
+        Guarded {
+            model: "account.move.line",
+            view: None,
+            status: "parent_state",
+            names: vec![],
+            states: vec![("posted", item), ("cancel", item)],
+        },
+        Guarded {
+            model: "account.move.line",
+            view: Some("view_invoice_line_form"),
+            status: "parent_state",
+            names: vec![("purchase_source_line_id", no())],
+            states: vec![("posted", item), ("cancel", item)],
+        },
+        Guarded {
+            model: "account.payment",
+            view: None,
+            status: "state",
+            names: vec![("move_id", no())],
+            states: ["paid", "reconciled", "canceled", "rejected"]
+                .into_iter()
+                .map(|state| (state, Rule::Deny(payment_fixed())))
+                .collect(),
+        },
+    ];
+    for kind in ["out_invoice", "in_invoice"] {
+        forms.push(Guarded {
+            model: "account.move",
+            view: Some("view_invoice_form"),
+            status: "state",
+            names: invoice_names(kind),
+            states: vec![("posted", entry), ("cancel", entry)],
+        });
+    }
+    forms
 }
 
 /// The form's read-only map of `guard.model` with its status field set to `state`.
@@ -244,15 +349,27 @@ async fn form_readonly(
     guard: &Guarded,
     state: &str,
 ) -> BTreeMap<String, bool> {
+    let view = match guard.view {
+        None => None,
+        Some(name) => {
+            let rows = tx
+                .query(
+                    "SELECT res_id::int8 FROM ir_model_data \
+                     WHERE module = 'account' AND name = $1 AND model = 'ir.ui.view'",
+                    &[&name],
+                )
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1, "the view account.{name}");
+            Some(rows[0].get::<_, i64>(0))
+        }
+    };
+    let mut names = guard.names.clone();
+    names.push((guard.status, ExprValue::str(state)));
     let env = tx.env();
-    erp_addon_web::metadata_test_support::test_form_readonly(
-        &env,
-        tx,
-        guard.model,
-        &[(guard.status, ExprValue::str(state))],
-    )
-    .await
-    .unwrap()
+    erp_addon_web::metadata_test_support::test_form_readonly(&env, tx, guard.model, view, &names)
+        .await
+        .unwrap()
 }
 
 /// Every field of each guarded form that is editable in draft is, in each final state, read-only
@@ -268,17 +385,18 @@ fn final_state_forms_show_read_only_exactly_what_the_server_refuses() {
             // allow-list says nothing about it.
             let draft = form_readonly(&mut tx, &guard, "draft").await;
             assert!(!draft.is_empty(), "{} has no form fields", guard.model);
-            for (state, writable) in &guard.states {
+            for (state, rule) in &guard.states {
                 let form = form_readonly(&mut tx, &guard, state).await;
                 for (field, readonly) in &form {
                     if draft.get(field) == Some(&true) {
                         continue;
                     }
-                    let allowed = writable.contains(&field.as_str());
+                    let allowed = rule.accepts(field);
                     if allowed == *readonly {
                         disagreements.push(format!(
-                            "{} {state}: {field} is {} on the form but {} by the server",
+                            "{} {} {state}: {field} is {} on the form but {} by the server",
                             guard.model,
+                            guard.view.unwrap_or("default form"),
                             if *readonly { "read-only" } else { "editable" },
                             if allowed { "accepted" } else { "refused" },
                         ));

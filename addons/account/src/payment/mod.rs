@@ -22,7 +22,7 @@ use erp_sdk::prelude::*;
 
 /// The fields only the payment service writes: a caller value, a context default and a copy are
 /// refused or dropped.
-pub(crate) const SERVICE_OWNED: [&str; 7] = [
+pub const SERVICE_OWNED: [&str; 7] = [
     "state",
     "name",
     "move_id",
@@ -32,8 +32,9 @@ pub(crate) const SERVICE_OWNED: [&str; 7] = [
     "is_sent",
 ];
 
-/// What feeds the journal entry of a payment: refused on a payment that is no longer a draft.
-pub(crate) const ENTRY_FIELDS: [&str; 11] = [
+/// What feeds the journal entry of a payment: refused on a payment that is no longer a draft
+/// (paid, reconciled, cancelled or rejected); reset a cancelled or rejected one to draft first.
+pub const ENTRY_FIELDS: [&str; 11] = [
     "date",
     "amount",
     "payment_type",
@@ -534,6 +535,7 @@ impl AccountPayment {
         }
         if !entry.is_empty() {
             service::refuse_posted(tx, &this.ids(), &entry.join(", ")).await?;
+            service::refuse_ended(tx, &this.ids(), &entry.join(", ")).await?;
         }
         sup.call(tx, this.as_records(), (vals,)).await?;
         if memo {

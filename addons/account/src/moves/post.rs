@@ -43,14 +43,14 @@ pub const POSTER_GROUP: &str = "account.group_account_user";
 /// refused at `:4061-4071`) and leaves the rest to its views. Modified: a default-deny list in
 /// the ORM (R1b; the payment fields of its list are written by the payment slice,
 /// never by a caller, and `narration` does not exist yet).
-pub(crate) const POSTED_MOVE_WRITABLE: [&str; 1] = ["ref"];
+pub const POSTED_MOVE_WRITABLE: [&str; 1] = ["ref"];
 
 /// What a caller may still change on the items of a posted or cancelled entry: the label and the
 /// due date (R1b). Observed: the reference protects the tax, fiscal and hash fields of
 /// a posted item (
 /// `:3829-3838`) and the invoice amounts through its views. Modified: everything else (quantity,
 /// price, discount, product, subtotals, taxes, amounts, accounts) is refused by the ORM.
-pub(crate) const POSTED_LINE_WRITABLE: [&str; 2] = ["name", "date_maturity"];
+pub const POSTED_LINE_WRITABLE: [&str; 2] = ["name", "date_maturity"];
 
 #[methods(AccountMove, addon = "account")]
 impl AccountMove {

@@ -82,9 +82,11 @@ pub struct AccountMoveLine {
     /// The entry's accounting date.
     #[field(date, related = "move_id.date", store = true, string = "Date")]
     pub date: Option<Date>,
-    /// The entry's state, written with it by the posting service.
+    /// The entry's state, written with it by the posting service. Its values repeat the entry's,
+    /// so a form can read it in its modifiers.
     #[field(
         selection,
+        selection = [("draft", "Draft"), ("posted", "Posted"), ("cancel", "Cancelled")],
         related = "move_id.state",
         store = true,
         readonly = true,
