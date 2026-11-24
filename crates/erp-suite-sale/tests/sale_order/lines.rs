@@ -1206,6 +1206,10 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
             .call(&mut tx, "action_create_draft_invoice", ())
             .await
             .unwrap();
+        // A request reads the count in a new transaction; inside this one the read is cached.
+        tx.invalidate_records(&order, Some(&["invoice_count"]))
+            .await
+            .unwrap();
         assert_eq!(
             order.cell(&mut tx, "invoice_count").await.unwrap(),
             Cell::Int(2)
