@@ -387,11 +387,18 @@ struct Header {
 }
 
 async fn header(tx: &mut Transaction, id: i64) -> Result<Header> {
+    header_with(tx, id, "FOR UPDATE").await
+}
+
+/// The header with an optional lock clause (empty: read without locking).
+async fn header_with(tx: &mut Transaction, id: i64, lock: &str) -> Result<Header> {
     tx.flush().await?;
     let rows = tx
         .query(
-            "SELECT name, state, company_id, picking_type_id, validating, validation_run \
-             FROM stock_picking_batch WHERE id = $1 FOR UPDATE",
+            &format!(
+                "SELECT name, state, company_id, picking_type_id, validating, validation_run \
+                 FROM stock_picking_batch WHERE id = $1 {lock}"
+            ),
             &[&id],
         )
         .await?;
@@ -529,15 +536,15 @@ pub(crate) async fn add_pickings(
             misfits.join(", ")
         )));
     }
-    if head.picking_type.is_none() {
-        let records = env.records("stock.picking.batch")?.browse([batch])?;
-        write_own(
-            &records,
-            tx,
-            RawVals::new().set_cell("picking_type_id", Cell::Id(picking_type)),
-        )
-        .await?;
-    }
+    // Written in every case: the update makes a concurrent type or company write that waited on
+    // the batch row fail with a serialization error and retry, instead of passing on an old snapshot.
+    let records = env.records("stock.picking.batch")?.browse([batch])?;
+    write_own(
+        &records,
+        tx,
+        RawVals::new().set_cell("picking_type_id", Cell::Id(picking_type)),
+    )
+    .await?;
     link(env, tx, ids, Some(batch)).await
 }
 
@@ -953,6 +960,13 @@ impl StockPickingBatch {
     ) -> Result<Value> {
         let id = this.as_records().ensure_one()?.int()?;
         require_group(this.as_records().env(), tx).await?;
+        let head = header_with(tx, id, "").await?;
+        if held(tx, id, &head).await? {
+            return Err(Error::user(format!(
+                "Batch {} is being validated: add transfers when it is finished.",
+                head.name
+            )));
+        }
         Ok(dialog(
             json!({ "default_mode": "existing", "default_batch_id": id }),
         ))
