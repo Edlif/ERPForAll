@@ -374,6 +374,27 @@ pub async fn cancel_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
     .await
 }
 
+/// Cancel the draft entries `drafts` that belong to a commercial document being cancelled (a
+/// sales or purchase order), through [`cancel_moves`]. The order's own write right is the
+/// caller's to check before; a caller without accounting rights is elevated for this one state
+/// change only, so a user of the sales or purchase app can cancel an order whose only invoices
+/// are drafts. Nothing is returned to the caller.
+///
+/// # Errors
+///
+/// The errors of [`cancel_moves`]: an entry that is no longer a draft is refused.
+pub async fn cancel_document_drafts(tx: &mut Transaction, env: &Env, drafts: &[i64]) -> Result<()> {
+    if drafts.is_empty() {
+        return Ok(());
+    }
+    let env = if env.su() || tx.has_group(env, POSTER_GROUP).await? {
+        env.clone()
+    } else {
+        env.sudo(true)
+    };
+    cancel_moves(tx, &env.records("account.move")?.browse(drafts.iter().copied())?).await
+}
+
 /// Asks the caller's `operation` right on the entries of `move_ids`. It runs before any statement
 /// reads or locks an entry by a caller-supplied id: without it the refusal text would give the
 /// state and number of an entry the caller may not read (another company's), and a caller without

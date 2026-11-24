@@ -390,6 +390,12 @@ pub(crate) struct LineFacts {
 }
 
 impl LineFacts {
+    /// Whether something was delivered or invoiced on the line: it then keeps its product, its
+    /// unit and at least that quantity, whatever the state of its order.
+    fn downstream(&self) -> bool {
+        self.delivered > Decimal::ZERO || self.invoiced > Decimal::ZERO
+    }
+
     /// "Desk (S00001)" or "line 12 (S00001)".
     fn describe(
         &self,
@@ -907,7 +913,8 @@ impl SaleOrderLine {
         Ok(())
     }
 
-    /// The lines that may not be deleted: product lines of a confirmed order; sections and notes
+    /// The lines that may not be deleted: product lines of a confirmed order and product lines
+    /// with a delivered or invoiced quantity, whatever the order's state; sections and notes
     /// always may be, and down payments while they have no invoice line.
     #[method]
     async fn _check_line_unlink(
@@ -917,7 +924,11 @@ impl SaleOrderLine {
         let kept = facts(this, tx)
             .await?
             .into_iter()
-            .filter(|line| line.state == "sale" && line.display_type.is_none() && !line.downpayment)
+            .filter(|line| {
+                line.display_type.is_none()
+                    && !line.downpayment
+                    && (line.state == "sale" || line.downstream())
+            })
             .map(|line| line.id);
         Ok(this.as_records().browse_ids(kept))
     }
@@ -1103,10 +1114,8 @@ impl SaleOrderLine {
                 .filter(|line| {
                     line.downpayment
                         || line.state == "cancel"
-                        || (line.state == "sale"
-                            && (line.locked
-                                || line.invoiced > Decimal::ZERO
-                                || line.delivered > Decimal::ZERO))
+                        || line.downstream()
+                        || (line.state == "sale" && line.locked)
                 })
                 .cloned()
                 .collect();
@@ -1117,20 +1126,40 @@ impl SaleOrderLine {
         }
         if let Some(new_quantity) = quantity(&vals)? {
             // stricter than the reference, which checks only the delivered quantity: an invoiced
-            // quantity is a consequence too
+            // quantity is a consequence too, and the floor holds whatever the order's state; a
+            // raise or an unchanged quantity passes, even while still below the floor
             let below: Vec<LineFacts> = lines
                 .iter()
                 .filter(|line| {
-                    line.state == "sale" && new_quantity < line.delivered.max(line.invoiced)
+                    let floor = line.delivered.max(line.invoiced);
+                    line.downstream() && new_quantity < floor && new_quantity < line.ordered
                 })
                 .cloned()
                 .collect();
-            refuse(tx, &env, &below, |listed| {
-                format!(
-                    "The quantity of a confirmed sales order line cannot go below what was delivered or invoiced; return or credit the rest instead: {listed}."
-                )
-            })
-            .await?;
+            if !below.is_empty() {
+                let (names, orders) = names(tx, &below, &env).await?;
+                let listed: Vec<String> = below
+                    .iter()
+                    .map(|line| {
+                        format!(
+                            "{}: {} delivered, {} invoiced",
+                            line.describe(&names, &orders),
+                            line.delivered.normalize(),
+                            line.invoiced.normalize()
+                        )
+                    })
+                    .collect();
+                let hint = if below.iter().any(|line| line.delivered >= line.invoiced) {
+                    "return the goods or correct the delivered quantity first"
+                } else {
+                    "correct the invoice or credit the rest first"
+                };
+                return Err(Error::user(format!(
+                    "The quantity of a sales order line cannot go below what was delivered or invoiced ({} asked); {hint}: {}.",
+                    new_quantity.normalize(),
+                    listed.join("; ")
+                )));
+            }
             let changed: Vec<RecId> = lines
                 .iter()
                 .filter(|line| line.state == "sale" && line.ordered != new_quantity)
@@ -1197,7 +1226,7 @@ impl SaleOrderLine {
             let lines = facts(&set, tx).await?;
             refuse(tx, &env, &lines, |listed| {
                 format!(
-                    "A line of a confirmed sales order is kept for its deliveries and invoices; set its quantity to 0 instead: {listed}."
+                    "A line of a confirmed sales order, or one with deliveries or invoices, is kept; set its quantity to 0 instead, or to what was delivered or invoiced: {listed}."
                 )
             })
             .await?;

@@ -235,6 +235,38 @@ impl SalesInvoiceHeader {
         .await
     }
 
+    /// Posting refuses an invoice or credit note whose sales order is not confirmed (cancelled or
+    /// back in quotation): what it invoices would no longer match an order. The orders are
+    /// share-locked, so a cancel of one of them at the same time waits for the posting or fails.
+    /// Nothing about the order is named: the poster may not read it.
+    #[method(override)]
+    async fn action_post(this: &RecordSet<AccountMove>, tx: &mut Transaction, sup: Super) -> Result<()> {
+        let moves = this.as_records();
+        if !moves.is_empty() {
+            moves.check_access(tx, Operation::Write).await?;
+            tx.flush().await?;
+            let rows = tx
+                .query(
+                    "SELECT o.state::text FROM sale_order o WHERE o.id IN ( \
+                         SELECT s.order_id FROM sale_invoice_item k \
+                         JOIN sale_order_line s ON s.id = k.sale_line_id \
+                         JOIN account_move_line l ON l.id = k.invoice_item_id \
+                         WHERE l.move_id = ANY($1)) ORDER BY o.id FOR SHARE",
+                    &[&moves.ids()],
+                )
+                .await?;
+            for row in rows {
+                let state: Option<String> = row.try_get(0).map_err(decode)?;
+                if state.as_deref() != Some("sale") {
+                    return Err(Error::user(
+                        "This invoice comes from a sales order that is cancelled or back in quotation, so it cannot be posted. Confirm the order again, or remove its lines from the invoice.",
+                    ));
+                }
+            }
+        }
+        sup.call(tx, moves, ()).await
+    }
+
     #[constrains("partner_id", "currency_id", "company_id", "move_type")]
     async fn _check_sales_items(this: &RecordSet<AccountMove>, tx: &mut Transaction) -> Result<()> {
         check_links(tx, this.ids(), "m.id").await

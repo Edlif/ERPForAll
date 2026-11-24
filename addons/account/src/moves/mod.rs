@@ -22,7 +22,7 @@ mod post;
 pub use line::AccountMoveLine;
 pub(crate) use post::refuse_locked_items;
 pub use post::{POSTED_LINE_WRITABLE, POSTED_MOVE_WRITABLE};
-pub use post::{POSTER_GROUP, cancel_moves, post_moves, reset_moves};
+pub use post::{POSTER_GROUP, cancel_document_drafts, cancel_moves, post_moves, reset_moves};
 
 use erp_sdk::Operation;
 use erp_sdk::ValueMap;
