@@ -19,7 +19,19 @@ test("related-list action retains a literal base filter and defaults", () => {
   refused({...currentResult,domain:[["id","=",9007199254740992]]}, "server", "Current-window integer literal exceeds the browser's safe range.");
   refused({...currentResult,context:{allowed_company_ids:[9]}}, "unsupported", "Unsupported current-window context key: allowed_company_ids.");
   refused({...currentResult,views:[{id:null,type:"form"}]}, "unsupported", "A current window requires list, optionally followed by form.");
-  refused({...currentResult,res_id:7}, "unsupported", "Unknown action result member: res_id.");
+  // A list carrying a record id is not a list: it must be one form scoped to that record.
+  refused({...currentResult,res_id:7}, "unsupported", "A current window that opens one record requires exactly one form view.");
+});
+test("a one-record result is one form scoped to that record, refused when malformed", () => {
+  const one = {kind:"current_window",name:"Wizard",model:"test.wizard",views:[{id:3,type:"form"}],domain:[["id","=",7]],res_id:7,context:{create:false}};
+  expect(decode(one)).toEqual(one);
+  expect(decode({...one,views:[{id:null,type:"form"}]})).toEqual({...one,views:[{id:null,type:"form"}]});
+  refused({...one,views:[{id:null,type:"list"}]}, "unsupported", "A current window that opens one record requires exactly one form view.");
+  refused({...one,views:[]}, "unsupported", "A current window that opens one record requires exactly one form view.");
+  refused({...one,domain:[["id","=",8]]}, "server", "A current window that opens one record must be scoped to that record.");
+  refused({...one,domain:[]}, "server", "A current window that opens one record must be scoped to that record.");
+  refused({...one,res_id:0}, "server", "Invalid current-window record id.");
+  refused({...one,res_id:"7"}, "server", "Invalid current-window record id.");
 });
 /// (partial: a related list may preselect search items; a dialog has no search to preselect)
 test("a related-list result carries search defaults by plain name and plain value", () => {

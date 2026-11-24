@@ -11,17 +11,19 @@ use serde_json::{Value as Json, json};
 fn fail(message: impl Into<String>) -> Error {
     Error::validation(message)
 }
-fn literal(expr: &erp_sdk::expr::Expr, uid: i64, depth: usize, label: &str) -> Result<Json> {
+/// The JSON of a saved domain expression made of literal criteria and `uid`, or `None` when it
+/// uses anything else (a context value, a call); malformed input is an error.
+fn literal(
+    expr: &erp_sdk::expr::Expr,
+    uid: i64,
+    depth: usize,
+    label: &str,
+) -> Result<Option<Json>> {
     use erp_sdk::expr::{Expr, Literal, UnaryOp};
-    let only = || {
-        fail(format!(
-            "{label} domains support literal criteria and uid only."
-        ))
-    };
     if depth > 32 {
         return Err(fail(format!("{label} domain exceeds the 32-level bound.")));
     }
-    Ok(match expr {
+    Ok(Some(match expr {
         Expr::Literal(Literal::None) => Json::Null,
         Expr::Literal(Literal::Bool(v)) => json!(v),
         Expr::Literal(Literal::Int(v)) => json!(v),
@@ -37,32 +39,42 @@ fn literal(expr: &erp_sdk::expr::Expr, uid: i64, depth: usize, label: &str) -> R
                     .ok_or_else(|| fail(format!("{label} domain integer overflow.")))?
             ),
             Expr::Literal(Literal::Float(v)) if v.is_finite() => json!(-v),
-            _ => return Err(only()),
+            _ => return Ok(None),
         },
-        Expr::List(items) | Expr::Tuple(items) => Json::Array(
-            items
-                .iter()
-                .map(|e| literal(e, uid, depth + 1, label))
-                .collect::<Result<_>>()?,
-        ),
-        _ => return Err(only()),
-    })
+        Expr::List(items) | Expr::Tuple(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(value) = literal(item, uid, depth + 1, label)? else {
+                    return Ok(None);
+                };
+                values.push(value);
+            }
+            Json::Array(values)
+        }
+        _ => return Ok(None),
+    }))
 }
 fn domain(document: Option<&WireDocument>, uid: i64) -> Result<Domain> {
-    literal_domain(document, uid, "Dashboard")
+    literal_domain(document, uid, "Dashboard")?
+        .ok_or_else(|| fail("Dashboard domains support literal criteria and uid only."))
 }
-/// A saved domain of literal criteria and `uid`; anything else is refused, named by `label`.
+/// A saved domain of literal criteria and `uid`, or `None` when it uses anything else; a
+/// malformed domain is refused, named by `label`.
 pub(crate) fn literal_domain(
     document: Option<&WireDocument>,
     uid: i64,
     label: &str,
-) -> Result<Domain> {
+) -> Result<Option<Domain>> {
     match document {
-        None => Ok(Domain::TRUE),
+        None => Ok(Some(Domain::TRUE)),
         Some(document) => {
             let ast = erp_sdk::expr::wire::ValidatedAst::try_from(document.clone())
                 .map_err(|e| fail(e.to_string()))?;
-            Domain::from_json(&literal(ast.as_expr(), uid, 0, label)?)
+            let Some(json) = literal(ast.as_expr(), uid, 0, label)? else {
+                return Ok(None);
+            };
+            Domain::from_json(&json)
+                .map(Some)
                 .map_err(|e| fail(format!("Invalid {} domain: {e}", label.to_lowercase())))
         }
     }

@@ -427,7 +427,9 @@ A link to another record on a form (a many2one, a tag, a one2many cell, a wizard
 that record with one call, `erp_resolve_record_action` on `ir.actions.act_window` (`model`, `record_id`): the server
 picks the first window action of the user's visible menus, in menu order, that opens the current page, has a form view
 of that model and whose domain holds the record, and answers it with its views, or `null` when the user may open none.
-The domain of such an action may hold literal criteria and `uid` only. Opened from a form, the new form goes on top of
+A domain of literal criteria and `uid` is checked against the record; an action whose domain reads anything else (the
+context, for one) cannot be checked against one record and is taken only when no checkable action holds the record,
+for a record the user may read. The form loads the record under the user's own access either way. Opened from a form, the new form goes on top of
 it: the breadcrumb shows the list, the record and the opened record, and leads back to each. The same holds for a list
 a form's button opens (an object button whose method returns a current-window action, or a declared action button), for
 a form opened from that list, and for a link in a line dialog or a relation dialog, which closes first: every step stays
@@ -452,6 +454,20 @@ most 32 KiB each. After a reload the list is decoded like a server answer and se
 `erp_normalize_action_result`, the check it passed when its button opened it, under the user's rights and the page's
 companies; it opens as the server answers now. A list the server refuses, or one the client cannot read back, opens
 nothing: the page offers the way back to the action it was opened under.
+
+An object or stat button may return one record to open in its form: a current-window action with `res_id` and
+exactly one form view (`[[view_id|false, "form"]]`), and no domain. `erp_normalize_action_result` admits it under the
+same checks as a list (the model, the view, the defaults) and then checks that the record exists and that the user
+may read it; a record the user may not read and one that does not exist are refused alike (`AccessError`), and a
+malformed result (a domain next to `res_id`, a list view, an id that is not a positive integer) is refused by name
+(`ValidationError`). The answer carries `res_id` and the domain `[["id", "=", res_id]]`. The client opens the form on
+top of the page the button is on, so the breadcrumb leads back to it, and it survives a reload like a list a button
+opened. The count buttons of sales, purchase, invoicing and stock (an order's invoices, vendor bills, deliveries and
+receipts, and the way back from an invoice, a bill or a transfer to its order) open the form directly when they count
+exactly one document, and the list otherwise.
+
+A current-window result from a button inside a dialog closes the dialog first, then opens on the main page, on top of
+the page under the dialog.
 
 A user's home action (`res.users.action_id`, a window action the user may set on their own record) opens in place of
 the app grid when the address names no action. It loads through the usual access checks: an action the user may not

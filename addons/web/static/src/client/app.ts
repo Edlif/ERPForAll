@@ -2203,10 +2203,12 @@ export class HumanApp {
       const kept = error instanceof ExpiredMethodAction ? this.navigationStore.action(id) : undefined;
       if (!kept) throw error;
       const { result } = kept, context = { ...kept.context, ...this.context };
+      // One record goes back as itself (`res_id`, no domain); the server checks again that the user may read it.
       const input = { type: "ir.actions.act_window", name: result.name, res_model: result.model, target: "current",
-        views: result.views.map(view => [view.id ?? false, view.type]), domain: result.domain, context: result.context };
+        views: result.views.map(view => [view.id ?? false, view.type]),
+        ...result.res_id === undefined ? { domain: result.domain } : { res_id: result.res_id }, context: result.context };
       const admitted = actionResult(await this.rpc.call(result.model, "erp_normalize_action_result", { wire_major: 1, result: input, context }));
-      if (admitted.kind !== "current_window" || admitted.model !== result.model) throw new ClientError("server", "The related list did not open again as a list of its model.");
+      if (admitted.kind !== "current_window" || admitted.model !== result.model || admitted.res_id !== result.res_id) throw new ClientError("server", "The related page did not open again as it was opened: reopen it from the page it came from.");
       const entry: MethodAction = { ...kept, result: admitted, context };
       this.methodActions.restore(id, entry);
       return entry;
@@ -4089,8 +4091,11 @@ export class HumanApp {
     const origin = { ...this.current };
     if (normalized.kind === "current_window") {
       const id = this.methodActions.add({ result: normalized, context: { ...this.context, ...normalized.context }, origin, originLabel });
-      try { await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: id, model: normalized.model, view_type: "list" }); }
-      catch (error) { this.methodActions.remove(id); throw error; }
+      try {
+        await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: id, model: normalized.model,
+          ...normalized.res_id === undefined ? { view_type: "list" } : { id: String(normalized.res_id), view_type: "form" } },
+          false, false, undefined, normalized.res_id === undefined ? undefined : { stack: true });
+      } catch (error) { this.methodActions.remove(id); throw error; }
       if (this.current.method_action !== id) this.methodActions.remove(id);
       return;
     }
@@ -4235,9 +4240,15 @@ export class HumanApp {
       await refresh(); return;
     }
     if (result.kind === "current_window") {
-      if (source) throw new ClientError("unsupported", "A dialog cannot open a current-window action yet.");
-      const invocation = this.pendingInvocation;
-      if (!invocation || invocation.caller !== caller || invocation.generation !== binding) throw new ClientError("validation", "The action's source is no longer available for navigation.");
+      // From a dialog: the dialog closes first (as a link inside it does), then the result opens on the main page, on
+      // top of the page under the dialog. A dialog that stays open (it may not be left) opens nothing.
+      if (source) {
+        if (!await source.canLeave(true)) return;
+        await source.close();
+        if (this.wizard === source || !this.live(binding)) return;
+      }
+      const invocation = source ? undefined : this.pendingInvocation;
+      if (!source && (!invocation || invocation.caller !== caller || invocation.generation !== binding)) throw new ClientError("validation", "The action's source is no longer available for navigation.");
       const context = { ...callerContext, active_model: caller.model, active_id: caller.id,
         active_ids: caller.id === undefined ? [] : [caller.id], ...result.context };
       const origin = { ...this.current };
@@ -4245,15 +4256,18 @@ export class HumanApp {
       const originLabel = typeof name === "string" && name ? name : caller.id === undefined ? "Record" : `#${caller.id}`;
       const id = this.methodActions.add({ result, context, origin, originLabel });
       try {
-        await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids,
-          method_action: id, model: result.model, view_type: "list" }, false, false, invocation);
+        // One record opens straight in its form, on top of the page the button is on.
+        await this.navigate({ action: origin.action, menu: origin.menu, cids: origin.cids, method_action: id, model: result.model,
+          ...result.res_id === undefined ? { view_type: "list" } : { id: String(result.res_id), view_type: "form" } },
+          false, false, invocation, result.res_id === undefined ? undefined : { stack: true });
       } catch (error) {
         this.methodActions.remove(id);
         // The method has already completed. Reload its known result without repeating it,
-        // then report destination failure while retaining the mounted source.
-        await refresh();
+        // then report destination failure while retaining the mounted source. A closed dialog refreshed its page already.
+        if (!source) await refresh();
         throw error;
       }
+      if (source && this.current.method_action !== id) this.methodActions.remove(id);
       return;
     }
     if (result.kind === "client") {

@@ -81,7 +81,28 @@ pub fn counts(sources: &Records, found: &BTreeMap<i64, Vec<i64>>) -> Result<Vec<
 }
 
 /// A current-window action over the readable documents; `views` empty means the model's defaults.
+/// Exactly one document opens straight in its form, stacked on the page the button is on; more
+/// (or none) open the list.
 pub fn window(name: &str, model: &str, views: Vec<(i64, &str)>, ids: Vec<i64>) -> Value {
+    let context = ValueMap::from([("create".to_owned(), Value::Bool(false))]);
+    if let [id] = ids.as_slice() {
+        let form = views
+            .iter()
+            .find(|(_, kind)| *kind == "form")
+            .map_or(Value::False, |(view, _)| Value::Int(*view));
+        return Value::Map(Arc::new(ValueMap::from([
+            ("type".to_owned(), Value::str("ir.actions.act_window")),
+            ("name".to_owned(), Value::str(name)),
+            ("res_model".to_owned(), Value::str(model)),
+            ("target".to_owned(), Value::str("current")),
+            ("res_id".to_owned(), Value::Int(*id)),
+            (
+                "views".to_owned(),
+                Value::list([Value::list([form, Value::str("form")])]),
+            ),
+            ("context".to_owned(), Value::Map(Arc::new(context))),
+        ])));
+    }
     let views = if views.is_empty() {
         vec![
             Value::list([Value::False, Value::str("list")]),
@@ -93,7 +114,6 @@ pub fn window(name: &str, model: &str, views: Vec<(i64, &str)>, ids: Vec<i64>) -
             .map(|(id, kind)| Value::list([Value::Int(id), Value::str(kind)]))
             .collect()
     };
-    let context = ValueMap::from([("create".to_owned(), Value::Bool(false))]);
     Value::Map(Arc::new(ValueMap::from([
         ("type".to_owned(), Value::str("ir.actions.act_window")),
         ("name".to_owned(), Value::str(name)),
