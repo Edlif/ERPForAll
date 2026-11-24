@@ -46,7 +46,7 @@ impl StockPartner {
     ) -> Result<()> {
         for value in this.as_records().values(tx, "picking_warn_msg").await? {
             match value {
-                Value::False | Value::Null => {}
+                Value::False => {}
                 Value::Str(text) => {
                     if text.chars().count() > MAX_WARNING_CHARS {
                         return Err(Error::validation(format!(

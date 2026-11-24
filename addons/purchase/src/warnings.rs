@@ -17,7 +17,7 @@ pub const MAX_WARNING_CHARS: usize = 4_000;
 fn check_warning_length(field_label: &str, values: Vec<Value>) -> Result<()> {
     for value in values {
         match value {
-            Value::False | Value::Null => {}
+            Value::False => {}
             Value::Str(text) => {
                 if text.chars().count() > MAX_WARNING_CHARS {
                     return Err(Error::validation(format!(
@@ -37,7 +37,7 @@ fn check_warning_length(field_label: &str, values: Vec<Value>) -> Result<()> {
 
 fn non_empty_text(context: &str, value: Value) -> Result<Option<Arc<str>>> {
     match value {
-        Value::False | Value::Null => Ok(None),
+        Value::False => Ok(None),
         Value::Str(text) => Ok((!text.is_empty()).then_some(text)),
         other => Err(Error::programming(format!(
             "{context} expected text or empty value, received {other:?}."
@@ -47,7 +47,7 @@ fn non_empty_text(context: &str, value: Value) -> Result<Option<Arc<str>>> {
 
 fn optional_rec_id(context: &str, value: Value) -> Result<Option<RecId>> {
     match value {
-        Value::False | Value::Null => Ok(None),
+        Value::False => Ok(None),
         Value::Int(id) => RecId::from_real(id)
             .ok_or_else(|| Error::programming(format!("{context} had invalid record id {id}.")))
             .map(Some),
