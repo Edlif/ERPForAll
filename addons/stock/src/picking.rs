@@ -328,6 +328,7 @@ pub struct StockPicking {
     #[field(
         text,
         compute = "_compute_picking_warning_text",
+        compute_sudo = true,
         readonly = true,
         copy = false,
         string = "Transfer Warning"

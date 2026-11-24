@@ -235,6 +235,7 @@ pub struct PurchaseOrderLine {
     #[field(
         text,
         compute = "_compute_purchase_line_warn_msg",
+        compute_sudo = true,
         readonly = true,
         copy = false,
         string = "Product Warning"

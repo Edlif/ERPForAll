@@ -212,6 +212,7 @@ pub struct PurchaseOrder {
     #[field(
         text,
         compute = "_compute_purchase_warning_text",
+        compute_sudo = true,
         readonly = true,
         copy = false,
         string = "Purchase Warning"

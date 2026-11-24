@@ -53,7 +53,8 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         let manager = user(&mut tx, "po-warn-manager", &[manager_group], &[company]).await;
         let buyer = user(&mut tx, "po-warn-buyer", &[buyer_group], &[company]).await;
 
-        let partners = tx.env().records("res.partner").unwrap();
+        let setup_env = tx.env().with_company(company).unwrap();
+        let partners = setup_env.records("res.partner").unwrap();
         let parent_id = partners
             .create(
                 &mut tx,
@@ -87,7 +88,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
             .unwrap()
             .ids()[0];
 
-        let templates = tx.env().records("product.template").unwrap();
+        let templates = setup_env.records("product.template").unwrap();
         let warn_tmpl_id = templates
             .create(
                 &mut tx,
@@ -122,8 +123,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
             .await
             .unwrap()[0]
             .get(0);
-        let warn_prod_display = match tx
-            .env()
+        let warn_prod_display = match setup_env
             .records("product.product")
             .unwrap()
             .browse([warn_prod_id])
@@ -145,7 +145,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         )
         .await;
         let po_warn_id = po_warn.ids()[0];
-        let lines = tx.env().records("purchase.order.line").unwrap();
+        let lines = setup_env.records("purchase.order.line").unwrap();
         let line_warn_1 = lines
             .create(
                 &mut tx,
@@ -209,7 +209,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
             .unwrap();
 
         // Populate warning texts as superuser while the feature group is still disabled.
-        tx.env()
+        setup_env
             .records("res.partner")
             .unwrap()
             .browse([parent_id])
@@ -220,7 +220,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
             )
             .await
             .unwrap();
-        tx.env()
+        setup_env
             .records("res.partner")
             .unwrap()
             .browse([vendor_id])
@@ -231,7 +231,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
             )
             .await
             .unwrap();
-        tx.env()
+        setup_env
             .records("product.template")
             .unwrap()
             .browse([warn_tmpl_id])
@@ -304,8 +304,42 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         tx.rollback().await.unwrap();
         drop(tx);
 
-        // 2. Outside purchase.group_warning_purchase: direct field access is refused and computed
-        //    warning fields read empty.
+        // 2. Outside purchase.group_warning_purchase: direct field read/write is refused (even for
+        //    admin who has model write rights) and computed warning fields read empty.
+        let mut tx = orm.begin(admin).await.unwrap();
+        let admin_env = tx.env().with_company(company).unwrap();
+        let admin_partner_rec = admin_env
+            .records("res.partner")
+            .unwrap()
+            .browse([vendor_id])
+            .unwrap();
+        let write_partner_err = write(
+            &mut tx,
+            &admin_partner_rec,
+            RawVals::new().set_cell("purchase_warn_msg", text("Blocked write")),
+        )
+        .await;
+        refused(write_partner_err, ErrorKind::Access, &["purchase_warn_msg"]);
+
+        let admin_tmpl_rec = admin_env
+            .records("product.template")
+            .unwrap()
+            .browse([warn_tmpl_id])
+            .unwrap();
+        let write_tmpl_err = write(
+            &mut tx,
+            &admin_tmpl_rec,
+            RawVals::new().set_cell("purchase_line_warn_msg", text("Blocked write")),
+        )
+        .await;
+        refused(
+            write_tmpl_err,
+            ErrorKind::Access,
+            &["purchase_line_warn_msg"],
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+
         let mut tx = orm.begin(buyer).await.unwrap();
         let buyer_env = tx.env().with_company(company).unwrap();
         let partner_rec = buyer_env
@@ -321,14 +355,6 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
             .await;
         refused(read_partner_err, ErrorKind::Access, &["purchase_warn_msg"]);
 
-        let write_partner_err = write(
-            &mut tx,
-            &partner_rec,
-            RawVals::new().set_cell("purchase_warn_msg", text("Blocked write")),
-        )
-        .await;
-        refused(write_partner_err, ErrorKind::Access, &["purchase_warn_msg"]);
-
         let tmpl_rec = buyer_env
             .records("product.template")
             .unwrap()
@@ -342,18 +368,6 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
             .await;
         refused(
             read_tmpl_err,
-            ErrorKind::Access,
-            &["purchase_line_warn_msg"],
-        );
-
-        let write_tmpl_err = write(
-            &mut tx,
-            &tmpl_rec,
-            RawVals::new().set_cell("purchase_line_warn_msg", text("Blocked write")),
-        )
-        .await;
-        refused(
-            write_tmpl_err,
             ErrorKind::Access,
             &["purchase_line_warn_msg"],
         );
