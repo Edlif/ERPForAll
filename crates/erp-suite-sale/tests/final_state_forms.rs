@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use erp_modules::{AddonIndex, InitOptions, ModuleName, ModuleSystem};
-use erp_orm::{Context, Orm, SUPERUSER_ID};
+use erp_fields::{Cell, RecId};
+use erp_orm::{Command, Context, Orm, RawVals, SUPERUSER_ID};
 use erp_sdk::expr::ExprValue;
 use erp_testkit::{TemplateDb, TestDb};
 
@@ -100,8 +101,10 @@ fn run(body: impl std::future::Future<Output = ()> + Send + 'static) {
         .unwrap();
 }
 
-/// A cached database with sales, purchase and inventory installed, with their bridges.
-async fn installed() -> (TestDb, Orm) {
+/// A cached database with sales, purchase and inventory installed, with their bridges; the ORM
+/// with the compiled policy, and an administrator of the four apps who reads the forms (the
+/// compiled forms resolve their groups for a user, never for the system principal).
+async fn installed() -> (TestDb, Orm, erp_sdk::UserId) {
     let db = TemplateDb::clone_or_init("erp-suite-sale:final-state:v1", |pool| async move {
         let system = system_for_pool(pool);
         let initialized = Box::pin(system.initialize(InitOptions::new()))
@@ -125,8 +128,51 @@ async fn installed() -> (TestDb, Orm) {
     let loaded = Box::pin(system_for_pool(db.pool().clone()).load())
         .await
         .unwrap();
+    let mut setup = loaded.orm.begin(SUPERUSER_ID).await.unwrap();
+    let id = |row: &erp_testkit::tokio_postgres::Row| RecId::from_real(row.get(0)).unwrap();
+    let groups: Vec<RecId> = setup
+        .query(
+            "SELECT res_id::int8 FROM ir_model_data WHERE model = 'res.groups' AND (module, name) IN \
+             (('base', 'group_user'), ('base', 'group_system'), ('account', 'group_account_manager'), \
+              ('stock', 'group_stock_manager'), ('sales_team', 'group_sale_manager'), \
+              ('purchase', 'group_purchase_manager'))",
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(id)
+        .collect();
+    assert_eq!(groups.len(), 6, "the app manager groups");
+    let company = id(&setup
+        .query(
+            "SELECT res_id::int8 FROM ir_model_data WHERE module = 'base' AND name = 'main_company'",
+            &[],
+        )
+        .await
+        .unwrap()[0]);
+    let reader = setup
+        .env()
+        .records("res.users")
+        .unwrap()
+        .create(
+            &mut setup,
+            vec![
+                RawVals::new()
+                    .set_cell("name", Cell::Str("Final-state reader".into()))
+                    .set_cell("login", Cell::Str("final-state-reader".into()))
+                    .set_cell("company_id", Cell::Id(company.as_real().unwrap().get()))
+                    .set_commands("company_ids", [Command::set([company])])
+                    .set_commands("group_ids", [Command::set(groups)]),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0];
+    setup.commit().await.unwrap();
+    drop(setup);
     let orm = policy_orm(&db, &loaded.orm).await;
-    (db, orm)
+    (db, orm, erp_sdk::UserId::new(reader).unwrap())
 }
 
 /// The installed ORM with the database's compiled access policy, as a served node builds it: the
@@ -214,8 +260,8 @@ async fn form_readonly(
 #[test]
 fn final_state_forms_show_read_only_exactly_what_the_server_refuses() {
     run(async {
-        let (db, orm) = installed().await;
-        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let (db, orm, reader) = installed().await;
+        let mut tx = orm.begin(reader).await.unwrap();
         let mut disagreements = Vec::new();
         for guard in guarded() {
             // A field read-only already in draft is never edited on the form, so the final-state
