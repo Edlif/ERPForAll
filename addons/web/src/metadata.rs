@@ -3393,6 +3393,18 @@ async fn load_action_views(
     admission: &mut ResponseAdmission,
 ) -> Result<wire::WindowActionViews> {
     let action = load_action(this, tx, admission).await?;
+    describe_action_views(this, tx, action, wire_major, options, admission).await
+}
+
+/// The view descriptions of `action`, already loaded from `this` under the caller.
+async fn describe_action_views(
+    this: &Records,
+    tx: &mut Transaction,
+    action: wire::WindowAction,
+    wire_major: u64,
+    options: Option<ValueMap>,
+    admission: &mut ResponseAdmission,
+) -> Result<wire::WindowActionViews> {
     let mut requested = admission.vector::<Value>(action.views.len())?;
     for view in &action.views {
         let id = view
@@ -3454,6 +3466,132 @@ async fn load_action_views(
     Ok(wire::WindowActionViews::new(action, views))
 }
 
+/// The answer of `erp_resolve_record_action`: the menu and action that open the record, with the action's views.
+#[derive(Serialize)]
+struct RecordAction {
+    menu: wire::WireId,
+    /// The same action opens every record of the model: it has no domain and no earlier candidate was passed over.
+    any_record: bool,
+    action: wire::WindowAction,
+    views: wire::ViewDescription,
+}
+
+/// The first window action of the caller's visible menus (in menu order) that targets the current page, has a form
+/// view of `model` and whose domain holds `record_id`. `None` for anything the caller may not see: an unknown or
+/// unreadable model, no visible menu, no matching action, a record outside every domain.
+async fn resolve_record_action(
+    env: &Env,
+    tx: &mut Transaction,
+    model: &str,
+    record_id: i64,
+    wire_major: u64,
+    options: Option<ValueMap>,
+    admission: &mut ResponseAdmission,
+) -> Result<Option<RecordAction>> {
+    if model.is_empty()
+        || model.len() > MAX_ACTION_MODEL_BYTES
+        || !model
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.')
+    {
+        return Err(fail("Invalid model name."));
+    }
+    if record_id < 1 {
+        return Err(fail("A record id must be a positive integer."));
+    }
+    if env.registry().model(model).is_none() {
+        return Ok(None);
+    }
+    // The menu walk is its own budget: none of it is part of the answer.
+    let menus = match load_menus(env, tx, &mut ResponseAdmission::new()).await {
+        Ok(menus) => menus,
+        Err(error) if error.kind() == ErrorKind::Access => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    // (menu, action) in the order the client lists menus, each action once.
+    let (mut order, mut seen) = (Vec::new(), BTreeSet::new());
+    for node in &menus.nodes {
+        let (Some(action), Some(wire::MenuActionKind::Window)) = (node.action_id, node.action_kind)
+        else {
+            continue;
+        };
+        let action = i64::try_from(u64::from(action))
+            .map_err(|_| Error::invariant("menu action identity exceeds i64"))?;
+        if seen.insert(action) {
+            let menu = i64::try_from(u64::from(node.id))
+                .map_err(|_| Error::invariant("menu identity exceeds i64"))?;
+            order.push((menu, action));
+        }
+    }
+    if order.is_empty() {
+        return Ok(None);
+    }
+    // One read of every visible action's model (load_menus authorized each one), so only actions of `model` load.
+    let ids: Vec<i64> = order.iter().map(|(_, action)| *action).collect();
+    let rows = env
+        .records("ir.actions.act_window")?
+        .sudo(true)
+        .browse(ids)?
+        .read_with(tx, &["res_model"], Load::Raw)
+        .await?;
+    let mut models = BTreeMap::new();
+    for row in &rows {
+        let Value::Int(id) = value(row, "id")? else {
+            return Err(Error::invariant("action identity is not an integer"));
+        };
+        models.insert(*id, text_value(row, "res_model")? == model);
+    }
+    let mut passed_over = false;
+    for (menu, action_id) in order {
+        if !models.get(&action_id).copied().unwrap_or(false) {
+            continue;
+        }
+        let records = env.records("ir.actions.act_window")?.browse([action_id])?;
+        let action = match load_action(&records, tx, admission).await {
+            Ok(action) => action,
+            Err(error) if error.kind() == ErrorKind::Access => continue,
+            Err(error) => return Err(error),
+        };
+        if !matches!(action.target, wire::ActionTarget::Current)
+            || !action
+                .views
+                .iter()
+                .any(|view| matches!(view.view_type, wire::ViewType::Form))
+        {
+            continue;
+        }
+        if let Some(document) = action.domain.as_ref() {
+            let domain =
+                crate::dashboard::literal_domain(Some(document), env.uid(), "Window action")?;
+            let scoped = Domain::from_json(&serde_json::json!([["id", "=", record_id]]))
+                .map_err(Error::from)?
+                & domain;
+            // Read under the caller: a record it may not read counts as outside the domain.
+            let found = require_model_read(env, tx, model)
+                .await?
+                .search_count(tx, &scoped, Some(2))
+                .await?;
+            if found > 1 {
+                return Err(Error::invariant("Several records matched one record id."));
+            }
+            if found == 0 {
+                passed_over = true;
+                continue;
+            }
+        }
+        let any_record = !passed_over && action.domain.is_none();
+        let bundle =
+            describe_action_views(&records, tx, action, wire_major, options, admission).await?;
+        return Ok(Some(RecordAction {
+            menu: wire_id(menu)?,
+            any_record,
+            action: bundle.action,
+            views: bundle.views,
+        }));
+    }
+    Ok(None)
+}
+
 #[methods(IrActionsActWindow, addon = "web")]
 impl WebIrActionsActWindow {
     /// Load an authorized action and its bounded view descriptions in this transaction.
@@ -3470,6 +3608,35 @@ impl WebIrActionsActWindow {
         let result =
             load_action_views(this.as_records(), tx, wire_major, options, &mut admission).await?;
         admission.wire(&result)
+    }
+
+    /// Resolve the menu and window action that open record `record_id` of `model` in a form, with the action's
+    /// view descriptions, in one call: the first action of the caller's visible menus (in menu order) of that model
+    /// with a form view, targeting the current page, whose domain holds the record. Each action passes the checks of
+    /// `erp_load_web_action`, a domain is checked against the record under the caller (an action without one
+    /// answers the same for every id), and anything the caller may not see answers `null`, the same as no match.
+    #[method]
+    #[rpc(effect = read, model)]
+    async fn erp_resolve_record_action(
+        this: &RecordSet<IrActionsActWindow>,
+        tx: &mut Transaction,
+        model: String,
+        record_id: i64,
+        wire_major: u64,
+        options: Option<ValueMap>,
+    ) -> Result<Value> {
+        let mut admission = ResponseAdmission::new();
+        let found = resolve_record_action(
+            this.env(),
+            tx,
+            &model,
+            record_id,
+            wire_major,
+            options,
+            &mut admission,
+        )
+        .await?;
+        admission.wire(&found)
     }
 
     /// Load one caller-authorized native window action.

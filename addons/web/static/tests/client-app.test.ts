@@ -1538,25 +1538,30 @@ test("related-record opening uses an advertised form action and preserves model 
   vi.stubGlobal("fetch",vi.fn(async(path:string,init:RequestInit)=>{
     calls.push(path);const body=JSON.parse(String(init.body));let value:unknown;
     if(path.endsWith("erp_load_web_menus"))value={wire_major:1,registry_version:"r1",roots:[10,12,11],nodes:[{ module: null,id:10,parent_id:null,label:"Notes",action_id:20,children:[],icon:null},{ module: null,id:12,parent_id:null,label:"Unrelated",action_id:22,children:[],icon:null},{ module: null,id:11,parent_id:null,label:"Companies",action_id:21,children:[],icon:null}]};
+    else if(path.endsWith("erp_resolve_record_action")){
+      expect(body).toMatchObject({model:"res.company",record_id:9,wire_major:1});
+      value={menu:11,any_record:true,action:{wire_major:1,id:21,name:"Companies",model:"res.company",target:"current",views:[{id:1,type:"form"}],domain:null,context:null},views:related};
+    }
     else if(path.endsWith("erp_load_web_action") || path.endsWith("erp_load_web_action_views")){
       const id=body.ids[0];
-      // Discovery must not describe this unrelated model's inaccessible views.
-      if(id===22 && path.endsWith("erp_load_web_action_views")) return new Response(JSON.stringify({message:"Unrelated view denied."}),{status:403,headers:{"Content-Type":"application/json"}});
-      value=actionMetadata(path,{wire_major:1,id,name:id===20?"Notes":"Companies",model:id===20?"test.note":id===22?"denied.note":"res.company",target:"current",views:[{id:1,type:"form"}],domain:null,context:null},id===20?source:related);
+      value=actionMetadata(path,{wire_major:1,id,name:id===20?"Notes":"Companies",model:id===20?"test.note":"res.company",target:"current",views:[{id:1,type:"form"}],domain:null,context:null},id===20?source:related);
     }
     else if(path.endsWith("get_views"))value=path.includes("res.company")?related:source;
     else value=path.includes("res.company")?[{id:9,name:"Company record"}]:[{id:5,name:"Source record",company_id:{id:9,display_name:"Company record"}}];
     return new Response(JSON.stringify(value),{headers:{"Content-Type":"application/json"}});
   }));
   const root=host();app=new HumanApp(root,bootstrap);await app.start();
+  calls.length=0;
   root.querySelector<HTMLButtonElement>('[aria-label="Open Company: Company record"]')!.click();
   await vi.waitFor(()=>expect(location.pathname).toBe("/erp/action-21"));
   expect(new URLSearchParams(location.search).get("model")).toBe("res.company");
   expect(new URLSearchParams(location.search).get("id")).toBe("9");
+  expect(new URLSearchParams(location.search).get("menu")).toBe("11");
   expect(root.querySelector<HTMLInputElement>('input[name="name"]')!.value).toBe("Company record");
-  expect(calls.some(path=>path.endsWith("erp_load_web_action"))).toBe(true);
-  expect(calls.filter(path=>path.endsWith("erp_load_web_action_views"))).toHaveLength(2);
-  expect(calls.some(path=>path.includes("res.company")&&path.endsWith("get_views"))).toBe(false);
+  // One resolve call, no walk over the menus' actions, no second fetch of the matched action, one record read.
+  expect(calls.filter(path=>path.endsWith("erp_resolve_record_action"))).toHaveLength(1);
+  expect(calls.filter(path=>/erp_load_web_action|get_views|search_count/.test(path))).toEqual([]);
+  expect(calls.filter(path=>path.includes("res.company")&&path.endsWith("web_read"))).toHaveLength(1);
 });
 
 test("failed initial list load disposes search document listeners", async () => {

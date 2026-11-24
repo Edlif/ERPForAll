@@ -5,14 +5,13 @@ import { reportFailure } from "./failure-owner.js";
 import type { Route } from "./route.js";
 import { attachMenuDropdown } from "./menu-dropdown.js";
 
-/** A single descriptor in the breadcrumb trail. */
+/** A single descriptor in the breadcrumb trail: plain data (no closures, no DOM), so a trail can be stored and restored. */
 export interface BreadcrumbItem {
   readonly id: string;
   readonly title: string;
   readonly route: Route;
   readonly url: string;
   readonly isFormView?: boolean;
-  onSelected(): Promise<void>;
 }
 
 export type NavigationTarget = "current" | "main" | "new";
@@ -50,6 +49,9 @@ export class BreadcrumbTrail {
   }
 
   push(item: BreadcrumbItem): void {
+    // The entry below the new one keeps its address as it is now (a list's crumb reads its live search until then).
+    const below = this.stack.at(-1);
+    if (below) this.stack[this.stack.length - 1] = { id: below.id, title: below.title, route: { ...below.route }, url: below.url, isFormView: below.isFormView };
     this.stack.push(item);
     if (this.stack.length > this.maxDepth) {
       this.stack.shift();
@@ -80,17 +82,17 @@ export class BreadcrumbTrail {
 export function renderBreadcrumbs(
   container: HTMLElement,
   trail: BreadcrumbTrail,
-  options?: {
+  options: {
     isSmall?: boolean;
-    onNavigate?(item: BreadcrumbItem): Promise<void>;
+    onNavigate(item: BreadcrumbItem): Promise<void>;
     /** Receives a failed navigation; without it the failure surfaces as a global error. */
     report?(error: unknown): void;
   }
 ): void {
   container.replaceChildren();
   const go = (item: BreadcrumbItem): void => reportFailure(
-    (async () => { await (options?.onNavigate ? options.onNavigate(item) : item.onSelected()); })(),
-    { report: options?.report }
+    (async () => { await options.onNavigate(item); })(),
+    { report: options.report }
   );
   const items = trail.items;
   if (!items.length) return;
@@ -98,7 +100,7 @@ export function renderBreadcrumbs(
   const current = trail.current!;
   const previous = trail.previous;
   const collapsed = trail.collapsed;
-  const isSmall = options?.isSmall ?? (document.documentElement.dataset["mobile"] === "true");
+  const isSmall = options.isSmall ?? (document.documentElement.dataset["mobile"] === "true");
 
   if (isSmall) {
     // Mobile view: single back button if previous exists, plus current title

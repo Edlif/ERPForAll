@@ -423,6 +423,13 @@ two functions from the shell (`ShellNavigation` in `addons/web/static/src/client
 Both do nothing once the page that handed them out was left. The address of every page keeps the active companies,
 so a reload or a copied link opens the same companies.
 
+A link to another record on a form (a many2one, a tag, a one2many cell, a wizard's link) or on a kanban card opens
+that record with one call, `erp_resolve_record_action` on `ir.actions.act_window` (`model`, `record_id`): the server
+picks the first window action of the user's visible menus, in menu order, that opens the current page, has a form view
+of that model and whose domain holds the record, and answers it with its views, or `null` when the user may open none.
+The domain of such an action may hold literal criteria and `uid` only. Opened from a form, the new form goes on top of
+it: the breadcrumb shows the list, the record and the opened record, and leads back to each.
+
 A user's home action (`res.users.action_id`, a window action the user may set on their own record) opens in place of
 the app grid when the address names no action. It loads through the usual access checks: an action the user may not
 open leaves the grid with a notice. The logo still opens the grid.

@@ -123,6 +123,10 @@ fn short_receipt(always: bool) {
         drop(tx);
         let mut tx = orm.begin(clerk).await.unwrap();
         let po = orders(&tx, &[company]).browse([parent]).unwrap();
+        assert_eq!(
+            po.cell(&mut tx, "invoice_count").await.unwrap(),
+            Cell::Int(0)
+        );
         let first = bill_id(&mut tx, &po, "action_create_vendor_bill").await;
         let row=&tx.query("SELECT l.id,l.quantity FROM purchase_direct_bill_line s JOIN account_move_line l ON l.id=s.bill_line_id WHERE s.bill_id=$1",&[&first]).await.unwrap()[0];
         assert_eq!(row.get::<_, Decimal>(1), dec("2"));
@@ -156,6 +160,60 @@ fn short_receipt(always: bool) {
             let items=tx.query("SELECT l.quantity FROM purchase_direct_bill_line s JOIN account_move_line l ON l.id=s.bill_line_id WHERE s.bill_id=$1",&[&next]).await.unwrap();
             assert_eq!(items[0].get::<_, Decimal>(0), dec("1"));
             assert_eq!(bill_id(&mut tx, &po, "action_bill_remaining").await, next);
+            // The count button: two bills for the clerk, none for a buyer without Accounting.
+            assert_eq!(
+                po.cell(&mut tx, "invoice_count").await.unwrap(),
+                Cell::Int(2)
+            );
+            let shown: Value = po.call(&mut tx, "action_view_invoice", ()).await.unwrap();
+            let shown: Value = po
+                .call(&mut tx, "erp_normalize_action_result", (1_u64, shown))
+                .await
+                .expect("the web action normalizer accepts the vendor bills action");
+            let Value::Json(shown) = shown else {
+                panic!("a web action envelope")
+            };
+            assert_eq!(shown["result"]["kind"], "current_window");
+            assert_eq!(shown["result"]["model"], "account.move");
+            assert_eq!(shown["result"]["views"].as_array().unwrap().len(), 2);
+            assert_eq!(shown["result"]["domain"][0][2].as_array().unwrap().len(), 2);
+            // The way back from a bill to its order.
+            let bill = bill_books::moves(&tx, company).browse([next]).unwrap();
+            assert_eq!(
+                bill.cell(&mut tx, "purchase_order_count").await.unwrap(),
+                Cell::Int(1)
+            );
+            let back: Value = bill
+                .call(&mut tx, "action_view_purchase_orders", ())
+                .await
+                .unwrap();
+            let back: Value = bill
+                .call(&mut tx, "erp_normalize_action_result", (1_u64, back))
+                .await
+                .expect("the web action normalizer accepts the purchase orders action");
+            let Value::Json(back) = back else {
+                panic!("a web action envelope")
+            };
+            assert_eq!(back["result"]["model"], "purchase.order");
+            tx.commit().await.unwrap();
+            drop(tx);
+            let mut tx = orm.begin(buyer).await.unwrap();
+            let buyer_po = orders(&tx, &[company]).browse([parent]).unwrap();
+            assert_eq!(
+                buyer_po.cell(&mut tx, "invoice_count").await.unwrap(),
+                Cell::Int(0)
+            );
+            let none: Value = buyer_po
+                .call(&mut tx, "action_view_invoice", ())
+                .await
+                .unwrap();
+            let Value::Map(none) = none else {
+                panic!("an action dictionary")
+            };
+            assert!(
+                !format!("{:?}", none["domain"]).contains("Int("),
+                "{none:?}"
+            );
             tx.rollback().await.unwrap();
             return;
         }
