@@ -473,11 +473,7 @@ pub enum ModuleToggleState {
 impl ModuleToggleState {
     /// Resolve `addon` against the installed database addons and the addons linked into this binary.
     #[must_use]
-    pub fn resolve(
-        addon: &str,
-        installed: &BTreeSet<String>,
-        linked: &BTreeSet<String>,
-    ) -> Self {
+    pub fn resolve(addon: &str, installed: &BTreeSet<String>, linked: &BTreeSet<String>) -> Self {
         if installed.contains(addon) {
             Self::Installed
         } else if linked.contains(addon) {

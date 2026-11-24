@@ -408,7 +408,11 @@ async fn general_section() {
     // Module toggle items resolve installed, linked-but-uninstalled, and unlinked states accurately.
     let expected_uninstalled = linked_uninstalled_addon();
     for (key, expected_addon, expected_state) in [
-        ("base.test_mod_installed", "base", ModuleToggleState::Installed),
+        (
+            "base.test_mod_installed",
+            "base",
+            ModuleToggleState::Installed,
+        ),
         (
             "base.test_mod_not_installed",
             expected_uninstalled.as_str(),
