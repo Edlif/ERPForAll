@@ -231,8 +231,11 @@ test("module toggles render all three states, keep unavailable disabled, and sta
   expect(calls.some(c => c.method === "erp_write_values")).toBe(false);
 });
 
-test("module toggle install and uninstall flows use existing endpoints and update in place without page reload", async () => {
+test("module toggle install and uninstall flows use existing endpoints, then reload the application", async () => {
   stubDialogs();
+  let reloaded = 0;
+  Object.defineProperty(window, "location", { configurable: true, value: { reload: () => { reloaded++; } } });
+  const describes: string[] = [];
   let state: "not_installed" | "installed" = "not_installed";
   let registryVersion = "r1";
   const notices: string[] = [];
@@ -265,6 +268,7 @@ test("module toggle install and uninstall flows use existing endpoints and updat
       }), { headers: { "Content-Type": "application/json" } });
     }
     if (url.endsWith("/erp_describe")) {
+      describes.push(registryVersion);
       return new Response(JSON.stringify({
         wire_major: 1,
         registry_version: registryVersion,
@@ -292,19 +296,29 @@ test("module toggle install and uninstall flows use existing endpoints and updat
   expect(posts).toHaveLength(0);
   expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(false);
 
-  // 2. Tick -> Confirm install: POST /erp/module/install, reloads with r2, checkbox becomes checked.
+  // 2. Tick -> Confirm install (the confirmation names the addon): POST /erp/module/install, then the whole
+  // application reloads; the view never reads the new registry in place.
   const box2 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
   box2.checked = true;
   box2.dispatchEvent(new Event("change"));
   await vi.waitFor(() => expect(document.querySelector(".message-dialog-footer button")).not.toBeNull());
+  expect(document.querySelector(".message-dialog-body")?.textContent).toContain("Install Carriers (delivery) and its dependencies?");
+  const describedBeforeInstall = describes.length;
   [...document.querySelectorAll<HTMLButtonElement>(".message-dialog-footer button")].find(b => b.textContent === "Install")!.click();
   await Promise.all(jobs);
   expect(posts).toEqual([{ path: "/erp/module/install", body: { modules: ["delivery"] } }]);
-  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(true);
-  expect(notices).toContain("Carriers installed.");
+  expect(reloaded).toBe(1);
+  expect(describes).toHaveLength(describedBeforeInstall);
+  expect(notices).toContain("Carriers installed. Reloading the application…");
+  // The browser reload is stubbed: the rest of the walk starts again from a view that reads the new registry.
+  host.remove();
+  const reopened = document.createElement("div");
+  document.body.append(reopened);
+  await settingsView(reopened, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job()); }, message => { notices.push(message); }, {}, ["global"], "r2", undefined, undefined, "stock");
+  expect(reopened.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(true);
 
   // 3. Untick -> Cancel uninstall impact dialog: preview called, no uninstall POST, stays checked.
-  const box3 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
+  const box3 = reopened.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
   box3.checked = false;
   box3.dispatchEvent(new Event("change"));
   expect(box3.checked).toBe(true);
@@ -314,18 +328,19 @@ test("module toggle install and uninstall flows use existing endpoints and updat
   document.querySelector<HTMLButtonElement>(".addon-uninstall-cancel")!.click();
   await Promise.all(jobs);
   expect(posts).toHaveLength(1);
-  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(true);
+  expect(reopened.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(true);
 
-  // 4. Untick -> Confirm uninstall: POST /erp/module/uninstall with fingerprint, reloads with r3, becomes unchecked.
-  const box4 = host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
+  // 4. Untick -> Confirm uninstall: POST /erp/module/uninstall with fingerprint, then the application reloads.
+  const box4 = reopened.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!;
   box4.checked = false;
   box4.dispatchEvent(new Event("change"));
   await vi.waitFor(() => expect(document.querySelector(".addon-uninstall-confirm")).not.toBeNull());
   document.querySelector<HTMLButtonElement>(".addon-uninstall-confirm")!.click();
   await Promise.all(jobs);
   expect(posts[1]).toEqual({ path: "/erp/module/uninstall", body: { modules: ["delivery"], impact: "fp-123" } });
-  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.module_delivery"] input')!.checked).toBe(false);
-  expect(notices).toContain("Carriers uninstalled.");
+  expect(reloaded).toBe(2);
+  expect(notices).toContain("Carriers uninstalled. Reloading the application…");
+  reopened.remove();
 });
 
 test("module toggle handles uninstall preview validation refusal and 409 conflict", async () => {
@@ -384,47 +399,53 @@ test("module toggle handles uninstall preview validation refusal and 409 conflic
   expect(errors).toHaveLength(1);
 });
 
-test("group toggles render on, off and not available, and stay out of scalar RPCs", async () => {
-  const on: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "enabled", group_id: 41, internal_group_id: 1 };
-  const off: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_owner", label: "Consignment", app: "stock", block: "Operations", sequence: 110, group: "stock.group_tracking_owner", state: "disabled", group_id: 42, internal_group_id: 1 };
-  const missing: SettingsItem = { kind: "group", key: "stock.group_stock_multi_locations", label: "Multiple locations", app: "stock", block: "Warehouse", sequence: 100, group: "stock.group_stock_multi_locations", state: "not_available", group_id: null, internal_group_id: null };
-  const { host, controller, calls, jobs } = await mount([on, off, missing], [], "stock");
+test("group toggles render on and off, and stay out of scalar RPCs", async () => {
+  const on: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: "enabled" };
+  const off: SettingsItem = { kind: "group", key: "stock.group_stock_tracking_owner", label: "Consignment", app: "stock", block: "Operations", sequence: 110, group: "stock.group_tracking_owner", state: "disabled" };
+  const { host, controller, calls, jobs } = await mount([on, off], [], "stock");
   const box = (key: string) => host.querySelector<HTMLInputElement>(`[data-setting-key="${key}"] input[type="checkbox"]`)!;
   expect([box(on.key).checked, box(on.key).disabled]).toEqual([true, false]);
   expect([box(off.key).checked, box(off.key).disabled]).toEqual([false, false]);
-  expect([box(missing.key).checked, box(missing.key).disabled]).toEqual([false, true]);
-  const row = host.querySelector<HTMLElement>(`[data-setting-key="${missing.key}"]`)!;
-  expect(row.classList.contains("settings-group-toggle")).toBe(true);
-  expect(row.classList.contains("is-unavailable")).toBe(true);
-  expect(row.textContent).toContain("Not available in this server (stock.group_stock_multi_locations).");
-  // Still disabled after the screen is drawn again.
+  expect(host.querySelector<HTMLElement>(`[data-setting-key="${off.key}"]`)!.classList.contains("settings-group-toggle")).toBe(true);
   [...host.querySelectorAll<HTMLButtonElement>(".settings-toolbar button")].find(b => b.textContent === "Discard")!.click();
   await Promise.all(jobs);
-  expect(box(missing.key).disabled).toBe(true);
   expect(controller.dirty()).toBe(false);
   expect(calls.find(c => c.method === "erp_read_values")?.args["keys"]).toEqual([]);
-  expect(calls.some(c => c.method === "erp_write_values" || c.method === "write")).toBe(false);
+  expect(calls.some(c => c.method === "erp_write_values" || c.method === "erp_toggle_group")).toBe(false);
 });
 
-test("group toggles write the internal-user group's implication after confirmation, then reload the application", async () => {
+function groupToggleServer(state: () => "enabled" | "disabled", toggle: (body: Record<string, unknown>) => Response) {
+  const describes: string[] = [];
+  const rpc = new RpcClient(async (path, init) => {
+    const url = String(path), body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    if (url === "/erp/json/2/ir.config.setting/erp_toggle_group") return toggle(body);
+    if (url.endsWith("/erp_describe")) describes.push(state());
+    const response = url.endsWith("/erp_describe")
+      ? { wire_major: 1, registry_version: "r1", scope: body["scope"], declarations: [], items: [{ kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state: state() }] }
+      : { wire_major: 1, scope: body["scope"], revision: "1", values: [] };
+    return new Response(JSON.stringify(response), { headers: { "Content-Type": "application/json" } });
+  }, () => {});
+  return { rpc, describes };
+}
+
+test("group toggles ask the server to change the feature after confirmation, then reload the application", async () => {
   stubDialogs();
   let reloaded = 0;
   Object.defineProperty(window, "location", { configurable: true, value: { reload: () => { reloaded++; } } });
   let state: "enabled" | "disabled" = "disabled";
-  const writes: Record<string, unknown>[] = [];
+  const toggles: Record<string, unknown>[] = [];
   const jobs: Promise<void>[] = [];
-  const rpc = new RpcClient(async (path, init) => {
-    const url = String(path), body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-    if (url === "/erp/json/2/res.groups/write") { writes.push(body); return new Response("true", { headers: { "Content-Type": "application/json" } }); }
-    const response = url.endsWith("/erp_describe")
-      ? { wire_major: 1, registry_version: "r1", scope: body["scope"], declarations: [], items: [{ kind: "group", key: "stock.group_stock_tracking_lot", label: "Packages", app: "stock", block: "Operations", sequence: 100, group: "stock.group_tracking_lot", state, group_id: 41, internal_group_id: 1 }] }
-      : { wire_major: 1, scope: body["scope"], revision: "1", values: [] };
-    return new Response(JSON.stringify(response), { headers: { "Content-Type": "application/json" } });
-  }, () => {});
-  const host = document.createElement("div");
-  document.body.append(host);
-  await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job()); }, () => {}, {}, ["global"], "r1", undefined, undefined, "stock");
-  const flip = async (answer: string) => {
+  const { rpc } = groupToggleServer(() => state, body => {
+    toggles.push(body);
+    return new Response(JSON.stringify({ key: body["key"], state: body["enabled"] ? "enabled" : "disabled" }), { headers: { "Content-Type": "application/json" } });
+  });
+  const open = async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job()); }, () => {}, {}, ["global"], "r1", undefined, undefined, "stock");
+    return host;
+  };
+  const flip = async (host: HTMLElement, answer: string) => {
     const box = host.querySelector<HTMLInputElement>('[data-setting-key="stock.group_stock_tracking_lot"] input')!;
     const before = box.checked;
     box.checked = !before;
@@ -435,27 +456,46 @@ test("group toggles write the internal-user group's implication after confirmati
     [...document.querySelectorAll<HTMLButtonElement>(".message-dialog-footer button")].find(b => b.textContent === answer)!.click();
     await Promise.all(jobs);
   };
-  // Cancel writes nothing.
-  await flip("Cancel");
-  expect(writes).toHaveLength(0);
+  const host = await open();
+  // Cancel asks nothing of the server.
+  await flip(host, "Cancel");
+  expect(toggles).toHaveLength(0);
   expect(reloaded).toBe(0);
-  // On: the internal-user group links the feature group.
-  await flip("Turn on");
-  expect(writes).toEqual([{ ids: [1], vals: { implied_ids: [[4, 41]] }, context: {} }]);
+  // On: only the declared key and the wanted state travel; the server owns the group rows.
+  await flip(host, "Turn on");
+  expect(toggles).toEqual([{ key: "stock.group_stock_tracking_lot", enabled: true, context: {} }]);
   expect(reloaded).toBe(1);
-  // Off: the link is removed, the group itself stays.
-  state = "enabled";
   host.remove();
-  const again = document.createElement("div");
-  document.body.append(again);
-  await settingsView(again, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job()); }, () => {}, {}, ["global"], "r1", undefined, undefined, "stock");
-  const box = again.querySelector<HTMLInputElement>('[data-setting-key="stock.group_stock_tracking_lot"] input')!;
-  expect(box.checked).toBe(true);
+  state = "enabled";
+  const again = await open();
+  expect(again.querySelector<HTMLInputElement>('[data-setting-key="stock.group_stock_tracking_lot"] input')!.checked).toBe(true);
+  await flip(again, "Turn off");
+  expect(toggles[1]).toEqual({ key: "stock.group_stock_tracking_lot", enabled: false, context: {} });
+  expect(reloaded).toBe(2);
+  again.remove();
+});
+
+test("a refused group toggle reloads the settings, keeps the page and rethrows", async () => {
+  stubDialogs();
+  let reloaded = 0;
+  Object.defineProperty(window, "location", { configurable: true, value: { reload: () => { reloaded++; } } });
+  const errors: unknown[] = [];
+  const jobs: Promise<void>[] = [];
+  const { rpc, describes } = groupToggleServer(() => "enabled", () => new Response(JSON.stringify({ error: { message: "Packages stays on for every internal user through the group stock.group_x; change that group instead.", name: "erp.exceptions.ValidationError" } }), { status: 400, headers: { "Content-Type": "application/json" } }));
+  const host = document.createElement("div");
+  document.body.append(host);
+  await settingsView(host, rpc, [{ id: 1, name: "One" }], job => { jobs.push(job().catch(error => { errors.push(error); })); }, () => {}, {}, ["global"], "r1", undefined, undefined, "stock");
+  const described = describes.length;
+  const box = host.querySelector<HTMLInputElement>('[data-setting-key="stock.group_stock_tracking_lot"] input')!;
   box.checked = false;
   box.dispatchEvent(new Event("change"));
   await vi.waitFor(() => expect(document.querySelector(".message-dialog-footer button")).not.toBeNull());
   [...document.querySelectorAll<HTMLButtonElement>(".message-dialog-footer button")].find(b => b.textContent === "Turn off")!.click();
   await Promise.all(jobs);
-  expect(writes[1]).toEqual({ ids: [1], vals: { implied_ids: [[3, 41]] }, context: {} });
-  expect(reloaded).toBe(2);
+  expect(errors).toHaveLength(1);
+  expect((errors[0] as Error).message).toContain("stays on for every internal user");
+  expect(reloaded).toBe(0);
+  expect(describes.length).toBeGreaterThan(described);
+  expect(host.querySelector<HTMLInputElement>('[data-setting-key="stock.group_stock_tracking_lot"] input')!.checked).toBe(true);
+  host.remove();
 });

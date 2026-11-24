@@ -105,21 +105,18 @@ test("module toggle items decode all three states and reject malformed payloads"
   }
 });
 
-test("group toggle items decode every state and refuse ids that contradict it", () => {
+test("group toggle items decode both states and refuse unknown members, states and groups", () => {
   const base = { kind: "group", key: "stock.group_stock_tracking_lot", app: "stock", block: "Operations", label: "Packages", sequence: 100, group: "stock.group_tracking_lot" };
   for (const state of ["enabled", "disabled"] as const) {
-    const row = { ...base, state, group_id: 41, internal_group_id: 1 };
+    const row = { ...base, state };
     expect(readSettingsItems({ items: [row] }, [])).toEqual([row]);
   }
-  const missing = { ...base, state: "not_available", group_id: null, internal_group_id: null };
-  expect(readSettingsItems({ items: [missing] }, [])).toEqual([missing]);
   for (const [bad, kind, message] of [
-    [{ ...base, state: "enabled", group_id: 41, internal_group_id: 1, extra: 1 }, "unsupported", "Unknown setting item member: extra."],
-    [{ ...base, state: "enabled", group_id: 41 }, "server", "Missing setting item member: internal_group_id."],
-    [{ ...base, state: "on", group_id: 41, internal_group_id: 1 }, "server", "Invalid setting item group state."],
-    [{ ...base, group: "tracking_lot", state: "enabled", group_id: 41, internal_group_id: 1 }, "server", "Invalid setting item group."],
-    [{ ...base, state: "enabled", group_id: null, internal_group_id: 1 }, "server", "Invalid setting item group ids."],
-    [{ ...base, state: "not_available", group_id: 41, internal_group_id: null }, "server", "Invalid setting item group ids."],
+    [{ ...base, state: "enabled", group_id: 41 }, "unsupported", "Unknown setting item member: group_id."],
+    [{ ...base }, "server", "Missing setting item member: state."],
+    [{ ...base, state: "on" }, "server", "Invalid setting item group state."],
+    [{ ...base, state: "not_available" }, "server", "Invalid setting item group state."],
+    [{ ...base, group: "tracking_lot", state: "enabled" }, "server", "Invalid setting item group."],
   ] as const) {
     expect(() => readSettingsItems({ items: [bad] }, [])).toThrowError(expect.objectContaining({ kind, message }));
   }

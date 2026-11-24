@@ -165,3 +165,28 @@ macro_rules! setting_groups {
             $crate::settings::GroupContribution::new(&crate::ADDON, $factory);
     };
 }
+
+/// Reads the browser install route's addon catalogue (see [`bind_addon_catalogue`]).
+pub type AddonCatalogueSource =
+    Box<dyn Fn() -> crate::BoxFuture<'static, crate::Result<AddonCatalogue>> + Send + Sync>;
+static ADDON_CATALOGUE: std::sync::OnceLock<AddonCatalogueSource> = std::sync::OnceLock::new();
+/// Bind the catalogue module toggles resolve against: the composition root that serves the install route
+/// passes the same catalogue that route enforces. Once per process.
+///
+/// # Errors
+/// `Programming` when a catalogue is already bound in this process.
+pub fn bind_addon_catalogue(source: AddonCatalogueSource) -> crate::Result<()> {
+    ADDON_CATALOGUE.set(source).map_err(|_| {
+        crate::Error::programming("The Settings addon catalogue is already bound in this process.")
+    })
+}
+/// The bound addon catalogue, read now; `None` when this process bound none.
+///
+/// # Errors
+/// The errors of the bound source.
+pub async fn addon_catalogue() -> crate::Result<Option<AddonCatalogue>> {
+    match ADDON_CATALOGUE.get() {
+        Some(source) => source().await.map(Some),
+        None => Ok(None),
+    }
+}

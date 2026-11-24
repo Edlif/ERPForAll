@@ -880,7 +880,8 @@ fn every_kind_refuses_by_name_with_its_bounds() {
 #[test]
 fn module_toggle_items_validate_addon_names_publish_and_resolve_states() {
     use erp_registry::settings::{
-        LinkTarget, ModuleToggleState, PanelItemDecl, PanelItemKind, SettingsRegistry,
+        AddonCatalogue, LinkTarget, ModuleToggleState, PanelItemDecl, PanelItemKind,
+        SettingsRegistry,
     };
     use std::collections::BTreeSet;
 
@@ -992,32 +993,63 @@ fn module_toggle_items_validate_addon_names_publish_and_resolve_states() {
             .unwrap_err(),
     );
 
-    // State resolution: Installed takes precedence even if not in linked; otherwise linked -> NotInstalled; else NotAvailable.
-    let linked = BTreeSet::from(["base".to_owned(), "sale".to_owned()]);
+    // A toggle readable by anyone but exactly the Settings administrators is refused by key.
+    let error = SettingsRegistry::build(vec![], &installed, |_| true)
+        .unwrap()
+        .with_items(
+            vec![(
+                "stock".into(),
+                vec![
+                    toggle_with_access
+                        .clone()
+                        .access(&["base.group_system", "base.group_user"])
+                        .unwrap(),
+                ],
+            )],
+            &installed,
+            |_| true,
+            |_: &str, _: &LinkTarget| true,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.message(),
+        "Setting item stock.module_delivery is a toggle; only base.group_system may read it."
+    );
+
+    // State resolution against the install route's catalogue: installed wins, offered -> NotInstalled,
+    // refused by the catalogue -> NotAvailable; unknown, or no catalogue at all, is no state (None).
+    let catalogue = AddonCatalogue::new(
+        BTreeSet::from(["sale".to_owned()]),
+        BTreeSet::from(["delivery".to_owned()]),
+    );
+    assert!(catalogue.knows("sale") && catalogue.knows("delivery") && !catalogue.knows("dlivery"));
     let db_installed = BTreeSet::from(["base".to_owned(), "legacy_installed".to_owned()]);
     assert_eq!(
-        ModuleToggleState::resolve("base", &db_installed, &linked),
-        ModuleToggleState::Installed
+        ModuleToggleState::resolve("legacy_installed", &db_installed, Some(&catalogue)),
+        Some(ModuleToggleState::Installed)
     );
     assert_eq!(
-        ModuleToggleState::resolve("legacy_installed", &db_installed, &linked),
-        ModuleToggleState::Installed
+        ModuleToggleState::resolve("base", &db_installed, None),
+        Some(ModuleToggleState::Installed)
     );
     assert_eq!(
-        ModuleToggleState::resolve("sale", &db_installed, &linked),
-        ModuleToggleState::NotInstalled
+        ModuleToggleState::resolve("sale", &db_installed, Some(&catalogue)),
+        Some(ModuleToggleState::NotInstalled)
     );
     assert_eq!(
-        ModuleToggleState::resolve("delivery", &db_installed, &linked),
-        ModuleToggleState::NotAvailable
+        ModuleToggleState::resolve("delivery", &db_installed, Some(&catalogue)),
+        Some(ModuleToggleState::NotAvailable)
     );
+    assert_eq!(
+        ModuleToggleState::resolve("dlivery", &db_installed, Some(&catalogue)),
+        None
+    );
+    assert_eq!(ModuleToggleState::resolve("sale", &db_installed, None), None);
 }
 
 #[test]
-fn group_toggle_items_validate_group_identities_publish_and_resolve_states() {
-    use erp_registry::settings::{
-        GroupToggleState, LinkTarget, PanelItemDecl, PanelItemKind, SettingsRegistry,
-    };
+fn group_toggle_items_validate_group_identities_access_and_publish() {
+    use erp_registry::settings::{LinkTarget, PanelItemDecl, PanelItemKind, SettingsRegistry};
     use std::collections::BTreeSet;
 
     let toggle = PanelItemDecl::group_toggle(
@@ -1061,7 +1093,7 @@ fn group_toggle_items_validate_group_identities_publish_and_resolve_states() {
             .with_items(
                 vec![("stock".into(), vec![item])],
                 &installed,
-                |group| group == "base.group_system",
+                |group| matches!(group, "base.group_system" | "stock.group_tracking_lot"),
                 |_: &str, _: &LinkTarget| false,
             )
     };
@@ -1070,7 +1102,8 @@ fn group_toggle_items_validate_group_identities_publish_and_resolve_states() {
         registry.item("stock.group_stock_tracking_lot").unwrap().kind(),
         PanelItemKind::Group { group, .. } if group == "stock.group_tracking_lot"
     ));
-    // A group of a module that is not installed is refused at publication; access is still required.
+    // A group of a module that is not installed is refused at publication; access is still required, and
+    // only the Settings administrators may read a toggle.
     invalid_declaration_message(
         &publish(
             PanelItemDecl::group_toggle("stock.sale_group", "Sale", "sale.group_feature")
@@ -1086,23 +1119,10 @@ fn group_toggle_items_validate_group_identities_publish_and_resolve_states() {
         )
         .unwrap_err(),
     );
-
-    // On exactly when the internal-user group implies the group; a missing row is never "off".
-    let implied = BTreeSet::from([1, 7, 9]);
     assert_eq!(
-        GroupToggleState::resolve(Some(7), Some(&implied)),
-        GroupToggleState::Enabled
-    );
-    assert_eq!(
-        GroupToggleState::resolve(Some(8), Some(&implied)),
-        GroupToggleState::Disabled
-    );
-    assert_eq!(
-        GroupToggleState::resolve(None, Some(&implied)),
-        GroupToggleState::NotAvailable
-    );
-    assert_eq!(
-        GroupToggleState::resolve(Some(7), None),
-        GroupToggleState::NotAvailable
+        publish(toggle.clone().access(&["stock.group_tracking_lot"]).unwrap())
+            .unwrap_err()
+            .message(),
+        "Setting item stock.group_stock_tracking_lot is a toggle; only base.group_system may read it."
     );
 }
