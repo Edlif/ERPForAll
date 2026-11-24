@@ -1,10 +1,26 @@
 # Installing ERPForAll
 
-This guide takes you from a fresh checkout to a running server with the web client, on one machine. ERPForAll is
-in early development: there is **no one-command local setup yet** (not available yet), so the steps below are the
-explicit ones. Every command in this guide was checked against the `erp` command-line source and `erp --help`; the
-sequence from "Create the roles and the database" to "Start the server" was also run end to end on a Linux x86_64
-machine with PostgreSQL 18. Where a step was not run, the text says so.
+This guide takes you from a fresh checkout to a running server with the web client, on one machine.
+
+**The short way.** On Linux x86_64 or macOS arm64, `scripts/install.sh` runs every step below for you and starts a
+server with demo data:
+
+```sh
+scripts/install.sh            # build, PostgreSQL 18 (a local server you name, or a Docker container), database,
+                              # web client, demo data, server on http://127.0.0.1:8069/erp
+scripts/install.sh --help     # flags: --state-dir, --port, --db-name, --pg-user, --modules, --dry-run, ...
+scripts/install.sh --reset --yes   # remove only what it created
+```
+
+Everything it owns is under `~/.erpforall/local` (`private/` holds the mode 600 URL files, the generated
+`admin-password` and `server.toml`). It installs these modules with demo data, in one command, after the base:
+`contacts account account_reporting stock sale sale_management purchase sale_stock purchase_stock account_mail
+purchase_mail stock_mail product_mail`. The rest of this guide is the manual route, for a setup of your own (other
+paths, a PostgreSQL server you manage, a different module list); it is also what the script does, step by step.
+
+ERPForAll is in early development. Every command in this guide was checked against the `erp` command-line source and
+`erp --help`; the sequence from "Create the roles and the database" to "Start the server" was also run end to end on a
+Linux x86_64 machine with PostgreSQL 18. Where a step was not run, the text says so.
 
 ## Prerequisites
 
