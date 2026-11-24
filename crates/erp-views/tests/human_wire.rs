@@ -713,13 +713,11 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
     bad_state["state"] = json!("pending");
     assert!(serde_json::from_value::<SettingsItem>(bad_state).is_err());
 
-    // Group toggle items roundtrip in every state; the two ids are required members, null when not available.
-    for (state, wire_state, ids) in [
-        (GroupToggleState::Enabled, "enabled", Some((7, 3))),
-        (GroupToggleState::Disabled, "disabled", Some((7, 3))),
-        (GroupToggleState::NotAvailable, "not_available", None),
+    // Group toggle items roundtrip in both states; the server owns the group rows, so no ids travel.
+    for (state, wire_state) in [
+        (GroupToggleState::Enabled, "enabled"),
+        (GroupToggleState::Disabled, "disabled"),
     ] {
-        let id = |raw: u64| WireId::try_from(raw).unwrap();
         let group_item = SettingsItem::Group {
             key: "stock.group_stock_tracking_lot".into(),
             label: "Packages".into(),
@@ -728,21 +726,12 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
             sequence: 100,
             group: "stock.group_tracking_lot".into(),
             state,
-            group_id: ids.map(|(group, _)| id(group)),
-            internal_group_id: ids.map(|(_, user)| id(user)),
         };
         let encoded = serde_json::to_value(&group_item).unwrap();
         assert_eq!(encoded["kind"], "group");
         assert_eq!(encoded["group"], "stock.group_tracking_lot");
         assert_eq!(encoded["state"], wire_state);
-        assert_eq!(
-            encoded["group_id"],
-            ids.map_or(json!(null), |(group, _)| json!(group))
-        );
-        assert_eq!(
-            encoded["internal_group_id"],
-            ids.map_or(json!(null), |(_, user)| json!(user))
-        );
+        assert!(encoded.get("group_id").is_none() && encoded.get("internal_group_id").is_none());
         roundtrip::<SettingsItem>(&encoded);
     }
     let sample_group = json!({
@@ -753,14 +742,15 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
         "block": "Operations",
         "sequence": 100,
         "group": "stock.group_tracking_lot",
-        "state": "disabled",
-        "group_id": 7,
-        "internal_group_id": 3
+        "state": "disabled"
     });
+    let mut with_ids = sample_group.clone();
+    with_ids["group_id"] = json!(7);
+    assert!(serde_json::from_value::<SettingsItem>(with_ids).is_err());
     let mut unknown = sample_group.clone();
     unknown["extra"] = json!(true);
     assert!(serde_json::from_value::<SettingsItem>(unknown).is_err());
-    for member in ["group", "state", "group_id", "internal_group_id"] {
+    for member in ["group", "state"] {
         let mut missing = sample_group.clone();
         missing.as_object_mut().unwrap().remove(member);
         assert!(
@@ -768,9 +758,11 @@ fn settings_items_roundtrip_as_tagged_rows_and_stay_additive() {
             "{member} is required"
         );
     }
-    let mut bad_state = sample_group;
-    bad_state["state"] = json!("on");
-    assert!(serde_json::from_value::<SettingsItem>(bad_state).is_err());
+    for bad in ["on", "not_available"] {
+        let mut bad_state = sample_group.clone();
+        bad_state["state"] = json!(bad);
+        assert!(serde_json::from_value::<SettingsItem>(bad_state).is_err());
+    }
 }
 
 #[test]

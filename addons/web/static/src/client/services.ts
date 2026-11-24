@@ -152,8 +152,8 @@ function confirmUninstallDialog(
       } catch (error) {
         settled = true;
         dialog.close();
-        await onError(error);
-        reject(error);
+        // The dialog promise settles even when the error handler itself fails.
+        try { await onError(error); } finally { reject(error); }
         return;
       }
       settled = true;
@@ -795,10 +795,9 @@ export async function settingsView(
     }
   };
 
-  const describe = async (immutableScope: Record<string, unknown>, acceptNewRegistry = false) => {
+  const describe = async (immutableScope: Record<string, unknown>) => {
     const description = object(await rpc.call("ir.config.setting", "erp_describe", { scope: immutableScope, context }));
-    if (description["wire_major"] !== 1 || currentRegistry !== undefined && !acceptNewRegistry && description["registry_version"] !== currentRegistry) throw new ClientError("unsupported", "Settings changed. Reload the application.");
-    if (acceptNewRegistry && currentRegistry !== undefined) currentRegistry = text(description["registry_version"], "settings registry version");
+    if (description["wire_major"] !== 1 || currentRegistry !== undefined && description["registry_version"] !== currentRegistry) throw new ClientError("unsupported", "Settings changed. Reload the application.");
     checkScope(description["scope"], immutableScope);
     const nextDeclarations = array(description["declarations"], "setting declarations").map(value => object(value));
     const keys = nextDeclarations.map(value => text(value["key"], "setting key"));
@@ -814,9 +813,9 @@ export async function settingsView(
     return { nextDeclarations, nextItems, keys, apps };
   };
 
-  const load = async (requested: Record<string, unknown>, entry = false, preferredApp?: string, acceptNewRegistry = false): Promise<void> => {
+  const load = async (requested: Record<string, unknown>, entry = false, preferredApp?: string): Promise<void> => {
     const request = ++generation;
-    let immutableScope = { ...requested }, current = await describe(immutableScope, acceptNewRegistry);
+    let immutableScope = { ...requested }, current = await describe(immutableScope);
     appsByScope.set(scopeKey(immutableScope), current.apps);
     const alternate = scopeChoices.find(choice => choice.value !== scopeKey(immutableScope));
     if (entry && alternate) {
@@ -850,20 +849,26 @@ export async function settingsView(
     declarations = nextDeclarations; items = nextItems; baseline = nextValues; revision = nextRevision; scope = immutableScope; showScope(scopeKey(scope)); edits.clear(); ambiguous = false; draw();
   };
 
+  // After a failed install or uninstall the page may be stale; say so when it cannot be read again (the caller rethrows).
+  const reloadAfterFailure = async (): Promise<void> => {
+    try { await load(scope, false, selectedApp ?? undefined); } catch { notice("Settings could not be reloaded. Reload the application."); }
+  };
+
+  // A successful install or uninstall publishes a new registry: the whole application reloads, as the Addons page does.
   const toggleModule = async (item: Extract<SettingsItem, { kind: "module" }>, install: boolean, opener: HTMLElement): Promise<void> => {
     await operation(async () => {
       if (edits.size && await choose("Unsaved changes", "Discard changes before installing or uninstalling an addon?", ["Discard", "Cancel"]) !== "Discard") return;
       if (install) {
-        if (await choose("Install addon?", `Install ${item.label} and its dependencies?`, ["Install", "Cancel"]) !== "Install") return;
+        if (await choose("Install addon?", `Install ${item.label} (${item.addon}) and its dependencies?`, ["Install", "Cancel"]) !== "Install") return;
         try {
           await rpc.post("/erp/module/install", { modules: [item.addon] }, { write: true });
-          await load(scope, false, selectedApp ?? undefined, true);
-          if (!disposed) notice(`${item.label} installed.`);
         } catch (error) {
           notice("Installation status may have changed. Reloading settings…");
-          await load(scope, false, selectedApp ?? undefined, true).catch(() => {});
+          await reloadAfterFailure();
           throw error;
         }
+        notice(`${item.label} installed. Reloading the application…`);
+        window.location.reload();
         return;
       }
       let impact: Record<string, unknown>;
@@ -879,9 +884,9 @@ export async function settingsView(
         { name: item.addon, label: item.label },
         impact,
         opener,
-        async () => {
-          await load(scope, false, selectedApp ?? undefined, true);
-          if (!disposed) notice(`${item.label} uninstalled.`);
+        () => {
+          notice(`${item.label} uninstalled. Reloading the application…`);
+          window.location.reload();
         },
         async (error) => {
           if (error instanceof ClientError && (error.status === 409 || (error as { kind?: string }).kind === "conflict")) {
@@ -889,22 +894,25 @@ export async function settingsView(
           } else {
             notice("Uninstall status may have changed. Reloading settings…");
           }
-          await load(scope, false, selectedApp ?? undefined, true).catch(() => {});
+          await reloadAfterFailure();
         }
       );
     });
   };
 
-  // An ordinary res.groups write on the internal-user group, so only users who may edit groups can make it. The
-  // whole application reloads: menus, views and fields follow the new groups.
+  // The server changes the internal-user group for the declared item, checks who may and audits it. The whole
+  // application reloads: menus, views and fields follow the new groups.
   const toggleGroup = async (item: Extract<SettingsItem, { kind: "group" }>, enable: boolean): Promise<void> => {
     await operation(async () => {
-      const { group_id: group, internal_group_id: internal } = item;
-      if (group === null || internal === null) throw new ClientError("validation", `${item.label} is not available in this server.`);
       if (edits.size && await choose("Unsaved changes", "Discard changes before changing a feature for all users?", ["Discard", "Cancel"]) !== "Discard") return;
       const verb = enable ? "Turn on" : "Turn off";
       if (await choose(`${verb} ${item.label}?`, `${verb} ${item.label} for every internal user? The application reloads afterwards.`, [verb, "Cancel"]) !== verb) return;
-      await rpc.call("res.groups", "write", { ids: [internal], vals: { implied_ids: [[enable ? 4 : 3, group]] }, context }, { write: true });
+      try {
+        await rpc.call("ir.config.setting", "erp_toggle_group", { key: item.key, enabled: enable, context }, { write: true });
+      } catch (error) {
+        await reloadAfterFailure();
+        throw error;
+      }
       notice(`${item.label} turned ${enable ? "on" : "off"}. Reloading the application…`);
       window.location.reload();
     });

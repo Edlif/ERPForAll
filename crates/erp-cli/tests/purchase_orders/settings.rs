@@ -9,7 +9,9 @@ use erp_sdk::views::wire::{ModuleToggleState, SettingsItem};
 fn purchase_settings_describe_module_toggles_and_states() {
     run(async {
         let db = TestDb::builder().pool_size(8).create().await.unwrap();
-        let system = purchase_module_system(&db);
+        let system = std::sync::Arc::new(purchase_module_system(&db));
+        // Module toggles resolve against the install route's catalogue, as the server binds it.
+        erp_cli::module::bind_settings_catalogue(std::sync::Arc::clone(&system)).unwrap();
         let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
             .await
             .unwrap();
