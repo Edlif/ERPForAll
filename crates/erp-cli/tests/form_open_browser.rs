@@ -58,7 +58,13 @@ fn call(fixture: &NativeFixture, model: &str, method: &str, company: i64, body: 
 }
 
 fn create(fixture: &NativeFixture, model: &str, company: i64, vals: Vec<Value>) -> Vec<i64> {
-    let ids = call(fixture, model, "create", company, json!({"vals_list": vals}));
+    let ids = call(
+        fixture,
+        model,
+        "create",
+        company,
+        json!({"vals_list": vals}),
+    );
     ids.as_array()
         .expect("create returns record ids")
         .iter()
