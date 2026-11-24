@@ -69,11 +69,12 @@ struct DirectBillLine {
 
 #[methods(PurchaseOrder, addon = "purchase")]
 impl PurchaseOrder {
-    /// Create the first bill for received goods, or reopen its accounting document.
+    /// Create the first bill for the quantity to bill of each line (ordered or received, by the
+    /// product's bill control), or reopen its accounting document.
     ///
     /// # Errors
     ///
-    /// Refuses multiple orders, an unauthorized order or item, missing receipts or missing journal.
+    /// Refuses multiple orders, an unauthorized order or item, nothing to bill or missing journal.
     #[method]
     #[rpc(effect = write)]
     pub async fn action_create_vendor_bill(
@@ -85,11 +86,12 @@ impl PurchaseOrder {
             .await
     }
 
-    /// Bill the quantities received in excess of those on active direct bills.
+    /// Bill the quantity still to bill of each line: ordered or received, by the product's bill
+    /// control, less the quantities on active direct bills.
     ///
     /// # Errors
     ///
-    /// Refuses unapproved orders, unreadable source records and quantities requiring a credit.
+    /// Refuses unapproved orders, unreadable source records and bills above the bill control.
     #[method]
     #[rpc(effect = write)]
     pub async fn action_bill_remaining(
@@ -197,13 +199,14 @@ async fn draft_or_open(
             crate::bill_history::read(tx, &env, company, order_id, limit).await?
         }
     };
-    let (items, sources) = received_items(tx, &env, order_id, &history.quantities, limit).await?;
+    let (items, sources) = billable_items(tx, &env, order_id, limit).await?;
     if items.is_empty() {
         if let Some(bill) = history.latest_active {
             return document_action(tx, bill).await;
         }
         return Err(Error::user(
-            "Receive goods on this purchase order before creating its vendor bill.",
+            "Nothing on this purchase order is ready to bill. Receive goods first, or set the \
+             product's bill control to ordered quantities.",
         ));
     }
     if history.link_count > 0 {
@@ -250,11 +253,12 @@ async fn draft_or_open(
     document_action(tx, bill).await
 }
 
-async fn received_items(
+/// One bill item per line with a positive quantity to bill, the quantity being the line's
+/// `qty_to_invoice`: the button and the order's billing status read the same number.
+async fn billable_items(
     tx: &mut Transaction,
     env: &erp_sdk::Env,
     order_id: i64,
-    billed: &BTreeMap<i64, Decimal>,
     limit: i64,
 ) -> Result<(Vec<Command>, Vec<i64>)> {
     let probe = limit
@@ -281,7 +285,7 @@ async fn received_items(
         &lines,
         &[
             "product_id",
-            "qty_received",
+            "qty_to_invoice",
             "uom_id",
             "name",
             "price_unit",
@@ -333,28 +337,20 @@ async fn received_items(
     for (source, target) in mappings {
         columns.push((target, lines.cells(tx, source).await?));
     }
-    let quantities = lines.cells(tx, "qty_received").await?;
+    let quantities = lines.cells(tx, "qty_to_invoice").await?;
     let mut items = Vec::new();
     let mut sources = Vec::new();
     for (index, id) in ids.into_iter().enumerate() {
-        let Some(Cell::Decimal(quantity)) = quantities.get(index) else {
+        let Some(Cell::Decimal(remaining)) = quantities.get(index).cloned() else {
             return Err(Error::invariant(
-                "The received purchase quantity is not a number.",
+                "The quantity to bill of a purchase line is not a number.",
             ));
         };
-        if *quantity < Decimal::ZERO {
-            return Err(Error::user(
-                "Negative received quantities require the vendor credit workflow (a later release).",
-            ));
-        }
-        let remaining = quantity
-            .checked_sub(billed.get(&id).copied().unwrap_or(Decimal::ZERO))
-            .ok_or_else(|| {
-                Error::validation("The remaining purchase quantity is outside its supported range.")
-            })?;
         if remaining < Decimal::ZERO {
             return Err(Error::user(
-                "One or more vendor bills exceed the received quantity. Review those items in Accounting before billing more goods.",
+                "One or more vendor bills exceed what their products' bill control allows (the \
+                 ordered or the received quantity), or goods were returned; a vendor credit note is \
+                 a later release. Review those items in Accounting before billing more goods.",
             ));
         }
         if remaining.is_zero() {
@@ -408,7 +404,25 @@ async fn link_items(
         }
         bill_items.push(row.try_get::<_, i64>(1).map_err(decode)?);
     }
-    tx.execute("INSERT INTO purchase_direct_bill_line (company_id,order_id,bill_id,purchase_line_id,bill_line_id)
-        SELECT $1,$2,$3,source,item FROM unnest($4::int8[],$5::int8[]) AS links(source,item)", &[&company,&order_id,&bill,&sources,&bill_items]).await?;
+    // The private association only: the bill and its items were created as the caller. Through the
+    // ORM, so the billed quantities of the source lines and the order's status follow.
+    let links = sources
+        .iter()
+        .zip(bill_items)
+        .map(|(source, item)| {
+            RawVals::new()
+                .set_cell("company_id", Cell::Id(company))
+                .set_cell("order_id", Cell::Id(order_id))
+                .set_cell("bill_id", Cell::Id(bill))
+                .set_cell("purchase_line_id", Cell::Id(*source))
+                .set_cell("bill_line_id", Cell::Id(item))
+        })
+        .collect();
+    tx.env()
+        .sudo(true)
+        .records("purchase.direct.bill.line")?
+        .create(tx, links)
+        .await?;
+    tx.flush().await?;
     crate::line::invalidate_bill_comparisons(tx).await
 }
