@@ -459,50 +459,57 @@ impl LinkTarget {
         }
     }
 }
+/// The addons the browser install route offers, and the addon-directory entries it refuses, by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AddonCatalogue {
+    /// Addons the install route accepts.
+    pub offered: BTreeSet<String>,
+    /// Addons of the addon directory the install route refuses (for example a native crate not linked here).
+    pub refused: BTreeSet<String>,
+}
+impl AddonCatalogue {
+    /// A catalogue of `offered` and `refused` addon names.
+    #[must_use]
+    pub fn new(offered: BTreeSet<String>, refused: BTreeSet<String>) -> Self {
+        Self { offered, refused }
+    }
+    /// Whether `addon` is in the addon directory at all, offered or refused.
+    #[must_use]
+    pub fn knows(&self, addon: &str) -> bool {
+        self.offered.contains(addon) || self.refused.contains(addon)
+    }
+}
 /// Resolved state of a module toggle panel item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ModuleToggleState {
     /// The addon is installed in the current database.
     Installed,
-    /// The addon is linked into this binary and can be installed.
+    /// The install route offers the addon.
     NotInstalled,
-    /// The addon is not linked into this binary and cannot be installed from Settings.
+    /// The addon is in the addon directory, but the install route refuses it.
     NotAvailable,
 }
 impl ModuleToggleState {
-    /// Resolve `addon` against the installed database addons and the addons linked into this binary.
+    /// Resolve `addon` against the installed database addons and the install route's catalogue; `None` when
+    /// the addon is not installed and the catalogue is missing or does not know it (the truth is unknown).
     #[must_use]
-    pub fn resolve(addon: &str, installed: &BTreeSet<String>, linked: &BTreeSet<String>) -> Self {
+    pub fn resolve(
+        addon: &str,
+        installed: &BTreeSet<String>,
+        catalogue: Option<&AddonCatalogue>,
+    ) -> Option<Self> {
         if installed.contains(addon) {
-            Self::Installed
-        } else if linked.contains(addon) {
-            Self::NotInstalled
-        } else {
-            Self::NotAvailable
+            return Some(Self::Installed);
         }
-    }
-}
-/// Resolved state of a feature group toggle panel item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum GroupToggleState {
-    /// The internal-user group implies the feature group: every internal user has it.
-    Enabled,
-    /// The internal-user group does not imply the feature group: only users granted it otherwise have it.
-    Disabled,
-    /// The feature group or the internal-user group has no row in this database.
-    NotAvailable,
-}
-impl GroupToggleState {
-    /// Resolve the feature group row `group` against `implied`, the groups the internal-user group implies
-    /// (itself included, transitively); `None` for either when its row does not exist.
-    #[must_use]
-    pub fn resolve(group: Option<i64>, implied: Option<&BTreeSet<i64>>) -> Self {
-        match (group, implied) {
-            (Some(group), Some(implied)) if implied.contains(&group) => Self::Enabled,
-            (Some(_), Some(_)) => Self::Disabled,
-            _ => Self::NotAvailable,
+        let catalogue = catalogue?;
+        if catalogue.offered.contains(addon) {
+            Some(Self::NotInstalled)
+        } else if catalogue.refused.contains(addon) {
+            Some(Self::NotAvailable)
+        } else {
+            None
         }
     }
 }
@@ -1019,8 +1026,9 @@ impl SettingsRegistry {
     /// # Errors
     /// `Validation` "invalid declared setting or value" for a wrong or uninstalled owner, a key already used by a
     /// setting or an item, empty or missing read groups, an uninstalled target app or a group toggle whose group
-    /// belongs to an uninstalled module; `Validation` "Setting item
-    /// references an unavailable action or menu." for a link whose target does not exist.
+    /// belongs to an uninstalled module; a `Validation` error naming the key for a module or group toggle
+    /// readable by anything other than exactly `base.group_system`; `Validation` "Setting item references an
+    /// unavailable action or menu." for a link whose target does not exist.
     pub fn with_items(
         mut self,
         contributions: Vec<(String, Vec<PanelItemDecl>)>,
@@ -1049,7 +1057,18 @@ impl SettingsRegistry {
                         "Setting item references an unavailable action or menu.",
                     ));
                 }
-                // The group row itself is resolved per request: a missing row is the named "not available" state.
+                // A toggle changes the whole database (an addon, or a group of every internal user).
+                if matches!(
+                    item.kind,
+                    PanelItemKind::Module { .. } | PanelItemKind::Group { .. }
+                ) && item.read_groups != ["base.group_system"]
+                {
+                    return Err(Error::validation(format!(
+                        "Setting item {} is a toggle; only base.group_system may read it.",
+                        item.key
+                    )));
+                }
+                // The group row and what it implies are checked by the publisher (it reads the database).
                 if let PanelItemKind::Group { group } = &item.kind
                     && !group
                         .split_once('.')

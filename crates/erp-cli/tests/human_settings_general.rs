@@ -17,8 +17,7 @@ use erp_sdk::settings::{
     LinkTarget, PanelItemDecl, PanelItemKind, PanelItemValue, ScopeKind, SettingsScope,
 };
 use erp_sdk::views::wire::{
-    GroupToggleState, ModuleToggleState, SettingValue, SettingsDescription, SettingsItem,
-    SettingsLinkTarget, WireId,
+    ModuleToggleState, SettingValue, SettingsDescription, SettingsItem, SettingsLinkTarget, WireId,
 };
 use erp_sdk::{Env, Value};
 use std::sync::Arc;
@@ -44,13 +43,57 @@ const PROBE_REFUSED_AFTER_FAILED_STATEMENT: u8 = 1;
 const PROBE_FAILS: u8 = 2;
 const PROBE_WRONG_KIND: u8 = 3;
 const PROBE_RECORD_LINK_WRONG_KIND: u8 = 4;
-const PROBE_TOGGLE_KEYS: [&str; 5] = [
-    "base.test_group_export",
-    "base.test_group_missing",
-    "base.test_mod_installed",
-    "base.test_mod_not_available",
-    "base.test_mod_uom",
+const PROBE_TOGGLE_KEYS: [&str; 2] = ["base.test_mod_not_available", "base.test_mod_uom"];
+// A toggle declaration that publication must refuse, switched on for one check at a time.
+static PROBE_BAD_TOGGLE: AtomicU8 = AtomicU8::new(0);
+const BAD_TOGGLES: [(&str, &str); 6] = [
+    (
+        "base.test_mod_unknown",
+        "Setting item base.test_mod_unknown toggles the addon no_such_addon, which is neither installed nor in \
+         the addon directory.",
+    ),
+    (
+        "base.test_mod_base",
+        "Setting item base.test_mod_base toggles the addon base, which base itself needs.",
+    ),
+    (
+        "base.test_group_missing",
+        "Setting item base.test_group_missing cannot toggle the group base.no_such_group: it does not exist.",
+    ),
+    (
+        "base.test_group_user",
+        "Setting item base.test_group_user cannot toggle the group base.group_user: it is the internal-user \
+         group itself.",
+    ),
+    (
+        "base.test_group_heavy",
+        "Setting item base.test_group_heavy cannot toggle the group base.group_system: it is or implies a \
+         group that is not a light feature group.",
+    ),
+    (
+        "base.test_group_export",
+        "Setting item base.test_group_export cannot toggle the group base.group_allow_export: it is or \
+         implies a group that is not a light feature group.",
+    ),
 ];
+fn bad_toggle(index: u8) -> erp_sdk::Result<Option<PanelItemDecl>> {
+    let item = match index {
+        1 => PanelItemDecl::module_toggle("base.test_mod_unknown", "Unknown", "no_such_addon")?,
+        2 => PanelItemDecl::module_toggle("base.test_mod_base", "Base", "base")?,
+        3 => {
+            PanelItemDecl::group_toggle("base.test_group_missing", "Missing", "base.no_such_group")?
+        }
+        4 => PanelItemDecl::group_toggle("base.test_group_user", "Users", "base.group_user")?,
+        5 => PanelItemDecl::group_toggle("base.test_group_heavy", "Admins", "base.group_system")?,
+        6 => PanelItemDecl::group_toggle(
+            "base.test_group_export",
+            "Export",
+            "base.group_allow_export",
+        )?,
+        _ => return Ok(None),
+    };
+    Ok(Some(item.block("Probe")?.access(&["base.group_system"])?))
+}
 fn probe_items() -> erp_sdk::Result<Vec<PanelItemDecl>> {
     Ok(vec![
         PanelItemDecl::info("base.test_probe", "Probe")?
@@ -67,30 +110,17 @@ fn probe_items() -> erp_sdk::Result<Vec<PanelItemDecl>> {
         PanelItemDecl::info("base.test_company_only", "Company only")?
             .scope(ScopeKind::Company)
             .access(&["base.group_system"])?,
-        PanelItemDecl::module_toggle("base.test_mod_installed", "Base module", "base")?
-            .block("Probe")?
-            .access(&["base.group_system"])?,
         PanelItemDecl::module_toggle("base.test_mod_uom", "Units of Measure", "uom")?
             .block("Probe")?
             .access(&["base.group_system"])?,
-        PanelItemDecl::module_toggle(
-            "base.test_mod_not_available",
-            "Unlinked module",
-            "unlinked_test_addon",
-        )?
-        .block("Probe")?
-        .access(&["base.group_system"])?,
-        PanelItemDecl::group_toggle(
-            "base.test_group_export",
-            "Export",
-            "base.group_allow_export",
-        )?
-        .block("Probe")?
-        .access(&["base.group_system"])?,
-        PanelItemDecl::group_toggle("base.test_group_missing", "Missing", "base.no_such_group")?
+        // In the addon directory, but not linked into this binary: the install route refuses it.
+        PanelItemDecl::module_toggle("base.test_mod_not_available", "Inventory", "stock")?
             .block("Probe")?
             .access(&["base.group_system"])?,
-    ])
+    ]
+    .into_iter()
+    .chain(bad_toggle(PROBE_BAD_TOGGLE.load(Ordering::SeqCst))?)
+    .collect())
 }
 fn probe<'a>(
     env: &'a Env,
@@ -206,36 +236,6 @@ fn link(description: &SettingsDescription, key: &str) -> (String, SettingsLinkTa
         other => panic!("{key} is not a link row: {other:?}"),
     }
 }
-/// `(state, group_id, internal_group_id)` of a group toggle row.
-fn group_toggle(
-    description: &SettingsDescription,
-    key: &str,
-) -> (GroupToggleState, Option<i64>, Option<i64>) {
-    match item(description, key) {
-        Some(SettingsItem::Group {
-            state,
-            group_id,
-            internal_group_id,
-            app,
-            ..
-        }) => {
-            assert_eq!(app, "base");
-            let id = |id: &Option<WireId>| id.map(|id| i64::try_from(u64::from(id)).unwrap());
-            (*state, id(group_id), id(internal_group_id))
-        }
-        other => panic!("{key} is not a group toggle: {other:?}"),
-    }
-}
-/// Whether the internal-user group implies `group` directly, read with independent SQL.
-async fn implied_by_internal(tx: &mut Transaction, internal: i64, group: i64) -> bool {
-    !tx.query(
-        "SELECT 1 FROM res_groups_implied_rel WHERE gid = $1 AND hid = $2",
-        &[&internal, &group],
-    )
-    .await
-    .unwrap()
-    .is_empty()
-}
 fn integer(value: &SettingValue) -> i64 {
     match value {
         SettingValue::Integer(value) => *value,
@@ -346,17 +346,21 @@ async fn general_section() {
             (name, snapshot.digest().to_owned())
         })
         .collect();
-    let system = erp_modules::system::ModuleSystem::builder(db.pool().clone(), index)
-        .native_artifact_identities(native_artifact_identities)
-        .code([&ADDON, &erp_addon_uom::ADDON])
-        .build()
-        .unwrap();
+    let system = Arc::new(
+        erp_modules::system::ModuleSystem::builder(db.pool().clone(), index)
+            .native_artifact_identities(native_artifact_identities)
+            .code([&ADDON, &erp_addon_uom::ADDON])
+            .build()
+            .unwrap(),
+    );
+    // Module toggles resolve against the catalogue the install route uses, as the server binds it.
+    erp_cli::module::bind_settings_catalogue(Arc::clone(&system)).unwrap();
     let initialized = system
         .initialize(InitOptions::new().with_skip_auto_install(true))
         .await
         .unwrap();
-    // Before `uom` is installed, it is linked into this binary (NotInstalled), while `base` is Installed
-    // and an unlinked addon is NotAvailable.
+    // Before `uom` is installed the install route offers it (NotInstalled); `stock` is in the addon directory but
+    // not linked, so the route refuses it (NotAvailable).
     {
         let mut pre_tx = initialized.orm.begin(SUPERUSER_ID).await.unwrap();
         let pre_env = pre_tx.env();
@@ -364,15 +368,10 @@ async fn general_section() {
             .await
             .unwrap();
         for (key, expected_addon, expected_state) in [
-            (
-                "base.test_mod_installed",
-                "base",
-                ModuleToggleState::Installed,
-            ),
             ("base.test_mod_uom", "uom", ModuleToggleState::NotInstalled),
             (
                 "base.test_mod_not_available",
-                "unlinked_test_addon",
+                "stock",
                 ModuleToggleState::NotAvailable,
             ),
         ] {
@@ -472,15 +471,10 @@ async fn general_section() {
     assert_eq!(keys(&initial), expected_keys);
     // After `uom` is installed, its module toggle transitions to Installed while the unlinked addon stays NotAvailable.
     for (key, expected_addon, expected_state) in [
-        (
-            "base.test_mod_installed",
-            "base",
-            ModuleToggleState::Installed,
-        ),
         ("base.test_mod_uom", "uom", ModuleToggleState::Installed),
         (
             "base.test_mod_not_available",
-            "unlinked_test_addon",
+            "stock",
             ModuleToggleState::NotAvailable,
         ),
     ] {
@@ -625,22 +619,6 @@ async fn general_section() {
     )
     .await;
     let reader_uid = user("general-settings-reader", user_group, vec![main_company]).await;
-    let exporter_uid = user("general-settings-exporter", user_group, vec![main_company]).await;
-    let export_group = xmlid(&mut tx, "group_allow_export", "res.groups").await;
-    tx.env()
-        .records("res.users")
-        .unwrap()
-        .browse([exporter_uid])
-        .unwrap()
-        .write(
-            &mut tx,
-            RawVals::new().set_commands(
-                "group_ids",
-                [Command::link(RecId::from_real(export_group).unwrap())],
-            ),
-        )
-        .await
-        .unwrap();
     tx.commit().await.unwrap();
     drop(tx);
 
@@ -966,102 +944,32 @@ async fn general_section() {
     drop(tx);
     PROBE_MODE.store(PROBE_REPORTS_CALLER, Ordering::SeqCst);
 
-    // A group toggle: off on a fresh database, on exactly while the internal-user group implies the group, and
-    // switched by the ordinary res.groups write, which only a Settings administrator may make.
-    let implication = |command: Command| RawVals::new().set_commands("implied_ids", [command]);
-    let export = RecId::from_real(export_group).unwrap();
-    let mut tx = users_orm
-        .begin(erp_orm::UserId::new(admin_uid).unwrap())
-        .await
-        .unwrap();
-    let admin = tx.env();
-    let off = describe(&admin, &mut tx, SettingsScope::Global {})
-        .await
-        .unwrap();
-    assert_eq!(
-        group_toggle(&off, "base.test_group_export"),
-        (
-            GroupToggleState::Disabled,
-            Some(export_group),
-            Some(user_group)
-        )
-    );
-    // An unknown group is shown as not available, without ids, never as off.
-    assert_eq!(
-        group_toggle(&off, "base.test_group_missing"),
-        (GroupToggleState::NotAvailable, None, None)
-    );
-    assert!(!implied_by_internal(&mut tx, user_group, export_group).await);
-    tx.rollback().await.unwrap();
-    drop(tx);
-    // An internal user without group rights is refused the switch.
-    let mut tx = users_orm
-        .begin(erp_orm::UserId::new(reader_uid).unwrap())
-        .await
-        .unwrap();
-    let refused = tx
-        .env()
-        .records("res.groups")
-        .unwrap()
-        .browse([user_group])
-        .unwrap()
-        .write(&mut tx, implication(Command::link(export)))
-        .await
-        .unwrap_err();
-    assert_eq!(refused.kind(), ErrorKind::Access, "{}", refused.message());
-    tx.rollback().await.unwrap();
-    drop(tx);
-    // On, then off, by the administrator.
-    for (command, expected) in [
-        (Command::link(export), GroupToggleState::Enabled),
-        (Command::unlink(export), GroupToggleState::Disabled),
-    ] {
-        let mut tx = users_orm
-            .begin(erp_orm::UserId::new(admin_uid).unwrap())
-            .await
-            .unwrap();
-        tx.env()
-            .records("res.groups")
-            .unwrap()
-            .browse([user_group])
-            .unwrap()
-            .write(&mut tx, implication(command))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        drop(tx);
+    // Publication refuses each bad toggle declaration by key and addon or group; the page works again once it
+    // is gone. (The working group toggle and its on/off walk are in the Inventory install test.)
+    for (index, (key, message)) in (1u8..).zip(BAD_TOGGLES) {
+        PROBE_BAD_TOGGLE.store(index, Ordering::SeqCst);
         let mut tx = users_orm
             .begin(erp_orm::UserId::new(admin_uid).unwrap())
             .await
             .unwrap();
         let admin = tx.env();
-        let described = describe(&admin, &mut tx, SettingsScope::Global {})
+        let refused = describe(&admin, &mut tx, SettingsScope::Global {})
             .await
-            .unwrap();
-        assert_eq!(
-            group_toggle(&described, "base.test_group_export").0,
-            expected
-        );
-        assert_eq!(
-            implied_by_internal(&mut tx, user_group, export_group).await,
-            expected == GroupToggleState::Enabled
-        );
+            .unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Validation, "{key}");
+        assert_eq!(refused.message(), message, "{key}");
         tx.rollback().await.unwrap();
         drop(tx);
     }
-    // Off removes only the implication: the user who was given the group directly keeps it.
-    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
-    let direct = tx
-        .query(
-            "SELECT uid::int8 FROM res_groups_users_rel WHERE gid = $1 AND uid = ANY($2) ORDER BY uid",
-            &[&export_group, &vec![reader_uid, exporter_uid]],
-        )
+    PROBE_BAD_TOGGLE.store(0, Ordering::SeqCst);
+    let mut tx = users_orm
+        .begin(erp_orm::UserId::new(admin_uid).unwrap())
         .await
-        .unwrap()
-        .iter()
-        .map(|row| row.get::<_, i64>(0))
-        .collect::<Vec<_>>();
-    assert_eq!(direct, [exporter_uid]);
+        .unwrap();
+    let admin = tx.env();
+    describe(&admin, &mut tx, SettingsScope::Global {})
+        .await
+        .unwrap();
     tx.rollback().await.unwrap();
     drop(tx);
 

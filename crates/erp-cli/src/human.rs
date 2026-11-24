@@ -1475,6 +1475,8 @@ pub(crate) fn serve(args: &ServerArgs) -> Result<()> {
         CATALOG_SYSTEM
             .set(Arc::clone(&system))
             .map_err(|_| failed("the addon catalogue was already bound in this process"))?;
+        // Settings module toggles resolve against the same catalogue the install route enforces.
+        crate::module::bind_settings_catalogue(Arc::clone(&system))?;
         let asset_store =
             erp_server::assets::AssetStore::new(config.startup_limits().assets_memory_bytes())
                 .map_err(|error| failed(error.to_string()))?;

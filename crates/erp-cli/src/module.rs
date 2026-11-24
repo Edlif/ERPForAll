@@ -8,6 +8,39 @@ use std::path::PathBuf;
 
 pub mod chart_defaults;
 
+/// Bind `system`'s browser install catalogue as the one Settings module toggles resolve against
+/// ([`erp_sdk::settings::bind_addon_catalogue`]): the same names the install route accepts or refuses.
+///
+/// # Errors
+/// `Programming` when this process already bound a catalogue.
+pub fn bind_settings_catalogue(
+    system: std::sync::Arc<erp_modules::system::ModuleSystem>,
+) -> erp_sdk::Result<()> {
+    erp_sdk::settings::bind_addon_catalogue(Box::new(move || {
+        let system = std::sync::Arc::clone(&system);
+        Box::pin(async move {
+            let catalog = system.human_catalog().await.map_err(|error| match error {
+                erp_modules::Error::Orm(error) => error,
+                other => erp_sdk::Error::validation(format!(
+                    "The addon catalogue could not be read: {other}"
+                )),
+            })?;
+            Ok(erp_sdk::settings::AddonCatalogue::new(
+                catalog
+                    .offered
+                    .iter()
+                    .map(|manifest| manifest.name().as_str().to_owned())
+                    .collect(),
+                catalog
+                    .refused
+                    .iter()
+                    .map(|(name, _)| name.as_str().to_owned())
+                    .collect(),
+            ))
+        })
+    }))
+}
+
 /// Dedicated operation enum representing module lifecycle commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleOperation {
