@@ -9,9 +9,11 @@ pub use chain::{installed, owner, refused};
 
 // Snapshot xmin is cluster-wide: unrelated test transactions can legitimately delay admission.
 // Wait for the actual database frontier, never an assumed elapsed commit delay.
+// The limit is a fail-safe, not an expectation: on a host that runs other test lanes against the same cluster a
+// long transaction of another test held the frontier past 30 s and failed five tests here that had no defect.
 pub async fn begin(h: &Harness) -> erp_orm::Transaction {
     let c = owner(h).await;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         let safe:bool=c.query_one("SELECT COALESCE(max(xid),'0'::xid8)<pg_snapshot_xmin(pg_current_snapshot()) FROM erp_event.ir_audit_entry",&[]).await.unwrap().get(0);
         if safe {
