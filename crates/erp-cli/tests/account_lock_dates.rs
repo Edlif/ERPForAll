@@ -17,11 +17,11 @@
 mod accounting;
 
 use accounting::*;
-use erp_data::impex::ImpexExt;
-use erp_sdk::prelude::*;
 use erp_addon_account::fiscal::status::{
     LockOutcome, PeriodSet, hard_lock_begin, hard_lock_complete, sync_lock_dates,
 };
+use erp_data::impex::ImpexExt;
+use erp_sdk::prelude::*;
 use erp_sdk::{Command, ErrorKind, SUPERUSER_ID};
 
 async fn try_write(record: &Records, tx: &mut Transaction, vals: RawVals) -> Result<()> {
@@ -981,7 +981,9 @@ async fn hard_body() {
     tx.commit().await.unwrap();
     drop(tx);
     let mut tx = orm
-        .begin_opts(erp_sdk::BeginOptions::new(SUPERUSER_ID).isolation(erp_sdk::Isolation::ReadCommitted))
+        .begin_opts(
+            erp_sdk::BeginOptions::new(SUPERUSER_ID).isolation(erp_sdk::Isolation::ReadCommitted),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -1020,7 +1022,11 @@ async fn hard_body() {
     let error = try_call(&items, &mut tx, "remove_move_reconcile")
         .await
         .unwrap_err();
-    locked(&error, &later_name, "fiscalyear_lock_date through 2024-02-29");
+    locked(
+        &error,
+        &later_name,
+        "fiscalyear_lock_date through 2024-02-29",
+    );
     assert!(
         !error.message().contains("hard_lock_date"),
         "{}",
@@ -1063,10 +1069,7 @@ async fn hard_body() {
         "{}",
         error.message()
     );
-    assert_eq!(
-        decimal(&later, &mut tx, "amount_residual").await,
-        num("0")
-    );
+    assert_eq!(decimal(&later, &mut tx, "amount_residual").await, num("0"));
     tx.rollback().await.unwrap();
     drop(orm);
     db.cleanup().await.unwrap();
