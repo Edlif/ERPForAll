@@ -33,7 +33,7 @@ const STOCK_MATRIX: &[(&str, [&str; 3])] = &[
     ("stock.package.type", ["", "r", "crud"]),
     ("stock.picking", ["", "crud", "crud"]),
     ("stock.picking.batch", ["", "crud", "crud"]),
-    ("stock.picking.batch.result", ["", "crud", "crud"]),
+    ("stock.picking.batch.result", ["", "r", "r"]),
     ("stock.picking.to.batch", ["", "crud", "crud"]),
     ("stock.picking.type", ["r", "r", "crud"]),
     ("stock.putaway.rule", ["r", "r", "crud"]),

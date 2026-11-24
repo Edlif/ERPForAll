@@ -48,5 +48,5 @@ access_res_partner_manager,Inventory: res.partner (manager),base.model_res_partn
 access_product_removal_employee,Inventory: product.removal (employee),stock.model_product_removal,base.group_user,r,
 access_stock_reference_employee,Inventory: stock.reference (employee),stock.model_stock_reference,base.group_user,cru,
 access_stock_picking_batch_user,Inventory: stock.picking.batch (user),stock.model_stock_picking_batch,stock.group_stock_user,crud,
-access_stock_picking_batch_result_user,Inventory: stock.picking.batch.result (user),stock.model_stock_picking_batch_result,stock.group_stock_user,crud,
+access_stock_picking_batch_result_user,Inventory: stock.picking.batch.result (user),stock.model_stock_picking_batch_result,stock.group_stock_user,r,
 access_stock_picking_to_batch_user,Inventory: stock.picking.to.batch (user),stock.model_stock_picking_to_batch,stock.group_stock_user,crud,"[('create_uid', '=', user.id)]"

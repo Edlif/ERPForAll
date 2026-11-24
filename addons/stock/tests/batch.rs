@@ -422,10 +422,31 @@ impl Fixture {
         .await
     }
 
-    /// One chunk of the validation job of `run`.
+    /// The payload the queued job of `run` stores, with its kind and key checked.
+    async fn queued(
+        &self,
+        tx: &mut Transaction,
+        batch: i64,
+        run: i32,
+    ) -> erp_sdk::serde_json::Value {
+        tx.flush().await.unwrap();
+        let key = format!("stock.batch_validate:{batch}:{run}");
+        let rows = tx
+            .query(
+                "SELECT kind, payload::text FROM erp_job WHERE dedup_key = $1 AND state <> 'dead'",
+                &[&key],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one live job for {key}");
+        assert_eq!(rows[0].get::<_, String>(0), "stock.batch_validate");
+        erp_sdk::serde_json::from_str(&rows[0].get::<_, String>(1)).unwrap()
+    }
+
+    /// One chunk of the validation job of `run`, fed the payload the queue stored.
     async fn step(&self, tx: &mut Transaction, batch: i64, run: i32) -> StepOutcome {
         let args = StepArgs {
-            payload: erp_sdk::serde_json::json!({ "id": batch, "run": run }),
+            payload: self.queued(tx, batch, run).await,
             progress: None,
             attempt: 1,
         };
@@ -643,8 +664,15 @@ async fn validation_keeps_a_result_per_transfer_in_chunks() {
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[2].0, short);
     assert_eq!(rows[2].1, "error");
-    assert!(
-        rows[2].2.as_deref().is_some_and(|m| !m.is_empty()),
+    assert_eq!(
+        rows[2].2.as_deref(),
+        Some(
+            erp_addon_stock::StockError::BackorderNotAvailable {
+                product: "P".into()
+            }
+            .to_string()
+            .as_str()
+        ),
         "{rows:?}"
     );
     assert_eq!((rows[3].0, rows[3].1.as_str()), (empty, "detached"));
@@ -684,7 +712,7 @@ async fn a_done_batch_stays_and_a_cancelled_batch_releases_its_transfers() {
     assert!(!batch_row(&mut tx, batch).await.1);
     let error = f.batches(&tx, batch).unlink(&mut tx).await.unwrap_err();
     assert!(
-        error.message().contains("done batch"),
+        error.message().contains("done transfer"),
         "{}",
         error.message()
     );
@@ -747,4 +775,182 @@ async fn the_dialog_creates_a_new_batch() {
         .unwrap()[0]
         .get(0);
     assert_eq!(description, "Dock 3");
+}
+
+/// The batch of a transfer, the transfer list and the type and company of a batch are not
+/// written around the batch actions.
+#[tokio::test]
+async fn links_and_batch_identity_are_not_written_directly() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let batch = f.batch(&mut tx).await.unwrap();
+    let a = f.transfer(&mut tx, true, "1").await;
+    let b = f.transfer(&mut tx, true, "1").await;
+    f.add(&mut tx, batch, &[a]).await.unwrap();
+    let env = f.env(&tx);
+    // a transfer cannot be pointed at a batch, moved or released by a plain write
+    for target in [Cell::Id(batch), Cell::Null] {
+        let error = env
+            .records("stock.picking")
+            .unwrap()
+            .browse([b])
+            .unwrap()
+            .write(&mut tx, RawVals::new().set_cell("batch_id", target))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+        assert!(
+            error.message().contains("batch actions"),
+            "{}",
+            error.message()
+        );
+    }
+    let error = env
+        .records("stock.picking")
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![RawVals::new().set_cell("batch_id", Cell::Id(batch))],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    assert_eq!(picking_batch(&mut tx, a).await, Some(batch));
+    assert_eq!(picking_batch(&mut tx, b).await, None);
+    // a batch is not created with transfers
+    let error = env
+        .records("stock.picking.batch")
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![RawVals::new().set_cell("picking_ids", ids(&[b]))],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{error:?}");
+    // while it holds a transfer its type and company stay
+    for field in ["picking_type_id", "company_id"] {
+        let error = f
+            .batches(&tx, batch)
+            .write(
+                &mut tx,
+                RawVals::new().set_cell(field, Cell::Id(f.delivery_type)),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation, "{field} {error:?}");
+    }
+}
+
+/// A batch that is not done can be deleted; one with a done transfer cannot.
+#[tokio::test]
+async fn only_a_batch_without_done_work_is_deleted() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let a = f.transfer(&mut tx, true, "1").await;
+    let draft = f.batch(&mut tx).await.unwrap();
+    f.batches(&tx, draft).unlink(&mut tx).await.unwrap();
+    let batch = f.batch(&mut tx).await.unwrap();
+    f.add(&mut tx, batch, &[a]).await.unwrap();
+    f.call_batch(&mut tx, batch, "action_confirm")
+        .await
+        .unwrap();
+    f.call_batch(&mut tx, batch, "action_done").await.unwrap();
+    // being validated: not deleted either
+    let error = f.batches(&tx, batch).unlink(&mut tx).await.unwrap_err();
+    assert!(
+        error.message().contains("being validated"),
+        "{}",
+        error.message()
+    );
+    f.step(&mut tx, batch, 1).await;
+    let error = f.batches(&tx, batch).unlink(&mut tx).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError, "{error:?}");
+}
+
+/// A validation whose job is gone does not hold the batch: Cancel proceeds, and Validate queues
+/// the same run again. Nothing joins a batch while a live job validates it.
+#[tokio::test]
+async fn a_lost_validation_job_does_not_hold_the_batch() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let a = f.transfer(&mut tx, true, "1").await;
+    let b = f.transfer(&mut tx, true, "1").await;
+    let batch = f.batch(&mut tx).await.unwrap();
+    f.add(&mut tx, batch, &[a]).await.unwrap();
+    f.call_batch(&mut tx, batch, "action_confirm")
+        .await
+        .unwrap();
+    f.call_batch(&mut tx, batch, "action_done").await.unwrap();
+    assert_eq!(f.queued(&mut tx, batch, 1).await["run"], 1);
+    // live job: no joining, no cancel, no second validation, no availability check
+    let error = f.add(&mut tx, batch, &[b]).await.unwrap_err();
+    assert!(
+        error.message().contains("being validated"),
+        "{}",
+        error.message()
+    );
+    for method in ["action_cancel", "action_done", "action_assign"] {
+        f.call_batch(&mut tx, batch, method).await.unwrap_err();
+    }
+    // the job dies: the flag no longer holds the batch
+    tx.execute(
+        "UPDATE erp_job SET state = 'dead', dead_at = now() WHERE dedup_key = $1",
+        &[&format!("stock.batch_validate:{batch}:1")],
+    )
+    .await
+    .unwrap();
+    f.call_batch(&mut tx, batch, "action_done").await.unwrap();
+    assert_eq!(
+        batch_row(&mut tx, batch).await.2,
+        1,
+        "the same run continues"
+    );
+    assert_eq!(f.queued(&mut tx, batch, 1).await["id"], batch);
+    tx.execute(
+        "UPDATE erp_job SET state = 'dead', dead_at = now() WHERE dedup_key = $1",
+        &[&format!("stock.batch_validate:{batch}:1")],
+    )
+    .await
+    .unwrap();
+    f.call_batch(&mut tx, batch, "action_cancel").await.unwrap();
+    let row = batch_row(&mut tx, batch).await;
+    assert_eq!((row.0.as_str(), row.1), ("cancel", false));
+}
+
+/// Validate settles a batch whose transfers were all finished on their own, and refuses a batch
+/// where nothing is reserved instead of emptying it.
+#[tokio::test]
+async fn validate_settles_finished_batches_and_refuses_empty_ones() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    // a delivery nothing is reserved for (made before the receipt puts stock on hand)
+    let waiting = f.transfer(&mut tx, false, "1").await;
+    let a = f.transfer(&mut tx, true, "1").await;
+    let batch = f.batch(&mut tx).await.unwrap();
+    f.add(&mut tx, batch, &[a]).await.unwrap();
+    f.call_batch(&mut tx, batch, "action_confirm")
+        .await
+        .unwrap();
+    f.call(&mut tx, a, "button_validate").await.unwrap();
+    f.call_batch(&mut tx, batch, "action_done").await.unwrap();
+    assert_eq!(batch_row(&mut tx, batch).await.0, "done");
+
+    let other = f.batch(&mut tx).await.unwrap();
+    f.add(&mut tx, other, &[waiting]).await.unwrap();
+    f.call_batch(&mut tx, other, "action_confirm")
+        .await
+        .unwrap();
+    let error = f
+        .call_batch(&mut tx, other, "action_done")
+        .await
+        .unwrap_err();
+    assert!(
+        error.message().contains("Check Availability"),
+        "{}",
+        error.message()
+    );
+    let row = batch_row(&mut tx, other).await;
+    assert_eq!((row.0.as_str(), row.1), ("in_progress", false));
+    assert_eq!(picking_batch(&mut tx, waiting).await, Some(other));
 }
