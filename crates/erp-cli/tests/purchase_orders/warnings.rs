@@ -657,14 +657,36 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
     });
 }
 
-async fn create_one(tx: &mut Transaction, model: &str, vals: RawVals) -> i64 {
+async fn create_one(tx: &mut Transaction, company: i64, model: &str, vals: RawVals) -> i64 {
     tx.env()
+        .with_company(company)
+        .unwrap()
         .records(model)
         .unwrap()
         .create(tx, vec![vals])
         .await
         .unwrap()
         .ids()[0]
+}
+
+/// One record of `model` as seen by user `uid` working in `companies`.
+fn record_as(
+    tx: &Transaction,
+    uid: UserId,
+    companies: &[i64],
+    model: &str,
+    id: i64,
+) -> Records {
+    tx.env()
+        .with_user(uid)
+        .with_context([(
+            "allowed_company_ids",
+            Value::list(companies.iter().map(|c| Value::Int(*c))),
+        )])
+        .records(model)
+        .unwrap()
+        .browse([id])
+        .unwrap()
 }
 
 /// Which notices an order shows: a contact without a note of its own shows its parent's, a note of
@@ -686,9 +708,7 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             .await
             .unwrap()[0]
             .get(0);
-        let other_company = create_one(
-            &mut tx,
-            "res.company",
+        let other_company = create_one(&mut tx, company, "res.company",
             RawVals::new()
                 .set_cell("name", text("Notice Other Company"))
                 .set_cell("currency_id", Cell::Id(currency)),
@@ -710,26 +730,20 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         let narrow_buyer = user(&mut tx, "notice-narrow", &[buyer_group], &[company]).await;
         let manager = user(&mut tx, "notice-manager", &[manager_group], &[company]).await;
 
-        let parent = create_one(
-            &mut tx,
-            "res.partner",
+        let parent = create_one(&mut tx, company, "res.partner",
             RawVals::new()
                 .set_cell("name", text("Parent Holdings"))
                 .set_cell("is_company", Cell::Bool(true))
                 .set_cell("purchase_warn_msg", text("Parent requires PO reference")),
         )
         .await;
-        let child = create_one(
-            &mut tx,
-            "res.partner",
+        let child = create_one(&mut tx, company, "res.partner",
             RawVals::new()
                 .set_cell("name", text("Silent Branch"))
                 .set_cell("parent_id", Cell::Id(parent)),
         )
         .await;
-        let blank = create_one(
-            &mut tx,
-            "res.partner",
+        let blank = create_one(&mut tx, company, "res.partner",
             RawVals::new()
                 .set_cell("name", text("Blank Note Vendor"))
                 .set_cell("purchase_warn_msg", text("   ")),
@@ -740,9 +754,7 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             ("Visible Valve", "Visible note"),
             ("Guarded Valve", "Guarded note"),
         ] {
-            let template = create_one(
-                &mut tx,
-                "product.template",
+            let template = create_one(&mut tx, company, "product.template",
                 RawVals::new()
                     .set_cell("name", text(name))
                     .set_cell("purchase_line_warn_msg", text(note)),
@@ -780,9 +792,7 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         .await
         .ids()[0];
         for product in [visible, guarded] {
-            create_one(
-                &mut tx,
-                "purchase.order.line",
+            create_one(&mut tx, company, "purchase.order.line",
                 RawVals::new()
                     .set_cell("order_id", Cell::Id(notice_order))
                     .set_cell("product_id", Cell::Id(product))
@@ -790,6 +800,8 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             )
             .await;
         }
+        // a product without attributes or a code displays under its name
+        let (visible_name, guarded_name) = ("Visible Valve", "Guarded Valve");
         // The company rule of the product hides it from callers outside the other company; the
         // product joins that company after the order lines exist, so no company check refuses them.
         tx.execute(
@@ -816,39 +828,37 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         drop(tx);
         let orm = purchase_policy_orm(&db, &orm, &[]).await;
 
-        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
-        let env = tx.env();
-        let display = |id: i64| {
-            env.records("product.product")
-                .unwrap()
-                .browse([id])
-                .unwrap()
-        };
-        let (visible_name, guarded_name) = (display(visible), display(guarded));
-        let visible_name = match visible_name.cell(&mut tx, "display_name").await.unwrap() {
-            Cell::Str(s) => s.to_string(),
-            other => panic!("display name: {other:?}"),
-        };
-        let guarded_name = match guarded_name.cell(&mut tx, "display_name").await.unwrap() {
-            Cell::Str(s) => s.to_string(),
-            other => panic!("display name: {other:?}"),
-        };
-        let both = |ids: &[i64]| Value::list(ids.iter().map(|c| Value::Int(*c)));
+        // The system principal may switch users without an impersonation capability.
+        let mut tx = orm.begin(erp_orm::PrincipalHint::system()).await.unwrap();
+        // a first write resolves the principal of the transaction before any switched read
+        let parent_record = tx
+            .env()
+            .with_company(company)
+            .unwrap()
+            .records("res.partner")
+            .unwrap()
+            .browse([parent])
+            .unwrap();
+        write(
+            &mut tx,
+            &parent_record,
+            RawVals::new().set_cell("purchase_warn_msg", text("Parent requires PO reference")),
+        )
+        .await
+        .unwrap();
         let parent_line = "Parent Holdings - Parent requires PO reference";
         let narrow_text = format!("{parent_line}\n{visible_name} - Visible note");
         let wide_text = format!("{narrow_text}\n{guarded_name} - Guarded note");
 
         // Two callers, one transaction: each one's text follows that caller's own rights.
-        let read_as = |uid: UserId, companies: &[i64], order_id: i64| {
-            env.with_user(uid)
-                .with_context([("allowed_company_ids", both(companies))])
-                .records("purchase.order")
-                .unwrap()
-                .browse([order_id])
-                .unwrap()
-        };
-        let narrow_order = read_as(narrow_buyer, &[company], notice_order);
-        let wide_order = read_as(wide_buyer, &[company, other_company], notice_order);
+        let narrow_order = record_as(&tx, narrow_buyer, &[company], "purchase.order", notice_order);
+        let wide_order = record_as(
+            &tx,
+            wide_buyer,
+            &[company, other_company],
+            "purchase.order",
+            notice_order,
+        );
         assert_eq!(
             narrow_order
                 .cell(&mut tx, "purchase_warning_text")
@@ -879,16 +889,14 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             .await
             .unwrap()[0]
             .get(0);
-        let line_as = |uid: UserId, companies: &[i64]| {
-            env.with_user(uid)
-                .with_context([("allowed_company_ids", both(companies))])
-                .records("purchase.order.line")
-                .unwrap()
-                .browse([guarded_line])
-                .unwrap()
-        };
-        let narrow_line = line_as(narrow_buyer, &[company]);
-        let wide_line = line_as(wide_buyer, &[company, other_company]);
+        let narrow_line = record_as(&tx, narrow_buyer, &[company], "purchase.order.line", guarded_line);
+        let wide_line = record_as(
+            &tx,
+            wide_buyer,
+            &[company, other_company],
+            "purchase.order.line",
+            guarded_line,
+        );
         assert_eq!(
             narrow_line
                 .cell(&mut tx, "purchase_line_warn_msg")
@@ -904,7 +912,7 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
             text("Guarded note")
         );
         // A note of spaces only gives no banner.
-        let blank_as_narrow = read_as(narrow_buyer, &[company], blank_order);
+        let blank_as_narrow = record_as(&tx, narrow_buyer, &[company], "purchase.order", blank_order);
         assert_eq!(
             blank_as_narrow
                 .cell(&mut tx, "purchase_warning_text")
@@ -914,7 +922,7 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
         );
 
         // An edit of a note shows when the order is read again in the same transaction.
-        let manager_order = read_as(manager, &[company], notice_order);
+        let manager_order = record_as(&tx, manager, &[company], "purchase.order", notice_order);
         assert_eq!(
             manager_order
                 .cell(&mut tx, "purchase_warning_text")
@@ -922,13 +930,7 @@ fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
                 .unwrap(),
             text(&narrow_text)
         );
-        let manager_parent = env
-            .with_user(manager)
-            .with_context([("allowed_company_ids", both(&[company]))])
-            .records("res.partner")
-            .unwrap()
-            .browse([parent])
-            .unwrap();
+        let manager_parent = record_as(&tx, manager, &[company], "res.partner", parent);
         write(
             &mut tx,
             &manager_parent,
@@ -959,9 +961,8 @@ fn purchase_notice_length_follows_the_system_parameter() {
         let db = TestDb::builder().pool_size(8).create().await.unwrap();
         let orm = install(&db).await;
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
-        let vendor = create_one(
-            &mut tx,
-            "res.partner",
+        let company = xmlid(&mut tx, "base", "main_company").await;
+        let vendor = create_one(&mut tx, company, "res.partner",
             RawVals::new().set_cell("name", text("Short Notice Vendor")),
         )
         .await;
@@ -1016,6 +1017,95 @@ fn purchase_notice_length_follows_the_system_parameter() {
         tx.rollback().await.unwrap();
         drop(tx);
         drop(orm);
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// Removing Purchase while its notice switch is on takes the feature group and its columns away and
+/// leaves the internal-user group intact.
+#[test]
+fn purchase_uninstall_with_the_notice_switch_on() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let system = purchase_module_system(&db);
+        let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
+            .await
+            .unwrap();
+        let env = init.orm.env(SUPERUSER_ID, Context::new());
+        let purchase = ModuleName::new("purchase").unwrap();
+        let installed = Box::pin(system.button_immediate_install(&env, &[purchase.clone()]))
+            .await
+            .unwrap();
+        assert!(installed.post_commit.is_clean(), "{:?}", installed.post_commit);
+
+        let mut tx = installed.orm.begin(SUPERUSER_ID).await.unwrap();
+        let user_group = xmlid(&mut tx, "base", "group_user").await;
+        let warning_group = xmlid(&mut tx, "purchase", "group_warning_purchase").await;
+        tx.env()
+            .records("res.groups")
+            .unwrap()
+            .browse([user_group])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "implied_ids",
+                    [Command::Link(RecId::from_real(warning_group).unwrap())],
+                ),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let caller = system.system_env(Context::new());
+        let removed = Box::pin(system.button_immediate_uninstall(&caller, &[purchase.clone()]))
+            .await
+            .unwrap();
+        assert!(removed.uninstalled.contains(&purchase));
+        let mut tx = removed.orm.begin(SUPERUSER_ID).await.unwrap();
+        assert_eq!(
+            strings(
+                &mut tx,
+                "SELECT count(*)::text FROM ir_model_data \
+                 WHERE module = 'purchase' AND name = 'group_warning_purchase'"
+            )
+            .await,
+            ["0"],
+            "the feature group record is gone"
+        );
+        // the internal-user group and its other implications stay
+        let internal = tx
+            .query(
+                "SELECT count(*)::int8 FROM res_groups WHERE id = $1",
+                &[&user_group],
+            )
+            .await
+            .unwrap()[0]
+            .get::<_, i64>(0);
+        assert_eq!(internal, 1);
+        let stale = tx
+            .query(
+                "SELECT count(*)::int8 FROM res_groups_implied_rel r \
+                 WHERE NOT EXISTS (SELECT 1 FROM res_groups g WHERE g.id = r.hid)",
+                &[],
+            )
+            .await
+            .unwrap()[0]
+            .get::<_, i64>(0);
+        assert_eq!(stale, 0, "no implication points at a removed group");
+        assert_eq!(
+            strings(
+                &mut tx,
+                "SELECT count(*)::text FROM information_schema.columns \
+                 WHERE table_name = 'res_partner' AND column_name = 'purchase_warn_msg'"
+            )
+            .await,
+            ["0"],
+            "the notice column is gone"
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
         db.cleanup().await.unwrap();
     });
 }
