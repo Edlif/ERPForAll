@@ -380,6 +380,12 @@ fn window(members: &Map<String, Json>, lookup: &dyn ModelLookup) -> Result<wire:
     })
 }
 
+fn single_form() -> Error {
+    fail(
+        "A current window that opens one record (res_id) requires exactly one [id|false, 'form'] view.",
+    )
+}
+
 fn current_window(
     members: &Map<String, Json>,
     lookup: &dyn ModelLookup,
@@ -410,6 +416,7 @@ fn current_window(
             "views",
             "domain",
             "context",
+            "res_id",
         ],
         "current window",
     )?;
@@ -426,6 +433,36 @@ fn current_window(
     let model = text(members, "res_model", MAX_MODEL_BYTES, "A current window")?;
     if !lookup.has_model(model) {
         return Err(fail(format!("Unknown action model '{model}'.")));
+    }
+    // One record opened as a form, stacked on the page it came from; the caller's read access to
+    // that record is checked by the server's normalize step, not here.
+    if let Some(res_id) = optional_id(members, "res_id", "Current-window res_id")? {
+        if members.contains_key("domain") {
+            return Err(fail(
+                "A current window that opens one record (res_id) takes no domain.",
+            ));
+        }
+        let view = match members.get("views") {
+            Some(Json::Array(entries)) => match entries.as_slice() {
+                [Json::Array(pair)] => match pair.as_slice() {
+                    [Json::Null | Json::Bool(false), Json::String(kind)] if kind == "form" => None,
+                    [id, Json::String(kind)] if kind == "form" => {
+                        Some(positive_id(id, "Current-window view identity")?)
+                    }
+                    _ => return Err(single_form()),
+                },
+                _ => return Err(single_form()),
+            },
+            _ => return Err(single_form()),
+        };
+        return Ok(wire::ActionResult::CurrentWindow {
+            name: name.to_owned(),
+            model: model.to_owned(),
+            views: vec![wire::ActionView::new(view, wire::ViewType::Form)],
+            domain: vec![serde_json::json!(["id", "=", u64::from(res_id)])],
+            res_id: Some(res_id),
+            context: context(members.get("context"), model, lookup, true)?,
+        });
     }
     let Some(Json::Array(entries)) = members.get("views") else {
         return Err(fail(
@@ -477,6 +514,7 @@ fn current_window(
         model: model.to_owned(),
         views,
         domain,
+        res_id: None,
         context: context(members.get("context"), model, lookup, true)?,
     })
 }
@@ -958,6 +996,69 @@ mod tests {
             serde_json::to_value(empty).unwrap()["domain"],
             json!([[0, "=", 1]])
         );
+    }
+
+    #[test]
+    fn current_window_opens_one_record_as_a_form_and_refuses_malformed_ones() {
+        let one = json!({"type": ACT_WINDOW, "name": "Loan", "res_model": "library.loan",
+            "target": "current", "res_id": 7, "views": [[12, "form"]], "context": {"create": false}});
+        let value = serde_json::to_value(run(one.clone()).unwrap()).unwrap();
+        assert_eq!(value["kind"], json!("current_window"));
+        assert_eq!(value["res_id"], json!(7));
+        assert_eq!(value["views"], json!([{"id": 12, "type": "form"}]));
+        assert_eq!(value["domain"], json!([["id", "=", 7]]));
+        assert_eq!(value["context"], json!({"create": false}));
+        let mut defaults = one.clone();
+        defaults["views"] = json!([[false, "form"]]);
+        let value = serde_json::to_value(run(defaults).unwrap()).unwrap();
+        assert_eq!(value["views"], json!([{"id": null, "type": "form"}]));
+        // A list keeps no res_id member on the wire.
+        let list = json!({"type": ACT_WINDOW, "name": "Loans", "res_model": "library.loan",
+            "target": "current", "views": [[false, "list"]], "domain": [], "context": {}});
+        assert!(
+            serde_json::to_value(run(list).unwrap())
+                .unwrap()
+                .get("res_id")
+                .is_none()
+        );
+        let single = "A current window that opens one record (res_id) requires exactly one [id|false, 'form'] view.";
+        for (key, bad, expected) in [
+            (
+                "res_id",
+                json!(0),
+                "Current-window res_id must be a positive JSON-safe integer.",
+            ),
+            (
+                "res_id",
+                json!("7"),
+                "Current-window res_id must be a positive JSON-safe integer.",
+            ),
+            (
+                "res_id",
+                json!(9_007_199_254_740_992_u64),
+                "Current-window integer literal exceeds the browser's safe range.",
+            ),
+            ("views", json!([[false, "list"], [false, "form"]]), single),
+            ("views", json!([[false, "list"]]), single),
+            ("views", json!([]), single),
+            ("views", json!("form"), single),
+            (
+                "views",
+                json!([[0, "form"]]),
+                "Current-window view identity must be a positive JSON-safe integer.",
+            ),
+            (
+                "domain",
+                json!([["id", "=", 7]]),
+                "A current window that opens one record (res_id) takes no domain.",
+            ),
+        ] {
+            let mut value = one.clone();
+            value[key] = bad;
+            let error = run(value).unwrap_err();
+            assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation, "{key}");
+            assert_eq!(error.message(), expected, "{key}");
+        }
     }
 
     #[test]

@@ -1383,13 +1383,20 @@ name: string,
  */
 model: string,
 /**
- * List, optionally followed by form; service views are not admitted.
+ * List, optionally followed by form; service views are not admitted. With `res_id`,
+ * exactly one form.
  */
 views: Array<ActionView>,
 /**
- * Literal base domain. Later ORM requests still apply caller access rules.
+ * Literal base domain. Later ORM requests still apply caller access rules. With
+ * `res_id`, exactly `[["id", "=", res_id]]`.
  */
 domain: unknown[],
+/**
+ * The one record to open as a form, readable by the caller when admitted; absent for a
+ * list.
+ */
+res_id?: WireId,
 /**
  * Bounded literal defaults; authority-bearing context is refused.
  */
