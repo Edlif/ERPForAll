@@ -331,7 +331,12 @@ fn stock_batch_actions_need_the_batch_group() {
             }
             let orm = secure(&db, &installed).await;
             let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
-            let batch = tx.env().records("stock.picking.batch").unwrap().browse([1]).unwrap();
+            let batch = tx
+                .env()
+                .records("stock.picking.batch")
+                .unwrap()
+                .browse([1])
+                .unwrap();
             let result = batch
                 .call::<(), erp_sdk::Value>(&mut tx, "action_add_transfers", ())
                 .await;
@@ -340,7 +345,13 @@ fn stock_batch_actions_need_the_batch_group() {
             } else {
                 let error = result.unwrap_err();
                 assert_eq!(error.kind(), ErrorKind::Access, "{error:?}");
-                assert!(error.message().contains("Batch transfers are not turned on"), "{}", error.message());
+                assert!(
+                    error
+                        .message()
+                        .contains("Batch transfers are not turned on"),
+                    "{}",
+                    error.message()
+                );
             }
             tx.rollback().await.unwrap();
         }
