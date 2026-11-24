@@ -770,13 +770,13 @@ fn a_short_direct_receipt_counts_completed_goods_in_the_purchase_unit() {
             Cell::Decimal(dec("1"))
         );
         // received goods keep the line's unit
-        let unit = line
-            .write(
-                &mut tx,
-                RawVals::new().set_cell("uom_id", Cell::Id(catalog.unit)),
-            )
-            .await
-            .unwrap_err();
+        let unit = super::write(
+            &mut tx,
+            &line,
+            RawVals::new().set_cell("uom_id", Cell::Id(catalog.unit)),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(unit.kind(), ErrorKind::Validation, "{unit:?}");
         assert!(
             unit.message().contains("product and unit can no longer change"),
