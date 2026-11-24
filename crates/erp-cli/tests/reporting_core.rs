@@ -1727,6 +1727,141 @@ fn json2_report_options_preserve_false_and_nested_nulls() {
     });
 }
 
+/// The form of a report line offers its expressions as an editable one2many (not a read-only
+/// list), and a report built only by the ORM writes those forms make (lines and expressions as
+/// nested commands) computes.
+#[test]
+fn line_form_offers_editable_expressions_and_a_form_built_report_computes() {
+    run(async {
+        let f = fixture().await;
+        let mut tx = f.orm.begin(f.admin).await.unwrap();
+        let env = tx.env().clone();
+        // the line opened from the menu shows its expressions as an editable one2many
+        let line_form = xmlid(&mut tx, "reporting", "reporting_report_line_main_form").await;
+        let views = erp_addon_web::metadata_test_support::test_get_views(
+            &env,
+            &mut tx,
+            "reporting.report.line",
+            vec![Value::list([Value::Int(line_form), Value::str("form")])],
+            32 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+        let described = erp_sdk::serde_json::to_value(views).unwrap();
+        let text = described.to_string();
+        let field = &described["fields"]["reporting.report.line"]["expression_ids"];
+        assert_eq!(field["type"], "one2many", "{field}");
+        assert_eq!(field["readonly"], false, "{field}");
+        assert!(text.contains("\"name\":\"expression_ids\""), "{text}");
+        assert!(text.contains("\"name\":\"report_id\""), "{text}");
+        // the expression form offers every field of an expression
+        let expression_form = xmlid(
+            &mut tx,
+            "reporting",
+            "reporting_report_expression_main_form",
+        )
+        .await;
+        let views = erp_addon_web::metadata_test_support::test_get_views(
+            &env,
+            &mut tx,
+            "reporting.report.expression",
+            vec![Value::list([
+                Value::Int(expression_form),
+                Value::str("form"),
+            ])],
+            32 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+        let described = erp_sdk::serde_json::to_value(views).unwrap().to_string();
+        for name in [
+            "line_id",
+            "label",
+            "engine",
+            "model",
+            "domain",
+            "field",
+            "formula",
+            "date_field",
+            "date_scope",
+            "zero_division",
+        ] {
+            assert!(
+                described.contains(&format!("\"name\":\"{name}\"")),
+                "{name} in {described}"
+            );
+        }
+        // both open from the menu as top-level records (a line inside its report's dialog shows
+        // its expressions read-only: the client never writes nested lines from a line)
+        for name in [
+            "action_reporting_report_line",
+            "action_reporting_report_expression",
+            "menu_reporting_report_line",
+            "menu_reporting_report_expression",
+        ] {
+            let found = tx
+                .query(
+                    "SELECT 1 FROM ir_model_data WHERE module = 'reporting' AND name = $1",
+                    &[&name],
+                )
+                .await
+                .unwrap();
+            assert_eq!(found.len(), 1, "{name}");
+        }
+        tx.rollback().await.unwrap();
+        drop(tx);
+
+        // a report built only through the writes the forms make
+        let mut tx = f.orm.begin(f.admin).await.unwrap();
+        let expression = RawVals::new()
+            .set_cell("label", Cell::Str("qty".into()))
+            .set_cell("model", Cell::Str("reporting_fixture.item".into()))
+            .set_cell("field", Cell::Str("qty".into()))
+            .set_cell("date_field", Cell::Str("day".into()))
+            .set_cell("date_scope", Cell::Str("from_beginning".into()));
+        let line = RawVals::new()
+            .set_cell("name", Cell::Str("Everything".into()))
+            .set_cell("code", Cell::Str("ALL".into()))
+            .set_commands("expression_ids", [Command::Create(expression)]);
+        let column = RawVals::new()
+            .set_cell("name", Cell::Str("Quantity".into()))
+            .set_cell("label", Cell::Str("qty".into()));
+        let report = tx
+            .env()
+            .records("reporting.report")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Built In The UI".into()))
+                        .set_commands("line_ids", [Command::Create(line)])
+                        .set_commands("column_ids", [Command::Create(column)]),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        tx.commit().await.unwrap();
+        let answer = lines(&f.orm, f.admin, &november(report)).await.unwrap();
+        // P1 x12 (78) + P2 (2) + P3 (7) + PX (100); the admin reads the restricted row too
+        assert_eq!(
+            cells(line_of(&answer, "ALL")),
+            [json!("187.00")],
+            "{answer}"
+        );
+    });
+}
+
+fn line_of<'a>(answer: &'a Json, code: &str) -> &'a Json {
+    answer["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["id"].as_str().is_some_and(|id| id.contains(code)))
+        .unwrap_or_else(|| panic!("no line {code} in {answer}"))
+}
+
 /// The form of a new report sends its new lines and columns as `[0, virtual, values]` commands
 /// whose translatable `name` is a plain string; the onchange must accept them.
 #[test]
