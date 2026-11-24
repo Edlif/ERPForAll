@@ -394,6 +394,8 @@ export class HumanApp {
       }
       if (!isForeign && this.restoringHistory === targetIndex) {
         this.restoringHistory = undefined;
+        // Back on the page's own entry after a step that failed: it gets the page's address, which a save on the way out may have changed.
+        history.replaceState({ erpIndex: targetIndex }, "", this.currentUrl);
         return;
       }
       this.restoringHistory = undefined;
@@ -4569,13 +4571,18 @@ export class HumanApp {
       if (returning) this.breadcrumbs.truncateTo(crumb.id);
       // A record opened from a form goes on top of that form, once: later renders (after a save) replace it. Only on the
       // form being left: a form crumb left over under a client screen or a service page is not that page.
-      const stacked = stack && !returning && this.breadcrumbs.current?.isFormView === true && this.pageCrumb() !== undefined;
+      const oneRecord = stack;
+      const stacked = oneRecord && !returning && this.breadcrumbs.current?.isFormView === true && this.pageCrumb() !== undefined;
       stack = false;
       if (stacked) this.breadcrumbs.push(crumb);
       else {
         if (this.breadcrumbs.items.length === 0 || this.breadcrumbs.current?.route.action !== route.action) {
           this.breadcrumbs.clear();
-          this.breadcrumbs.push({ id: crumbId(route), title: actionTitle, route: listRouteOf(route), url: routeUrl(listRouteOf(route)), isFormView: false });
+          // A one-record result that starts the trail gets the action's crumb only when that crumb opens a list (or another
+          // multi-record view), not a blank form.
+          if (!oneRecord || !availableViews || availableViews.some(([, type]) => type === "list") || availableViews[0]?.[1] !== "form") {
+            this.breadcrumbs.push({ id: crumbId(route), title: actionTitle, route: listRouteOf(route), url: routeUrl(listRouteOf(route)), isFormView: false });
+          }
         }
         if (this.breadcrumbs.current?.isFormView) this.breadcrumbs.replaceCurrent(crumb);
         else this.breadcrumbs.push(crumb);

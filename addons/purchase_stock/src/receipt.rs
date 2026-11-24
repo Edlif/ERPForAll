@@ -589,7 +589,7 @@ impl PurchaseOrderReceipt {
                 let state: &str = row.try_get(2).map_err(decode)?;
                 if state == "done" {
                     let picking: i64 = row.try_get(1).map_err(decode)?;
-                    return Err(Error::user(done_receipt(tx, picking).await?));
+                    return Err(Error::user(done_receipt(tx, orders.env(), picking).await?));
                 }
                 if state == "cancel" {
                     continue;
@@ -632,8 +632,9 @@ impl PurchaseOrderReceipt {
     }
 }
 
-/// The refusal of cancelling an order whose receipt `picking` is done, naming both.
-async fn done_receipt(tx: &mut Transaction, picking: i64) -> Result<String> {
+/// The refusal of cancelling an order whose receipt `picking` is done, naming the order and,
+/// when the caller may read it, the receipt.
+async fn done_receipt(tx: &mut Transaction, env: &Env, picking: i64) -> Result<String> {
     let rows = tx
         .query(
             "SELECT o.name, p.name FROM purchase_stock_receipt_link l \
@@ -647,9 +648,18 @@ async fn done_receipt(tx: &mut Transaction, picking: i64) -> Result<String> {
         .ok_or_else(|| Error::invariant(format!("receipt {picking} has no purchase order link")))?;
     let order: String = row.try_get(0).map_err(decode)?;
     let receipt: Option<String> = row.try_get(1).map_err(decode)?;
+    let readable = !env
+        .records("stock.picking")?
+        .browse([picking])?
+        .filtered_access(tx, Operation::Read)
+        .await?
+        .is_empty();
+    let named = match receipt {
+        Some(receipt) if readable => format!(" {receipt}"),
+        _ => String::new(),
+    };
     Ok(format!(
-        "The purchase order {order} cannot be cancelled: its receipt {} is done. Return the goods instead; the order keeps what was received.",
-        receipt.as_deref().unwrap_or("(no reference)")
+        "The purchase order {order} cannot be cancelled: its receipt{named} is done. Return the goods instead; the order keeps what was received."
     ))
 }
 

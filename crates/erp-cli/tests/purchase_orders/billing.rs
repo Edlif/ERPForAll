@@ -713,11 +713,194 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
         .await
         .unwrap();
         assert_eq!(billed(&mut tx, &received).await, d("0/0"));
-        // a cancelled order with a draft bill: nothing left to bill, the bill keeps its quantity
+        // a cancelled order takes its draft bill along: nothing billed, nothing left to bill
         act(&mut tx, &po, "button_cancel").await.unwrap();
-        assert_eq!(billed(&mut tx, &ordered).await, d("3/0"));
+        assert_eq!(billed(&mut tx, &ordered).await, d("0/0"));
         assert_eq!(billed(&mut tx, &received).await, d("0/0"));
         assert_eq!(status(&mut tx, &po).await, "no");
         tx.rollback().await.unwrap();
+    })
+}
+
+async fn bill_state(tx: &mut Transaction, bill: i64) -> String {
+    tx.query(
+        "SELECT state::text FROM account_move WHERE id = $1",
+        &[&bill],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+/// Cancelling a purchase order cancels its draft bills, also for a buyer without accounting
+/// rights, so nothing of a cancelled or redrafted order is posted afterwards; a posted bill
+/// refuses the cancel without naming a bill the buyer cannot read; the billed quantity is a floor
+/// a raise or an unchanged quantity may stay below.
+#[test]
+fn cancelled_purchases_take_their_draft_bills_along_and_keep_the_billed_floor() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install_modules(&db, &["purchase"]).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let company = xmlid(&mut tx, "base", "main_company").await;
+        let system = xmlid(&mut tx, "base", "group_system").await;
+        user(&mut tx, "cancel-bills-admin", &[system], &[company]).await;
+        let purchase = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        let buyer = user(&mut tx, "cancel-bills-buyer", &[purchase], &[company]).await;
+        bill_books::books(&mut tx, company).await;
+        let k = catalog(&mut tx, company).await;
+        let service = tx
+            .env()
+            .with_company(company)
+            .unwrap()
+            .records("product.product")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", text("Cleaning"))
+                        .set_cell("type", text("service"))
+                        .set_cell("uom_id", Cell::Id(k.unit)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let mut made = Vec::new();
+        for _ in 0..3 {
+            let po = order(
+                &mut tx,
+                &[company],
+                RawVals::new()
+                    .set_cell("partner_id", Cell::Id(k.vendor))
+                    .set_commands(
+                        "order_line",
+                        [Command::Create(
+                            line_vals(service)
+                                .set_cell("product_qty", Cell::Decimal(dec("2")))
+                                .set_cell("price_unit", Cell::Decimal(dec("10"))),
+                        )],
+                    ),
+            )
+            .await;
+            act(&mut tx, &po, "button_confirm").await.unwrap();
+            let bill = bill(&mut tx, &po, "action_create_vendor_bill").await;
+            bill_books::moves(&tx, company)
+                .browse([bill])
+                .unwrap()
+                .write(
+                    &mut tx,
+                    RawVals::new()
+                        .set_cell("invoice_date", Cell::Date(bill_books::d(2024, 6, 3)))
+                        .set_cell("date", Cell::Date(bill_books::d(2024, 6, 3))),
+                )
+                .await
+                .unwrap();
+            made.push((po.ids()[0], bill));
+        }
+        let [drafted, posted, redrafted] = <[(i64, i64); 3]>::try_from(made).unwrap();
+        // the redrafted order's bill holds more than was ordered
+        let po = orders(&tx, &[company]).browse([redrafted.0]).unwrap();
+        let line = lines_of(&mut tx, &[company], &po).await.remove(0);
+        let item = item_of(&mut tx, company, redrafted.1, &line).await;
+        set_quantity(&mut tx, &item, "5").await;
+        tx.commit().await.unwrap();
+        drop(tx);
+        bill_books::periods(&orm, company).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        bill_books::moves(&tx, company)
+            .browse([posted.1])
+            .unwrap()
+            .call::<(), ()>(&mut tx, "action_post", ())
+            .await
+            .unwrap();
+        let number: String = tx
+            .query("SELECT name FROM account_move WHERE id = $1", &[&posted.1])
+            .await
+            .unwrap()[0]
+            .get(0);
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let quantity =
+            |value: &str| RawVals::new().set_cell("product_qty", Cell::Decimal(dec(value)));
+        // a posted bill: refused, naming the order but not the bill; Cancel is hidden, also on an
+        // onchange snapshot of the order
+        let po = orders(&tx, &[company]).browse([posted.0]).unwrap();
+        let reference = name(&mut tx, &po).await;
+        let kept = act(&mut tx, &po, "button_cancel").await.unwrap_err();
+        assert_eq!(kept.kind(), ErrorKind::UserError, "{kept:?}");
+        assert!(
+            kept.message().contains(&format!(
+                "The purchase order {reference} cannot be cancelled: its vendor bill is posted"
+            )),
+            "{kept}"
+        );
+        assert!(!kept.message().contains(&number), "{kept}");
+        assert_eq!(cell(&mut tx, &po, "cancel_blocked").await, Cell::Bool(true));
+        let model = orders(&tx, &[company]);
+        let snapshot = tx
+            .new_record(&model, RawVals::new(), Some(po.rec_ids()[0]), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            cell(&mut tx, &snapshot, "cancel_blocked").await,
+            Cell::Bool(true),
+            "the snapshot of a blocked order"
+        );
+        // the billed floor: below it is refused with the quantities, the floor and above pass
+        let line = lines_of(&mut tx, &[company], &po).await.remove(0);
+        refused(
+            write(&mut tx, &line, quantity("1")).await,
+            ErrorKind::UserError,
+            &[
+                "cannot go below what was received or billed",
+                "2 billed",
+                "correct the bill",
+            ],
+        );
+        write(&mut tx, &line, quantity("2")).await.unwrap();
+        write(&mut tx, &line, quantity("3")).await.unwrap();
+        // billed above the order: a raise passes below the floor, a lower quantity does not
+        let po = orders(&tx, &[company]).browse([redrafted.0]).unwrap();
+        let line = lines_of(&mut tx, &[company], &po).await.remove(0);
+        write(&mut tx, &line, quantity("3")).await.unwrap();
+        refused(
+            write(&mut tx, &line, quantity("1")).await,
+            ErrorKind::UserError,
+            &["5 billed"],
+        );
+        // a draft bill is cancelled with its order; back to a request nothing is left to exceed
+        let po = orders(&tx, &[company]).browse([drafted.0]).unwrap();
+        act(&mut tx, &po, "button_cancel").await.unwrap();
+        assert_eq!(state(&mut tx, &po).await, "cancel");
+        assert_eq!(bill_state(&mut tx, drafted.1).await, "cancel");
+        act(&mut tx, &po, "button_draft").await.unwrap();
+        let line = lines_of(&mut tx, &[company], &po).await.remove(0);
+        write(&mut tx, &line, quantity("1")).await.unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        // posting is refused for a bill of a cancelled or redrafted order
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        tx.execute(
+            "UPDATE purchase_order SET state = 'draft' WHERE id = $1",
+            &[&redrafted.0],
+        )
+        .await
+        .unwrap();
+        for bill in [drafted.1, redrafted.1] {
+            let bills = bill_books::moves(&tx, company).browse([bill]).unwrap();
+            refused(
+                act(&mut tx, &bills, "action_post").await,
+                ErrorKind::UserError,
+                &["cancelled or back to a request for quotation, so it cannot be posted"],
+            );
+        }
+        assert_eq!(bill_state(&mut tx, redrafted.1).await, "draft");
+        tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
     })
 }

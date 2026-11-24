@@ -630,8 +630,9 @@ impl DirectSalesOrder {
         sup.call(tx, orders, ()).await
     }
 
-    /// The orders whose cancel step refuses: those of the base and those with a linked transfer
-    /// that is not cancelled.
+    /// The orders whose Cancel is hidden: those of the base and those with a done transfer, which
+    /// the order cannot undo. An open transfer leaves Cancel visible: the refusal of the cancel
+    /// step says to cancel the transfer first.
     #[method(override)]
     async fn _cancel_blocked(
         this: &RecordSet<SaleOrder>,
@@ -646,7 +647,7 @@ impl DirectSalesOrder {
             .query(
                 "SELECT DISTINCT l.order_id::int8 FROM sale_stock_delivery_link l \
                  JOIN stock_picking p ON p.id = l.picking_id \
-                 WHERE l.order_id = ANY($1) AND p.state IS DISTINCT FROM 'cancel'",
+                 WHERE l.order_id = ANY($1) AND p.state = 'done'",
                 &[&orders.ids()],
             )
             .await?

@@ -29,13 +29,18 @@ pub const NEW_NAME: &str = "New";
 /// sets the day the company-currency total converts at, which the approval question reads.
 pub const CONFIRMED_FIELDS: [&str; 4] = ["partner_id", "currency_id", "company_id", "date_order"];
 
-/// The posted vendor bills and refunds of the orders: order id, order number, bill number, the
-/// first per order first.
-const POSTED_BILLS: &str = "SELECT DISTINCT o.id::int8, o.name, m.name FROM purchase_direct_bill_line k \
+/// The posted vendor bills of the orders (a linked bill is always a vendor bill: the source guard
+/// of `direct_bill_integrity.rs`): order id, order number, bill number, bill id, the first per
+/// order first.
+const POSTED_BILLS: &str = "SELECT DISTINCT o.id::int8, o.name, m.name, m.id::int8 FROM purchase_direct_bill_line k \
     JOIN purchase_order o ON o.id = k.order_id \
     JOIN account_move m ON m.id = k.bill_id \
-    WHERE k.order_id = ANY($1) AND m.state = 'posted' \
-    AND m.move_type IN ('in_invoice', 'in_refund') ORDER BY 1, 3";
+    WHERE k.order_id = ANY($1) AND m.state = 'posted' ORDER BY 1, 3";
+
+/// The draft vendor bills of the orders.
+const DRAFT_BILLS: &str = "SELECT DISTINCT k.bill_id::int8 FROM purchase_direct_bill_line k \
+    JOIN account_move m ON m.id = k.bill_id \
+    WHERE k.order_id = ANY($1) AND m.state = 'draft' ORDER BY 1";
 
 /// Fields only the operations write (5).
 const OPERATION_FIELDS: [&str; 3] = ["state", "locked", "date_approve"];
@@ -588,26 +593,43 @@ impl PurchaseOrder {
             .await
     }
 
-    /// The cancel step: an order with a posted vendor bill or refund is refused by name, otherwise
-    /// the state is written. Bridges extend this step, never the action, so no extension runs
-    /// twice for one order (V9). The reference also refuses an order with a bill that is neither
-    /// a draft nor cancelled.
+    /// The cancel step: an order with a posted vendor bill is refused, otherwise its draft bills
+    /// are cancelled and the state is written. Bridges extend this step, never the action, so no
+    /// extension runs twice for one order (V9). The reference also refuses an order with a bill
+    /// that is neither a draft nor cancelled. The write right on the orders comes first: the
+    /// refusal describes their bills, and names one only when the caller may read it.
     #[method]
     async fn _action_cancel(this: &RecordSet<PurchaseOrder>, tx: &mut Transaction) -> Result<()> {
+        let records = this.as_records();
+        records.check_access(tx, Operation::Write).await?;
         tx.flush().await?;
-        if let Some(row) = tx
-            .query(POSTED_BILLS, &[&this.as_records().ids()])
-            .await?
-            .first()
-        {
+        if let Some(row) = tx.query(POSTED_BILLS, &[&records.ids()]).await?.first() {
             let order: String = row.try_get(1).map_err(db)?;
-            let bill: Option<String> = row.try_get(2).map_err(db)?;
+            let number: Option<String> = row.try_get(2).map_err(db)?;
+            let bill: i64 = row.try_get(3).map_err(db)?;
+            let readable = !records
+                .env()
+                .records("account.move")?
+                .browse([bill])?
+                .filtered_access(tx, Operation::Read)
+                .await?
+                .is_empty();
+            let named = match number {
+                Some(number) if readable => format!(" {number}"),
+                _ => String::new(),
+            };
             return Err(Error::user(format!(
-                "The purchase order {order} cannot be cancelled: its vendor bill {} is posted. Correct the bill with a refund; the order keeps what was billed.",
-                bill.as_deref().unwrap_or("(no number)")
+                "The purchase order {order} cannot be cancelled: its vendor bill{named} is posted, and a posted bill stays on its order. Correct the bill with a refund instead."
             )));
         }
-        this.as_records()
+        let drafts: Vec<i64> = tx
+            .query(DRAFT_BILLS, &[&records.ids()])
+            .await?
+            .iter()
+            .map(|row| row.try_get(0).map_err(db))
+            .collect::<Result<_>>()?;
+        erp_addon_account::moves::cancel_document_drafts(tx, records.env(), &drafts).await?;
+        records
             .write_base(
                 tx,
                 RawVals::new().set_cell("state", Cell::Str("cancel".into())),
@@ -639,18 +661,15 @@ impl PurchaseOrder {
         out: &mut Assign<'_, PurchaseOrder>,
     ) -> Result<()> {
         let records = this.as_records();
-        let stored: Vec<i64> = records
-            .rec_ids()
-            .iter()
-            .filter_map(|id| id.as_real().map(|id| id.get()))
-            .collect();
+        // an onchange snapshot is a new record whose origin is the stored order
+        let row = |id: &RecId| id.as_real().or(id.origin()).map(|id| id.get());
         let blocked: Records = records
-            .browse(stored)?
+            .browse(records.rec_ids().iter().filter_map(row))?
             .call(tx, "_cancel_blocked", ())
             .await?;
         let blocked: BTreeSet<i64> = blocked.ids().into_iter().collect();
         for (index, id) in records.rec_ids().iter().enumerate() {
-            let held = id.as_real().is_some_and(|id| blocked.contains(&id.get()));
+            let held = row(id).is_some_and(|id| blocked.contains(&id));
             out.set(index, PurchaseOrder::CANCEL_BLOCKED, held)?;
         }
         Ok(())
