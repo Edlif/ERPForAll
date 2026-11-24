@@ -13,8 +13,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use erp_modules::{AddonIndex, InitOptions, ModuleName, ModuleSystem};
 use erp_fields::{Cell, RecId};
+use erp_modules::{AddonIndex, InitOptions, ModuleName, ModuleSystem};
 use erp_orm::{Command, Context, Orm, RawVals, SUPERUSER_ID};
 use erp_sdk::expr::ExprValue;
 use erp_testkit::{TemplateDb, TestDb};
