@@ -53,6 +53,10 @@ fn decode(error: impl std::error::Error + Send + Sync + 'static) -> Error {
 #[derive(Default)]
 pub(crate) struct OwnWrite(pub(crate) bool);
 
+/// Set while a batch action writes `batch_id` of transfers.
+#[derive(Default)]
+pub(crate) struct LinkWrite(pub(crate) bool);
+
 /// `stock.picking.batch`: transfers processed together.
 #[model(
     name = "stock.picking.batch",
@@ -339,7 +343,7 @@ fn guard_own_fields(vals: &RawVals) -> Result<()> {
 /// # Errors
 /// `Validation` outside a batch action.
 pub(crate) fn refuse_link(tx: &mut Transaction) -> Result<()> {
-    if tx.extension::<OwnWrite>().0 {
+    if tx.extension::<LinkWrite>().0 {
         Ok(())
     } else {
         Err(Error::validation(
@@ -348,17 +352,12 @@ pub(crate) fn refuse_link(tx: &mut Transaction) -> Result<()> {
     }
 }
 
-/// Write while the flag of the batch actions is set.
-async fn with_flag(records: &Records, tx: &mut Transaction, vals: RawVals) -> Result<()> {
+/// Write the fields only a batch action sets.
+async fn write_own(records: &Records, tx: &mut Transaction, vals: RawVals) -> Result<()> {
     let previous = std::mem::replace(&mut tx.extension::<OwnWrite>().0, true);
     let written = records.write(tx, vals).await;
     tx.extension::<OwnWrite>().0 = previous;
     written
-}
-
-/// Write the fields only a batch action sets.
-async fn write_own(records: &Records, tx: &mut Transaction, vals: RawVals) -> Result<()> {
-    with_flag(records, tx, vals).await
 }
 
 /// Join (`Some`) or leave (`None`) a batch.
@@ -370,7 +369,12 @@ async fn link(
 ) -> Result<()> {
     let value = batch.map_or(Cell::Null, Cell::Id);
     let records = env.records("stock.picking")?.browse(pickings)?;
-    with_flag(&records, tx, RawVals::new().set_cell("batch_id", value)).await
+    let previous = std::mem::replace(&mut tx.extension::<LinkWrite>().0, true);
+    let written = records
+        .write(tx, RawVals::new().set_cell("batch_id", value))
+        .await;
+    tx.extension::<LinkWrite>().0 = previous;
+    written
 }
 
 struct Header {
@@ -616,6 +620,7 @@ impl StockPickingBatch {
         sup: Super,
     ) -> Result<Records> {
         let records = this.as_records();
+        require_group(records.env(), tx).await?;
         records.check_access(tx, Operation::Create).await?;
         let env = records.env().clone();
         for vals in &mut vals_list {
@@ -661,6 +666,7 @@ impl StockPickingBatch {
         sup: Super,
     ) -> Result<()> {
         if !tx.extension::<OwnWrite>().0 {
+            require_group(this.as_records().env(), tx).await?;
             guard_own_fields(&vals)?;
             if names(&vals, "picking_ids") {
                 return Err(Error::validation(
@@ -675,6 +681,12 @@ impl StockPickingBatch {
             {
                 records.check_access(tx, Operation::Write).await?;
                 tx.flush().await?;
+                // the batch rows are locked first: a concurrent add waits for this write
+                tx.query(
+                    "SELECT 1 FROM stock_picking_batch WHERE id = ANY($1) ORDER BY id FOR UPDATE",
+                    &[&records.ids()],
+                )
+                .await?;
                 let used = tx
                     .query(
                         "SELECT 1 FROM stock_picking WHERE batch_id = ANY($1) LIMIT 1",
@@ -703,6 +715,7 @@ impl StockPickingBatch {
         if records.is_empty() {
             return sup.call(tx, records, ()).await;
         }
+        require_group(records.env(), tx).await?;
         records.check_access(tx, Operation::Unlink).await?;
         tx.flush().await?;
         let ids = records.ids();
@@ -997,11 +1010,20 @@ impl StockPickingBatch {
             let has_quantity: bool = row.try_get(1).map_err(decode)?;
             let record = pickings.browse([picking])?;
             let (outcome, message) = if !has_quantity {
-                link(&env, tx, vec![picking], None).await?;
-                (
-                    "detached",
-                    "No quantity is reserved: the transfer left the batch.".to_owned(),
-                )
+                let env = env.clone();
+                let detached = tx
+                    .savepoint(async move |tx| link(&env, tx, vec![picking], None).await)
+                    .await;
+                match detached {
+                    Ok(()) => (
+                        "detached",
+                        "No quantity is reserved: the transfer left the batch.".to_owned(),
+                    ),
+                    Err(error) if is_user_facing(error.kind()) => {
+                        ("error", bounded(error.message()))
+                    }
+                    Err(error) => return Err(error),
+                }
             } else {
                 let validated = tx
                     .savepoint(async move |tx| {
@@ -1095,6 +1117,7 @@ impl StockPickingToBatch {
         let records = this.as_records();
         let id = records.ensure_one()?.int()?;
         require_group(records.env(), tx).await?;
+        records.check_access(tx, Operation::Read).await?;
         tx.flush().await?;
         let ids: Vec<i64> = tx
             .query(
@@ -1110,6 +1133,11 @@ impl StockPickingToBatch {
             return Err(Error::user("Select at least one transfer to add."));
         }
         let env = records.env().clone();
+        // the caller may change the chosen transfers before anything else of them is read
+        env.records("stock.picking")?
+            .browse(ids.clone())?
+            .check_access(tx, Operation::Write)
+            .await?;
         let rows = tx
             .query(
                 "SELECT mode, batch_id, is_create_draft FROM stock_picking_to_batch WHERE id = $1",

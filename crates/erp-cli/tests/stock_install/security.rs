@@ -301,60 +301,290 @@ fn stock_security_installed_role_matrix_and_model_coverage() {
     });
 }
 
-/// The batch actions need the batch feature group: an Inventory operator without it is refused by name,
-/// and the same operator with it is let through.
+async fn set_groups(orm: &Orm, user: i64, command: Command) {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    tx.env()
+        .records("res.users")
+        .unwrap()
+        .browse([user])
+        .unwrap()
+        .write(&mut tx, RawVals::new().set_commands("group_ids", [command]))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+fn batch_group_refusal(error: &erp_sdk::Error, what: &str) {
+    assert_eq!(error.kind(), ErrorKind::Access, "{what}: {error:?}");
+    assert!(
+        error.message().contains("Batch transfers are not turned on"),
+        "{what}: {}",
+        error.message()
+    );
+}
+
+/// Batch transfers through the compiled policy. An Inventory user with the batch group adds
+/// transfers, confirms and validates, and the job step finishes it even after the user lost the group;
+/// the result rows are written by the job, not by the user. A user without the group is refused by
+/// name in every batch action, in create, in write and in delete.
 #[test]
-fn stock_batch_actions_need_the_batch_group() {
+fn stock_batch_flow_and_group_run_under_the_compiled_policy() {
     run(async {
         let db = TestDb::builder().pool_size(8).create().await.unwrap();
         let installed = install(&db).await;
         let users = roles(&installed).await;
-        let group = xid(&installed, "stock", "group_stock_picking_batch").await;
-        for granted in [false, true] {
-            if granted {
-                let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
-                tx.env()
-                    .records("res.users")
-                    .unwrap()
-                    .browse([users[2]])
-                    .unwrap()
-                    .write(
-                        &mut tx,
-                        RawVals::new().set_commands(
-                            "group_ids",
-                            [Command::link(RecId::from_real(group).unwrap())],
-                        ),
-                    )
-                    .await
-                    .unwrap();
-                tx.commit().await.unwrap();
-            }
-            let orm = secure(&db, &installed).await;
-            let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
-            let batch = tx
-                .env()
-                .records("stock.picking.batch")
-                .unwrap()
-                .browse([1])
-                .unwrap();
-            let result = batch
-                .call::<(), erp_sdk::Value>(&mut tx, "action_add_transfers", ())
-                .await;
-            if granted {
-                result.unwrap();
-            } else {
-                let error = result.unwrap_err();
-                assert_eq!(error.kind(), ErrorKind::Access, "{error:?}");
-                assert!(
-                    error
-                        .message()
-                        .contains("Batch transfers are not turned on"),
-                    "{}",
-                    error.message()
-                );
-            }
-            tx.rollback().await.unwrap();
+        let company = xid(&installed, "base", "main_company").await;
+        let stock_user = xid(&installed, "stock", "group_stock_user").await;
+        let batch_group = xid(&installed, "stock", "group_stock_picking_batch").await;
+        let group_id = |id: i64| RecId::from_real(id).unwrap();
+
+        // setup as the system: a receipt type, two ready receipts and a user with the batch group
+        let mut setup = installed.begin(SUPERUSER_ID).await.unwrap();
+        let template = create(
+            &mut setup,
+            "product.template",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Batch widget".into()))
+                .set_cell("is_storable", Cell::Bool(true)),
+        )
+        .await;
+        let product: i64 = setup
+            .query("SELECT id FROM product_product WHERE product_tmpl_id = $1", &[&template])
+            .await
+            .unwrap()[0]
+            .get(0);
+        let vendor = create(
+            &mut setup,
+            "stock.location",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Batch vendor".into()))
+                .set_cell("usage", Cell::Str("supplier".into())),
+        )
+        .await;
+        let shelf = create(
+            &mut setup,
+            "stock.location",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Batch shelf".into()))
+                .set_cell("usage", Cell::Str("internal".into())),
+        )
+        .await;
+        let kind = create(
+            &mut setup,
+            "stock.picking.type",
+            RawVals::new()
+                .set_cell("name", Cell::Str("Batch receipts".into()))
+                .set_cell("code", Cell::Str("incoming".into()))
+                .set_cell("company_id", Cell::Id(company))
+                .set_cell("sequence_code", Cell::Str("BREC/".into()))
+                .set_cell("default_location_src_id", Cell::Id(vendor))
+                .set_cell("default_location_dest_id", Cell::Id(shelf)),
+        )
+        .await;
+        let mut receipts = Vec::new();
+        for n in 0..2 {
+            let picking = create(
+                &mut setup,
+                "stock.picking",
+                RawVals::new()
+                    .set_cell("name", Cell::Str(format!("BREC-{n}").into()))
+                    .set_cell("company_id", Cell::Id(company))
+                    .set_cell("picking_type_id", Cell::Id(kind))
+                    .set_cell("location_id", Cell::Id(vendor))
+                    .set_cell("location_dest_id", Cell::Id(shelf)),
+            )
+            .await;
+            create(
+                &mut setup,
+                "stock.move",
+                RawVals::new()
+                    .set_cell("company_id", Cell::Id(company))
+                    .set_cell("product_id", Cell::Id(product))
+                    .set_cell("location_id", Cell::Id(vendor))
+                    .set_cell("location_dest_id", Cell::Id(shelf))
+                    .set_cell("product_uom_qty", Cell::Decimal(Decimal::ONE))
+                    .set_cell("picking_id", Cell::Id(picking)),
+            )
+            .await;
+            let records = setup.env().records("stock.picking").unwrap().browse([picking]).unwrap();
+            records.call::<(), ()>(&mut setup, "action_confirm", ()).await.unwrap();
+            records.call::<(), ()>(&mut setup, "action_assign", ()).await.unwrap();
+            receipts.push(picking);
         }
+        let grouped = user(&mut setup, "batch-user", company, stock_user).await;
+        setup.install_audit_schema().await.ok();
+        setup.commit().await.unwrap();
+        set_groups(&installed, grouped, Command::link(group_id(batch_group))).await;
+
+        // the user with the group: create, add through the dialog, confirm, validate
+        let orm = secure(&db, &installed).await;
+        let mut tx = orm.begin(UserId::new(grouped).unwrap()).await.unwrap();
+        let batch = tx
+            .env()
+            .records("stock.picking.batch")
+            .unwrap()
+            .create(&mut tx, vec![RawVals::new().set_cell("description", Cell::Str("Dock".into()))])
+            .await
+            .unwrap()
+            .ids()[0];
+        let dialog = tx
+            .env()
+            .records("stock.picking.to.batch")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("mode", Cell::Str("existing".into()))
+                        .set_cell("batch_id", Cell::Id(batch))
+                        .set_commands(
+                            "picking_ids",
+                            [Command::set(receipts.iter().map(|id| group_id(*id)))],
+                        ),
+                ],
+            )
+            .await
+            .unwrap();
+        dialog
+            .call::<(), erp_sdk::Value>(&mut tx, "action_add_to_batch", ())
+            .await
+            .unwrap();
+        let batches = tx.env().records("stock.picking.batch").unwrap().browse([batch]).unwrap();
+        batches.call::<(), ()>(&mut tx, "action_confirm", ()).await.unwrap();
+        batches.call::<(), ()>(&mut tx, "action_done", ()).await.unwrap();
+        // a result row is never written by the user
+        let error = tx
+            .env()
+            .records("stock.picking.batch.result")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("batch_id", Cell::Id(batch))
+                        .set_cell("picking_id", Cell::Id(receipts[0]))
+                        .set_cell("company_id", Cell::Id(company))
+                        .set_cell("run", Cell::Int(2))
+                        .set_cell("outcome", Cell::Str("done".into())),
+                ],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Access, "{error:?}");
+        tx.commit().await.unwrap();
+
+        // the user loses the group before the job runs: the queued job still finishes as that user
+        set_groups(&installed, grouped, Command::unlink(group_id(batch_group))).await;
+        let orm = secure(&db, &installed).await;
+        let payload: String = {
+            let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+            let rows = tx
+                .query(
+                    "SELECT payload::text FROM erp_job WHERE kind = 'stock.batch_validate' AND state <> 'dead'",
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            rows[0].get(0)
+        };
+        let mut tx = orm.begin(UserId::new(grouped).unwrap()).await.unwrap();
+        let args = erp_sdk::jobs::StepArgs {
+            payload: erp_sdk::serde_json::from_str(&payload).unwrap(),
+            progress: None,
+            attempt: 1,
+        };
+        let outcome = tx
+            .env()
+            .records("stock.picking.batch")
+            .unwrap()
+            .call::<(erp_sdk::jobs::StepArgs,), erp_sdk::jobs::StepOutcome>(&mut tx, "run_validate_step", (args,))
+            .await
+            .unwrap();
+        assert!(outcome.finished);
+        tx.commit().await.unwrap();
+        let mut check = installed.begin(SUPERUSER_ID).await.unwrap();
+        let results: Vec<String> = check
+            .query(
+                "SELECT outcome FROM stock_picking_batch_result WHERE batch_id = $1 AND run = 1 ORDER BY picking_id",
+                &[&batch],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        assert_eq!(results, ["done", "done"]);
+        let state: String = check
+            .query("SELECT state FROM stock_picking_batch WHERE id = $1", &[&batch])
+            .await
+            .unwrap()[0]
+            .get(0);
+        assert_eq!(state, "done");
+        check.rollback().await.unwrap();
+
+        // an Inventory operator without the group is refused everywhere, by name
+        let mut tx = orm.begin(UserId::new(users[2]).unwrap()).await.unwrap();
+        let batches = tx.env().records("stock.picking.batch").unwrap().browse([batch]).unwrap();
+        for method in ["action_confirm", "action_assign", "action_cancel", "action_done"] {
+            let error = tx
+                .savepoint({
+                    let records = batches.clone();
+                    async move |tx| records.call::<(), ()>(tx, method, ()).await
+                })
+                .await
+                .unwrap_err();
+            batch_group_refusal(&error, method);
+        }
+        let error = batches
+            .call::<(), erp_sdk::Value>(&mut tx, "action_add_transfers", ())
+            .await
+            .unwrap_err();
+        batch_group_refusal(&error, "action_add_transfers");
+        let error = tx
+            .env()
+            .records("stock.picking")
+            .unwrap()
+            .browse([receipts[0]])
+            .unwrap()
+            .call::<(), erp_sdk::Value>(&mut tx, "action_add_to_batch", ())
+            .await
+            .unwrap_err();
+        batch_group_refusal(&error, "transfer button");
+        let dialog = tx
+            .env()
+            .records("stock.picking.to.batch")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_commands(
+                    "picking_ids",
+                    [Command::set([group_id(receipts[0])])],
+                )],
+            )
+            .await
+            .unwrap();
+        let error = dialog
+            .call::<(), erp_sdk::Value>(&mut tx, "action_add_to_batch", ())
+            .await
+            .unwrap_err();
+        batch_group_refusal(&error, "dialog");
+        let error = tx
+            .env()
+            .records("stock.picking.batch")
+            .unwrap()
+            .create(&mut tx, vec![RawVals::new().set_cell("description", Cell::Str("No".into()))])
+            .await
+            .unwrap_err();
+        batch_group_refusal(&error, "create");
+        let error = batches
+            .write(&mut tx, RawVals::new().set_cell("description", Cell::Str("No".into())))
+            .await
+            .unwrap_err();
+        batch_group_refusal(&error, "write");
+        let error = batches.unlink(&mut tx).await.unwrap_err();
+        batch_group_refusal(&error, "unlink");
+        tx.rollback().await.unwrap();
         db.cleanup().await.unwrap();
     });
 }
