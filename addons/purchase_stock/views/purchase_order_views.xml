@@ -22,4 +22,30 @@
       </xpath>
     </field>
   </record>
+  <record id="view_order_form_receipt_button" model="ir.ui.view">
+    <field name="name">purchase.order.form.receipt.button</field>
+    <field name="model">purchase.order</field>
+    <field name="inherit_id" ref="purchase.purchase_order_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button name="action_view_receipt" type="object" class="oe_stat_button" invisible="receipt_count == 0">
+          <field name="receipt_count" widget="statinfo" string="Receipt"/>
+        </button>
+      </xpath>
+    </field>
+  </record>
+  <record id="view_picking_form_purchase_order_button" model="ir.ui.view">
+    <field name="name">stock.picking.form.purchase.order.button</field>
+    <field name="model">stock.picking</field>
+    <field name="inherit_id" ref="stock.view_picking_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//div[hasclass('oe_title')]" position="before">
+        <div class="oe_button_box" name="button_box_purchase">
+          <button name="action_view_purchase_order" type="object" class="oe_stat_button" invisible="purchase_order_count == 0">
+            <field name="purchase_order_count" widget="statinfo" string="Purchase Order"/>
+          </button>
+        </div>
+      </xpath>
+    </field>
+  </record>
 </erp>

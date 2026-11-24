@@ -8,8 +8,10 @@ erp_sdk::addon!(
 );
 
 mod bill_buttons;
+pub use bill_buttons::{counts, flat, readable_links, window};
 mod bill_history;
 mod bill_source_review;
+pub mod billing;
 mod direct_bill;
 mod direct_bill_integrity;
 pub mod line;

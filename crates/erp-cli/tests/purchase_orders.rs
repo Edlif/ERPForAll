@@ -34,6 +34,8 @@ mod remainder;
 
 #[path = "purchase_orders/bill_snapshot.rs"]
 mod bill_snapshot;
+#[path = "purchase_orders/billing.rs"]
+mod billing;
 
 #[path = "purchase_orders/replenish.rs"]
 mod replenish;
