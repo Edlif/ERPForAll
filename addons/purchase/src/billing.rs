@@ -93,15 +93,42 @@ impl PurchaseBillControl {
     }
 }
 
+/// Write the pending values the SQL below reads (an item quantity edited in this transaction, a
+/// new link), without flushing unrelated compute graphs.
+async fn flush_bill_inputs(tx: &mut Transaction, env: &Env) -> Result<()> {
+    for (model, names) in [
+        ("purchase.direct.bill.line", &["purchase_line_id", "order_id", "bill_id", "bill_line_id"][..]),
+        ("account.move.line", &["quantity", "display_type", "move_id"][..]),
+        ("account.move", &["state", "move_type"][..]),
+    ] {
+        let records = env.records(model)?;
+        let fields = names
+            .iter()
+            .map(|name| {
+                records.spec().field(name).map(|field| field.id).ok_or_else(|| {
+                    Error::programming(format!("The billed quantity reads {model}.{name}."))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        tx.flush_fields(records.model_id(), &fields).await?;
+    }
+    Ok(())
+}
+
 /// The signed quantity of the draft and posted vendor bill items linked to each of `lines`:
 /// bills add, vendor credit notes subtract, cancelled documents and removed items count nothing.
 /// A linked item keeps the line's product and unit (the bill integrity checks), so the sum is in
 /// the line's unit.
-async fn billed_quantities(tx: &mut Transaction, lines: &[i64]) -> Result<BTreeMap<i64, Decimal>> {
+async fn billed_quantities(
+    tx: &mut Transaction,
+    env: &Env,
+    lines: &[i64],
+) -> Result<BTreeMap<i64, Decimal>> {
     let mut billed = BTreeMap::new();
     if lines.is_empty() {
         return Ok(billed);
     }
+    flush_bill_inputs(tx, env).await?;
     let rows = tx
         .query(
             "SELECT s.purchase_line_id, SUM(CASE m.move_type WHEN 'in_invoice' THEN i.quantity
@@ -161,7 +188,8 @@ impl PurchaseOrderLine {
         out: &mut Assign<'_, PurchaseOrderLine>,
     ) -> Result<()> {
         let rec_ids = this.as_records().rec_ids().to_vec();
-        let billed = billed_quantities(tx, &real_ids(&rec_ids)).await?;
+        let env = this.env().clone();
+        let billed = billed_quantities(tx, &env, &real_ids(&rec_ids)).await?;
         for (index, id) in rec_ids.iter().enumerate() {
             let quantity = id
                 .as_real()
@@ -252,6 +280,8 @@ impl PurchaseOrder {
         let orders = real_ids(this.as_records().rec_ids());
         let mut billed = BTreeSet::new();
         if !orders.is_empty() {
+            let env = this.env().clone();
+            flush_bill_inputs(tx, &env).await?;
             for row in tx
                 .query(
                     "SELECT DISTINCT order_id FROM purchase_direct_bill_line

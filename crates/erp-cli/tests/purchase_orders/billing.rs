@@ -456,6 +456,24 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
         )
         .await
         .unwrap();
+        // a product created after the change takes the new default
+        let gasket = tx
+            .env()
+            .with_company(company)
+            .unwrap()
+            .records("product.product")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", text("Gasket"))
+                        .set_cell("uom_id", Cell::Id(k.unit)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
         tx.commit().await.unwrap();
         drop(tx);
 
@@ -466,17 +484,7 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
             .unwrap()
             .records("product.product")
             .unwrap();
-        let gasket = products
-            .create(
-                &mut tx,
-                vec![
-                    RawVals::new()
-                        .set_cell("name", text("Gasket"))
-                        .set_cell("uom_id", Cell::Id(k.unit)),
-                ],
-            )
-            .await
-            .unwrap();
+        let gasket = products.browse([gasket]).unwrap();
         assert_eq!(
             cell(&mut tx, &gasket, "purchase_method").await,
             text("purchase")
