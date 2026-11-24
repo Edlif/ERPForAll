@@ -7,19 +7,28 @@
 
 use std::collections::BTreeSet;
 
+use erp_sdk::Operation;
 use erp_sdk::prelude::*;
 
 use crate::order::{Header, SaleOrder, headers};
 
 /// The posted customer invoices and credit notes of the orders: order id, order number, invoice
-/// number, the first per order first.
-const POSTED_INVOICES: &str = "SELECT DISTINCT o.id::int8, o.name, m.name FROM sale_invoice_item k \
+/// number, invoice id, the first per order first.
+const POSTED_INVOICES: &str = "SELECT DISTINCT o.id::int8, o.name, m.name, m.id::int8 FROM sale_invoice_item k \
     JOIN sale_order_line s ON s.id = k.sale_line_id \
     JOIN sale_order o ON o.id = s.order_id \
     JOIN account_move_line l ON l.id = k.invoice_item_id \
     JOIN account_move m ON m.id = l.move_id \
     WHERE s.order_id = ANY($1) AND m.state = 'posted' \
     AND m.move_type IN ('out_invoice', 'out_refund') ORDER BY 1, 3";
+
+/// The draft customer invoices and credit notes of the orders.
+const DRAFT_INVOICES: &str = "SELECT DISTINCT l.move_id::int8 FROM sale_invoice_item k \
+    JOIN sale_order_line s ON s.id = k.sale_line_id \
+    JOIN account_move_line l ON l.id = k.invoice_item_id \
+    JOIN account_move m ON m.id = l.move_id \
+    WHERE s.order_id = ANY($1) AND m.state = 'draft' \
+    AND m.move_type IN ('out_invoice', 'out_refund') ORDER BY 1";
 
 fn decode(error: impl std::error::Error + Send + Sync + 'static) -> Error {
     Error::db("Reading the invoices of a sales order failed.").with_source(error)
@@ -244,12 +253,15 @@ impl SaleOrder {
         }
     }
 
-    /// The cancel step: in the base, an order with a posted invoice or credit note is refused
-    /// by name, otherwise the state becomes `cancel`. Stricter than the reference, which cancels
-    /// the order and leaves the posted invoice: what was invoiced stays recorded on the order.
+    /// The cancel step: in the base, an order with a posted invoice or credit note is refused,
+    /// otherwise its draft invoices and credit notes are cancelled and the state becomes `cancel`.
+    /// Stricter than the reference, which cancels the order and leaves the posted invoice: what
+    /// was invoiced stays recorded on the order. The write right on the orders comes first: the
+    /// refusal describes their invoices, and names one only when the caller may read it.
     #[method]
     async fn _action_cancel(this: &RecordSet<SaleOrder>, tx: &mut Transaction) -> Result<()> {
         let records = this.as_records();
+        records.check_access(tx, Operation::Write).await?;
         tx.flush().await?;
         if let Some(row) = tx
             .query(POSTED_INVOICES, &[&stored(records)])
@@ -257,12 +269,30 @@ impl SaleOrder {
             .first()
         {
             let order: String = row.try_get(1).map_err(decode)?;
-            let invoice: Option<String> = row.try_get(2).map_err(decode)?;
+            let number: Option<String> = row.try_get(2).map_err(decode)?;
+            let invoice: i64 = row.try_get(3).map_err(decode)?;
+            let readable = !records
+                .env()
+                .records("account.move")?
+                .browse([invoice])?
+                .filtered_access(tx, Operation::Read)
+                .await?
+                .is_empty();
+            let named = match number {
+                Some(number) if readable => format!(" {number}"),
+                _ => String::new(),
+            };
             return Err(Error::user(format!(
-                "The sales order {order} cannot be cancelled: its invoice {} is posted. Correct the invoice with a credit note; the order keeps what was invoiced.",
-                invoice.as_deref().unwrap_or("(no number)")
+                "The sales order {order} cannot be cancelled: its invoice{named} is posted, and a posted invoice stays on its order. Correct the invoice with a credit note instead."
             )));
         }
+        let drafts: Vec<i64> = tx
+            .query(DRAFT_INVOICES, &[&stored(records)])
+            .await?
+            .iter()
+            .map(|row| row.try_get(0).map_err(decode))
+            .collect::<Result<_>>()?;
+        erp_addon_account::moves::cancel_document_drafts(tx, records.env(), &drafts).await?;
         records.write_base(tx, state("cancel")).await
     }
 
@@ -287,11 +317,13 @@ impl SaleOrder {
         out: &mut Assign<'_, SaleOrder>,
     ) -> Result<()> {
         let records = this.as_records();
-        let stored = records.browse(stored(records))?;
+        // an onchange snapshot is a new record whose origin is the stored order
+        let row = |id: &RecId| id.as_real().or(id.origin()).map(|id| id.get());
+        let stored = records.browse(records.rec_ids().iter().filter_map(row))?;
         let blocked: Records = stored.call(tx, "_cancel_blocked", ()).await?;
         let blocked: BTreeSet<i64> = blocked.ids().into_iter().collect();
         for (index, id) in records.rec_ids().iter().enumerate() {
-            let held = id.as_real().is_some_and(|id| blocked.contains(&id.get()));
+            let held = row(id).is_some_and(|id| blocked.contains(&id));
             out.set(index, SaleOrder::CANCEL_BLOCKED, held)?;
         }
         Ok(())

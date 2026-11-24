@@ -1085,6 +1085,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "deletes association records only for the authorized accounting items or headers being deleted; accounting enforces its draft and deletion policies in the same savepoint, rolling back the private deletion on refusal",
     ),
     (
+        "account/moves/post.rs::cancel_document_drafts",
+        1,
+        "cancels, through the ordinary cancel of draft entries (which refuses any entry no longer a draft), only the draft invoices or bills linked to a sales or purchase order whose cancel step already checked the caller's write right on that order; elevated only for a caller without accounting rights, so a sales or purchase user can cancel an order whose invoices are drafts; returns nothing",
+    ),
+    (
         "base/report_settings.rs::barcode_grid",
         1,
         "reads the one declared global base.report_barcode_dpi setting for the renderer and returns the validated module grid",

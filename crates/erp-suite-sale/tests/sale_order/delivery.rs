@@ -1527,7 +1527,7 @@ async fn cancel_blocked(tx: &mut Transaction, order: &Records) -> bool {
 }
 
 /// A delivered line keeps its product and unit and does not go below what was delivered; the
-/// order with a delivery shows Cancel blocked and refuses it. A posted invoice blocks Cancel by
+/// order with a done delivery shows Cancel blocked and refuses it. A posted invoice blocks Cancel by
 /// name and keeps the invoiced quantity; a draft invoice blocks nothing.
 #[test]
 fn delivered_and_invoiced_sales_keep_what_happened_downstream() {
@@ -1571,8 +1571,8 @@ fn delivered_and_invoiced_sales_keep_what_happened_downstream() {
             .await
             .unwrap();
         assert!(
-            cancel_blocked(&mut tx, &order).await,
-            "an open delivery blocks Cancel"
+            !cancel_blocked(&mut tx, &order).await,
+            "an open delivery leaves Cancel to the server's refusal"
         );
         let picking_id: i64 = tx
             .query(
@@ -1708,6 +1708,21 @@ fn delivered_and_invoiced_sales_keep_what_happened_downstream() {
             .await
             .unwrap();
         assert!(cancel_blocked(&mut tx, &billed).await);
+        // an onchange snapshot of the order is a new record whose origin is the order
+        let snapshot = tx
+            .new_record(
+                &env.records("sale.order").unwrap(),
+                RawVals::new(),
+                Some(billed.rec_ids()[0]),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot.cell(&mut tx, "cancel_blocked").await.unwrap(),
+            Cell::Bool(true),
+            "the snapshot of a blocked order"
+        );
         let posted = billed
             .call::<(), ()>(&mut tx, "action_cancel", ())
             .await
@@ -1734,6 +1749,268 @@ fn delivered_and_invoiced_sales_keep_what_happened_downstream() {
                 .contains("cannot go below what was delivered or invoiced"),
             "{below_invoiced}"
         );
+        assert!(
+            below_invoiced.message().contains("3 invoiced")
+                && below_invoiced.message().contains("credit"),
+            "{below_invoiced}"
+        );
+        // the floor itself and a raise pass
+        for quantity in [3, 4] {
+            write(
+                &mut tx,
+                &billed_line,
+                RawVals::new().set_cell("product_uom_qty", Cell::Decimal(Decimal::from(quantity))),
+            )
+            .await
+            .unwrap();
+        }
+        tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// The move ids of the invoices made from the sales order line `line`.
+async fn invoice_of(tx: &mut Transaction, line: i64) -> i64 {
+    tx.query(
+        "SELECT DISTINCT l.move_id::int8 FROM sale_invoice_item k \
+         JOIN account_move_line l ON l.id = k.invoice_item_id WHERE k.sale_line_id = $1",
+        &[&line],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+async fn move_state(tx: &mut Transaction, invoice: i64) -> String {
+    tx.query(
+        "SELECT state::text FROM account_move WHERE id = $1",
+        &[&invoice],
+    )
+    .await
+    .unwrap()[0]
+        .get(0)
+}
+
+/// An open delivery leaves Cancel visible and the cancel refused with what to do; once the
+/// transfer is cancelled, the order cancels.
+#[test]
+fn an_order_cancels_once_its_open_transfer_is_cancelled() {
+    run(async move {
+        let (db, orm) = cloned_sales_with_pool(8, true).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        admin(&mut tx).await;
+        let world = world(&mut tx).await;
+        let env = tx.env().with_company(world.company).unwrap();
+        let salesperson = user(&mut tx, "open-transfer-sales", "group_sale_salesman").await;
+        let goods = product(&mut tx, "Open transfer goods", "consu").await;
+        let (order_id, _, _) =
+            order_with_product(&mut tx, &world, salesperson, goods, RawVals::new()).await;
+        let order = env
+            .records("sale.order")
+            .unwrap()
+            .browse([order_id])
+            .unwrap();
+        act(&mut tx, &order, "action_confirm").await.unwrap();
+        assert!(!cancel_blocked(&mut tx, &order).await);
+        let refused = act(&mut tx, &order, "action_cancel").await.unwrap_err();
+        assert!(
+            refused.message().contains("Cancel the linked transfer"),
+            "{refused}"
+        );
+        let picking: i64 = tx
+            .query(
+                "SELECT picking_id FROM sale_stock_delivery_link WHERE order_id=$1",
+                &[&order_id],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        env.records("stock.picking")
+            .unwrap()
+            .browse([picking])
+            .unwrap()
+            .call::<(), ()>(&mut tx, "action_cancel", ())
+            .await
+            .unwrap();
+        act(&mut tx, &order, "action_cancel").await.unwrap();
+        assert_eq!(text(&mut tx, &order, "state").await, "cancel");
+        tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// Cancelling a sales order cancels its draft invoices, also for a salesperson without
+/// accounting rights, so nothing of a cancelled or requoted order is posted afterwards; a posted
+/// invoice refuses the cancel without naming an invoice the salesperson cannot read; the line
+/// guards follow the delivered and invoiced quantities, not the order's state.
+#[test]
+fn cancelled_sales_take_their_draft_invoices_along_and_keep_the_line_floor() {
+    run(async move {
+        let (db, installed) = cloned_sales_with_pool(8, true).await;
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        admin(&mut tx).await;
+        let world = world(&mut tx).await;
+        let env = tx.env().with_company(world.company).unwrap();
+        super::lines::invoice_chart(&mut tx, &env, world.company).await;
+        let salesperson = user(&mut tx, "draft-invoice-sales", "group_sale_salesman").await;
+        let service = product(&mut tx, "Draft invoice service", "service").await;
+        let other = product(&mut tx, "Other draft invoice service", "service").await;
+        let orders = env.records("sale.order").unwrap();
+        let invoices = env.records("account.move").unwrap();
+        let mut confirmed = Vec::new();
+        for _ in 0..4 {
+            let (order, line, reference) =
+                order_with_product(&mut tx, &world, salesperson, service, RawVals::new()).await;
+            act(&mut tx, &orders.browse([order]).unwrap(), "action_confirm")
+                .await
+                .unwrap();
+            confirmed.push((order, line, reference));
+        }
+        let [drafted, posted, manual, requoted] =
+            <[(i64, i64, String); 4]>::try_from(confirmed).unwrap();
+        for order in [drafted.0, posted.0, requoted.0] {
+            let _: Value = orders
+                .browse([order])
+                .unwrap()
+                .call(&mut tx, "action_create_draft_invoice", ())
+                .await
+                .unwrap();
+        }
+        let drafted_invoice = invoice_of(&mut tx, drafted.1).await;
+        let posted_invoice = invoice_of(&mut tx, posted.1).await;
+        let requoted_invoice = invoice_of(&mut tx, requoted.1).await;
+        invoices
+            .browse([posted_invoice])
+            .unwrap()
+            .call::<(), ()>(&mut tx, "action_post", ())
+            .await
+            .unwrap();
+        let number: String = tx
+            .query(
+                "SELECT name FROM account_move WHERE id = $1",
+                &[&posted_invoice],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        // a delivered quantity entered by hand, above the ordered 3
+        write(
+            &mut tx,
+            &env.records("sale.order.line")
+                .unwrap()
+                .browse([manual.1])
+                .unwrap(),
+            RawVals::new().set_cell("qty_delivered", Cell::Decimal(Decimal::from(5))),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let orm = policy_orm(&db, &installed).await;
+        let mut tx = orm.begin(UserId::new(salesperson).unwrap()).await.unwrap();
+        let orders = tx.env().records("sale.order").unwrap();
+        let lines = tx.env().records("sale.order.line").unwrap();
+        let quantity = |value: i32| {
+            RawVals::new().set_cell("product_uom_qty", Cell::Decimal(Decimal::from(value)))
+        };
+        // a posted invoice: refused, naming the order but not the invoice
+        let kept = act(
+            &mut tx,
+            &orders.browse([posted.0]).unwrap(),
+            "action_cancel",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(kept.kind(), ErrorKind::UserError, "{kept:?}");
+        assert!(
+            kept.message().contains(&format!(
+                "The sales order {} cannot be cancelled: its invoice is posted",
+                posted.2
+            )),
+            "{kept}"
+        );
+        assert!(!kept.message().contains(&number), "{kept}");
+        // a draft invoice is cancelled with its order; back in quotation nothing is left to exceed
+        let order = orders.browse([drafted.0]).unwrap();
+        act(&mut tx, &order, "action_cancel").await.unwrap();
+        assert_eq!(text(&mut tx, &order, "state").await, "cancel");
+        assert_eq!(move_state(&mut tx, drafted_invoice).await, "cancel");
+        act(&mut tx, &order, "action_draft").await.unwrap();
+        let line = lines.browse([drafted.1]).unwrap();
+        write(&mut tx, &line, quantity(1)).await.unwrap();
+        // the hand-entered delivery: a raise and an unchanged quantity pass below the floor, a
+        // lower one is refused with the quantities, before and after the order goes back
+        let line = lines.browse([manual.1]).unwrap();
+        write(&mut tx, &line, quantity(4)).await.unwrap();
+        write(&mut tx, &line, quantity(4)).await.unwrap();
+        let order = orders.browse([manual.0]).unwrap();
+        for back in [false, true] {
+            if back {
+                act(&mut tx, &order, "action_cancel").await.unwrap();
+                act(&mut tx, &order, "action_draft").await.unwrap();
+                assert_eq!(text(&mut tx, &order, "state").await, "draft");
+            }
+            let below = write(&mut tx, &line, quantity(2)).await.unwrap_err();
+            assert_eq!(below.kind(), ErrorKind::UserError, "{below:?}");
+            assert!(
+                below
+                    .message()
+                    .contains("cannot go below what was delivered or invoiced")
+                    && below.message().contains("5 delivered")
+                    && below.message().contains("return the goods"),
+                "{below}"
+            );
+        }
+        refused(
+            write(
+                &mut tx,
+                &line,
+                RawVals::new().set_cell("product_id", Cell::Id(other)),
+            )
+            .await,
+            ErrorKind::UserError,
+            "The product of these sales order lines can no longer be changed",
+        );
+        let deleted = tx.savepoint(async |tx| line.unlink(tx).await).await;
+        refused(
+            deleted,
+            ErrorKind::UserError,
+            "set its quantity to 0 instead",
+        );
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        // posting is refused for an invoice of a cancelled or requoted order
+        let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
+        let invoices = tx
+            .env()
+            .with_company(world.company)
+            .unwrap()
+            .records("account.move")
+            .unwrap();
+        tx.execute(
+            "UPDATE sale_order SET state = 'draft' WHERE id = $1",
+            &[&requoted.0],
+        )
+        .await
+        .unwrap();
+        for invoice in [drafted_invoice, requoted_invoice] {
+            let unposted = invoices
+                .browse([invoice])
+                .unwrap()
+                .call::<(), ()>(&mut tx, "action_post", ())
+                .await
+                .unwrap_err();
+            assert_eq!(unposted.kind(), ErrorKind::UserError, "{unposted:?}");
+            assert!(
+                unposted
+                    .message()
+                    .contains("cancelled or back in quotation, so it cannot be posted"),
+                "{unposted}"
+            );
+        }
+        assert_eq!(move_state(&mut tx, requoted_invoice).await, "draft");
         tx.rollback().await.unwrap();
         db.cleanup().await.unwrap();
     });

@@ -777,7 +777,7 @@ fn a_short_direct_receipt_counts_completed_goods_in_the_purchase_unit() {
         )
         .await
         .unwrap_err();
-        assert_eq!(unit.kind(), ErrorKind::Validation, "{unit:?}");
+        assert_eq!(unit.kind(), ErrorKind::UserError, "{unit:?}");
         assert!(
             unit.message()
                 .contains("product and unit can no longer change"),
@@ -1164,9 +1164,12 @@ fn a_direct_vendor_bill_traces_the_received_purchase_line() {
                 )
                 .await
                 .unwrap_err();
-            assert_eq!(
-                changed_source.kind(),
-                ErrorKind::Validation,
+            // the bill-link check or the received-goods guard, whichever runs first
+            assert!(
+                matches!(
+                    changed_source.kind(),
+                    ErrorKind::Validation | ErrorKind::UserError
+                ),
                 "{changed_source:?}"
             );
             assert!(
@@ -1295,10 +1298,18 @@ fn received_purchases_keep_what_happened_downstream() {
             ),
         ] {
             let err = super::write(&mut tx, &line, vals).await.unwrap_err();
-            assert_eq!(err.kind(), ErrorKind::Validation, "{err:?}");
+            assert_eq!(err.kind(), ErrorKind::UserError, "{err:?}");
             assert!(err.message().contains(expected), "{err:?}");
             assert!(err.message().contains(reference.as_str()), "{err:?}");
         }
+        // the received quantity itself passes
+        super::write(
+            &mut tx,
+            &line,
+            RawVals::new().set_cell("product_qty", Cell::Decimal(dec("2"))),
+        )
+        .await
+        .unwrap();
         tx.rollback().await.unwrap();
         db.cleanup().await.unwrap();
     });
