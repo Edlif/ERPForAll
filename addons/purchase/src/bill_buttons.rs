@@ -131,16 +131,8 @@ fn flat(found: BTreeMap<i64, Vec<i64>>) -> Vec<i64> {
     found.into_values().flatten().collect()
 }
 
-/// `purchase.order` with the bills created for it.
-#[extend(PurchaseOrder, addon = "purchase")]
-pub struct PurchaseOrderBills {
-    /// How many readable vendor bills and refunds the order has.
-    #[field(integer, compute = "_compute_invoice_count", string = "Bill Count")]
-    pub invoice_count: i32,
-}
-
 #[methods(PurchaseOrder, addon = "purchase")]
-impl PurchaseOrderBills {
+impl PurchaseOrder {
     #[compute(depends = [])]
     async fn _compute_invoice_count(
         this: &RecordSet<PurchaseOrder>,
@@ -150,7 +142,7 @@ impl PurchaseOrderBills {
         let records = this.as_records();
         let found = readable_links(tx, records, ORDER_BILLS, "account.move").await?;
         for (index, count) in counts(records, &found)?.into_iter().enumerate() {
-            out.set(index, PurchaseOrderBills::INVOICE_COUNT, count)?;
+            out.set(index, PurchaseOrder::INVOICE_COUNT, count)?;
         }
         Ok(())
     }
