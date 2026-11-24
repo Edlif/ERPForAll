@@ -20,9 +20,11 @@ export const MAX_METHOD_ACTION_BYTES = 32768;
 /** Most method actions kept. */
 export const MAX_METHOD_ACTIONS = 64;
 
-/** Bounded page-lifetime state. URLs/history reference identities, never action payloads.
+/** Bounded state of this page. URLs/history reference identities, never action payloads.
  * An unknown/evicted identity is an explicit error; it must never open an unfiltered list.
- * `keep` hears every entry added and removed (the tab's store keeps them for a reload). */
+ * `keep` hears every entry added and removed: the tab's store keeps them for a reload, and the server admits a kept
+ * entry again before it opens. `clear()` (changed metadata, the page's end) drops only this page's copies, so it does
+ * not tell `keep`: a kept entry still opens after the server admits it again under the new metadata. */
 export class MethodActions {
   private readonly page = crypto.randomUUID();
   private next = 0;

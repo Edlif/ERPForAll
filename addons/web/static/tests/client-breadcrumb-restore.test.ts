@@ -57,6 +57,10 @@ let root: HTMLElement;
 let refused: Set<number>;
 /** Whether the server refuses to admit a related list again. */
 let refuseList: boolean;
+/** Records whose read fails on the server (`web_read` answers 500). */
+let failing: Set<number>;
+/** The request (`model/method`) the server answers with 401: the session ended. */
+let expireOn: string | undefined;
 const calls: string[] = [];
 /** The results sent to the server's admission, in order. */
 const admitted: unknown[] = [];
@@ -68,6 +72,8 @@ beforeEach(() => {
   Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value(this: HTMLDialogElement) { this.open = false; } });
   refused = new Set();
   refuseList = false;
+  failing = new Set();
+  expireOn = undefined;
   calls.length = 0;
   admitted.length = 0;
   configureClientTemplates([{
@@ -87,6 +93,7 @@ beforeEach(() => {
     const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
     const call = path.split("/").slice(-2).join("/");
     calls.push(call);
+    if (call === expireOn) return new Response(JSON.stringify({ name: "erp.http.session.SessionExpiredException", message: "Session expired." }), { status: 401, headers: { "Content-Type": "application/json" } });
     let value: unknown = [];
     if (call.endsWith("erp_load_web_menus")) value = { wire_major: 1, registry_version: "r1", roots: [10, 11], nodes: [
       { module: null, id: 10, parent_id: null, label: "Notes", action_id: 20, children: [], icon: null },
@@ -117,6 +124,7 @@ beforeEach(() => {
     else if (call === "test.note/web_search_read") value = { length: 2, records: [{ id: 5, name: "Source record" }, { id: 6, name: "Parent record" }] };
     else if (call === "test.note/web_read" || call === "res.company/web_read") {
       const id = (body["ids"] as number[])[0]!;
+      if (failing.has(id)) return new Response(JSON.stringify({ name: "erp.exceptions.ServerError", message: "The server failed to read the record." }), { status: 500, headers: { "Content-Type": "application/json" } });
       if (refused.has(id)) return new Response(JSON.stringify({ name: "erp.exceptions.AccessError", message: "You may not read this record." }), { status: 403, headers: { "Content-Type": "application/json" } });
       value = call === "test.note/web_read" ? [notes[id]] : [{ id: 9, name: "Company record", note_id: { id: 6, display_name: "Parent record" } }];
     }
@@ -420,4 +428,81 @@ test("a one-record result the server refuses opens nothing, and a kept one this 
     await recovery();
     expect(calls.filter(call => call.endsWith("erp_normalize_action_result"))).toEqual([]);
   }
+});
+
+test("a crumb the server fails to open (not a refusal) stays in the trail; a refused one goes and the focus stays on the trail", async () => {
+  await depthThree();
+  failing.add(9);
+  back();
+  await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")?.textContent).toContain("The server failed to read the record."));
+  expect(trail()).toEqual(["Notes", "Source record", "Company record", "Parent record"]);
+  document.querySelector<HTMLButtonElement>("dialog.client-error-dialog [data-error-close]")!.click();
+  await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")).toBeNull());
+
+  failing.delete(9);
+  refused.add(9);
+  const crumb = root.querySelector<HTMLButtonElement>(".breadcrumb-previous .breadcrumb-back")!;
+  crumb.focus();
+  crumb.click();
+  await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")?.textContent).toContain("You may not read this record."));
+  expect(trail()).toEqual(["Notes", "Source record", "Parent record"]);
+  document.querySelector<HTMLButtonElement>("dialog.client-error-dialog [data-error-close]")!.click();
+  await vi.waitFor(() => expect(document.querySelector("dialog.client-error-dialog")).toBeNull());
+  expect(document.activeElement).toBe(root.querySelector(".breadcrumb-previous .breadcrumb-back"));
+});
+
+test("a page load without its history entry numbers past the kept entries, so Back to an older entry gets its own trail", async () => {
+  history.replaceState(null, "", "/erp/action-20");
+  await load();
+  root.querySelector<HTMLElement>("tbody tr[data-id='5']")!.click();
+  await opened("Source record");
+  open("Company: Company record");
+  await opened("Company record");
+  const older = { state: history.state as { erpIndex: number }, url: location.pathname + location.search };
+  expect(trail()).toEqual(["Notes", "Source record", "Company record"]);
+
+  // A full page load into a new entry (the company switcher), then pages of its own.
+  history.pushState(null, "", "/erp/action-21");
+  await load();
+  await listed(9);
+  root.querySelector<HTMLElement>("tbody tr[data-id='9']")!.click();
+  await opened("Company record");
+  open("Note: Parent record");
+  await opened("Parent record");
+  expect(trail()).toEqual(["Companies", "Company record", "Parent record"]);
+  expect((history.state as { erpIndex: number }).erpIndex).toBeGreaterThan(older.state.erpIndex);
+
+  // Back to the older entry loads its page again with the trail it had.
+  history.replaceState(older.state, "", older.url);
+  await load();
+  await opened("Company record");
+  expect(trail()).toEqual(["Notes", "Source record", "Company record"]);
+});
+
+test("a kept trail whose last entry is another record of the same action is not shown with this page", async () => {
+  await depthThree();
+  const data = stored()!;
+  const index = (history.state as { erpIndex: number }).erpIndex;
+  const entries = data.trails.find(([at]) => at === index)![1];
+  // The page is Parent record (id 6); the kept trail ends on Source record (id 5) of the same action.
+  sessionStorage.setItem(NAVIGATION_KEY, JSON.stringify({ ...data, trails: [[index, [entries[0], entries[2], entries[1]]]] }));
+  await load();
+  await opened("Parent record");
+  expect(trail()).toEqual(["Notes", "Parent record"]);
+});
+
+test("a request that fails after the session expired does not write the navigation store again", async () => {
+  history.replaceState(null, "", "/erp/action-20");
+  await load();
+  root.querySelector<HTMLElement>("tbody tr[data-id='5']")!.click();
+  await opened("Source record");
+  await vi.waitFor(() => expect(headerButton("Note companies").disabled).toBe(false));
+  expect(sessionStorage.getItem(NAVIGATION_KEY)).not.toBeNull();
+  // The button's list opens, and the read of its views meets the expired session: the open fails, and its catch drops
+  // the related list it had kept.
+  expireOn = "res.company/get_views";
+  headerButton("Note companies").click();
+  await vi.waitFor(() => expect(root.textContent).toContain("Session expired"));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(sessionStorage.getItem(NAVIGATION_KEY)).toBeNull();
 });
