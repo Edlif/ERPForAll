@@ -575,7 +575,9 @@ impl StockPicking {
             let mut joined = false;
             // an unchanged value passes: only a different type or company is refused
             for field in ["picking_type_id", "company_id"] {
-                let Some(cell) = vals.get(field) else { continue };
+                let Some(cell) = vals.get(field) else {
+                    continue;
+                };
                 let value = cell_id(cell);
                 joined |= !tx
                     .query(
