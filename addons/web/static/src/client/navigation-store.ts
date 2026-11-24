@@ -20,6 +20,14 @@ const MAX_TITLE = 512;
 interface Stored { readonly id: string; readonly title: string; readonly url: string; readonly form: boolean }
 interface StoredAction { readonly result: unknown; readonly context: Record<string, unknown>; readonly origin: string; readonly label: string }
 
+const MAX_CONTEXT_TEXT = 4096;
+const scalar = (value: unknown): boolean => typeof value === "string" && value.length <= MAX_CONTEXT_TEXT
+  || typeof value === "number" && Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
+/** A value of a kept list's context, admitted by type: null, a boolean, a text, a number (whole numbers in the safe
+ *  range), or a flat list of numbers or texts (ids, names). Anything else (a nested object) is not one this client keeps. */
+const contextValue = (value: unknown): boolean => value === null || typeof value === "boolean" || scalar(value)
+  || Array.isArray(value) && value.length <= 1000 && value.every(scalar);
+const CONTEXT_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const title = (value: unknown): value is string => typeof value === "string" && !!value.trim() && value.length <= MAX_TITLE && !/[\u0000-\u001f\u007f]/u.test(value);
 /** A page address this client writes: same origin, a route the parser admits, an action. */
 function address(value: unknown): Route | undefined {
@@ -46,6 +54,8 @@ function methodAction(raw: unknown): MethodAction | undefined {
   const { result, context, origin, label } = raw as Record<string, unknown>;
   const route = address(origin);
   if (!route || !title(label) || typeof context !== "object" || context === null || Array.isArray(context) || Object.keys(context).length > 64) return undefined;
+  // Each value goes into the server's admission and every request of the list: only the kinds this client writes there.
+  if (!Object.entries(context).every(([key, value]) => CONTEXT_KEY.test(key) && contextValue(value))) return undefined;
   try {
     const decoded = actionResult({ wire_major: 1, result });
     return decoded.kind === "current_window" ? { result: decoded, context: context as Record<string, unknown>, origin: route, originLabel: label } : undefined;
@@ -57,10 +67,14 @@ export class NavigationStore {
   private trails = new Map<number, readonly BreadcrumbItem[]>();
   private readonly actions = new Map<string, MethodAction>();
   private failed = false;
+  /** Set when the session ends: the tab's protected state is erased, and nothing is written back after that. */
+  private ended = false;
 
   /** `report` hears once when the browser refuses to keep the store (disabled storage, full quota). */
   constructor(private readonly uid: number, private readonly cap: number, private readonly report: (error: unknown) => void,
     private readonly storage: () => Storage = () => window.sessionStorage) {
+    // A request that fails after expiry or sign-out (a catch that drops its related list) must not write the store again.
+    window.addEventListener("erp:session-ended", () => { this.ended = true; this.trails.clear(); this.actions.clear(); }, { once: true });
     let text: string | null = null;
     try { text = this.storage().getItem(NAVIGATION_KEY); } catch (error) { this.refused(error); }
     if (text === null) return;
@@ -98,10 +112,17 @@ export class NavigationStore {
   }
 
   /** The trail kept for history entry `index`, when its last entry is the page `route` opens (same action, same related
-   *  list): a trail kept for another page is not shown with this one. */
+   *  list, same record): a trail kept for another page is not shown with this one. The search part of a list's address is
+   *  left out: the list rewrites it in place without keeping its trail again. */
   trail(index: number, route: Route): readonly BreadcrumbItem[] | undefined {
     const items = this.trails.get(index), top = items?.at(-1)?.route;
-    return top && top.action === route.action && top.method_action === route.method_action ? items : undefined;
+    return top && top.action === route.action && top.method_action === route.method_action && top.id === route.id ? items : undefined;
+  }
+
+  /** The history index a page load without one starts from: past every entry this tab keeps a trail for, so the older
+   *  entries (Back after a full page load, as the company switcher does) keep theirs. */
+  nextIndex(): number {
+    return this.trails.size ? Math.max(...this.trails.keys()) + 1 : 0;
   }
 
   /** Keeps `items` (the trail on screen) for history entry `index`. */
@@ -113,13 +134,18 @@ export class NavigationStore {
   }
 
   private write(): void {
+    if (this.ended) return;
     const trails = [...this.trails].map(([index, items]) => [index, items.map((item): Stored => ({ id: item.id, title: item.title, url: item.url, form: item.isFormView === true }))]);
     const actions = [...this.actions].map(([id, entry]) => [id, { result: entry.result, context: entry.context, origin: routeUrl(entry.origin), label: entry.originLabel } satisfies StoredAction]);
     let text = JSON.stringify({ v: 1, uid: this.uid, trails, actions });
-    // The oldest related lists, then the oldest trails, give way until the store fits its bound.
-    while (text.length > MAX_STORED && trails.length + actions.length > 1) {
-      if (actions.length) { actions.shift(); this.actions.delete(this.actions.keys().next().value!); }
-      else { trails.shift(); this.trails.delete(this.trails.keys().next().value!); }
+    // The oldest related lists, then the oldest trails, give way until the store fits its bound. Each entry's own length
+    // (and its comma) is taken off, so the whole store is written out once more, not once per entry.
+    if (text.length > MAX_STORED) {
+      let excess = text.length - MAX_STORED;
+      while (excess > 0 && trails.length + actions.length > 1) {
+        if (actions.length) { excess -= JSON.stringify(actions.shift()).length + 1; this.actions.delete(this.actions.keys().next().value!); }
+        else { excess -= JSON.stringify(trails.shift()).length + 1; this.trails.delete(this.trails.keys().next().value!); }
+      }
       text = JSON.stringify({ v: 1, uid: this.uid, trails, actions });
     }
     try { this.storage().setItem(NAVIGATION_KEY, text); } catch (error) { this.refused(error); }

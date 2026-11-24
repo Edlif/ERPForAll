@@ -112,6 +112,14 @@ function crumbId(route: Route, id?: number | string): string {
   return `action-${route.action}${via}-${id === undefined ? "list" : `form-${id}`}`;
 }
 
+/** Gives the drawn current crumb the element `tag` (the `h1` that names the page, or a `span` where the page has its own). */
+function retagCrumb(current: HTMLElement, tag: "h1" | "span"): void {
+  if (current.tagName.toLowerCase() === tag) return;
+  const replacement = el(tag); replacement.className = current.className;
+  replacement.setAttribute("aria-current", "page"); replacement.textContent = current.textContent;
+  current.replaceWith(replacement);
+}
+
 type SwitchableView = "list" | "form" | "pivot" | "calendar" | "graph" | "kanban";
 const SWITCHABLE_VIEWS: readonly string[] = ["list", "form", "pivot", "calendar", "graph", "kanban"];
 const switchable = (view: string): view is SwitchableView => SWITCHABLE_VIEWS.includes(view);
@@ -232,6 +240,9 @@ export class HumanApp {
   private navigationInFlight: Promise<void> | undefined;
   /** Records of `edit="0"` views: once they have an id they are never written back. */
   private readonly lockedRecords = new WeakSet<RecordState>();
+  /** What a mounted form does once its record was saved (the address, the systray and the trail carry the saved record);
+   *  a save outside the form's own Save (the leave prompt, a breadcrumb's autosave) runs it too. */
+  private readonly savedRecords = new WeakMap<RecordState, () => void>();
   /** The Print reports of each model, read once per page: a list and its forms share one answer; a failed read is not kept. */
   private readonly printReports = new Map<string, Promise<PrintableReport[]>>();
   private keyboardPending: "save" | "discard" | undefined;
@@ -1159,26 +1170,34 @@ export class HumanApp {
         this.notice("This record is read-only; the change was not saved.");
         return true;
       }
-      try {
-        if (this.record) await this.record.save();
-        else await this.service?.save();
-        return true;
-      } catch (error) {
-        return this.messages.saveFailure(error, { discard: () => { this.record?.discard(); this.service?.discard(); } });
-      }
+      return this.saveBeforeLeaving();
     }
     const choice = await this.choose("Unsaved changes", "Save your changes before leaving this page?", ["Save", "Discard", "Cancel"]);
-    if (choice === "Save") {
-      try {
-        if (this.record) await this.record.save();
-        else await this.service?.save();
-        return true;
-      } catch (error) {
-        return this.messages.saveFailure(error, { discard: () => { this.record?.discard(); this.service?.discard(); } });
-      }
-    }
-    if (choice === "Discard") { this.record?.discard(); this.service?.discard(); return true; }
+    if (choice === "Save") return this.saveBeforeLeaving();
+    if (choice === "Discard") { this.discardBeforeLeaving(); return true; }
     return false;
+  }
+
+  /** Saves the page being left. A saved record goes on in the address and the trail as itself (a new one with its id),
+   *  so a page stacked on it next leads back to the saved record. */
+  private async saveBeforeLeaving(): Promise<boolean> {
+    const record = this.record;
+    try {
+      if (record) await record.save();
+      else await this.service?.save();
+    } catch (error) {
+      return this.messages.saveFailure(error, { discard: () => this.discardBeforeLeaving() });
+    }
+    if (record) this.savedRecords.get(record)?.();
+    return true;
+  }
+
+  /** Discards the page being left. A new record that was never saved leaves the trail too: nothing is stacked on it. */
+  private discardBeforeLeaving(): void {
+    if (this.record && this.record.id === undefined && this.breadcrumbs.current?.id === crumbId(this.current, "new")) {
+      this.breadcrumbs.replace(this.breadcrumbs.items.slice(0, -1));
+    }
+    this.record?.discard(); this.service?.discard();
   }
 
   async start(resolveTheme = false): Promise<void> {
@@ -1245,22 +1264,23 @@ export class HumanApp {
     this.headerMenuSearchReady?.();
 
     const initialRoute = parseRoute(new URL(window.location.href));
-    // A reload keeps this entry's place in the tab's history and its trail; an address opened afresh has neither.
+    // A reload keeps this entry's place in the tab's history and its trail; an address opened afresh has neither, and
+    // its entries are numbered past the ones the tab keeps, whose trails Back still brings back.
     const state: unknown = history.state;
     const index = typeof state === "object" && state !== null ? (state as Record<string, unknown>)["erpIndex"] : undefined;
     if (typeof index === "number" && Number.isSafeInteger(index) && index >= 0) {
       this.historyIndex = index;
       const kept = this.navigationStore.trail(index, initialRoute);
       if (kept) this.breadcrumbs.replace(kept);
-    }
+    } else this.historyIndex = this.navigationStore.nextIndex();
     if (initialRoute.action === undefined && await this.openHomeAction(initialRoute)) return;
     if (this.lifetime.signal.aborted) return;
     try { await this.navigate(initialRoute, true); }
     catch (error) {
-      // A related list that the tab no longer holds, or that the server no longer admits.
+      // A related list (or record) whose first load failed for any reason: the tab no longer holds it, the server no longer
+      // admits it, or its page could not load. Offer explicit recovery to the originating persisted action; never
+      // silently substitute it for the related list.
       if (error instanceof ExpiredMethodAction || initialRoute.method_action !== undefined && !this.isClientRoute(initialRoute)) {
-        // A reload/new tab has no retained action payload. Offer explicit recovery to the
-        // originating persisted action; never silently substitute it for the related list.
         const recovery = el("a", "Return to originating action", "method-action-recovery");
         recovery.href = routeUrl({ action: initialRoute.action, menu: initialRoute.menu, cids: initialRoute.cids });
         this.content.replaceChildren(recovery);
@@ -2215,6 +2235,13 @@ export class HumanApp {
     }
   }
 
+  /** The trail's last entry when it is the page on screen (its form or its list); a client screen or a service page has
+   *  none, and the trail left under one belongs to an older page. */
+  private pageCrumb(): BreadcrumbItem | undefined {
+    const top = this.breadcrumbs.current;
+    return top?.id === (this.record ? crumbId(this.current, this.current.id ?? "new") : crumbId(this.current)) ? top : undefined;
+  }
+
   /** Keeps the trail on screen for the current history entry. */
   private saveTrail(): void {
     this.navigationStore.saveTrail(this.historyIndex, this.breadcrumbs.items);
@@ -2224,13 +2251,19 @@ export class HumanApp {
    *  is gone, the user may no longer open it, the tab no longer holds its related list) drops out of the trail and
    *  `redraw` draws the rest, which stays usable; the failure is still reported. A lost connection drops nothing. */
   private async openCrumb(item: BreadcrumbItem, redraw: () => void): Promise<void> {
-    const before = [...this.breadcrumbs.items], generation = this.generation;
+    const generation = this.generation;
     try { await this.navigate(item.route, false, false, undefined, { autosave: true, showRefusedPage: false }); }
     catch (error) {
-      if (generation === this.generation && !this.expired && !(error instanceof ClientError && (error.kind === "network" || error.kind === "ambiguous"))) {
-        this.breadcrumbs.replace(before.filter(entry => entry.id !== item.id));
+      // Only a refusal (the record is gone, the user may not open it, the related list expired) drops the entry; a lost
+      // connection or a server failure may pass, and the entry stays to be tried again. The failed navigation already put
+      // the trail back as it was for this page.
+      if (generation === this.generation && !this.expired && error instanceof ClientError && (error.kind === "validation" || error.kind === "permission")) {
+        const focused = document.activeElement;
+        this.breadcrumbs.replace(this.breadcrumbs.items.filter(entry => entry.id !== item.id));
         this.saveTrail();
         redraw();
+        // The redraw replaced the crumb that had the focus: it goes to the way back that is left (the error dialog returns it there).
+        if (focused instanceof HTMLElement && !focused.isConnected) this.content.querySelector<HTMLElement>(".breadcrumb-back")?.focus();
       }
       throw error;
     }
@@ -2250,7 +2283,9 @@ export class HumanApp {
       }
       this.pendingInvocation = undefined;
     } else if (!initial && !await this.canLeave(options) || this.expired) return;
-    const previousGeneration = this.generation, previousList = this.listContext;
+    // Staging the destination changes the trail (a list clears it, a form goes on top); a navigation that does not
+    // commit puts it back for the page that stays.
+    const previousGeneration = this.generation, previousList = this.listContext, previousTrail = [...this.breadcrumbs.items];
     let committed = false;
     if (options?.target === "main" || !route.action) {
       this.breadcrumbs.clear();
@@ -2455,6 +2490,7 @@ export class HumanApp {
         // The mounted source and its event bindings remain valid when destination staging fails.
         this.generation = previousGeneration;
         this.listContext = previousList;
+        this.breadcrumbs.replace(previousTrail);
       }
       finishLoading();
       this.busy = false;
@@ -3211,11 +3247,16 @@ export class HumanApp {
       title.setAttribute("aria-current", "page");
       breadcrumbs.replaceChildren(title);
       if (returning || stacked) {
-        const draw = (): void => renderBreadcrumbs(breadcrumbs, this.breadcrumbs, {
-          isSmall: document.documentElement.dataset["mobile"] === "true",
-          onNavigate: async item => this.run(() => this.openCrumb(item, draw)),
-          report: error => this.reportError(error)
-        });
+        const draw = (): void => {
+          renderBreadcrumbs(breadcrumbs, this.breadcrumbs, {
+            isSmall: document.documentElement.dataset["mobile"] === "true",
+            onNavigate: async item => this.run(() => this.openCrumb(item, draw)),
+            report: error => this.reportError(error)
+          });
+          // A list has no heading of its own: its crumb names the page, as on a list that starts the trail.
+          const current = breadcrumbs.querySelector<HTMLElement>(".breadcrumb-current");
+          if (current) retagCrumb(current, "h1");
+        };
         draw();
       } else if (related) {
         // A list opened by a form button keeps the way back: menu path, the source record, this list.
@@ -4252,8 +4293,11 @@ export class HumanApp {
       const context = { ...callerContext, active_model: caller.model, active_id: caller.id,
         active_ids: caller.id === undefined ? [] : [caller.id], ...result.context };
       const origin = { ...this.current };
-      const name = caller.values["display_name"] ?? caller.values["name"];
-      const originLabel = typeof name === "string" && name ? name : caller.id === undefined ? "Record" : `#${caller.id}`;
+      // The way back names the page the result opens from: its record, or its own crumb (a dialog the user menu opened
+      // has no caller on the page, and its own record is not that page).
+      const page = this.record, name = page?.values["display_name"] ?? page?.values["name"];
+      const originLabel = typeof name === "string" && name ? name : page ? page.id === undefined ? "Record" : `#${page.id}`
+        : this.pageCrumb()?.title ?? this.clientMounted?.name ?? "Previous page";
       const id = this.methodActions.add({ result, context, origin, originLabel });
       try {
         // One record opens straight in its form, on top of the page the button is on.
@@ -4517,12 +4561,15 @@ export class HumanApp {
       const displayName = labelField ? state.values[labelField.name] : undefined;
       const currentName = !state.id ? "New" : typeof displayName === "string" && displayName ? displayName : (typeof title === "string" && title ? title : `#${state.id}`);
 
-      const crumb = { id: crumbId(route, state.id ?? "new"), title: currentName, route: { ...route }, url: routeUrl(route), isFormView: true };
+      // A saved new record's crumb opens that record, not another new form.
+      const here: Route = state.id === undefined ? { ...route } : { ...route, id: String(state.id), view_type: "form" };
+      const crumb = { id: crumbId(route, state.id ?? "new"), title: currentName, route: here, url: routeUrl(here), isFormView: true };
       // A form already in the trail (its crumb, browser Back) cuts the trail back to itself.
       const returning = this.breadcrumbs.items.some(item => item.id === crumb.id);
       if (returning) this.breadcrumbs.truncateTo(crumb.id);
-      // A record opened from a form goes on top of that form, once: later renders (after a save) replace it.
-      const stacked = stack && !returning && this.breadcrumbs.current?.isFormView === true;
+      // A record opened from a form goes on top of that form, once: later renders (after a save) replace it. Only on the
+      // form being left: a form crumb left over under a client screen or a service page is not that page.
+      const stacked = stack && !returning && this.breadcrumbs.current?.isFormView === true && this.pageCrumb() !== undefined;
       stack = false;
       if (stacked) this.breadcrumbs.push(crumb);
       else {
@@ -4628,12 +4675,7 @@ export class HumanApp {
       const current = breadcrumbs?.querySelector<HTMLElement>(".form-breadcrumb-record");
       if (!current) return;
       const declared = [...form.querySelectorAll("h1")].some(heading => !heading.closest("[hidden]"));
-      const tag = declared ? "span" : "h1";
-      if (current.tagName.toLowerCase() !== tag) {
-        const replacement = el(tag); replacement.className = current.className;
-        replacement.setAttribute("aria-current", "page"); replacement.textContent = current.textContent;
-        current.replaceWith(replacement);
-      }
+      retagCrumb(current, declared ? "span" : "h1");
     };
     headingObserver = new MutationObserver(() => syncPageHeading?.());
     headingObserver.observe(form, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
@@ -4679,12 +4721,8 @@ export class HumanApp {
         if (this.lifetime.signal.aborted || binding !== this.generation) return true;
         const toRead = readMode(true);
         render();
-        this.current = { ...route, id: String(state.id), view_type: "form" };
-        this.currentUrl = routeUrl(this.current);
-        // A saved new record gained its identity here, outside a navigation: republish it.
-        this.syncSystrayRecord();
-        history.replaceState({ erpIndex: this.historyIndex }, "", this.currentUrl);
-        updateBreadcrumbs(); updateStatus(); this.notice("Record saved.");
+        published();
+        updateStatus(); this.notice("Record saved.");
         recordEvent({ type: "saved", id: state.id! });
         if (toRead) recordEvent({ type: "modeChanged", mode: "read" });
         return true;
@@ -4694,6 +4732,19 @@ export class HumanApp {
       }
     };
     const save = async (): Promise<void> => { await trySave(); };
+    /** The record was saved (here, by the leave prompt or by a breadcrumb's autosave): a new one gained its identity outside
+     *  a navigation, so the page's address, the systray and the trail carry it, and a page stacked next leads back to it. */
+    const published = (): void => {
+      if (binding !== this.generation || this.expired || state.id === undefined) return;
+      this.current = { ...route, id: String(state.id), view_type: "form" };
+      this.currentUrl = routeUrl(this.current);
+      this.syncSystrayRecord();
+      // A step through the browser's history has already moved the browser to its entry: this one keeps its address.
+      if (!this.traversalRunning) history.replaceState({ erpIndex: this.historyIndex }, "", this.currentUrl);
+      updateBreadcrumbs();
+      this.saveTrail();
+    };
+    this.savedRecords.set(state, published);
     /** Widgets hear of saves, discards and mode changes once the form has rendered the outcome. */
     const recordEvent = (event: RecordEvent): void => { if (!disposed && surface) surface.emitRecordEvent(event); };
     /** Switch a read-first form; false when nothing changed (an ordinary form, or already in that mode). */
@@ -4916,7 +4967,12 @@ export class HumanApp {
       messagingStore: this.getMessagingStore(), uid: this.userId, userName: this.userName,
       run: this.run, report: error => this.reportError(error), messages: this.messages, editorLocale: this.editorLocale,
       notify: message => this.messages.notifications.add(message, { level: "warning" }),
-      openRecord: (model, id) => this.openRelatedRecord(model, id), views: this.viewLoader, button: renderButton, navigation: fieldNavigation,
+      // A link clicked while a field's change is still on its way (a line dialog commits its line, then opens the link)
+      // opens once that change has landed, so leaving the form asks about it; a change that failed reports itself and opens nothing.
+      openRecord: async (model, id) => {
+        if (scalarChange) { try { await scalarChange; } catch { return; } }
+        await this.openRelatedRecord(model, id);
+      }, views: this.viewLoader, button: renderButton, navigation: fieldNavigation,
       changeValues: (changes, focus) => this.run(async () => {
         if (this.uncertainMethod || this.expired) throw new ClientError("ambiguous", uncertainMethodMessage);
         const changeGeneration = this.generation;
