@@ -561,7 +561,7 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
         tx.commit().await.unwrap();
         drop(tx);
 
-        // a database of the previous release: none of the new columns, purchase at 1.2.2
+        // a database of the previous release: none of the new columns, purchase at 1.3.0
         let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
         tx.execute(
             "ALTER TABLE purchase_order_line DROP COLUMN qty_invoiced, DROP COLUMN qty_to_invoice",
@@ -579,7 +579,7 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
         .await
         .unwrap();
         tx.execute(
-            "UPDATE ir_module_module SET latest_version='1.2.2' WHERE name='purchase'",
+            "UPDATE ir_module_module SET latest_version='1.3.0' WHERE name='purchase'",
             &[],
         )
         .await
