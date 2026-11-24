@@ -12,6 +12,7 @@ erp_sdk::addon!(
 mod amounts;
 mod create_invoice;
 mod invoice_buttons;
+pub use invoice_buttons::{counts, flat, readable_links, window};
 mod invoice_lineage;
 pub mod line;
 mod numbering;

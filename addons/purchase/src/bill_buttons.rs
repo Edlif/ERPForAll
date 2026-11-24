@@ -30,7 +30,7 @@ fn row_of(id: &RecId) -> Option<i64> {
 }
 
 /// Per source row, the sorted ids of the linked `target` documents the caller may read.
-async fn readable_links(
+pub async fn readable_links(
     tx: &mut Transaction,
     sources: &Records,
     sql: &str,
@@ -64,7 +64,8 @@ async fn readable_links(
     Ok(out)
 }
 
-fn counts(sources: &Records, found: &BTreeMap<i64, Vec<i64>>) -> Result<Vec<i32>> {
+/// The number of linked documents per source record, in record order.
+pub fn counts(sources: &Records, found: &BTreeMap<i64, Vec<i64>>) -> Result<Vec<i32>> {
     sources
         .rec_ids()
         .iter()
@@ -76,7 +77,7 @@ fn counts(sources: &Records, found: &BTreeMap<i64, Vec<i64>>) -> Result<Vec<i32>
 }
 
 /// A current-window action over the readable documents; `views` empty means the model's defaults.
-fn window(name: &str, model: &str, views: Vec<(i64, &str)>, ids: Vec<i64>) -> Value {
+pub fn window(name: &str, model: &str, views: Vec<(i64, &str)>, ids: Vec<i64>) -> Value {
     let views = if views.is_empty() {
         vec![
             Value::list([Value::False, Value::str("list")]),
@@ -127,7 +128,8 @@ async fn invoice_views(tx: &mut Transaction) -> Result<Vec<(i64, &'static str)>>
     ])
 }
 
-fn flat(found: BTreeMap<i64, Vec<i64>>) -> Vec<i64> {
+/// Every linked id of all sources, in one list.
+pub fn flat(found: BTreeMap<i64, Vec<i64>>) -> Vec<i64> {
     found.into_values().flatten().collect()
 }
 
