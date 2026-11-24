@@ -408,8 +408,9 @@ pub(crate) enum LockScope {
     /// date (the scope of a date, a name, an amount, a tax, an added or a deleted line).
     Tax,
     /// Unmatching: the lock dates of [`Self::Tax`] that an administrator can lower again, not the
-    /// hard lock (a match made into a hard-locked period must stay removable), and a date without
-    /// a fiscal period refuses.
+    /// hard lock (a match made into a hard-locked period must stay removable, so in such a period
+    /// the fiscal-year date, which cannot be lowered across it, does not bind either), and a date
+    /// without a fiscal period refuses.
     Unmatch,
 }
 
@@ -687,7 +688,8 @@ async fn refuse_locked(
 /// or before a lock date an administrator can lower again (fiscal year, sale or purchase by
 /// journal, and the tax lock date for an entry that reaches the tax report), in a fiscal period
 /// closed by the fiscal-year lock, or on a date without a fiscal period. The hard lock does not
-/// bind it: matching into a hard-locked period is allowed, so its undoing must stay possible.
+/// bind it, nor the fiscal-year date in a hard-locked period: matching into a hard-locked period
+/// is allowed, so its undoing must stay possible.
 /// Unmatching asks it for its whole match walk (every item of a settlement is in it): matches of
 /// a locked period stay as they are until the lock is lowered (stricter than the reference, which
 /// unmatches and dates the follow-up entries on the first open day). The refused entry is named
@@ -695,7 +697,8 @@ async fn refuse_locked(
 ///
 /// # Errors
 ///
-/// `Validation` naming the entry and its lock dates; database errors.
+/// `Validation` naming the entry and its lock dates (neither for an entry the caller cannot
+/// read); database errors.
 pub(crate) async fn refuse_locked_items(
     tx: &mut Transaction,
     env: &Env,
@@ -724,12 +727,17 @@ pub(crate) async fn refuse_locked_items(
         .filtered_access(tx, Operation::Read)
         .await?
         .is_empty();
-    let label = if readable {
-        format!("the posted entry {}", entry.label())
-    } else {
-        "a posted entry you cannot open".to_owned()
-    };
-    Err(Error::validation(format!("You cannot {what} {label}: {refusal}")).with_source(refusal))
+    if !readable {
+        // neither the entry's name nor its date (the refusal's text carries it)
+        return Err(Error::validation(format!(
+            "You cannot {what} a posted entry you cannot open: it is in a locked period."
+        )));
+    }
+    Err(Error::validation(format!(
+        "You cannot {what} the posted entry {}: {refusal}",
+        entry.label()
+    ))
+    .with_source(refusal))
 }
 
 /// The refusal of Reset to Draft or Cancel (`what`) of posted entries: the first one is named with

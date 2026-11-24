@@ -3567,7 +3567,15 @@ async fn resolve_record_action(
             Ok(action) => action,
             // a candidate the caller may not open, or one that cannot be loaded, is passed over;
             // a failure of the transaction itself still ends the call
-            Err(error) if passable(error.kind()) => continue,
+            Err(error) if passable(error.kind()) => {
+                // the id and the kind only: the message can carry record data
+                tracing::info!(
+                    target: "erp::web",
+                    "record action resolve passed over action {action_id}: {:?}",
+                    error.kind()
+                );
+                continue;
+            }
             Err(error) => return Err(error),
         };
         if !matches!(action.target, wire::ActionTarget::Current)
