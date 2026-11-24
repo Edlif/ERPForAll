@@ -46,16 +46,9 @@ const PROBE_RECORD_LINK_WRONG_KIND: u8 = 4;
 const PROBE_MODULE_KEYS: [&str; 3] = [
     "base.test_mod_installed",
     "base.test_mod_not_available",
-    "base.test_mod_not_installed",
+    "base.test_mod_uom",
 ];
-fn linked_uninstalled_addon() -> String {
-    erp_sdk::linked_addon_names()
-        .into_iter()
-        .find(|name| name != "base" && name != "uom")
-        .expect("at least one linked addon besides base and uom")
-}
 fn probe_items() -> erp_sdk::Result<Vec<PanelItemDecl>> {
-    let not_installed = linked_uninstalled_addon();
     Ok(vec![
         PanelItemDecl::info("base.test_probe", "Probe")?
             .block("Probe")?
@@ -74,13 +67,9 @@ fn probe_items() -> erp_sdk::Result<Vec<PanelItemDecl>> {
         PanelItemDecl::module_toggle("base.test_mod_installed", "Base module", "base")?
             .block("Probe")?
             .access(&["base.group_system"])?,
-        PanelItemDecl::module_toggle(
-            "base.test_mod_not_installed",
-            "Linked uninstalled module",
-            &not_installed,
-        )?
-        .block("Probe")?
-        .access(&["base.group_system"])?,
+        PanelItemDecl::module_toggle("base.test_mod_uom", "Units of Measure", "uom")?
+            .block("Probe")?
+            .access(&["base.group_system"])?,
         PanelItemDecl::module_toggle(
             "base.test_mod_not_available",
             "Unlinked module",
@@ -321,6 +310,37 @@ async fn general_section() {
         .initialize(InitOptions::new().with_skip_auto_install(true))
         .await
         .unwrap();
+    // Before `uom` is installed, it is linked into this binary (NotInstalled), while `base` is Installed
+    // and an unlinked addon is NotAvailable.
+    {
+        let mut pre_tx = initialized.orm.begin(SUPERUSER_ID).await.unwrap();
+        let pre_env = pre_tx.env();
+        let pre_desc = describe(&pre_env, &mut pre_tx, SettingsScope::Global {})
+            .await
+            .unwrap();
+        for (key, expected_addon, expected_state) in [
+            (
+                "base.test_mod_installed",
+                "base",
+                ModuleToggleState::Installed,
+            ),
+            ("base.test_mod_uom", "uom", ModuleToggleState::NotInstalled),
+            (
+                "base.test_mod_not_available",
+                "unlinked_test_addon",
+                ModuleToggleState::NotAvailable,
+            ),
+        ] {
+            match item(&pre_desc, key) {
+                Some(SettingsItem::Module { addon, state, .. }) => {
+                    assert_eq!(addon, expected_addon, "{key}");
+                    assert_eq!(*state, expected_state, "{key}");
+                }
+                other => panic!("expected module toggle for {key}, got {other:?}"),
+            }
+        }
+        pre_tx.rollback().await.unwrap();
+    }
     // `uom` depends on base, so its action is outside base's dependency closure.
     let installed = system
         .button_immediate_install(
@@ -405,19 +425,14 @@ async fn general_section() {
         .collect();
     expected_keys.sort_unstable();
     assert_eq!(keys(&initial), expected_keys);
-    // Module toggle items resolve installed, linked-but-uninstalled, and unlinked states accurately.
-    let expected_uninstalled = linked_uninstalled_addon();
+    // After `uom` is installed, its module toggle transitions to Installed while the unlinked addon stays NotAvailable.
     for (key, expected_addon, expected_state) in [
         (
             "base.test_mod_installed",
             "base",
             ModuleToggleState::Installed,
         ),
-        (
-            "base.test_mod_not_installed",
-            expected_uninstalled.as_str(),
-            ModuleToggleState::NotInstalled,
-        ),
+        ("base.test_mod_uom", "uom", ModuleToggleState::Installed),
         (
             "base.test_mod_not_available",
             "unlinked_test_addon",
