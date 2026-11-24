@@ -1509,8 +1509,10 @@ fn short_sales_delivery(always: bool, ask: bool) {
 #[test]
 fn invoice_and_transfer_forms_describe_with_the_sales_count_buttons() {
     run(async {
-        let (_db, orm) = cloned_sales(true).await;
-        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let (db, orm) = cloned_sales(true).await;
+        // the compiled access policy, as a served node has it: the transfer form names groups
+        let secured = policy_orm(&db, &orm).await;
+        let mut tx = secured.begin(SUPERUSER_ID).await.unwrap();
         let company = xmlid(&mut tx, "base", "main_company").await;
         let env = tx.env().with_company(company).unwrap();
         for (model, module, view, button) in [
@@ -1547,5 +1549,6 @@ fn invoice_and_transfer_forms_describe_with_the_sales_count_buttons() {
             );
         }
         tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
     });
 }
