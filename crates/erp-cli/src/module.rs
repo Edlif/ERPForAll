@@ -11,20 +11,34 @@ pub mod chart_defaults;
 /// Bind `system`'s browser install catalogue as the one Settings module toggles resolve against
 /// ([`erp_sdk::settings::bind_addon_catalogue`]): the same names the install route accepts or refuses. Every
 /// native composition of the CLI calls it, so a mistyped addon is refused on every load path. The first system
-/// bound in a process is kept; a later call is a no-op (one CLI process serves one addon directory).
+/// bound in a process is kept; a later call with the same system (`Arc::ptr_eq`) or a system over the same addon
+/// directories is a no-op (one CLI process serves one addon directory set).
 ///
 /// # Errors
-/// `Programming` when something other than this function already bound a catalogue in this process.
+/// `Programming` when a system over other addon directories is bound after the first one (naming both), or when
+/// something other than this function already bound a catalogue in this process.
 pub fn bind_settings_catalogue(
     system: std::sync::Arc<erp_modules::system::ModuleSystem>,
 ) -> erp_sdk::Result<()> {
-    static BOUND: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+    type First = (
+        std::sync::Arc<erp_modules::system::ModuleSystem>,
+        Vec<PathBuf>,
+    );
+    static BOUND: std::sync::Mutex<Option<First>> = std::sync::Mutex::new(None);
     let mut bound = BOUND.lock().map_err(|_| {
         erp_sdk::Error::internal("The Settings catalogue binding lock is poisoned.")
     })?;
-    if *bound {
-        return Ok(());
+    let paths = system.with_index(|index| index.dev_paths().to_vec());
+    if let Some((first, first_paths)) = bound.as_ref() {
+        if std::sync::Arc::ptr_eq(first, &system) || *first_paths == paths {
+            return Ok(());
+        }
+        return Err(erp_sdk::Error::programming(format!(
+            "The Settings catalogue is already bound to the addon directories {first_paths:?}; a system over \
+             {paths:?} cannot answer for the same process."
+        )));
     }
+    let bound_system = std::sync::Arc::clone(&system);
     erp_sdk::settings::bind_addon_catalogue(Box::new(move || {
         let system = std::sync::Arc::clone(&system);
         Box::pin(async move {
@@ -48,7 +62,7 @@ pub fn bind_settings_catalogue(
             ))
         })
     }))?;
-    *bound = true;
+    *bound = Some((bound_system, paths));
     Ok(())
 }
 

@@ -46,7 +46,7 @@ const PROBE_RECORD_LINK_WRONG_KIND: u8 = 4;
 const PROBE_TOGGLE_KEYS: [&str; 2] = ["base.test_mod_not_available", "base.test_mod_uom"];
 // A toggle declaration that publication must refuse, switched on for one check at a time.
 static PROBE_BAD_TOGGLE: AtomicU8 = AtomicU8::new(0);
-const BAD_TOGGLES: [(&str, &str); 8] = [
+const BAD_TOGGLES: [(&str, &str); 11] = [
     (
         "base.test_mod_unknown",
         "Setting item base.test_mod_unknown toggles the addon no_such_addon, which is neither installed nor in \
@@ -58,8 +58,7 @@ const BAD_TOGGLES: [(&str, &str); 8] = [
     ),
     (
         "base.test_group_missing",
-        "Setting item base.test_group_missing cannot toggle the group base.no_such_group: it is or implies a \
-         group that is not a light feature group.",
+        "Setting item base.test_group_missing cannot toggle the group base.no_such_group: it does not exist.",
     ),
     (
         "base.test_group_user",
@@ -86,6 +85,21 @@ const BAD_TOGGLES: [(&str, &str); 8] = [
         "Setting item base.test_group_public cannot toggle the group base.group_public: it is the portal or \
          public group.",
     ),
+    (
+        "base.test_group_everyone",
+        "Setting item base.test_group_everyone cannot toggle the group base.group_everyone: it is a built-in \
+         base group.",
+    ),
+    (
+        "base.test_group_no_one",
+        "Setting item base.test_group_no_one cannot toggle the group base.group_no_one: it is a built-in base \
+         group.",
+    ),
+    (
+        "base.test_group_default",
+        "Setting item base.test_group_default cannot toggle the group base.default_user_group: it is a \
+         built-in base group.",
+    ),
 ];
 fn bad_toggle(index: u8) -> erp_sdk::Result<Option<PanelItemDecl>> {
     let item = match index {
@@ -103,6 +117,17 @@ fn bad_toggle(index: u8) -> erp_sdk::Result<Option<PanelItemDecl>> {
         )?,
         7 => PanelItemDecl::group_toggle("base.test_group_portal", "Portal", "base.group_portal")?,
         8 => PanelItemDecl::group_toggle("base.test_group_public", "Public", "base.group_public")?,
+        9 => PanelItemDecl::group_toggle(
+            "base.test_group_everyone",
+            "Everyone",
+            "base.group_everyone",
+        )?,
+        10 => PanelItemDecl::group_toggle("base.test_group_no_one", "No one", "base.group_no_one")?,
+        11 => PanelItemDecl::group_toggle(
+            "base.test_group_default",
+            "Default",
+            "base.default_user_group",
+        )?,
         _ => return Ok(None),
     };
     Ok(Some(item.block("Probe")?.access(&["base.group_system"])?))
@@ -499,6 +524,37 @@ async fn general_section() {
             other => panic!("expected module toggle for {key}, got {other:?}"),
         }
     }
+    // The recorded state decides, not registry membership: `uom` is in the registry but recorded as removed gives
+    // NotInstalled; recorded between states (`to install`, `to upgrade`) fails the description as the Addons
+    // directory does.
+    for (recorded, expected) in [
+        ("uninstalled", None),
+        ("to install", Some(ErrorKind::Concurrency)),
+        ("to upgrade", Some(ErrorKind::Concurrency)),
+    ] {
+        tx.execute(
+            &format!("UPDATE ir_module_module SET state = '{recorded}' WHERE name = 'uom'"),
+            &[],
+        )
+        .await
+        .unwrap();
+        let outcome = describe(&env, &mut tx, SettingsScope::Global {}).await;
+        match expected {
+            None => match item(&outcome.unwrap(), "base.test_mod_uom") {
+                Some(SettingsItem::Module { state, .. }) => {
+                    assert_eq!(*state, ModuleToggleState::NotInstalled, "{recorded}");
+                }
+                other => panic!("expected module toggle, got {other:?}"),
+            },
+            Some(kind) => assert_eq!(outcome.unwrap_err().kind(), kind, "{recorded}"),
+        }
+    }
+    tx.execute(
+        "UPDATE ir_module_module SET state = 'installed' WHERE name = 'uom'",
+        &[],
+    )
+    .await
+    .unwrap();
     // A fresh database: no active internal user (only the inactive `__system__`), one language, one company.
     for (key, sql, singular, plural, fresh) in [
         (
