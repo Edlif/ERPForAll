@@ -1,9 +1,10 @@
-# Continuous integration for pull requests, pushes to main, and weekly full sharded verification.
+# Continuous integration.
 #
-# Pull requests and sync pushes run `scripts/affected-packages.py` first and execute Rust/DB tests only for
-# affected packages (with prebuilt nextest, lld, and Swatinem/rust-cache) so runs finish quickly inside the
-# 14 GB disk budget of GitHub-hosted runners. Weekly scheduled runs and manual dispatches verify the full
-# workspace across package shards.
+# Pull requests and pushes to main run a light check that fits a GitHub-hosted runner (about 14 GB of disk):
+# formatting, layer checks and clippy for the packages the diff affects, the web type check and tests when web
+# files changed, and, on pull requests, a DCO sign-off check. The Rust and database test suites do not run here:
+# the maintainers run the full suite on their own hosts before a change reaches `main`. The weekly schedule and
+# a manual dispatch run the full workspace tests across package shards.
 name: CI
 
 on:
@@ -16,6 +17,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:
@@ -36,6 +41,7 @@ jobs:
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "schedule" ] || [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
@@ -48,6 +54,8 @@ jobs:
           fi
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             base="origin/$GITHUB_BASE_REF"
+          elif [ -n "$PUSH_BEFORE" ] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            base="$PUSH_BEFORE"
           else
             base="HEAD~1"
           fi
@@ -60,32 +68,30 @@ jobs:
           echo "run_rust=$run_rust" >> "$GITHUB_OUTPUT"
           echo "run_web=$run_web" >> "$GITHUB_OUTPUT"
           echo "base_ref=$base" >> "$GITHUB_OUTPUT"
-          if [ "$mode" = "full" ] && [ "$run_rust" = "true" ]; then
-            echo "sharded=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "sharded=false" >> "$GITHUB_OUTPUT"
-          fi
+          # Only the weekly schedule and a manual dispatch run the sharded test suite, even when the diff
+          # touches a global input and the light check widens to the whole workspace.
+          echo "sharded=false" >> "$GITHUB_OUTPUT"
+
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit of the pull request carries a Signed-off-by line
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 -I scripts/check-dco.py "$BASE_SHA" "$HEAD_SHA"
 
   rust:
     needs: plan
     if: needs.plan.outputs.run_rust == 'true' && needs.plan.outputs.sharded == 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+    timeout-minutes: 60
     env:
-      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
-      ERP_TEST_DATABASE_URLS: postgres://postgres:postgres@127.0.0.1:5432/postgres
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
@@ -102,17 +108,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lld
       - name: Install the pinned Rust toolchain
         run: rustup show
-      - name: Install prebuilt cargo-nextest
-        uses: taiki-e/install-action@nextest
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - name: Format, layers, clippy and affected tests
+      - name: Format, layers and clippy of the affected packages
         env:
           PLAN_BASE_REF: ${{ needs.plan.outputs.base_ref }}
-        run: scripts/check.sh --affected "$PLAN_BASE_REF" --committed-only --tests
+        run: scripts/check.sh --affected "$PLAN_BASE_REF" --committed-only
 
   rust-full-sharded:
     needs: plan
@@ -123,27 +127,27 @@ jobs:
       fail-fast: false
       matrix:
         shard: [core, addons, suites, cli]
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     env:
-      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
-      ERP_TEST_DATABASE_URLS: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/erpforall
+      ERP_TEST_DATABASE_URLS: postgres://postgres:postgres@127.0.0.1:5432/erpforall
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
     steps:
       - uses: actions/checkout@v4
+      - name: Start PostgreSQL 18
+        # The default lock table is too small for the parallel database tests ("out of shared memory"), and the
+        # tests refuse the system database named postgres, so the server gets its own database.
+        run: |
+          docker run -d --name pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=erpforall \
+            postgres:18 -c max_connections=200 -c max_locks_per_transaction=256
+          for _ in $(seq 1 60); do
+            docker exec pg pg_isready -h 127.0.0.1 -U postgres -d erpforall && exit 0
+            sleep 2
+          done
+          docker logs pg
+          exit 1
       - name: Free disk space on the runner
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
