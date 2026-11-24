@@ -2081,6 +2081,8 @@ async fn move_counters_follow_ordinary_move_mutations() {
             counted_move(&f, a, "assigned", "4", false, true),
             counted_move(&f, a, "done", "1", true, false),
             counted_move(&f, b, "cancel", "2", false, false),
+            // keeps B open: a cancelled transfer takes no further moves
+            counted_move(&f, b, "draft", "1", false, false),
         ],
     )
     .await

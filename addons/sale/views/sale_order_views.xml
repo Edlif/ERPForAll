@@ -17,11 +17,11 @@ The total with taxes and
         -->
         <field name="sequence" invisible="1"/>
         <field name="display_type" invisible="1"/>
-        <!-- delivered or invoiced goods keep their product and unit -->
-        <field name="product_id" readonly="qty_delivered &gt; 0 or qty_invoiced &gt; 0"/>
+        <!-- the line form and the server keep a delivered or invoiced line's product and unit -->
+        <field name="product_id"/>
         <field name="name" required="0"/>
         <field name="product_uom_qty"/>
-        <field name="product_uom_id" readonly="qty_delivered &gt; 0 or qty_invoiced &gt; 0"/>
+        <field name="product_uom_id"/>
         <field name="price_unit"/>
         <field name="discount" string="Disc. %"/>
         <field name="tax_ids" widget="many2many_tags"/>
