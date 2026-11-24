@@ -111,11 +111,10 @@ async fn installed() -> (TestDb, Orm) {
             return Err(format!("initialize: {:?}", initialized.post_commit));
         }
         let modules = ["sale_stock", "purchase_stock"].map(|name| ModuleName::new(name).unwrap());
-        let installed = Box::pin(
-            system.button_immediate_install(&system.system_env(Context::new()), &modules),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let installed =
+            Box::pin(system.button_immediate_install(&system.system_env(Context::new()), &modules))
+                .await
+                .map_err(|e| e.to_string())?;
         if !installed.post_commit.is_clean() {
             return Err(format!("install: {:?}", installed.post_commit));
         }

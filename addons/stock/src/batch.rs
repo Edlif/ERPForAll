@@ -734,6 +734,24 @@ impl StockPickingBatch {
         sup.call(tx, this.as_records(), (vals,)).await
     }
 
+    /// The generic upsert by the declared reference key runs no `create` or `write` override, so
+    /// none of the checks above (a done or cancelled batch among them): it is refused, after the
+    /// model access checks of both operations.
+    #[method(override)]
+    async fn upsert(
+        this: &RecordSet<StockPickingBatch>,
+        tx: &mut Transaction,
+        _call: erp_sdk::UpsertCall,
+        _sup: Super,
+    ) -> Result<erp_sdk::UpsertResult> {
+        let records = this.as_records();
+        records.check_access(tx, Operation::Create).await?;
+        records.check_access(tx, Operation::Write).await?;
+        Err(Error::user(
+            "A batch transfer is created and changed through its form and actions, not by an upsert on its reference.",
+        ))
+    }
+
     /// A batch is deleted only while it is not being validated and none of its transfers is done:
     /// it is the record of what was processed.
     #[method(override)]

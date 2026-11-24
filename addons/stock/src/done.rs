@@ -174,7 +174,11 @@ async fn count(tx: &mut Transaction, sql: &str, ids: &[i64]) -> Result<i64> {
 }
 
 /// The final state (`done` before `cancel`) among the rows `ids` of `sql`'s table, if any.
-pub(crate) async fn final_state(tx: &mut Transaction, sql: &str, ids: &[i64]) -> Result<Option<String>> {
+pub(crate) async fn final_state(
+    tx: &mut Transaction,
+    sql: &str,
+    ids: &[i64],
+) -> Result<Option<String>> {
     match tx.query(sql, &[&ids]).await?.first() {
         Some(row) => row.try_get(0).map(Some).map_err(decode),
         None => Ok(None),
@@ -182,7 +186,13 @@ pub(crate) async fn final_state(tx: &mut Transaction, sql: &str, ids: &[i64]) ->
 }
 
 /// The refusal of `field` (a field name of `model`) on a record of `what` in the final `state`.
-pub(crate) fn fixed(tx: &Transaction, model: &str, what: &'static str, state: &str, field: &str) -> Result<Error> {
+pub(crate) fn fixed(
+    tx: &Transaction,
+    model: &str,
+    what: &'static str,
+    state: &str,
+    field: &str,
+) -> Result<Error> {
     let field = label(tx, model, field)?;
     Ok(if state == "done" {
         StockError::DoneRecordFixed { what, field }

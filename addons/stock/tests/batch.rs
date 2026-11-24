@@ -815,7 +815,9 @@ async fn a_done_or_cancelled_batch_refuses_every_field() {
             let records = f.batches(&tx, batch);
             let error = tx
                 .savepoint(async move |tx| {
-                    records.write(tx, RawVals::new().set_cell(field, cell)).await
+                    records
+                        .write(tx, RawVals::new().set_cell(field, cell))
+                        .await
                 })
                 .await
                 .unwrap_err();
@@ -827,6 +829,31 @@ async fn a_done_or_cancelled_batch_refuses_every_field() {
             );
         }
     }
+    // the upsert by reference would run none of these checks: it is refused, also for a final batch
+    let name: String = tx
+        .query("SELECT name FROM stock_picking_batch WHERE id = $1", &[&done])
+        .await
+        .unwrap()[0]
+        .get(0);
+    let model = f.env(&tx).records("stock.picking.batch").unwrap();
+    let error = tx
+        .savepoint(async |tx| {
+            model
+                .upsert(
+                    tx,
+                    erp_sdk::UpsertCall::new("_name_uniq")
+                        .with_rows([RawVals::new()
+                            .set_cell("name", text(&name))
+                            .set_cell("company_id", Cell::Id(f.company))
+                            .set_cell("description", text("Late wave"))])
+                        .with_update(["description"]),
+                )
+                .await
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UserError, "{error:?}");
+    assert!(error.message().contains("not by an upsert"), "{}", error.message());
     // a batch that is not final still takes the same fields
     let open = f.batch(&mut tx).await.unwrap();
     f.batches(&tx, open)

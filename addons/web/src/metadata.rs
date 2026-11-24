@@ -4960,8 +4960,9 @@ pub async fn test_form_readonly(
     use erp_sdk::expr::{EvalContext, eval_ast, wire::ValidatedAst};
     let form = Value::list([Value::False, Value::str("form")]);
     let description = test_get_views(env, tx, model, vec![form], 32 * 1024 * 1024).await?;
-    let description = serde_json::to_value(&description)
-        .map_err(|e| Error::internal("The view description could not be encoded.").with_source(e))?;
+    let description = serde_json::to_value(&description).map_err(|e| {
+        Error::internal("The view description could not be encoded.").with_source(e)
+    })?;
     let mut ctx = EvalContext::standard();
     for (name, value) in names {
         ctx.set(*name, value.clone());
@@ -4972,9 +4973,10 @@ pub async fn test_form_readonly(
         .and_then(|view| view["nodes"].as_array())
         .ok_or_else(|| Error::internal(format!("{model} has no form view")))?;
     let mut result = BTreeMap::new();
-    for node in nodes.iter().filter(|node| {
-        node["kind"] == "field" && node["field"]["model"].as_str() == Some(model)
-    }) {
+    for node in nodes
+        .iter()
+        .filter(|node| node["kind"] == "field" && node["field"]["model"].as_str() == Some(model))
+    {
         let Some(name) = node["field"]["name"].as_str() else {
             return Err(Error::internal("A form field node has no name."));
         };
@@ -4985,9 +4987,8 @@ pub async fn test_form_readonly(
                 let bytes = serde_json::to_vec(document).map_err(|e| {
                     Error::internal("A modifier could not be encoded.").with_source(e)
                 })?;
-                let ast = ValidatedAst::from_json(&bytes).map_err(|e| {
-                    Error::internal(format!("readonly of {name}: {}", e.message()))
-                })?;
+                let ast = ValidatedAst::from_json(&bytes)
+                    .map_err(|e| Error::internal(format!("readonly of {name}: {}", e.message())))?;
                 let value = eval_ast(ast.as_expr(), &ctx)
                     .map_err(|e| Error::internal(format!("readonly of {name}: {e}")))?;
                 value.is_truthy() || own

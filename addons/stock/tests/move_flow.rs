@@ -2045,10 +2045,17 @@ async fn cancelled_work_is_fixed_for_every_caller() {
         )
         .await
         .unwrap_err();
-    assert!(error.message().starts_with("Source Location"), "{}", error.message());
+    assert!(
+        error.message().starts_with("Source Location"),
+        "{}",
+        error.message()
+    );
     // cancelling again leaves it as it is; the stock was given back once
     f.call(&mut tx, picking, "action_cancel").await.unwrap();
-    assert_eq!(f.quant(&mut tx, f.p).await, Some((dec("10"), Decimal::ZERO)));
+    assert_eq!(
+        f.quant(&mut tx, f.p).await,
+        Some((dec("10"), Decimal::ZERO))
+    );
     // a cancelled transfer and its moves may still be deleted
     f.unlink_as(&mut tx, "stock.picking", &[picking])
         .await
