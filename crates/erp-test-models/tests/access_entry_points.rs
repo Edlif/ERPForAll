@@ -1890,6 +1890,11 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "after the base create of teams, or a base write of their `member_ids`, checked the caller's create or write right on those teams (Sales administrator), links the members of those teams, and on a create the acting user, into their `favorite_user_ids`; reads the members through the caller's own read, writes only that relation of those teams, returns nothing",
     ),
     (
+        "stock/batch.rs::run_validate_step",
+        1,
+        "the job step that validates a batch's transfers creates the result rows of that batch and run (batch, transfer, company, run, outcome, message); users may read results but never write them, so no user can forge or remove an outcome; the transfers themselves are validated with the queuing user's own rights, the elevated environment is used for that one create and nothing is returned from it",
+    ),
+    (
         "stock/operation_type.rs::create_sequence",
         1,
         "creates the numbering sequence of the operation type being created, after the caller's create right on the type was checked; writes only that type's name, prefix, padding, company and implementation, and the new sequence id goes only to the type's own sequence_id, which is what later prefix edits may write",
