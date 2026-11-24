@@ -227,6 +227,10 @@ pub struct SaleOrder {
         string = "Delivery Status"
     )]
     pub delivery_status: Option<Arc<str>>,
+    /// How many customer invoices and credit notes of the order the caller may read
+    /// ([`crate::invoice_buttons`]).
+    #[field(integer, compute = "_compute_invoice_count", string = "Invoice Count")]
+    pub invoice_count: i32,
     /// The pricelist new lines are priced from; none: the products' sales prices. Not changed
     /// once the order is confirmed.
     #[field(

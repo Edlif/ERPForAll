@@ -11,4 +11,19 @@
       </xpath>
     </field>
   </record>
+
+  <record id="invoice_sales_orders_form" model="ir.ui.view">
+    <field name="name">account.move.invoice.form.sales.orders</field>
+    <field name="model">account.move</field>
+    <field name="inherit_id" ref="account.view_invoice_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//div[hasclass('oe_title')]" position="before">
+        <div class="oe_button_box" name="button_box_sales">
+          <button name="action_view_sale_orders" type="object" class="oe_stat_button" invisible="sale_order_count == 0">
+            <field name="sale_order_count" widget="statinfo" string="Sales Orders"/>
+          </button>
+        </div>
+      </xpath>
+    </field>
+  </record>
 </erp>
