@@ -103,7 +103,8 @@ try {
   await sourceOrder.waitFor();
   assert.equal(new URL(page.url()).searchParams.get("id"), String(transferId));
   assert.equal((await sourceOrder.innerText()).trim(), confirmedOrder.name);
-  assert.match(await page.locator("[data-control-breadcrumbs]").innerText(), /\bDeliveries\b/);
+  // the delivery opens on top of the order it came from: the trail leads back to that order
+  assert.ok((await page.locator("[data-control-breadcrumbs]").innerText()).includes(confirmedOrder.name));
   await screenshot("delivery-source-order.png");
   await sourceOrder.click();
   await deliveryLink.waitFor();
