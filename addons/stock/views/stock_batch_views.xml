@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <!-- Batch transfers: list, form (confirm, check availability, validate, cancel; transfers and the result of
+       each validation), search, the Add to Batch dialog and the menu, shown to the batch feature group. -->
+  <record id="view_picking_batch_list" model="ir.ui.view">
+    <field name="name">stock.picking.batch.list</field>
+    <field name="model">stock.picking.batch</field>
+    <field name="arch" type="xml">
+      <list string="Batch Transfers">
+        <field name="name"/>
+        <field name="description"/>
+        <field name="picking_type_id"/>
+        <field name="user_id"/>
+        <field name="scheduled_date"/>
+        <field name="state" widget="badge"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_picking_batch_form" model="ir.ui.view">
+    <field name="name">stock.picking.batch.form</field>
+    <field name="model">stock.picking.batch</field>
+    <field name="arch" type="xml">
+      <form string="Batch Transfer">
+        <header>
+          <button name="action_confirm" type="object" string="Confirm" class="oe_highlight" invisible="state != 'draft'"/>
+          <button name="action_assign" type="object" string="Check Availability" invisible="state != 'in_progress'"/>
+          <button name="action_done" type="object" string="Validate" class="oe_highlight" invisible="state != 'in_progress' or validating"/>
+          <button name="action_add_transfers" type="object" string="Add Transfers" invisible="state not in ('draft', 'in_progress') or validating"/>
+          <button name="action_cancel" type="object" string="Cancel" invisible="state not in ('draft', 'in_progress') or validating"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,in_progress,done"/>
+        </header>
+        <sheet>
+          <div class="oe_title"><h1><field name="name"/></h1></div>
+          <group>
+            <group>
+              <field name="description"/>
+              <field name="user_id"/>
+              <field name="picking_type_id" readonly="state != 'draft'"/>
+            </group>
+            <group>
+              <field name="scheduled_date"/>
+              <field name="priority"/>
+              <field name="company_id" readonly="1"/>
+              <field name="validating"/>
+            </group>
+          </group>
+          <notebook>
+            <page name="transfers" string="Transfers">
+              <field name="picking_ids" readonly="1"/>
+            </page>
+            <page name="results" string="Validation Results">
+              <field name="result_ids" readonly="1"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="view_picking_batch_result_list" model="ir.ui.view">
+    <field name="name">stock.picking.batch.result.list</field>
+    <field name="model">stock.picking.batch.result</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="run"/>
+        <field name="picking_id"/>
+        <field name="outcome" widget="badge"/>
+        <field name="message"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_picking_batch_result_form" model="ir.ui.view">
+    <field name="name">stock.picking.batch.result.form</field>
+    <field name="model">stock.picking.batch.result</field>
+    <field name="arch" type="xml">
+      <form string="Validation Result">
+        <sheet>
+          <group>
+            <group>
+              <field name="picking_id"/>
+              <field name="run"/>
+            </group>
+            <group>
+              <field name="outcome"/>
+              <field name="message"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="view_picking_batch_search" model="ir.ui.view">
+    <field name="name">stock.picking.batch.search</field>
+    <field name="model">stock.picking.batch</field>
+    <field name="arch" type="xml">
+      <search string="Batch Transfers">
+        <field name="name"/>
+        <field name="description"/>
+        <field name="user_id"/>
+        <filter name="draft" string="Draft" domain="[('state', '=', 'draft')]"/>
+        <filter name="in_progress" string="In progress" domain="[('state', '=', 'in_progress')]"/>
+        <filter name="done" string="Done" domain="[('state', '=', 'done')]"/>
+        <group>
+          <filter name="group_state" string="Status" context="{'group_by': 'state'}"/>
+          <filter name="group_user" string="Responsible" context="{'group_by': 'user_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+  <record id="action_picking_batch" model="ir.actions.act_window">
+    <field name="name">Batch Transfers</field>
+    <field name="res_model">stock.picking.batch</field>
+    <field name="view_mode">list,form</field>
+    <field name="search_view_id" ref="view_picking_batch_search"/>
+  </record>
+  <record id="view_picking_to_batch_form" model="ir.ui.view">
+    <field name="name">stock.picking.to.batch.form</field>
+    <field name="model">stock.picking.to.batch</field>
+    <field name="arch" type="xml">
+      <form string="Add to Batch" record_mode="record">
+        <group>
+          <field name="mode" widget="radio"/>
+          <field name="batch_id" invisible="mode != 'existing'" required="mode == 'existing'"/>
+          <field name="description" invisible="mode != 'new'"/>
+          <field name="user_id" invisible="mode != 'new'"/>
+          <field name="is_create_draft" invisible="mode != 'new'"/>
+        </group>
+        <field name="picking_ids" widget="many2many_tags"/>
+        <footer>
+          <button name="action_add_to_batch" type="object" string="Confirm" class="btn-primary"/>
+          <button special="cancel" string="Cancel"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+  <menuitem id="menu_stock_picking_batch" name="Batch Transfers" parent="menu_stock_operations" action="action_picking_batch" groups="stock.group_stock_picking_batch" sequence="50"/>
+  <record id="menu_stock_picking_batch" model="ir.ui.menu"><field name="web_icon">lucide:layers</field></record>
+
+  <!-- the transfer form: the batch and the button that adds the transfer to one -->
+  <record id="view_picking_form_batch" model="ir.ui.view">
+    <field name="name">stock.picking.form.batch</field>
+    <field name="model">stock.picking</field>
+    <field name="inherit_id" ref="view_picking_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//button[@name='action_cancel']" position="after">
+        <button name="action_add_to_batch" type="object" string="Add to Batch" groups="stock.group_stock_picking_batch" invisible="state in ('done', 'cancel') or batch_id"/>
+      </xpath>
+      <xpath expr="//field[@name='origin']" position="after">
+        <field name="batch_id" readonly="1" groups="stock.group_stock_picking_batch"/>
+      </xpath>
+    </field>
+  </record>
+</erp>
