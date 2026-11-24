@@ -1804,9 +1804,27 @@ dependencies = [
 name = "erp-addon-stock_dropshipping"
 version = "0.1.0"
 dependencies = [
+ "erp-addon-account",
+ "erp-addon-analytic",
+ "erp-addon-barcodes",
+ "erp-addon-barcodes_gs1_nomenclature",
+ "erp-addon-base",
+ "erp-addon-mail",
+ "erp-addon-product",
+ "erp-addon-purchase",
  "erp-addon-purchase_stock",
+ "erp-addon-reporting",
+ "erp-addon-sale",
  "erp-addon-sale_stock",
+ "erp-addon-sales_team",
+ "erp-addon-stock",
+ "erp-addon-stock_account",
+ "erp-addon-uom",
+ "erp-addon-web",
  "erp-sdk",
+ "erp-testkit",
+ "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -2047,6 +2065,7 @@ dependencies = [
  "erp-addon-stock",
  "erp-addon-stock-mail",
  "erp-addon-stock_account",
+ "erp-addon-stock_dropshipping",
  "erp-addon-theme-office-blue",
  "erp-addon-uom",
  "erp-addon-valuation",

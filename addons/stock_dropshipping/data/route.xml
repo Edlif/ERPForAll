@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp noupdate="1">
+  <record id="route_drop_shipping" model="stock.route">
+    <field name="name">Dropship</field>
+    <field name="product_selectable" eval="True"/>
+  </record>
+</erp>

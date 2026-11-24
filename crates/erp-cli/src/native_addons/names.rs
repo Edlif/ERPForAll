@@ -32,6 +32,7 @@ pub const LINKED: &[&str] = &[
     "sales_team",
     "sale",
     "sale_stock",
+    "stock_dropshipping",
     "ai_base",
     "hr",
 ];
@@ -47,7 +48,6 @@ pub const NOT_LINKED: &[(&str, &str)] = &[
     ("delivery", DECLARED_ONLY),
     ("product_expiry", DECLARED_ONLY),
     ("stock_delivery", DECLARED_ONLY),
-    ("stock_dropshipping", DECLARED_ONLY),
     ("stock_landed_costs", DECLARED_ONLY),
     ("stock_sms", DECLARED_ONLY),
 ];

@@ -25,6 +25,7 @@ erp-addon-analytic.workspace = true
 erp-addon-account.workspace = true
 erp-addon-purchase.workspace = true
 erp-addon-purchase_stock.workspace = true
+erp-addon-stock_dropshipping.workspace = true
 erp-addon-barcodes_gs1_nomenclature.workspace = true
 erp-addon-stock.workspace = true
 # message thread and chatter on entries, purchase orders and transfers (bridges, auto-installed with mail)
