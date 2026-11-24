@@ -428,7 +428,11 @@ that record with one call, `erp_resolve_record_action` on `ir.actions.act_window
 picks the first window action of the user's visible menus, in menu order, that opens the current page, has a form view
 of that model and whose domain holds the record, and answers it with its views, or `null` when the user may open none.
 The domain of such an action may hold literal criteria and `uid` only. Opened from a form, the new form goes on top of
-it: the breadcrumb shows the list, the record and the opened record, and leads back to each.
+it: the breadcrumb shows the list, the record and the opened record, and leads back to each. The same holds for a list
+a form's button opens (an object button whose method returns a current-window action, or a declared action button), for
+a form opened from that list, and for a link in a line dialog or a relation dialog, which closes first: every step stays
+in the trail (up to 32) and each crumb returns to its own step. Dialogs and line views read their view descriptions
+through the page's metadata cache, so a dialog opened again asks the server only for its record.
 
 A user's home action (`res.users.action_id`, a window action the user may set on their own record) opens in place of
 the app grid when the address names no action. It loads through the usual access checks: an action the user may not

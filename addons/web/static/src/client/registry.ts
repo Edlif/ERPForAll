@@ -37,6 +37,8 @@ export interface FieldWidgetProps { field: Field; value: unknown; change: (value
  * What happened to the record a form shows, told to its widgets after the form has settled (rendered again):
  * a save that succeeded (with the record id) or failed, a discard, and a switch between read and edit mode.
  */
+/** Loads the descriptions of `views` of `model` through the page's metadata cache, as `get_views` answers them. */
+export type ViewLoader = (model: string, views: [number | null, string][], context: Record<string, unknown>) => Promise<unknown>;
 export type RecordEvent = { readonly type: "saved"; readonly id: number } | { readonly type: "saveFailed" } | { readonly type: "discarded" } | { readonly type: "modeChanged"; readonly mode: "read" | "edit" };
 /** A window action named by its XML id, opened as its list (or a new record in its form) with a concrete domain and context. */
 export interface ActionRequest { xmlId: string; viewMode: "form" | "list" | null; domain: unknown[]; context: Record<string, unknown> }
@@ -79,6 +81,8 @@ export interface WidgetEnvironment extends FieldWidgetProps {
   /** Owner-scope disposal; stop reads and remove any protected child overlays when aborted. */
   signal?: AbortSignal;
   openRecord?: (model: string, id: number) => Promise<void>;
+  /** The page's cached view loader; absent, a widget that opens a form in a dialog asks the server itself. */
+  views?: ViewLoader;
   /** Opens a window action by XML id ({@link ShellNavigation.openAction}); present on the main form's fields, list cells and kanban cards (not in dialogs or one2many lines). */
   openAction?: (request: ActionRequest) => Promise<void>;
   /** Goes to a route through the shell ({@link ShellNavigation.navigate}); present where `openAction` is. */
