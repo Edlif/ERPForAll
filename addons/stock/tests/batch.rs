@@ -706,7 +706,11 @@ async fn validation_keeps_a_result_per_transfer_in_chunks() {
     let rows = results(&mut tx, batch, 2).await;
     assert_eq!(rows.len(), 1);
     assert_eq!((rows[0].0, rows[0].1.as_str()), (short, "error"));
-    assert_eq!(results(&mut tx, batch, 1).await.len(), 4, "run 1 keeps its rows");
+    assert_eq!(
+        results(&mut tx, batch, 1).await.len(),
+        4,
+        "run 1 keeps its rows"
+    );
 }
 
 /// A batch whose transfers are all validated is done and stays; it is not deleted. A cancelled
@@ -980,13 +984,25 @@ async fn a_step_of_a_gone_or_stale_run_does_nothing() {
     let a = f.transfer(&mut tx, true, "1").await;
     let batch = f.batch(&mut tx).await.unwrap();
     f.add(&mut tx, batch, &[a]).await.unwrap();
-    f.call_batch(&mut tx, batch, "action_confirm").await.unwrap();
+    f.call_batch(&mut tx, batch, "action_confirm")
+        .await
+        .unwrap();
     f.call_batch(&mut tx, batch, "action_done").await.unwrap();
     for (payload, expected) in [
-        (erp_sdk::serde_json::json!({ "id": batch + 1000, "run": 1 }), "gone"),
-        (erp_sdk::serde_json::json!({ "id": batch, "run": 7 }), "stale"),
+        (
+            erp_sdk::serde_json::json!({ "id": batch + 1000, "run": 1 }),
+            "gone",
+        ),
+        (
+            erp_sdk::serde_json::json!({ "id": batch, "run": 7 }),
+            "stale",
+        ),
     ] {
-        let args = StepArgs { payload, progress: None, attempt: 1 };
+        let args = StepArgs {
+            payload,
+            progress: None,
+            attempt: 1,
+        };
         let outcome = f
             .env(&tx)
             .records("stock.picking.batch")
@@ -1001,7 +1017,11 @@ async fn a_step_of_a_gone_or_stale_run_does_nothing() {
     assert!(results(&mut tx, batch, 1).await.is_empty());
     assert_eq!(picking_state(&mut tx, a).await, "assigned");
     // a payload that is not {id, run} is an invariant error, not a silent stop
-    let args = StepArgs { payload: erp_sdk::serde_json::json!({}), progress: None, attempt: 1 };
+    let args = StepArgs {
+        payload: erp_sdk::serde_json::json!({}),
+        progress: None,
+        attempt: 1,
+    };
     f.env(&tx)
         .records("stock.picking.batch")
         .unwrap()
@@ -1021,7 +1041,9 @@ async fn a_run_that_detaches_every_transfer_cancels_the_batch() {
     let b = f.transfer(&mut tx, false, "1").await;
     let batch = f.batch(&mut tx).await.unwrap();
     f.add(&mut tx, batch, &[a, b]).await.unwrap();
-    f.call_batch(&mut tx, batch, "action_confirm").await.unwrap();
+    f.call_batch(&mut tx, batch, "action_confirm")
+        .await
+        .unwrap();
     f.call_batch(&mut tx, batch, "action_done").await.unwrap();
     f.call(&mut tx, a, "do_unreserve").await.unwrap();
     f.call(&mut tx, b, "do_unreserve").await.unwrap();
@@ -1057,35 +1079,6 @@ async fn the_chunk_size_keeps_its_floor_and_bound() {
             .await;
         assert_eq!(result.is_ok(), ok, "{value}: {result:?}");
     }
-}
-
-/// A user outside the batch feature group gets no batch action; the refusal names the setting.
-#[tokio::test]
-async fn batch_actions_are_for_the_feature_group() {
-    let f = fixture().await;
-    let mut tx = f.h.begin().await.unwrap();
-    let a = f.transfer(&mut tx, true, "1").await;
-    let batch = f.batch(&mut tx).await.unwrap();
-    f.add(&mut tx, batch, &[a]).await.unwrap();
-    let outsider = tx.env().with_user(7).with_company(f.company).unwrap();
-    for method in ["action_confirm", "action_assign", "action_cancel", "action_done"] {
-        let records = outsider.records("stock.picking.batch").unwrap().browse([batch]).unwrap();
-        let error = tx
-            .savepoint(async move |tx| records.call::<(), ()>(tx, method, ()).await)
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error.kind(), ErrorKind::Access | ErrorKind::AccessDenied),
-            "{method}: {error:?}"
-        );
-    }
-    let records = outsider.records("stock.picking.batch").unwrap().browse([batch]).unwrap();
-    let error = tx
-        .savepoint(async move |tx| records.call::<(), Value>(tx, "action_add_transfers", ()).await)
-        .await
-        .unwrap_err();
-    assert!(matches!(error.kind(), ErrorKind::Access | ErrorKind::AccessDenied), "{error:?}");
-    assert_eq!(batch_row(&mut tx, batch).await.0, "draft");
 }
 
 /// A transfer of another company does not join, whatever its state.

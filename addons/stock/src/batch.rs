@@ -1204,10 +1204,22 @@ mod tests {
     /// queue retries the chunk.
     #[test]
     fn only_user_facing_errors_are_recorded() {
-        for kind in [ErrorKind::UserError, ErrorKind::Validation, ErrorKind::Access, ErrorKind::Missing, ErrorKind::Conflict] {
+        for kind in [
+            ErrorKind::UserError,
+            ErrorKind::Validation,
+            ErrorKind::Access,
+            ErrorKind::Missing,
+            ErrorKind::Conflict,
+        ] {
             assert!(is_user_facing(kind), "{kind:?}");
         }
-        for kind in [ErrorKind::Concurrency, ErrorKind::Lock, ErrorKind::Database, ErrorKind::Programming, ErrorKind::Internal] {
+        for kind in [
+            ErrorKind::Concurrency,
+            ErrorKind::Lock,
+            ErrorKind::Database,
+            ErrorKind::Programming,
+            ErrorKind::Internal,
+        ] {
             assert!(!is_user_facing(kind), "{kind:?}");
         }
     }
