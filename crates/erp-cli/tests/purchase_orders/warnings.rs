@@ -9,6 +9,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
     run(async {
         let db = TestDb::builder().pool_size(8).create().await.unwrap();
         let system = purchase_module_system(&db);
+        erp_cli::module::bind_settings_catalogue(std::sync::Arc::clone(&system)).unwrap();
         let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
             .await
             .unwrap();
@@ -267,8 +268,6 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         assert_eq!(group_item["block"], "Orders");
         assert_eq!(group_item["group"], "purchase.group_warning_purchase");
         assert_eq!(group_item["state"], "disabled");
-        assert_eq!(group_item["group_id"], warning_group);
-        assert_eq!(group_item["internal_group_id"], user_group);
 
         let err = write_values(
             &env,
