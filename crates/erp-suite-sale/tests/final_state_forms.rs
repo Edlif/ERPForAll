@@ -125,7 +125,34 @@ async fn installed() -> (TestDb, Orm) {
     let loaded = Box::pin(system_for_pool(db.pool().clone()).load())
         .await
         .unwrap();
-    (db, loaded.orm)
+    let orm = policy_orm(&db, &loaded.orm).await;
+    (db, orm)
+}
+
+/// The installed ORM with the database's compiled access policy, as a served node builds it: the
+/// compiled forms resolve the groups their nodes name.
+async fn policy_orm(db: &TestDb, installed: &Orm) -> Orm {
+    let registry = std::sync::Arc::clone(installed.registry());
+    let source = erp_security::source::PolicySource::build(registry.clone(), db.pool().clone())
+        .await
+        .unwrap();
+    Orm::builder(registry.clone(), db.pool().clone())
+        .generation_attachment(erp_orm::GenerationAttachment::new(
+            registry.clone(),
+            installed
+                .env(SUPERUSER_ID, Context::new())
+                .generation_attachment::<erp_views::PublishedViewTypes>()
+                .unwrap(),
+        ))
+        .require_core_tables(erp_security::auth::core_tables())
+        .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
+        .resolver(erp_security::resolver::Resolver::for_registry(&registry).unwrap())
+        .policy(std::sync::Arc::new(source) as std::sync::Arc<dyn erp_orm::PolicyProvider>)
+        .impls(erp_modules::base_models::IMPLS.iter().copied())
+        .constraints(erp_modules::base_models::CONSTRAINTS.iter().copied())
+        .unlink_hook(erp_data::model_data::UNLINK_HOOK)
+        .build()
+        .unwrap()
 }
 
 /// One guarded model: its form, the field that holds its status, and per final state the fields
