@@ -210,7 +210,10 @@ fn short_receipt(always: bool) {
             let Value::Map(none) = none else {
                 panic!("an action dictionary")
             };
-            assert!(!format!("{:?}", none["domain"]).contains("Int("), "{none:?}");
+            assert!(
+                !format!("{:?}", none["domain"]).contains("Int("),
+                "{none:?}"
+            );
             tx.rollback().await.unwrap();
             return;
         }
