@@ -769,15 +769,19 @@ fn a_short_direct_receipt_counts_completed_goods_in_the_purchase_unit() {
             line.cell(&mut tx, "qty_received").await.unwrap(),
             Cell::Decimal(dec("1"))
         );
-        line.write(
+        // received goods keep the line's unit
+        let unit = super::write(
             &mut tx,
+            &line,
             RawVals::new().set_cell("uom_id", Cell::Id(catalog.unit)),
         )
         .await
-        .unwrap();
-        assert_eq!(
-            line.cell(&mut tx, "qty_received").await.unwrap(),
-            Cell::Decimal(dec("12"))
+        .unwrap_err();
+        assert_eq!(unit.kind(), ErrorKind::Validation, "{unit:?}");
+        assert!(
+            unit.message()
+                .contains("product and unit can no longer change"),
+            "{unit:?}"
         );
         // Model the previous installed version: its completed receipt exists but the quantity
         // was always zero. Upgrade repeatedly through normal module lifecycle.
@@ -819,7 +823,7 @@ fn a_short_direct_receipt_counts_completed_goods_in_the_purchase_unit() {
             );
             assert_eq!(
                 line.cell(&mut tx, "qty_received").await.unwrap(),
-                Cell::Decimal(dec("12"))
+                Cell::Decimal(dec("1"))
             );
             tx.rollback().await.unwrap();
         }
@@ -1186,5 +1190,116 @@ fn a_direct_vendor_bill_traces_the_received_purchase_line() {
                 .unwrap(),
             answer
         );
+    });
+}
+
+async fn cancel_blocked(tx: &mut Transaction, order: &Records) -> bool {
+    tx.invalidate_records(order, Some(&["cancel_blocked"]))
+        .await
+        .unwrap();
+    order.cell(tx, "cancel_blocked").await.unwrap() == Cell::Bool(true)
+}
+
+/// A purchase whose receipt is done keeps what was received: the form hides Cancel and the server
+/// refuses it by name, and its line keeps its product, its unit and at least the received
+/// quantity.
+#[test]
+fn received_purchases_keep_what_happened_downstream() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install_module(&db, "purchase_stock").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let company = xmlid(&mut tx, "base", "main_company").await;
+        let catalog = catalog(&mut tx, company).await;
+        let source = order(
+            &mut tx,
+            &[company],
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(catalog.vendor))
+                .set_commands(
+                    "order_line",
+                    [Command::Create(
+                        line_vals(catalog.bolt).set_cell("product_qty", Cell::Decimal(dec("2"))),
+                    )],
+                ),
+        )
+        .await;
+        assert!(
+            !cancel_blocked(&mut tx, &source).await,
+            "a request for quotation"
+        );
+        act(&mut tx, &source, "button_confirm").await.unwrap();
+        assert!(
+            !cancel_blocked(&mut tx, &source).await,
+            "an open receipt is cancelled with its order"
+        );
+        let line = super::lines_of(&mut tx, &[company], &source)
+            .await
+            .remove(0);
+        let row = &tx
+            .query(
+                "SELECT m.picking_id, m.id
+             FROM purchase_stock_receipt_move_link ml JOIN stock_move m ON m.id=ml.move_id
+             WHERE ml.purchase_line_id=$1",
+                &[&line.ids()[0]],
+            )
+            .await
+            .unwrap()[0];
+        let (receipt, mov): (i64, i64) = (row.get(0), row.get(1));
+        let move_lines = tx.env().records("stock.move.line").unwrap();
+        let existing = tx
+            .query("SELECT id FROM stock_move_line WHERE move_id=$1", &[&mov])
+            .await
+            .unwrap();
+        let quantity = RawVals::new().set_cell("quantity", Cell::Decimal(dec("2")));
+        if let Some(row) = existing.first() {
+            move_lines
+                .browse([row.get(0)])
+                .unwrap()
+                .write(&mut tx, quantity)
+                .await
+                .unwrap();
+        } else {
+            move_lines
+                .create(&mut tx, vec![quantity.set_cell("move_id", Cell::Id(mov))])
+                .await
+                .unwrap();
+        }
+        validate(&mut tx, receipt).await.unwrap();
+
+        assert!(cancel_blocked(&mut tx, &source).await, "a done receipt");
+        let Cell::Str(reference) = source.cell(&mut tx, "name").await.unwrap() else {
+            panic!("an order reference");
+        };
+        let reference = reference.to_string();
+        let refused = act(&mut tx, &source, "button_cancel").await.unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::UserError, "{refused:?}");
+        assert!(
+            refused.message().contains(reference.as_str())
+                && refused.message().contains("its receipt")
+                && refused.message().contains("is done"),
+            "{refused:?}"
+        );
+        for (vals, expected) in [
+            (
+                RawVals::new().set_cell("product_qty", Cell::Decimal(dec("1"))),
+                "cannot go below",
+            ),
+            (
+                RawVals::new().set_cell("product_id", Cell::Id(catalog.nut)),
+                "product and unit can no longer change",
+            ),
+            (
+                RawVals::new().set_cell("uom_id", Cell::Id(catalog.dozen)),
+                "product and unit can no longer change",
+            ),
+        ] {
+            let err = super::write(&mut tx, &line, vals).await.unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::Validation, "{err:?}");
+            assert!(err.message().contains(expected), "{err:?}");
+            assert!(err.message().contains(reference.as_str()), "{err:?}");
+        }
+        tx.rollback().await.unwrap();
+        db.cleanup().await.unwrap();
     });
 }

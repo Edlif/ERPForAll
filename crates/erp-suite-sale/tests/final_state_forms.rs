@@ -331,6 +331,26 @@ fn guarded() -> Vec<Guarded> {
                 .collect(),
         },
     ];
+    // A cancelled order refuses every write until it is set back to draft.
+    let links = || {
+        vec![
+            ("locked", no()),
+            ("direct_delivery_id", no()),
+            ("direct_receipt_id", no()),
+            ("sale_order_id", no()),
+            ("purchase_order_id", no()),
+            ("purchase_warning_text", no()),
+        ]
+    };
+    for model in ["sale.order", "purchase.order"] {
+        forms.push(Guarded {
+            model,
+            view: None,
+            status: "state",
+            names: links(),
+            states: vec![("cancel", Rule::Allow(&[]))],
+        });
+    }
     for kind in ["out_invoice", "in_invoice"] {
         forms.push(Guarded {
             model: "account.move",
