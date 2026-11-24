@@ -1740,3 +1740,64 @@ async fn multi_company_branch_journal_checks_ancestor_and_archived_foreign_accou
     drop(tx);
     db.cleanup().await.unwrap();
 }
+
+#[test]
+fn the_payments_page_hides_as_a_whole_for_journal_types_without_payment_methods() {
+    big_stack(payments_page_visibility);
+}
+/// The form description is served once and each page's `invisible` expression is evaluated by the
+/// client per record, so the page itself must carry the rule: a rule on its only field leaves an
+/// empty tab. Follows the served-views pattern of `account_taxes.rs` (`test_get_views`).
+async fn payments_page_visibility() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let main = main_company(&mut tx).await;
+    let env = tx.env().with_company(main).unwrap();
+    let views = erp_addon_web::metadata_test_support::test_get_views(
+        &env,
+        &mut tx,
+        "account.journal",
+        vec![Value::list([Value::False, Value::str("form")])],
+        32 * 1024 * 1024,
+    )
+    .await
+    .unwrap();
+    let json = erp_sdk::serde_json::to_value(views).unwrap();
+    let nodes = json["views"][0]["nodes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("form nodes missing: {json}"));
+    let page = nodes
+        .iter()
+        .find(|node| node["kind"] == "page" && node["name"] == "payments")
+        .unwrap_or_else(|| panic!("payments page missing: {json}"));
+    // the page hides itself for the types without payment methods (sale, purchase, general)...
+    let rule = page
+        .get("invisible")
+        .unwrap_or_else(|| panic!("payments page has no invisible rule: {page}"))
+        .to_string();
+    for shown in ["bank", "cash", "credit"] {
+        assert!(rule.contains(shown), "{shown} not in {rule}");
+    }
+    for hidden in ["sale", "purchase", "general"] {
+        assert!(!rule.contains(hidden), "{hidden} in {rule}");
+    }
+    // ...and its field keeps no rule of its own, so a visible page is never empty
+    let lines: Vec<_> = nodes
+        .iter()
+        .filter(|node| {
+            node["kind"] == "field" && node.to_string().contains("payment_method_line_ids")
+        })
+        .collect();
+    assert!(
+        !lines.is_empty(),
+        "payment_method_line_ids not in the form: {json}"
+    );
+    assert!(
+        lines.iter().all(|node| node.get("invisible").is_none()),
+        "{lines:?}"
+    );
+    tx.rollback().await.unwrap();
+    drop(tx);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
