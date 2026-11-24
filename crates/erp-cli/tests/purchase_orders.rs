@@ -39,6 +39,8 @@ mod bill_snapshot;
 mod replenish;
 #[path = "purchase_orders/returns.rs"]
 mod returns;
+#[path = "purchase_orders/settings.rs"]
+mod settings;
 
 fn addons_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

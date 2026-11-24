@@ -129,6 +129,21 @@ a refused save stays in edit mode with its errors, and a new record opens editab
 read-only and cannot declare read mode. A field widget of the record form receives `mode` (`read` or `edit`) and
 `onRecordEvent(listener)`, which returns an unsubscribe function and reports `saved` (with the record id),
 `saveFailed`, `discarded` and `modeChanged` after the form has shown the outcome; subscriptions end with the widget.
+
+### Settings entries of an addon
+
+Besides its settings (`erp_sdk::setting_declarations!`), an addon puts rows on its Settings page with
+`erp_sdk::settings_panel_items!(items, resolve)`; each `PanelItemDecl` needs `.access(&[...])` (who sees it). An
+information row (`PanelItemDecl::info`) shows a value its resolver computes; a link row (`action_link`, `menu_link`)
+opens an action or a menu; a module toggle (`module_toggle(key, label, addon)`) installs or uninstalls an addon. A
+group toggle (`group_toggle(key, label, "my_addon.group_feature")`) turns a feature group on or off for every
+internal user: on, `base.group_user` implies the group; off, that implication is removed and only users who were
+given the group directly keep it. The client changes it with an ordinary `res.groups` `write` of `implied_ids`, so
+only users who may edit groups (`base.group_system`) can switch it, and the application reloads afterwards so menus,
+views and fields follow. The group must belong to an addon the declaring addon depends on; when its row is missing,
+the row shows as not available instead of off. Use a group toggle only for a group that already shows or hides
+something (a menu, a view element or a field).
+
 ### The request's client address
 
 A method called over JSON-2 can read where the request came from: `env.request()` is the client address the server

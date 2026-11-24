@@ -483,7 +483,30 @@ impl ModuleToggleState {
         }
     }
 }
-/// What a panel item shows: a read-only value, a link, or a module toggle.
+/// Resolved state of a feature group toggle panel item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GroupToggleState {
+    /// The internal-user group implies the feature group: every internal user has it.
+    Enabled,
+    /// The internal-user group does not imply the feature group: only users granted it otherwise have it.
+    Disabled,
+    /// The feature group or the internal-user group has no row in this database.
+    NotAvailable,
+}
+impl GroupToggleState {
+    /// Resolve the feature group row `group` against `implied`, the groups the internal-user group implies
+    /// (itself included, transitively); `None` for either when its row does not exist.
+    #[must_use]
+    pub fn resolve(group: Option<i64>, implied: Option<&BTreeSet<i64>>) -> Self {
+        match (group, implied) {
+            (Some(group), Some(implied)) if implied.contains(&group) => Self::Enabled,
+            (Some(_), Some(_)) => Self::Disabled,
+            _ => Self::NotAvailable,
+        }
+    }
+}
+/// What a panel item shows: a read-only value, a link, a module toggle or a feature group toggle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PanelItemKind {
@@ -497,9 +520,15 @@ pub enum PanelItemKind {
         /// Technical name of the addon controlled by this row.
         addon: String,
     },
+    /// A toggle that makes the internal-user group imply one feature group, or stop implying it.
+    #[non_exhaustive]
+    Group {
+        /// `<module>.<name>` identity of the feature group controlled by this row.
+        group: String,
+    },
 }
-/// A read-only information row, link row, or module toggle on a Settings app page: a sibling of
-/// [`SettingDecl`], never a setting. It has no default, no write groups and no stored value.
+/// A read-only information row, link row, module toggle or feature group toggle on a Settings app page: a
+/// sibling of [`SettingDecl`], never a setting. It has no default, no write groups and no stored value.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct PanelItemDecl {
@@ -595,6 +624,22 @@ impl PanelItemDecl {
             label,
             PanelItemKind::Module {
                 addon: addon.into(),
+            },
+        )
+    }
+    /// Declare a feature group toggle row: on, the internal-user group implies `group` (every internal user
+    /// has it); off, that implication is removed and only users granted `group` otherwise keep it.
+    /// # Errors
+    /// Invalid key, label or group identity (`<module>.<name>`, as for read groups).
+    pub fn group_toggle(key: &str, label: &str, group: &str) -> Result<Self> {
+        if !qualified(group) {
+            return Err(invalid());
+        }
+        Self::new(
+            key,
+            label,
+            PanelItemKind::Group {
+                group: group.into(),
             },
         )
     }
@@ -973,7 +1018,8 @@ impl SettingsRegistry {
     /// when the registry was published (exactly one row, owned by an addon in `owner`'s dependency closure).
     /// # Errors
     /// `Validation` "invalid declared setting or value" for a wrong or uninstalled owner, a key already used by a
-    /// setting or an item, empty or missing read groups or an uninstalled target app; `Validation` "Setting item
+    /// setting or an item, empty or missing read groups, an uninstalled target app or a group toggle whose group
+    /// belongs to an uninstalled module; `Validation` "Setting item
     /// references an unavailable action or menu." for a link whose target does not exist.
     pub fn with_items(
         mut self,
@@ -1002,6 +1048,14 @@ impl SettingsRegistry {
                     return Err(Error::validation(
                         "Setting item references an unavailable action or menu.",
                     ));
+                }
+                // The group row itself is resolved per request: a missing row is the named "not available" state.
+                if let PanelItemKind::Group { group } = &item.kind
+                    && !group
+                        .split_once('.')
+                        .is_some_and(|(module, _)| installed.contains(module))
+                {
+                    return Err(invalid());
                 }
                 self.items.insert(item.key.clone(), item);
             }
