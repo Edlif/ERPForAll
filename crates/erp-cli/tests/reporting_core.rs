@@ -1726,3 +1726,51 @@ fn json2_report_options_preserve_false_and_nested_nulls() {
         assert_eq!(status, 422, "{error}");
     });
 }
+
+/// The form of a new report sends its new lines and columns as `[0, virtual, values]` commands
+/// whose translatable `name` is a plain string; the onchange must accept them.
+#[test]
+fn onchange_of_a_new_report_accepts_new_lines_and_columns_with_plain_names() {
+    run(async {
+        let f = fixture().await;
+        let mut tx = f.orm.begin(f.admin).await.unwrap();
+        let reports = tx.env().records("reporting.report").unwrap();
+        let spec = erp_orm::Spec::from_value(&Value::Map(Arc::new(serde_to_map(json!({
+            "name": {},
+            "line_ids": {"fields": {"name": {}, "code": {}}},
+            "column_ids": {"fields": {"name": {}, "label": {}}},
+        })))))
+        .unwrap();
+        let values = serde_to_map(json!({
+            "name": "New",
+            "line_ids": [[0, "virtual_1", {"name": "Realized Hours", "code": "RH"}]],
+            "column_ids": [[0, "virtual_2", {"name": "Realized Hours", "label": "rh"}]],
+        }));
+        let result = reports
+            .onchange(&mut tx, values, vec!["line_ids".to_owned()], spec)
+            .await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    });
+}
+
+fn serde_to_map(json: Json) -> erp_sdk::ValueMap {
+    fn convert(json: Json) -> Value {
+        match json {
+            Json::Null => Value::False,
+            Json::Bool(b) => Value::Bool(b),
+            Json::Number(n) => n
+                .as_i64()
+                .map(Value::Int)
+                .unwrap_or_else(|| Value::Float(n.as_f64().unwrap())),
+            Json::String(t) => Value::str(t),
+            Json::Array(items) => Value::list(items.into_iter().map(convert)),
+            Json::Object(m) => Value::Map(Arc::new(
+                m.into_iter().map(|(k, x)| (k, convert(x))).collect(),
+            )),
+        }
+    }
+    match convert(json) {
+        Value::Map(m) => m.as_ref().clone(),
+        other => panic!("{other}"),
+    }
+}
