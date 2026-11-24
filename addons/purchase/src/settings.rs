@@ -85,7 +85,40 @@ fn setup_links() -> Result<Vec<PanelItemDecl>> {
     .collect()
 }
 
-// Static menu targets are resolved by the settings service, with the caller's menu visibility.
+const MODULES: &[(&str, &str, &str, &str)] = &[
+    (
+        "purchase.module_three_way_match",
+        "Three-way bill matching",
+        "Invoicing",
+        "purchase_three_way_match",
+    ),
+    (
+        "purchase.module_stock_dropshipping",
+        "Direct supplier delivery",
+        "Logistics",
+        "stock_dropshipping",
+    ),
+];
+
+fn module_toggles() -> Result<Vec<PanelItemDecl>> {
+    MODULES
+        .iter()
+        .map(|(key, label, block, addon)| {
+            PanelItemDecl::module_toggle(key, label, addon)?
+                .block(block)?
+                .sequence(200)
+                .access(&["base.group_system"])
+        })
+        .collect()
+}
+
+fn panel_items() -> Result<Vec<PanelItemDecl>> {
+    let mut items = setup_links()?;
+    items.extend(module_toggles()?);
+    Ok(items)
+}
+
+// Static menu targets and module toggles are resolved by the settings service.
 fn resolve_setup<'a>(
     _: &'a Env,
     _: &'a mut Transaction,
@@ -98,7 +131,7 @@ fn resolve_setup<'a>(
         )))
     })
 }
-erp_sdk::settings_panel_items!(setup_links, resolve_setup);
+erp_sdk::settings_panel_items!(panel_items, resolve_setup);
 
 fn settings() -> Result<Vec<SettingDecl>> {
     let place = |decl: SettingDecl, sequence: u32| -> Result<SettingDecl> {
@@ -271,6 +304,64 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn module_toggles_declare_existing_addons_for_administrators() {
+        use erp_sdk::settings::PanelItemKind;
+        let items = panel_items().unwrap();
+        assert_eq!(items.len(), 6);
+        let mut keys = std::collections::BTreeSet::new();
+        for item in &items {
+            assert!(keys.insert(item.key()), "duplicate key {}", item.key());
+        }
+        let toggles: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item.kind() {
+                PanelItemKind::Module { addon, .. } => Some((
+                    item.key(),
+                    item.block_title(),
+                    item.label(),
+                    addon.as_str(),
+                    item.read_groups().to_vec(),
+                    item.scope_restriction(),
+                    item.display_sequence(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            toggles,
+            [
+                (
+                    "purchase.module_three_way_match",
+                    "Invoicing",
+                    "Three-way bill matching",
+                    "purchase_three_way_match",
+                    vec!["base.group_system".to_string()],
+                    None,
+                    200,
+                ),
+                (
+                    "purchase.module_stock_dropshipping",
+                    "Logistics",
+                    "Direct supplier delivery",
+                    "stock_dropshipping",
+                    vec!["base.group_system".to_string()],
+                    None,
+                    200,
+                ),
+            ]
+        );
+        let addons_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        for (_, _, _, addon, _, _, _) in toggles {
+            assert!(
+                addons_dir.join(addon).join("manifest.toml").is_file(),
+                "manifest for {addon} must exist"
+            );
+        }
     }
 
     #[test]
