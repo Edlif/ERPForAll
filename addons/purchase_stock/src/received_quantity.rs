@@ -143,7 +143,25 @@ impl CompletedReceiptLine {
 
 #[erp_sdk::migration(addon="purchase_stock",version="1.2",stage=post)]
 async fn backfill_received(tx: &mut Transaction, _from: &SemverVersion) -> Result<()> {
-    tx.execute(&update_sql()?, &[&Option::<Vec<i64>>::None])
+    tx.flush().await?;
+    let changed = tx
+        .query(
+            &format!("{} RETURNING l.id", update_sql()?),
+            &[&Option::<Vec<i64>>::None],
+        )
         .await?;
+    let ids: Vec<i64> = changed
+        .iter()
+        .map(|row| row.try_get(0))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(decode)?;
+    // The billed and to-bill quantities of these lines read the received quantity.
+    if !ids.is_empty() {
+        tx.env()
+            .records("purchase.order.line")?
+            .browse(ids)?
+            .modified_external(tx, &["qty_received", "qty_received_method"])
+            .await?;
+    }
     Ok(())
 }

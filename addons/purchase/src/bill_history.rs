@@ -3,11 +3,12 @@
 
 use super::direct_bill::{SOURCE_LIMIT, authorize_fields, decode};
 use erp_sdk::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
+/// The linked documents of an order, read and locked. The quantities themselves are the lines'
+/// `qty_to_invoice` ([`crate::billing`]).
 #[derive(Default)]
 pub(super) struct History {
-    pub quantities: BTreeMap<i64, Decimal>,
     pub latest_active: Option<i64>,
     pub link_count: usize,
 }
@@ -47,7 +48,7 @@ pub(super) async fn read(
     authorize_fields(
         tx,
         &env.records("purchase.order.line")?.browse(sources)?,
-        &["qty_received"],
+        &["qty_to_invoice"],
     )
     .await?;
     authorize_fields(tx, &bills, &["state"]).await?;
@@ -96,11 +97,6 @@ pub(super) async fn read(
                 "A negative linked quantity requires a vendor credit review before billing more goods.",
             ));
         }
-        let source: i64 = row.try_get(0).map_err(decode)?;
-        let total = history.quantities.entry(source).or_default();
-        *total = total.checked_add(qty).ok_or_else(|| {
-            Error::validation("The billed purchase quantity is outside its supported range.")
-        })?;
     }
     Ok(history)
 }

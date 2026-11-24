@@ -8,6 +8,7 @@ erp_sdk::addon!(
 );
 
 mod bill_history;
+pub mod billing;
 mod bill_source_review;
 mod direct_bill;
 mod direct_bill_integrity;

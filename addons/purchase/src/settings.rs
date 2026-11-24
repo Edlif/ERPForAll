@@ -18,6 +18,9 @@ pub const APPROVAL_SETTING: &str = "purchase.po_double_validation";
 pub const AMOUNT_SETTING: &str = "purchase.po_double_validation_amount";
 /// `edit` keeps confirmed orders editable, `lock` locks them at approval (S3).
 pub const LOCK_SETTING: &str = "purchase.po_lock";
+/// The bill control a new product takes: `purchase` bills ordered quantities, `receive` received
+/// ones (the product's own field decides afterwards; services always bill ordered quantities).
+pub const BILL_CONTROL_SETTING: &str = "purchase.default_purchase_method";
 
 /// Default of [`AMOUNT_SETTING`].
 pub const AMOUNT_DEFAULT: f64 = 5_000.0;
@@ -32,6 +35,10 @@ const APPROVAL_CHOICES: [(&str, &str); 2] = [
         "two_step",
         "A manager approves orders from the minimum amount",
     ),
+];
+pub(crate) const BILL_CONTROL_CHOICES: [(&str, &str); 2] = [
+    ("purchase", "Ordered quantities"),
+    ("receive", "Received quantities"),
 ];
 const LOCK_CHOICES: [(&str, &str); 2] = [
     ("edit", "Confirmed orders stay editable"),
@@ -190,9 +197,51 @@ fn settings() -> Result<Vec<SettingDecl>> {
             )?,
             30,
         )?,
+        SettingDecl::selection(
+            BILL_CONTROL_SETTING,
+            "Bill control of new products",
+            ScopeKind::Global,
+            "receive",
+            &BILL_CONTROL_CHOICES,
+        )?
+        .block("Invoicing")?
+        .sequence(10)
+        .access(&[USER_GROUP], &["base.group_system"])?,
     ])
 }
 erp_sdk::setting_declarations!(settings);
+
+/// The value of [`BILL_CONTROL_SETTING`], read with the framework's rights: whoever creates a
+/// product needs no settings group.
+///
+/// # Errors
+///
+/// Settings read failures; a stored value that is not one of the declared choices.
+pub(crate) async fn default_bill_control(tx: &mut Transaction) -> Result<&'static str> {
+    let env = tx.env().sudo(true);
+    let read = read_values(
+        &env,
+        tx,
+        SettingsScope::Global {},
+        vec![BILL_CONTROL_SETTING.to_owned()],
+    )
+    .await?;
+    let read = serde_json::to_value(&read)
+        .map_err(|error| Error::internal(format!("purchase settings: {error}")))?;
+    let value = read["values"]
+        .as_array()
+        .and_then(|values| values.iter().find(|v| v["key"] == BILL_CONTROL_SETTING))
+        .and_then(|entry| entry["value"].as_str().map(str::to_owned));
+    BILL_CONTROL_CHOICES
+        .iter()
+        .map(|(choice, _)| *choice)
+        .find(|choice| value.as_deref() == Some(*choice))
+        .ok_or_else(|| {
+            Error::validation(format!(
+                "{BILL_CONTROL_SETTING} must be one of: purchase, receive."
+            ))
+        })
+}
 
 /// The order policy of one company.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -281,7 +330,15 @@ mod tests {
     fn order_settings_are_bounded_company_settings() {
         let declarations = settings().unwrap();
         let keys: Vec<&str> = declarations.iter().map(|d| d.key()).collect();
-        assert_eq!(keys, [APPROVAL_SETTING, AMOUNT_SETTING, LOCK_SETTING]);
+        assert_eq!(
+            keys,
+            [
+                APPROVAL_SETTING,
+                AMOUNT_SETTING,
+                LOCK_SETTING,
+                BILL_CONTROL_SETTING
+            ]
+        );
         for decl in &declarations {
             assert_eq!(decl.write_groups(), &["base.group_system"]);
         }
@@ -291,6 +348,8 @@ mod tests {
         };
         assert_eq!((*min, *max), (AMOUNT_FLOOR, AMOUNT_HARD));
         assert_eq!(declarations[2].default_value(), &Value::str("edit"));
+        assert_eq!(declarations[3].default_value(), &Value::str("receive"));
+        assert_eq!(declarations[3].block_title(), "Invoicing");
     }
 
     #[test]

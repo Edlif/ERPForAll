@@ -1845,6 +1845,16 @@ const SUDO_SITES: &[(&str, usize, &str)] = &[
         "for `button_confirm`, after the write check and the row locks on the caller's orders, finds the lines without a product of exactly those orders; only their order ids leave, to name in the refusal orders the caller already holds",
     ),
     (
+        "purchase/direct_bill.rs::link_items",
+        1,
+        "creates only the private source links of a vendor bill that this action just created as the caller (create access on the bill and its items checked, the order locked and its source fields authorized), one per bill item, so the billed quantities of the purchase lines follow through the ORM; no bill, order or line is read or written elevated and nothing is returned",
+    ),
+    (
+        "purchase/settings.rs::default_bill_control",
+        1,
+        "reads the one global purchase setting with the bill control of new products, for the stored policy of a product being computed; whoever creates a product needs no settings group; the value is one of two declared choices, lands on the product and is not returned as a setting",
+    ),
+    (
         "purchase/settings.rs::read",
         1,
         "reads the three purchase settings (approval levels, minimum amount, lock) of one company, the order's, for the approval question and the approval step; the framework reads its own configuration and a buyer needs no settings group; the values are bounded, decide only the operation and are not returned to the client",
