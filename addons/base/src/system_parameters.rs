@@ -173,6 +173,15 @@ pub(crate) fn declarations() -> Result<Vec<ParameterDecl>> {
             10,
             (1, i64::from(u32::MAX)),
         )?,
+        ParameterDecl::integer(
+            crate::warning_text::MAX_CHARS_KEY,
+            "Warning messages: maximum length (characters)",
+            crate::warning_text::MAX_CHARS_DEFAULT,
+            (
+                crate::warning_text::MAX_CHARS_FLOOR,
+                crate::warning_text::MAX_CHARS_HARD,
+            ),
+        )?,
     ];
     // image limits of the `image` field kind (B9 rows S2 and S7)
     out.extend(crate::image_settings::declarations()?);
@@ -220,7 +229,7 @@ mod tests {
         let declared = declarations().unwrap();
         assert_eq!(
             declared.len(),
-            16 + crate::image_settings::declarations().unwrap().len()
+            17 + crate::image_settings::declarations().unwrap().len()
                 + crate::attachments::settings::PARAMETERS.len()
                 + crate::report_job::PARAMETERS.len()
         );

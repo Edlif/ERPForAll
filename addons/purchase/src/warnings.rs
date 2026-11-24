@@ -4,58 +4,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use erp_addon_base::ResPartner;
+use erp_addon_base::warning_text::{check_length, non_empty_text, optional_rec_id, readable_ids};
 use erp_addon_product::ProductTemplate;
 use erp_sdk::prelude::*;
 
 use crate::WARNING_GROUP;
 use crate::line::PurchaseOrderLine;
 use crate::order::PurchaseOrder;
-
-/// Maximum length (in Unicode scalar values) of a purchase warning message.
-pub const MAX_WARNING_CHARS: usize = 4_000;
-
-fn check_warning_length(field_label: &str, values: Vec<Value>) -> Result<()> {
-    for value in values {
-        match value {
-            Value::False => {}
-            Value::Str(text) => {
-                if text.chars().count() > MAX_WARNING_CHARS {
-                    return Err(Error::validation(format!(
-                        "{field_label} cannot exceed {MAX_WARNING_CHARS} characters."
-                    )));
-                }
-            }
-            other => {
-                return Err(Error::programming(format!(
-                    "{field_label} expected text or empty value, received {other:?}."
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn non_empty_text(context: &str, value: Value) -> Result<Option<Arc<str>>> {
-    match value {
-        Value::False => Ok(None),
-        Value::Str(text) => Ok((!text.is_empty()).then_some(text)),
-        other => Err(Error::programming(format!(
-            "{context} expected text or empty value, received {other:?}."
-        ))),
-    }
-}
-
-fn optional_rec_id(context: &str, value: Value) -> Result<Option<RecId>> {
-    match value {
-        Value::False => Ok(None),
-        Value::Int(id) => RecId::from_real(id)
-            .ok_or_else(|| Error::programming(format!("{context} had invalid record id {id}.")))
-            .map(Some),
-        other => Err(Error::programming(format!(
-            "{context} expected a relation id or empty value, received {other:?}."
-        ))),
-    }
-}
 
 #[derive(Clone)]
 struct PartnerWarningInfo {
@@ -64,52 +19,72 @@ struct PartnerWarningInfo {
     warn_msg: Option<Arc<str>>,
 }
 
+/// The vendor data of the partners among `ids` that the caller can read; a partner the caller's own
+/// rights hide is absent from the map and contributes no message.
 async fn read_partner_info(
     env: &Env,
     tx: &mut Transaction,
     ids: Vec<RecId>,
 ) -> Result<BTreeMap<RecId, PartnerWarningInfo>> {
+    let ids = readable_ids(tx, env, "res.partner", ids).await?;
     if ids.is_empty() {
         return Ok(BTreeMap::new());
     }
     let partners = env.records("res.partner")?.browse_ids(ids);
     let rec_ids = partners.rec_ids().to_vec();
     let names = partners.values(tx, "name").await?;
-    let display_names = partners.values(tx, "display_name").await?;
     let parents = partners.values(tx, "parent_id").await?;
     let warnings = partners.values(tx, "purchase_warn_msg").await?;
+    let mut labels: BTreeMap<RecId, Arc<str>> = BTreeMap::new();
+    let mut unnamed = Vec::new();
+    for (&id, name) in rec_ids.iter().zip(names) {
+        match non_empty_text("res.partner.name", name)? {
+            Some(label) => {
+                labels.insert(id, label);
+            }
+            None => unnamed.push(id),
+        }
+    }
+    if !unnamed.is_empty() {
+        let fallback = env.records("res.partner")?.browse_ids(unnamed);
+        let ids = fallback.rec_ids().to_vec();
+        for (id, display) in ids.into_iter().zip(fallback.values(tx, "display_name").await?) {
+            if let Some(label) = non_empty_text("res.partner.display_name", display)? {
+                labels.insert(id, label);
+            }
+        }
+    }
     let mut map = BTreeMap::new();
-    for ((((&id, name), display_name), parent), warn) in rec_ids
-        .iter()
-        .zip(names)
-        .zip(display_names)
-        .zip(parents)
-        .zip(warnings)
-    {
-        let label = non_empty_text("res.partner.name", name)?
-            .or(non_empty_text("res.partner.display_name", display_name)?)
-            .unwrap_or_else(|| Arc::from(""));
-        let parent_id = optional_rec_id("res.partner.parent_id", parent)?;
-        let warn_msg = non_empty_text("res.partner.purchase_warn_msg", warn)?;
+    for ((&id, parent), warn) in rec_ids.iter().zip(parents).zip(warnings) {
         map.insert(
             id,
             PartnerWarningInfo {
-                label,
-                parent_id,
-                warn_msg,
+                label: labels.remove(&id).unwrap_or_else(|| Arc::from("")),
+                parent_id: optional_rec_id("res.partner.parent_id", parent)?,
+                warn_msg: non_empty_text("res.partner.purchase_warn_msg", warn)?,
             },
         );
     }
     Ok(map)
 }
 
+/// One banner line: the record label and its message; no separator when the record has no label.
+fn banner_entry(label: &str, msg: &str) -> String {
+    if label.is_empty() {
+        msg.to_owned()
+    } else {
+        format!("{label} - {msg}")
+    }
+}
+
 #[extend(ResPartner, addon = "purchase")]
 pub(crate) struct PurchasePartnerWarnings {
-    /// Non-blocking warning shown on purchase orders for this vendor.
+    /// Non-blocking notice shown on purchase orders for this vendor. Orders show it only to a
+    /// caller who can read this partner.
     #[field(
         text,
         groups = "purchase.group_warning_purchase",
-        string = "Purchase Order Warning"
+        string = "Vendor notice"
     )]
     pub purchase_warn_msg: Option<Arc<str>>,
 }
@@ -122,17 +97,18 @@ impl PurchasePartnerWarnings {
         tx: &mut Transaction,
     ) -> Result<()> {
         let values = this.as_records().values(tx, "purchase_warn_msg").await?;
-        check_warning_length("Purchase order warning", values)
+        check_length(tx, &crate::ADDON, "Purchase order notice", values).await
     }
 }
 
 #[extend(ProductTemplate, addon = "purchase")]
 pub(crate) struct PurchaseProductWarnings {
-    /// Non-blocking warning shown on purchase order lines for this product.
+    /// Non-blocking notice shown on purchase order lines for this product. Lines show it only to a
+    /// caller who can read this product.
     #[field(
         text,
         groups = "purchase.group_warning_purchase",
-        string = "Purchase Order Line Warning"
+        string = "Product notice"
     )]
     pub purchase_line_warn_msg: Option<Arc<str>>,
 }
@@ -148,7 +124,7 @@ impl PurchaseProductWarnings {
             .as_records()
             .values(tx, "purchase_line_warn_msg")
             .await?;
-        check_warning_length("Purchase order line warning", values)
+        check_length(tx, &crate::ADDON, "Purchase order line notice", values).await
     }
 }
 
@@ -179,6 +155,9 @@ impl PurchaseOrderLine {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        // elevated read, but only the products the caller's own rights can read give a message
+        let unique_products =
+            readable_ids(tx, this.env(), "product.product", unique_products).await?;
         let mut by_product: BTreeMap<RecId, Arc<str>> = BTreeMap::new();
         if !unique_products.is_empty() {
             let products = this
@@ -282,17 +261,23 @@ impl PurchaseOrder {
             }
         }
 
+        // A product is in the map only when the caller's own rights can read it; its label may be empty.
         let mut product_names: BTreeMap<RecId, Arc<str>> = BTreeMap::new();
-        if !product_ids_to_load.is_empty() {
-            let products = env
-                .records("product.product")?
-                .browse_ids(product_ids_to_load);
+        let readable_products = readable_ids(
+            tx,
+            env,
+            "product.product",
+            product_ids_to_load.into_iter().collect(),
+        )
+        .await?;
+        if !readable_products.is_empty() {
+            let products = env.records("product.product")?.browse_ids(readable_products);
             let rec_ids = products.rec_ids().to_vec();
             let display_names = products.values(tx, "display_name").await?;
             for (id, display_name) in rec_ids.into_iter().zip(display_names) {
-                if let Some(name) = non_empty_text("product.product.display_name", display_name)? {
-                    product_names.insert(id, name);
-                }
+                let name = non_empty_text("product.product.display_name", display_name)?
+                    .unwrap_or_else(|| Arc::from(""));
+                product_names.insert(id, name);
             }
         }
 
@@ -308,21 +293,20 @@ impl PurchaseOrder {
                 && let Some(partner) = partners.get(&pid)
             {
                 if let Some(msg) = &partner.warn_msg {
-                    push_unique(format!("{} - {msg}", partner.label));
+                    push_unique(banner_entry(&partner.label, msg));
                 }
                 if let Some(parent_id) = partner.parent_id
                     && let Some(parent) = partners.get(&parent_id)
                     && let Some(parent_msg) = &parent.warn_msg
                 {
-                    push_unique(format!("{} - {parent_msg}", parent.label));
+                    push_unique(banner_entry(&parent.label, parent_msg));
                 }
             }
             for line_id in lines {
-                if let Some((prod_id, msg)) = line_warnings.get(&line_id) {
-                    let label = prod_id
-                        .and_then(|pid| product_names.get(&pid))
-                        .map_or("", Arc::as_ref);
-                    push_unique(format!("{label} - {msg}"));
+                if let Some((prod_id, msg)) = line_warnings.get(&line_id)
+                    && let Some(label) = prod_id.and_then(|pid| product_names.get(&pid))
+                {
+                    push_unique(banner_entry(label, msg));
                 }
             }
             let combined = (!entries.is_empty()).then(|| Arc::<str>::from(entries.join("\n")));

@@ -3,32 +3,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use erp_addon_base::warning_text::{non_empty_text, optional_rec_id, readable_ids};
 use erp_sdk::prelude::*;
 
 use crate::StockPicking;
 use crate::res_partner::WARNING_GROUP;
-
-fn non_empty_text(context: &str, value: Value) -> Result<Option<Arc<str>>> {
-    match value {
-        Value::False => Ok(None),
-        Value::Str(text) => Ok((!text.is_empty()).then_some(text)),
-        other => Err(Error::programming(format!(
-            "{context} expected text or empty value, received {other:?}."
-        ))),
-    }
-}
-
-fn optional_rec_id(context: &str, value: Value) -> Result<Option<RecId>> {
-    match value {
-        Value::False => Ok(None),
-        Value::Int(id) => RecId::from_real(id)
-            .ok_or_else(|| Error::programming(format!("{context} had invalid record id {id}.")))
-            .map(Some),
-        other => Err(Error::programming(format!(
-            "{context} expected a relation id or empty value, received {other:?}."
-        ))),
-    }
-}
 
 struct PartnerTransferWarning {
     parent_id: Option<RecId>,
@@ -40,6 +19,8 @@ async fn read_partner_warnings(
     tx: &mut Transaction,
     ids: Vec<RecId>,
 ) -> Result<BTreeMap<RecId, PartnerTransferWarning>> {
+    // elevated read, but a contact the caller's own rights cannot read contributes no message
+    let ids = readable_ids(tx, env, "res.partner", ids).await?;
     if ids.is_empty() {
         return Ok(BTreeMap::new());
     }

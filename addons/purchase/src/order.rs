@@ -208,14 +208,16 @@ pub struct PurchaseOrder {
         string = "Total in Company Currency"
     )]
     pub amount_total_cc: Decimal,
-    /// Non-blocking vendor, parent company, and product warning messages for this order.
+    /// Non-blocking vendor, parent company, and product notices for this order. Computed elevated,
+    /// then limited to the partners and products the caller's own rights can read: a record the
+    /// caller cannot read adds no message.
     #[field(
         text,
         compute = "_compute_purchase_warning_text",
         compute_sudo = true,
         readonly = true,
         copy = false,
-        string = "Purchase Warning"
+        string = "Order notices"
     )]
     pub purchase_warning_text: Option<Arc<str>>,
 }

@@ -5,8 +5,6 @@ use erp_sdk::prelude::*;
 
 /// The feature group controlling transfer warning messages on contacts and transfers.
 pub const WARNING_GROUP: &str = "stock.group_warning_stock";
-/// Maximum length (in Unicode scalar values) of a transfer warning message.
-pub const MAX_WARNING_CHARS: usize = 4_000;
 
 #[extend(ResPartner, addon = "stock", check_company_auto = true)]
 pub(crate) struct StockPartner {
@@ -28,11 +26,12 @@ pub(crate) struct StockPartner {
         string = "Vendor location"
     )]
     pub property_stock_supplier: Option<RecId>,
-    /// Non-blocking warning shown on stock transfers for this contact.
+    /// Non-blocking notice shown on stock transfers for this contact. Transfers show it only to a
+    /// caller who can read this contact.
     #[field(
         text,
         groups = "stock.group_warning_stock",
-        string = "Transfer Warning"
+        string = "Transfer notice"
     )]
     pub picking_warn_msg: Option<Arc<str>>,
 }
@@ -44,23 +43,8 @@ impl StockPartner {
         this: &RecordSet<ResPartner>,
         tx: &mut Transaction,
     ) -> Result<()> {
-        for value in this.as_records().values(tx, "picking_warn_msg").await? {
-            match value {
-                Value::False => {}
-                Value::Str(text) => {
-                    if text.chars().count() > MAX_WARNING_CHARS {
-                        return Err(Error::validation(format!(
-                            "Transfer warning cannot exceed {MAX_WARNING_CHARS} characters."
-                        )));
-                    }
-                }
-                other => {
-                    return Err(Error::programming(format!(
-                        "Transfer warning expected text or empty value, received {other:?}."
-                    )));
-                }
-            }
-        }
-        Ok(())
+        let values = this.as_records().values(tx, "picking_warn_msg").await?;
+        erp_addon_base::warning_text::check_length(tx, &crate::ADDON, "Transfer notice", values)
+            .await
     }
 }

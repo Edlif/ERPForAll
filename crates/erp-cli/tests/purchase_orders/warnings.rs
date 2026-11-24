@@ -2,7 +2,7 @@
 //! Purchase warning group gating, length validation, order/line computation, and Settings toggle.
 
 use super::*;
-use erp_addon_base::ir_config_setting::{describe, write_values};
+use erp_addon_base::ir_config_setting::{describe, toggle_group, write_values};
 
 #[test]
 fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
@@ -29,10 +29,8 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         let mut tx = installed.orm.begin(SUPERUSER_ID).await.unwrap();
         let company = xmlid(&mut tx, "base", "main_company").await;
         let system_group = xmlid(&mut tx, "base", "group_system").await;
-        let user_group = xmlid(&mut tx, "base", "group_user").await;
         let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
         let manager_group = xmlid(&mut tx, "purchase", "group_purchase_manager").await;
-        let warning_group = xmlid(&mut tx, "purchase", "group_warning_purchase").await;
 
         // Verify partner and product view extensions installed cleanly.
         for view_name in [
@@ -269,6 +267,8 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         assert_eq!(group_item["group"], "purchase.group_warning_purchase");
         assert_eq!(group_item["state"], "disabled");
 
+        // The generic value write handles declared values only; a feature toggle is switched through
+        // `toggle_group` (step 3), so this write answers like an unavailable setting.
         let err = write_values(
             &env,
             &mut tx,
@@ -395,22 +395,29 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         tx.rollback().await.unwrap();
         drop(tx);
 
-        // 3. Enable purchase.group_warning_purchase via base.group_user.implied_ids (Settings toggle path).
-        let mut tx = installed.orm.begin(SUPERUSER_ID).await.unwrap();
-        tx.env()
-            .records("res.groups")
-            .unwrap()
-            .browse([user_group])
-            .unwrap()
-            .write(
-                &mut tx,
-                RawVals::new().set_commands(
-                    "implied_ids",
-                    [Command::Link(RecId::from_real(warning_group).unwrap())],
-                ),
-            )
+        // 3. Enable purchase.group_warning_purchase through the Settings switch (`toggle_group`): a purchase
+        //    manager (not a Settings administrator) is refused, the administrator switches it on for
+        //    every internal user.
+        let mut tx = orm.begin(manager).await.unwrap();
+        let env = tx.env().with_company(company).unwrap();
+        let refused = toggle_group(&env, &mut tx, "purchase.group_warning_purchase", true)
             .await
-            .unwrap();
+            .unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Access);
+        assert_eq!(
+            refused.message(),
+            "Only Settings administrators may turn a feature on or off for every user."
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        let mut tx = orm.begin(admin).await.unwrap();
+        let env = tx.env().with_company(company).unwrap();
+        assert_eq!(
+            toggle_group(&env, &mut tx, "purchase.group_warning_purchase", true)
+                .await
+                .unwrap(),
+            erp_sdk::views::wire::GroupToggleState::Enabled
+        );
         tx.commit().await.unwrap();
         drop(tx);
 
@@ -454,7 +461,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         assert_eq!(partner_over.kind(), ErrorKind::Validation);
         assert_eq!(
             partner_over.message(),
-            "Purchase order warning cannot exceed 4000 characters."
+            "Purchase order notice cannot exceed 4000 characters (base.warning_message_max_chars)."
         );
         // Reset quiet_vendor warning to empty.
         write(
@@ -487,7 +494,7 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         assert_eq!(tmpl_over.kind(), ErrorKind::Validation);
         assert_eq!(
             tmpl_over.message(),
-            "Purchase order line warning cannot exceed 4000 characters."
+            "Purchase order line notice cannot exceed 4000 characters (base.warning_message_max_chars)."
         );
         write(
             &mut tx,
@@ -497,6 +504,76 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
         .await
         .unwrap();
         tx.commit().await.unwrap();
+        drop(tx);
+
+        // Who writes the messages: a purchase manager may, a plain buyer may not.
+        let mut tx = orm.begin(manager).await.unwrap();
+        let manager_env = tx.env().with_company(company).unwrap();
+        let manager_partner = manager_env
+            .records("res.partner")
+            .unwrap()
+            .browse([quiet_vendor_id])
+            .unwrap();
+        write(
+            &mut tx,
+            &manager_partner,
+            RawVals::new().set_cell("purchase_warn_msg", text("Manager note")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            manager_partner
+                .cell(&mut tx, "purchase_warn_msg")
+                .await
+                .unwrap(),
+            text("Manager note")
+        );
+        let manager_tmpl = manager_env
+            .records("product.template")
+            .unwrap()
+            .browse([plain_tmpl_id])
+            .unwrap();
+        write(
+            &mut tx,
+            &manager_tmpl,
+            RawVals::new().set_cell("purchase_line_warn_msg", text("Manager product note")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            manager_tmpl
+                .cell(&mut tx, "purchase_line_warn_msg")
+                .await
+                .unwrap(),
+            text("Manager product note")
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        let mut tx = orm.begin(buyer).await.unwrap();
+        let buyer_env = tx.env().with_company(company).unwrap();
+        let denied = write(
+            &mut tx,
+            &buyer_env
+                .records("res.partner")
+                .unwrap()
+                .browse([quiet_vendor_id])
+                .unwrap(),
+            RawVals::new().set_cell("purchase_warn_msg", text("Buyer note")),
+        )
+        .await;
+        refused(denied, ErrorKind::Access, &[]);
+        let denied = write(
+            &mut tx,
+            &buyer_env
+                .records("product.template")
+                .unwrap()
+                .browse([plain_tmpl_id])
+                .unwrap(),
+            RawVals::new().set_cell("purchase_line_warn_msg", text("Buyer product note")),
+        )
+        .await;
+        refused(denied, ErrorKind::Access, &[]);
+        tx.rollback().await.unwrap();
         drop(tx);
 
         // 4. Inside purchase.group_warning_purchase: buyer reads partner, product, line, and order warnings.
@@ -572,6 +649,337 @@ fn purchase_warnings_group_gating_validation_computation_and_settings_toggle() {
                 .await
                 .unwrap(),
             Cell::Null
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(orm);
+        db.cleanup().await.unwrap();
+    });
+}
+
+async fn create_one(tx: &mut Transaction, model: &str, vals: RawVals) -> i64 {
+    tx.env()
+        .records(model)
+        .unwrap()
+        .create(tx, vec![vals])
+        .await
+        .unwrap()
+        .ids()[0]
+}
+
+/// Which notices an order shows: a contact without a note of its own shows its parent's, a note of
+/// spaces shows nothing, a product the caller's own rights hide adds nothing even though the
+/// computation is elevated, two callers in one transaction each get their own text, and an edit of
+/// a note shows when the order is read again.
+#[test]
+fn purchase_warnings_follow_the_callers_own_rights_and_current_notes() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let company = xmlid(&mut tx, "base", "main_company").await;
+        let currency: i64 = tx
+            .query("SELECT currency_id FROM res_company WHERE id=$1", &[&company])
+            .await
+            .unwrap()[0]
+            .get(0);
+        let other_company = create_one(
+            &mut tx,
+            "res.company",
+            RawVals::new()
+                .set_cell("name", text("Notice Other Company"))
+                .set_cell("currency_id", Cell::Id(currency)),
+        )
+        .await;
+        let user_group = xmlid(&mut tx, "base", "group_user").await;
+        let warning_group = xmlid(&mut tx, "purchase", "group_warning_purchase").await;
+        let buyer_group = xmlid(&mut tx, "purchase", "group_purchase_user").await;
+        let manager_group = xmlid(&mut tx, "purchase", "group_purchase_manager").await;
+        let wide_buyer = user(&mut tx, "notice-wide", &[buyer_group], &[company, other_company]).await;
+        let narrow_buyer = user(&mut tx, "notice-narrow", &[buyer_group], &[company]).await;
+        let manager = user(&mut tx, "notice-manager", &[manager_group], &[company]).await;
+
+        let parent = create_one(
+            &mut tx,
+            "res.partner",
+            RawVals::new()
+                .set_cell("name", text("Parent Holdings"))
+                .set_cell("is_company", Cell::Bool(true))
+                .set_cell("purchase_warn_msg", text("Parent requires PO reference")),
+        )
+        .await;
+        let child = create_one(
+            &mut tx,
+            "res.partner",
+            RawVals::new()
+                .set_cell("name", text("Silent Branch"))
+                .set_cell("parent_id", Cell::Id(parent)),
+        )
+        .await;
+        let blank = create_one(
+            &mut tx,
+            "res.partner",
+            RawVals::new()
+                .set_cell("name", text("Blank Note Vendor"))
+                .set_cell("purchase_warn_msg", text("   ")),
+        )
+        .await;
+        let mut products = Vec::new();
+        for (name, note) in [("Visible Valve", "Visible note"), ("Guarded Valve", "Guarded note")] {
+            let template = create_one(
+                &mut tx,
+                "product.template",
+                RawVals::new()
+                    .set_cell("name", text(name))
+                    .set_cell("purchase_line_warn_msg", text(note)),
+            )
+            .await;
+            let product: i64 = tx
+                .query(
+                    "SELECT id::int8 FROM product_product WHERE product_tmpl_id = $1",
+                    &[&template],
+                )
+                .await
+                .unwrap()[0]
+                .get(0);
+            products.push((template, product));
+        }
+        let [(_, visible), (guarded_template, guarded)] = products[..] else {
+            unreachable!()
+        };
+        let notice_order = order(
+            &mut tx,
+            &[company],
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(child))
+                .set_cell("company_id", Cell::Id(company)),
+        )
+        .await
+        .ids()[0];
+        let blank_order = order(
+            &mut tx,
+            &[company],
+            RawVals::new()
+                .set_cell("partner_id", Cell::Id(blank))
+                .set_cell("company_id", Cell::Id(company)),
+        )
+        .await
+        .ids()[0];
+        for product in [visible, guarded] {
+            create_one(
+                &mut tx,
+                "purchase.order.line",
+                RawVals::new()
+                    .set_cell("order_id", Cell::Id(notice_order))
+                    .set_cell("product_id", Cell::Id(product))
+                    .set_cell("product_qty", Cell::Decimal(Decimal::from(1))),
+            )
+            .await;
+        }
+        // The company rule of the product hides it from callers outside the other company; the
+        // product joins that company after the order lines exist, so no company check refuses them.
+        tx.execute(
+            "UPDATE product_template SET company_id = $1 WHERE id = $2",
+            &[&other_company, &guarded_template],
+        )
+        .await
+        .unwrap();
+        tx.env()
+            .records("res.groups")
+            .unwrap()
+            .browse([user_group])
+            .unwrap()
+            .write(
+                &mut tx,
+                RawVals::new().set_commands(
+                    "implied_ids",
+                    [Command::Link(RecId::from_real(warning_group).unwrap())],
+                ),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+        let orm = purchase_policy_orm(&db, &orm, &[]).await;
+
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let env = tx.env();
+        let display = |id: i64| {
+            env.records("product.product")
+                .unwrap()
+                .browse([id])
+                .unwrap()
+        };
+        let (visible_name, guarded_name) = (display(visible), display(guarded));
+        let visible_name = match visible_name.cell(&mut tx, "display_name").await.unwrap() {
+            Cell::Str(s) => s.to_string(),
+            other => panic!("display name: {other:?}"),
+        };
+        let guarded_name = match guarded_name.cell(&mut tx, "display_name").await.unwrap() {
+            Cell::Str(s) => s.to_string(),
+            other => panic!("display name: {other:?}"),
+        };
+        let both = |ids: &[i64]| {
+            Value::list(ids.iter().map(|c| Value::Int(*c)))
+        };
+        let parent_line = "Parent Holdings - Parent requires PO reference";
+        let narrow_text = format!("{parent_line}\n{visible_name} - Visible note");
+        let wide_text = format!("{narrow_text}\n{guarded_name} - Guarded note");
+
+        // Two callers, one transaction: each one's text follows that caller's own rights.
+        let read_as = |uid: UserId, companies: &[i64], order_id: i64| {
+            env.with_user(uid)
+                .with_context([("allowed_company_ids", both(companies))])
+                .records("purchase.order")
+                .unwrap()
+                .browse([order_id])
+                .unwrap()
+        };
+        let narrow_order = read_as(narrow_buyer, &[company], notice_order);
+        let wide_order = read_as(wide_buyer, &[company, other_company], notice_order);
+        assert_eq!(
+            narrow_order.cell(&mut tx, "purchase_warning_text").await.unwrap(),
+            text(&narrow_text)
+        );
+        assert_eq!(
+            wide_order.cell(&mut tx, "purchase_warning_text").await.unwrap(),
+            text(&wide_text)
+        );
+        assert_eq!(
+            narrow_order.cell(&mut tx, "purchase_warning_text").await.unwrap(),
+            text(&narrow_text)
+        );
+        // The line of the hidden product shows nothing to the narrow caller, its note to the wide one.
+        let guarded_line: i64 = tx
+            .query(
+                "SELECT id::int8 FROM purchase_order_line WHERE product_id = $1",
+                &[&guarded],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        let line_as = |uid: UserId, companies: &[i64]| {
+            env.with_user(uid)
+                .with_context([("allowed_company_ids", both(companies))])
+                .records("purchase.order.line")
+                .unwrap()
+                .browse([guarded_line])
+                .unwrap()
+        };
+        let narrow_line = line_as(narrow_buyer, &[company]);
+        let wide_line = line_as(wide_buyer, &[company, other_company]);
+        assert_eq!(
+            narrow_line.cell(&mut tx, "purchase_line_warn_msg").await.unwrap(),
+            Cell::Null
+        );
+        assert_eq!(
+            wide_line.cell(&mut tx, "purchase_line_warn_msg").await.unwrap(),
+            text("Guarded note")
+        );
+        // A note of spaces only gives no banner.
+        let blank_as_narrow = read_as(narrow_buyer, &[company], blank_order);
+        assert_eq!(
+            blank_as_narrow
+                .cell(&mut tx, "purchase_warning_text")
+                .await
+                .unwrap(),
+            Cell::Null
+        );
+
+        // An edit of a note shows when the order is read again in the same transaction.
+        let manager_order = read_as(manager, &[company], notice_order);
+        assert_eq!(
+            manager_order
+                .cell(&mut tx, "purchase_warning_text")
+                .await
+                .unwrap(),
+            text(&narrow_text)
+        );
+        let manager_parent = env
+            .with_user(manager)
+            .with_context([("allowed_company_ids", both(&[company]))])
+            .records("res.partner")
+            .unwrap()
+            .browse([parent])
+            .unwrap();
+        write(
+            &mut tx,
+            &manager_parent,
+            RawVals::new().set_cell("purchase_warn_msg", text("Changed reference rule")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            manager_order
+                .cell(&mut tx, "purchase_warning_text")
+                .await
+                .unwrap(),
+            text(&format!(
+                "Parent Holdings - Changed reference rule\n{visible_name} - Visible note"
+            ))
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(orm);
+        db.cleanup().await.unwrap();
+    });
+}
+
+/// The warning notice length bound is the system parameter `base.warning_message_max_chars`.
+#[test]
+fn purchase_notice_length_follows_the_system_parameter() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let vendor = create_one(
+            &mut tx,
+            "res.partner",
+            RawVals::new().set_cell("name", text("Short Notice Vendor")),
+        )
+        .await;
+        let params = tx.env().records("ir.config_parameter").unwrap();
+        let set = async |tx: &mut Transaction, value: i64| {
+            params
+                .call::<(String, Option<i64>), i64>(
+                    tx,
+                    "set_int",
+                    ("base.warning_message_max_chars".to_owned(), Some(value)),
+                )
+                .await
+        };
+        for outside in [0, 20_001] {
+            assert_eq!(
+                set(&mut tx, outside).await.unwrap_err().kind(),
+                ErrorKind::Validation,
+                "{outside}"
+            );
+        }
+        set(&mut tx, 12).await.unwrap();
+        let partner = tx
+            .env()
+            .records("res.partner")
+            .unwrap()
+            .browse([vendor])
+            .unwrap();
+        write(
+            &mut tx,
+            &partner,
+            RawVals::new().set_cell("purchase_warn_msg", text("123456789012")),
+        )
+        .await
+        .unwrap();
+        let error = write(
+            &mut tx,
+            &partner,
+            RawVals::new().set_cell("purchase_warn_msg", text("1234567890123")),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Validation);
+        assert_eq!(
+            error.message(),
+            "Purchase order notice cannot exceed 12 characters (base.warning_message_max_chars)."
         );
         tx.rollback().await.unwrap();
         drop(tx);
