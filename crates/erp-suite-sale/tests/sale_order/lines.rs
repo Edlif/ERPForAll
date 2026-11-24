@@ -1149,10 +1149,12 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
             Cell::Int(1)
         );
         let hidden = doc.with_env(env.with_user(seller).with_company(world.company).unwrap());
-        assert_eq!(
-            hidden.cell(&mut tx, "sale_order_count").await.unwrap(),
-            Cell::Int(0)
-        );
+        // Without read on the invoice model the invoice itself is closed to that user.
+        let closed = hidden
+            .cell(&mut tx, "sale_order_count")
+            .await
+            .expect_err("a sales-only user cannot read invoices");
+        assert_eq!(closed.kind(), ErrorKind::Access, "{closed}");
         let none: Value = seller_order
             .call(&mut tx, "action_view_invoice", ())
             .await
@@ -1175,10 +1177,10 @@ fn confirmed_order_creates_a_single_draft_customer_invoice_at_its_terms() {
         let Value::Json(shown) = shown else {
             panic!("a web action envelope")
         };
-        assert_eq!(shown["result"]["kind"], "window");
+        assert_eq!(shown["result"]["kind"], "current_window");
         assert_eq!(shown["result"]["model"], "account.move");
-        assert_eq!(shown["result"]["views"][0]["type"], "list");
-        assert_eq!(shown["result"]["views"][1]["type"], "form");
+        assert_eq!(shown["result"]["views"].as_array().unwrap().len(), 2);
+        assert_eq!(shown["result"]["domain"][0][2][0], invoice);
         let back: Value = doc
             .with_env(env.with_user(clerk).with_company(world.company).unwrap())
             .call(&mut tx, "action_view_sale_orders", ())

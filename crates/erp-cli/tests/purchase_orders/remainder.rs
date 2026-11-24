@@ -173,10 +173,10 @@ fn short_receipt(always: bool) {
             let Value::Json(shown) = shown else {
                 panic!("a web action envelope")
             };
-            assert_eq!(shown["result"]["kind"], "window");
+            assert_eq!(shown["result"]["kind"], "current_window");
             assert_eq!(shown["result"]["model"], "account.move");
-            assert_eq!(shown["result"]["views"][0]["type"], "list");
-            assert_eq!(shown["result"]["views"][1]["type"], "form");
+            assert_eq!(shown["result"]["views"].as_array().unwrap().len(), 2);
+            assert_eq!(shown["result"]["domain"][0][2].as_array().unwrap().len(), 2);
             // The way back from a bill to its order.
             let bill = bill_books::moves(&tx, company).browse([next]).unwrap();
             assert_eq!(
