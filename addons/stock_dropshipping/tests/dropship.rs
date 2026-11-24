@@ -24,6 +24,8 @@ pub fn harness_builder() -> erp_testkit::HarnessBuilder {
         &erp_addon_stock_account::ADDON,
         &erp_addon_purchase::ADDON,
         &erp_addon_purchase_stock::ADDON,
+        &erp_addon_mail::ADDON,
+        &erp_addon_sales_team::ADDON,
         &erp_addon_sale::ADDON,
         &erp_addon_sale_stock::ADDON,
         &erp_addon_stock_dropshipping::ADDON,
