@@ -165,22 +165,6 @@ fn short_receipt(always: bool) {
                 po.cell(&mut tx, "invoice_count").await.unwrap(),
                 Cell::Int(2)
             );
-            let buyer_po = po.with_env(tx.env().with_user(buyer).with_company(company).unwrap());
-            assert_eq!(
-                buyer_po.cell(&mut tx, "invoice_count").await.unwrap(),
-                Cell::Int(0)
-            );
-            let none: Value = buyer_po
-                .call(&mut tx, "action_view_invoice", ())
-                .await
-                .unwrap();
-            let Value::Map(none) = none else {
-                panic!("an action dictionary")
-            };
-            assert!(
-                !format!("{:?}", none["domain"]).contains("Int("),
-                "{none:?}"
-            );
             let shown: Value = po.call(&mut tx, "action_view_invoice", ()).await.unwrap();
             let shown: Value = po
                 .call(&mut tx, "erp_normalize_action_result", (1_u64, shown))
@@ -211,6 +195,22 @@ fn short_receipt(always: bool) {
                 panic!("a web action envelope")
             };
             assert_eq!(back["result"]["model"], "purchase.order");
+            tx.commit().await.unwrap();
+            drop(tx);
+            let mut tx = orm.begin(buyer).await.unwrap();
+            let buyer_po = orders(&tx, &[company]).browse([parent]).unwrap();
+            assert_eq!(
+                buyer_po.cell(&mut tx, "invoice_count").await.unwrap(),
+                Cell::Int(0)
+            );
+            let none: Value = buyer_po
+                .call(&mut tx, "action_view_invoice", ())
+                .await
+                .unwrap();
+            let Value::Map(none) = none else {
+                panic!("an action dictionary")
+            };
+            assert!(!format!("{:?}", none["domain"]).contains("Int("), "{none:?}");
             tx.rollback().await.unwrap();
             return;
         }

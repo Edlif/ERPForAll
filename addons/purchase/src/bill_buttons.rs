@@ -133,7 +133,7 @@ fn flat(found: BTreeMap<i64, Vec<i64>>) -> Vec<i64> {
 
 #[methods(PurchaseOrder, addon = "purchase")]
 impl PurchaseOrder {
-    #[compute(depends = [])]
+    #[compute(depends = [], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_invoice_count(
         this: &RecordSet<PurchaseOrder>,
         tx: &mut Transaction,
@@ -177,7 +177,7 @@ pub struct PurchaseBillOrders {
 
 #[methods(AccountMove, addon = "purchase")]
 impl PurchaseBillOrders {
-    #[compute(depends = [])]
+    #[compute(depends = [], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_purchase_order_count(
         this: &RecordSet<AccountMove>,
         tx: &mut Transaction,
