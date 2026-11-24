@@ -121,6 +121,31 @@ async fn order_with_product(
     (order, line, reference)
 }
 
+/// An internal user whose only group is Inventory user: no Sales rights.
+async fn stock_user(tx: &mut Transaction, login: &str) -> i64 {
+    let company = xmlid(tx, "base", "main_company").await;
+    let group = xmlid(tx, "stock", "group_stock_user").await;
+    let partner = partner(tx, RawVals::new().set_cell("name", Cell::Str(login.into()))).await;
+    tx.env()
+        .records("res.users")
+        .unwrap()
+        .create(
+            tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", Cell::Str(login.into()))
+                    .set_cell("login", Cell::Str(login.into()))
+                    .set_cell("partner_id", Cell::Id(partner))
+                    .set_cell("company_id", Cell::Id(company))
+                    .set_commands("company_ids", [Command::set([id(company)])])
+                    .set_commands("group_ids", [Command::set([id(group)])]),
+            ],
+        )
+        .await
+        .unwrap()
+        .ids()[0]
+}
+
 async fn transfers(tx: &mut Transaction, origin: &str) -> i64 {
     tx.query(
         "SELECT count(*) FROM stock_picking WHERE origin = $1",
@@ -138,6 +163,7 @@ fn direct_delivery_confirms_saved_order_as_salesperson() {
         let mut tx = installed.begin(SUPERUSER_ID).await.unwrap();
         admin(&mut tx).await;
         let salesperson = user(&mut tx, "delivery-sales", "group_sale_salesman").await;
+        let stocker = stock_user(&mut tx, "delivery-stocker").await;
         let world = world(&mut tx).await;
         let alternate = tx
             .env()
@@ -258,6 +284,28 @@ fn direct_delivery_confirms_saved_order_as_salesperson() {
             orders.cells(&mut tx, "direct_delivery_id").await.unwrap(),
             [Cell::Null]
         );
+        // The Delivery button follows the same rule: no Inventory right, no transfers, no leak.
+        assert_eq!(
+            orders.cells(&mut tx, "delivery_count").await.unwrap(),
+            [Cell::Int(0)]
+        );
+        let none: Value = orders
+            .call(&mut tx, "action_view_delivery", ())
+            .await
+            .unwrap();
+        let Value::Map(none) = none else {
+            panic!("an action dictionary")
+        };
+        assert_eq!(none["res_model"], Value::str("stock.picking"));
+        assert!(!format!("{:?}", none["domain"]).contains("Int("), "{none:?}");
+        assert_eq!(
+            orders
+                .sudo(true)
+                .cells(&mut tx, "delivery_count")
+                .await
+                .unwrap(),
+            [Cell::Int(1)]
+        );
         let delivery = tx
             .env()
             .records("stock.picking")
@@ -268,6 +316,10 @@ fn direct_delivery_confirms_saved_order_as_salesperson() {
         assert_eq!(
             delivery.cells(&mut tx, "sale_order_id").await.unwrap(),
             [Cell::Id(quotation)]
+        );
+        assert_eq!(
+            delivery.cells(&mut tx, "sale_order_count").await.unwrap(),
+            [Cell::Int(1)]
         );
         assert_eq!(row.get::<_, i64>(1), shipping);
         assert_eq!(row.get::<_, i64>(2), world.company);
@@ -326,6 +378,30 @@ fn direct_delivery_confirms_saved_order_as_salesperson() {
         assert_eq!(text(&mut tx, &orders, "state").await, "sale");
         assert_eq!(transfers(&mut tx, &reference).await, 1);
         tx.commit().await.unwrap();
+        drop(tx);
+        // An Inventory user without Sales rights opens the transfer: the way back counts 0 and
+        // opens nothing, and reading the form raises no access error.
+        let mut tx = orm.begin(UserId::new(stocker).unwrap()).await.unwrap();
+        let transfer = tx
+            .env()
+            .records("stock.picking")
+            .unwrap()
+            .browse([picking])
+            .unwrap();
+        assert_eq!(
+            transfer.cells(&mut tx, "sale_order_count").await.unwrap(),
+            [Cell::Int(0)]
+        );
+        let back: Value = transfer
+            .call(&mut tx, "action_view_sale_order", ())
+            .await
+            .unwrap();
+        let Value::Map(back) = back else {
+            panic!("an action dictionary")
+        };
+        assert_eq!(back["res_model"], Value::str("sale.order"));
+        assert!(!format!("{:?}", back["domain"]).contains("Int("), "{back:?}");
+        tx.rollback().await.unwrap();
         drop(tx);
         db.cleanup().await.unwrap();
     });
