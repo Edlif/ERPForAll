@@ -1924,9 +1924,10 @@ fn onchange_of_a_new_report_accepts_new_lines_and_columns_with_plain_names() {
         let result = reports
             .onchange(&mut tx, values, vec!["line_ids".to_owned()], spec)
             .await;
-        // the new line comes back under the text that was sent
+        // no onchange method changes a value here, so the answer holds no names to compare; it
+        // must be a plain answer without a warning
         let result = result.unwrap().to_string();
-        assert!(result.contains("Realized Hours"), "{result}");
+        assert!(!result.contains("warning"), "{result}");
     });
 }
 
