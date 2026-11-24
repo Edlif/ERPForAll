@@ -13,7 +13,7 @@ import { renderFormLayout } from "./form-layout.js";
 import { Chatter } from "./chatter.js";
 import type { MessagingStore } from "@erpforall/mail-store";
 import type { ButtonNode, CancelNode, Node, View } from "./metadata.js";
-import { resolveFieldWidget, type RecordEvent, type ShellNavigation, type WidgetHandle } from "./registry.js";
+import { resolveFieldWidget, type RecordEvent, type ShellNavigation, type ViewLoader, type WidgetHandle } from "./registry.js";
 import type { RecordState } from "./record.js";
 import { ClientError, type RpcClient } from "./transport.js";
 
@@ -87,6 +87,8 @@ export class RecordForm {
     userName?: string;
     run(job: () => Promise<void>): void; report(error: unknown): void;
     openRecord(model: string, id: number): Promise<void>;
+    /** The page's cached view loader, handed to the field widgets (a relation dialog, the lines of a one2many). */
+    views?: ViewLoader;
     /** Shell navigation handed to the form's field widgets (`navigate`, `openAction`). */
     navigation?: ShellNavigation;
     change(name: string, value: unknown, focus: string | undefined): void;
@@ -325,7 +327,7 @@ export class RecordForm {
         columnScope: this.env.uid === undefined ? undefined : JSON.stringify([this.env.uid, "form", state.model, this.env.view.id]),
         field: { ...node.field, widget: node.widget, label: node.label }, value: state.values[node.field.name], values: state.values, model: state.model, changed: state.isChanged(node.field.name), fields: state.currentFields, changeValues: this.env.changeValues ? changes => this.env.changeValues!(changes, this.focus()) : undefined, numericLocale: this.env.numericLocale, currencies: this.currencies, viewContext: "form",
         rpc: this.env.rpc, context: this.env.context, ...(this.env.messages ? { messages: this.env.messages } : {}), editorLocale: this.env.editorLocale, signal: this.env.signal, run: this.env.run, report: this.env.report,
-        openRecord: this.env.openRecord,
+        openRecord: this.env.openRecord, ...(this.env.views ? { views: this.env.views } : {}),
         ...(this.env.navigation ? { navigate: this.env.navigation.navigate, openAction: this.env.navigation.openAction } : {}),
         draft: {
           stage: value => {

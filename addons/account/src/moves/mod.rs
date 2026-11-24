@@ -20,6 +20,7 @@ mod line;
 mod post;
 
 pub use line::AccountMoveLine;
+pub(crate) use post::refuse_locked_items;
 pub use post::{POSTER_GROUP, cancel_moves, post_moves, reset_moves};
 
 use erp_sdk::Operation;
@@ -228,6 +229,15 @@ pub struct AccountMove {
         string = "Payment Status"
     )]
     pub payment_state: Option<Arc<str>>,
+    /// True while Reset to Draft would be refused: the entry is not cancelled (a posted entry is
+    /// corrected by a reversal under the posting policy, a draft already is one), an item of it is
+    /// matched, or it is a payment's entry. A form hides the button with it.
+    #[field(
+        boolean,
+        compute = "_compute_reset_blocked",
+        string = "Reset to Draft Blocked"
+    )]
+    pub reset_blocked: bool,
 }
 
 #[methods(AccountMove, addon = "account")]
@@ -331,8 +341,29 @@ impl AccountMove {
         let closed = post::closed_fields(&vals, &post::POSTED_MOVE_WRITABLE);
         if !closed.is_empty() {
             let what = format!("change {} of", closed.join(", "));
-            post::refuse_closed_entries(tx, this.env(), &this.ids(), Operation::Write, &what)
-                .await?;
+            // the date, the number and the items are what a lock date protects on an entry
+            let scope = if closed
+                .iter()
+                .any(|f| ["date", "name", "line_ids", "invoice_line_ids"].contains(f))
+            {
+                post::LockScope::Tax
+            } else {
+                post::LockScope::Unprotected
+            };
+            let new_date = match vals.get("date") {
+                Some(Cell::Date(date)) => Some(*date),
+                _ => None,
+            };
+            post::refuse_closed_entries(
+                tx,
+                this.env(),
+                &this.ids(),
+                Operation::Write,
+                &what,
+                scope,
+                new_date,
+            )
+            .await?;
         }
         refuse_sync_owned(&vals)?;
         sup.call(tx, &unchecked(this.as_records()), (vals,)).await?;
@@ -355,8 +386,17 @@ impl AccountMove {
     #[method(override)]
     async fn unlink(this: &RecordSet<AccountMove>, tx: &mut Transaction, sup: Super) -> Result<()> {
         tx.flush().await?;
-        post::refuse_closed_entries(tx, this.env(), &this.ids(), Operation::Unlink, "delete")
-            .await?;
+        post::refuse_closed_entries(
+            tx,
+            this.env(),
+            &this.ids(),
+            Operation::Unlink,
+            "delete",
+            post::LockScope::Tax,
+            None,
+        )
+        .await?;
+        post::refuse_consequences(tx, &this.ids(), "delete").await?;
         sup.call(tx, &unchecked(this.as_records()), ()).await
     }
 }

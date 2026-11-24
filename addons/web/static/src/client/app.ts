@@ -43,7 +43,7 @@ import { askButtonPrompt } from "./button-prompt.js";
 import { viewButton, ButtonDebouncer, ButtonHotkeys } from "./view-button.js";
 import { runUrlButton } from "./button-url.js";
 import { CurrencyDisplayCache } from "./field-currency.js";
-import { fieldWidgets, resolveFieldWidget, type ActionRequest, type RecordEvent, type ShellNavigation } from "./registry.js";
+import { fieldWidgets, resolveFieldWidget, type ActionRequest, type RecordEvent, type ShellNavigation, type ViewLoader } from "./registry.js";
 import { ListGroupModel, type ListGroupNode } from "./list-group-model.js";
 import type { ListGroupState } from "./list-group-state.js";
 import type { NumericLocale } from "./numeric-values.js";
@@ -103,6 +103,12 @@ function listRouteOf(route: Route): Route {
   delete list.id;
   delete list.view_type;
   return list;
+}
+
+/** The trail identity of a list or record page: its action, the related list it belongs to, and the record. */
+function crumbId(route: Route, id?: number | string): string {
+  const via = route.method_action ? `-via-${route.method_action}` : "";
+  return `action-${route.action}${via}-${id === undefined ? "list" : `form-${id}`}`;
 }
 
 type SwitchableView = "list" | "form" | "pivot" | "calendar" | "graph" | "kanban";
@@ -1473,6 +1479,9 @@ export class HumanApp {
   private viewKey(model: string, views: unknown[][], context = this.context): string {
     return `views ${model} ${JSON.stringify(this.viewArgs(views, context))}`;
   }
+
+  /** Plain view requests (dialogs, line views, relation editors) through the same page-lifetime cache. */
+  private readonly viewLoader: ViewLoader = (model, views, context) => this.viewDescriptions(model, views, {}, context);
 
   /** The view descriptions of one action, shared through the page-lifetime metadata cache. */
   private async viewDescriptions(model: string, views: unknown[][], options: CallOptions = {}, context = this.context, actionId?: number): Promise<unknown> {
@@ -3114,20 +3123,33 @@ export class HumanApp {
 
     const breadcrumbs = panel.querySelector<HTMLElement>("[data-control-breadcrumbs]") || panel.querySelector<HTMLElement>("h1");
     if (breadcrumbs) {
-      this.breadcrumbs.clear();
-      this.breadcrumbs.push({
-        id: `action-${route.action}-list`,
+      const listCrumb = {
+        id: crumbId(route),
         title: actionTitle,
         // Getters: the list's search facets are written into `route` after this crumb exists.
         get route() { return listRouteOf(route); },
         get url() { return routeUrl(listRouteOf(route)); },
         isFormView: false
-      });
+      };
+      const related = route.method_action ? this.methodActions.get(route.method_action) : undefined;
+      // A list opened by a form's button goes on top of that form; its own crumb (or browser Back) cuts the trail back to it.
+      const returning = !!related && this.breadcrumbs.items.some(item => item.id === listCrumb.id);
+      const stacked = !!related && !returning && this.breadcrumbs.current?.id === crumbId(related.origin, related.origin.id ?? "new");
+      if (returning) { this.breadcrumbs.truncateTo(listCrumb.id); this.breadcrumbs.replaceCurrent(listCrumb); }
+      else {
+        if (!stacked) this.breadcrumbs.clear();
+        this.breadcrumbs.push(listCrumb);
+      }
       const title = el("h1", actionTitle, "breadcrumb-current");
       title.setAttribute("aria-current", "page");
       breadcrumbs.replaceChildren(title);
-      const related = route.method_action ? this.methodActions.get(route.method_action) : undefined;
-      if (related) {
+      if (returning || stacked) {
+        renderBreadcrumbs(breadcrumbs, this.breadcrumbs, {
+          isSmall: document.documentElement.dataset["mobile"] === "true",
+          onNavigate: async item => this.run(() => this.navigate(item.route, false, false, undefined, { autosave: true })),
+          report: error => this.reportError(error)
+        });
+      } else if (related) {
         // A list opened by a form button keeps the way back: menu path, the source record, this list.
         const trail = el("div", undefined, "form-breadcrumb-path");
         const menus = this.menuTrail(related.origin);
@@ -4214,15 +4236,11 @@ export class HumanApp {
     if (previous && ((previous !== source && previous.busy) || !await previous.canLeave(previous === source))) return;
     const context = { ...callerContext, ...(caller ? { active_model: caller.model, active_id: caller.id,
       active_ids: caller.id === undefined ? [] : [caller.id] } : {}), ...result.context };
-    const description = describeViews(await this.rpc.call(result.model, "get_views", {
-      views: result.views.map(view => [view.id, view.type]), wire_major: 1, options: { mobile: false }, context
-    }), result.model, this.registry);
+    const description = describeViews(await this.viewLoader(result.model, result.views.map((view): [number | null, string] => [view.id, view.type]), context), result.model, this.registry);
     if (!this.live(binding)) return;
     const view = description.views.get("form");
     if (!view || view.mode !== "record") throw new ClientError("unsupported", "A wizard requires a record form.");
-    await attachSubviews(description, view, async (relation, refs) => describeViews(await this.rpc.call(relation, "get_views", {
-      views: [[null, "list"], [null, "form"]], wire_major: 1, options: { mobile: false }, context: refs ? { ...context, ...refs } : context
-    }), relation, this.registry));
+    await attachSubviews(description, view, async (relation, refs) => describeViews(await this.viewLoader(relation, [[null, "list"], [null, "form"]], refs ? { ...context, ...refs } : context), relation, this.registry));
     if (!this.live(binding)) return;
     const state = new RecordState(this.rpc, result.model, view.fields, context);
     await state.load(result.res_id ?? undefined);
@@ -4231,7 +4249,7 @@ export class HumanApp {
     scope = new WizardDialog({ profileTitle, numericLocale: this.numericLocale, name: result.name, state, view, rpc: this.rpc, context,debug:this.debug,uid:this.userId,
       action:(id,effective)=>this.declaredButtonAction(id,state,view.fields,effective,binding,refresh,scope),
       url:href=>runUrlButton(href,{baseUrl:location.href,navigate:async route=>{if(!await scope.canLeave(true))return;await scope.close();await this.navigate(route);},openExternal:(url,target,features)=>{window.open(url,target,features);}}),
-      openRecord: async (model, id) => { if (this.live(binding)) await this.openRelatedRecord(model, id); },
+      openRecord: async (model, id) => { if (this.live(binding)) await this.openRelatedRecord(model, id); }, views: this.viewLoader,
       report: error => this.hotkeyError(error, !this.live(binding)), notice: this.notice, messages: this.messages, editorLocale: this.editorLocale,
       result: async (value,effective=context,button,resubmit) => {
         const normalized = actionResult(await this.rpc.call(state.model, "erp_normalize_action_result", { wire_major: 1, result: value, context:effective }));
@@ -4419,7 +4437,7 @@ export class HumanApp {
       const displayName = labelField ? state.values[labelField.name] : undefined;
       const currentName = !state.id ? "New" : typeof displayName === "string" && displayName ? displayName : (typeof title === "string" && title ? title : `#${state.id}`);
 
-      const crumb = { id: `action-${route.action}-form-${state.id ?? "new"}`, title: currentName, route: { ...route }, url: routeUrl(route), isFormView: true };
+      const crumb = { id: crumbId(route, state.id ?? "new"), title: currentName, route: { ...route }, url: routeUrl(route), isFormView: true };
       // A form already in the trail (its crumb, browser Back) cuts the trail back to itself.
       const returning = this.breadcrumbs.items.some(item => item.id === crumb.id);
       if (returning) this.breadcrumbs.truncateTo(crumb.id);
@@ -4430,7 +4448,7 @@ export class HumanApp {
       else {
         if (this.breadcrumbs.items.length === 0 || this.breadcrumbs.current?.route.action !== route.action) {
           this.breadcrumbs.clear();
-          this.breadcrumbs.push({ id: `action-${route.action}-list`, title: actionTitle, route: listRouteOf(route), url: routeUrl(listRouteOf(route)), isFormView: false });
+          this.breadcrumbs.push({ id: crumbId(route), title: actionTitle, route: listRouteOf(route), url: routeUrl(listRouteOf(route)), isFormView: false });
         }
         if (this.breadcrumbs.current?.isFormView) this.breadcrumbs.replaceCurrent(crumb);
         else this.breadcrumbs.push(crumb);
@@ -4452,7 +4470,9 @@ export class HumanApp {
       // The same view too: the list of an action is not its pivot or chart as it was left.
       const backIsOrigin = !!origin && !!back && !back.method_action && back.action === origin.origin.action && back.id === origin.origin.id
         && back.view_type === origin.origin.view_type;
-      const previous = origin && !backIsOrigin ? breadcrumbs.querySelector(".breadcrumb-previous") : null;
+      // A trail that already holds the source record (the list went on top of it) shows it there.
+      const originInTrail = !!origin && this.breadcrumbs.items.some(item => item.id === crumbId(origin.origin, origin.origin.id ?? "new"));
+      const previous = origin && !backIsOrigin && !originInTrail ? breadcrumbs.querySelector(".breadcrumb-previous") : null;
       if (origin && previous) {
         const divider = el("span", "›", "form-breadcrumb-divider"); divider.setAttribute("aria-hidden", "true");
         previous.prepend(this.originCrumb(origin), divider);
@@ -4818,7 +4838,7 @@ export class HumanApp {
       messagingStore: this.getMessagingStore(), uid: this.userId, userName: this.userName,
       run: this.run, report: error => this.reportError(error), messages: this.messages, editorLocale: this.editorLocale,
       notify: message => this.messages.notifications.add(message, { level: "warning" }),
-      openRecord: (model, id) => this.openRelatedRecord(model, id), button: renderButton, navigation: fieldNavigation,
+      openRecord: (model, id) => this.openRelatedRecord(model, id), views: this.viewLoader, button: renderButton, navigation: fieldNavigation,
       changeValues: (changes, focus) => this.run(async () => {
         if (this.uncertainMethod || this.expired) throw new ClientError("ambiguous", uncertainMethodMessage);
         const changeGeneration = this.generation;
