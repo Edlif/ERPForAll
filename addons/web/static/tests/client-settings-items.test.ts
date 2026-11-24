@@ -151,13 +151,18 @@ test("a text info value is bounded and refuses control characters; an empty one 
 /// (partial: inactive-consumer help is rendered beside the editable value)
 test("Inventory keeps deferred features visible and outside scalar saves", async () => {
   const stockInfo: SettingsItem = { kind: "info", key: "stock.group_stock_multi_locations", label: "Multiple locations", app: "stock", block: "Warehouse", sequence: 100, value: "Multiple locations (unavailable)", detail: "Unavailable until a later release supplies feature-group changes." };
+  const fleetInfo: SettingsItem = { kind: "info", key: "stock.module_stock_fleet", label: "Transport", app: "stock", block: "Operations", sequence: 100, value: "Transport (unavailable)", detail: "Unavailable until a later release supplies this addon." };
   const stockLink: SettingsItem = { kind: "link", key: "stock.module_delivery", label: "Set up carriers in Addons", app: "stock", block: "Shipping", sequence: 200, target: { kind: "action", id: 77, res_id: null } };
   const stockSetting = { ...setting, key: "stock.stock_move_email_validation", app: "stock", block: "Shipping", default: false, help: "Saved only; delivery email is not sent by this setting yet." };
-  const { host, controller, calls, openTarget } = await mount([stockInfo, stockLink], [stockSetting], "stock");
+  const { host, controller, calls, openTarget } = await mount([stockInfo, fleetInfo, stockLink], [stockSetting], "stock");
   const unavailable = host.querySelector('[data-setting-key="stock.group_stock_multi_locations"]')!;
   expect(unavailable.querySelector(".settings-info-value")?.textContent).toBe("Multiple locations (unavailable)");
   expect(unavailable.textContent).toContain("a later release");
   expect(unavailable.querySelector("input, select")).toBeNull();
+  const fleet = host.querySelector('[data-setting-key="stock.module_stock_fleet"]')!;
+  expect(fleet.querySelector(".settings-info-value")?.textContent).toBe("Transport (unavailable)");
+  expect(fleet.querySelector("button")).toBeNull();
+  expect(host.querySelector<HTMLButtonElement>('[data-setting-key="stock.module_delivery"] button')).not.toBeNull();
   expect(host.textContent).toContain(stockSetting.help);
   expect(calls.find(call => call.method === "erp_read_values")?.args["keys"]).toEqual([stockSetting.key]);
   const input = host.querySelector<HTMLInputElement>('[data-setting-key="stock.stock_move_email_validation"] input')!;
