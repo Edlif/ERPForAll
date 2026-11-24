@@ -43,8 +43,17 @@ pnpm --dir web install --frozen-lockfile
 ```
 
 `scripts/check.sh --affected --tests` runs formatting, layer checks, clippy, and tests for only the packages affected
-by your diff against `origin/main` (fast default for pull requests); pass `-p <crate>` to target specific packages, or
-`scripts/check.sh --tests` to run the full workspace.
+by your diff against `origin/main`; pass `-p <crate>` to target specific packages, or `scripts/check.sh --tests` to run
+the full workspace.
+
+### What runs on a pull request
+
+The check on a pull request is light, so it fits a GitHub-hosted runner: formatting, layer checks and clippy for the
+packages your diff affects, the web type check and tests when web files changed, and a check that every commit carries
+a `Signed-off-by:` line (`scripts/check-dco.py`). It does not run the Rust or database test suites. The maintainers run
+the full suite on their own hosts before `stable` moves to a `main` revision; a weekly run of the full workspace tests also runs here.
+Run the tests of the packages you change yourself (`scripts/check.sh -p <crate> --tests`) and say in the pull request
+what you ran.
 
 ## Pull requests
 
@@ -53,7 +62,11 @@ by your diff against `origin/main` (fast default for pull requests); pass `-p <c
 - Errors fail loudly: no swallowed errors, no silent defaults; an unsupported case returns a clear error.
 - Keep the core small: business domains are addons, not core.
 - Run the formatting, lint and test commands above before you push.
-- Accepted pull requests are reviewed here, integrated through our release pipeline (keeping your authorship and DCO sign-off), and closed with a link to the commit once published to `main`.
+- Pull requests target `main`. An accepted pull request is reviewed by a maintainer and merged here on GitHub with a
+  merge commit: your commits, your authorship and your DCO sign-off stay, and the pull request shows as merged.
+- `main` is the integration branch and `stable` is the fully tested branch. The full test suite runs on the
+  maintainers' hosts for a `main` revision before `stable` moves to it, so a change reaches `stable` some time after
+  its merge. `stable` appears with the first full run that passes.
 
 ## Names
 

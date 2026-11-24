@@ -31,6 +31,15 @@ packages affected by your diff against `origin/main` (needs PostgreSQL 18 reacha
 and `pnpm run test` in `web/`, after `eval "$(scripts/web-toolchain.sh env)"`. Do not guess flags: `erp --help` and the
 subcommand help list what exists.
 
+## Branches and pull requests
+
+- `main` is the integration branch. Every pull request targets `main`. An accepted pull request is merged here on
+  GitHub with a merge commit, so its commits and their authorship stay.
+- `stable` is the fully tested branch. It moves to a `main` revision only after the full test suite passed for that
+  revision; the maintainers run it on their own hosts. Build from `stable` when you need a tested tree. The branch
+  appears with the first full run that passes; until then `main` is the only branch.
+- A pull request gets a light check. Run the tests of what you change yourself and say what you ran.
+
 ## Rules
 
 1. **Tests per behaviour.** A change that adds or alters behaviour comes with a test for it, next to the code.
@@ -43,7 +52,7 @@ subcommand help list what exists.
 6. **No secrets** in the repository, in logs or in test output.
 7. **DCO sign-off.** Every commit is signed off by the person who submits it (`git commit -s`). Agents do not sign
    off on their own; the human submitter does.
-8. **One topic per pull request**, small enough to review.
+8. **One topic per pull request**, small enough to review, against `main`.
 9. Match the surrounding style. `cargo fmt` and clippy with `-D warnings` must pass.
 
 ## Where to look first
