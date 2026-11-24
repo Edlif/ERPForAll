@@ -2047,6 +2047,7 @@ dependencies = [
  "erp-addon-stock",
  "erp-addon-stock-mail",
  "erp-addon-stock_account",
+ "erp-addon-stock_dropshipping",
  "erp-addon-theme-office-blue",
  "erp-addon-uom",
  "erp-addon-valuation",
