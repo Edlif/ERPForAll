@@ -520,6 +520,42 @@ empty optional answer. The method must take `prompt_value: String` (or `Option<S
 required); the view is refused otherwise. The client checks required, length, date and choice before calling, but the
 method can be called directly over RPC, so it validates its argument like any other. A prompt cannot combine with
 `confirm`, and a wizard stays the way for several fields.
+
+### Form open time
+
+`crates/erp-cli/tests/form_open_browser.rs` measures how long a form takes to open in a real browser: it installs
+sales, purchase, stock and accounting on a native server, creates a customer, products and orders with 0, 50 and 500
+lines, and `web/scripts/browser-form-open.mjs` times click to paint, with every request the page makes (time to first
+byte, size), for a list row to its form, a many2one link to its form, and an order's count button to its list and
+on to a record. It is a measurement, not a gate: it is ignored in every ordinary run, asserts only that each step
+reached its page, and writes `result.json` to the directory you name. Run it on a build machine with an optimized
+build:
+
+```sh
+cargo build --locked --profile release-tests -p erp-ui-compiler-cli --bin erp-ui-compile
+FORM_OPEN_OUTPUT=<dir> cargo test --locked --profile release-tests -p erp-cli --test form_open_browser -- --ignored --nocapture
+```
+
+One run on a 12-core Linux build machine (7 samples each, load average 18 at the start and 11 at the end, revision
+74941cc), click to paint:
+
+| Scenario | Median ms | Min to max ms | Requests before paint | Largest call before paint |
+|---|---|---|---|---|
+| list row to form, 0 lines, first | 47.9 | 41 to 66 | 5 | line views, 13 KB |
+| list row to form, 0 lines, again | 33.4 | 31.8 to 60 | 4 | record read, 1 KB |
+| list row to form, 50 lines, first | 72.9 | 69 to 77.9 | 6 | record read, 26 KB |
+| list row to form, 50 lines, again | 59.4 | 52.8 to 75.2 | 5 | record read, 26 KB |
+| list row to form, 500 lines, first | 310.5 | 297.6 to 340.1 | 6 | record read, 258 KB |
+| list row to form, 500 lines, again | 331.6 | 300.4 to 435.1 | 5 | record read, 258 KB |
+| many2one link to form, first | 66.4 | 59.5 to 82.4 | 5 | action resolve, 10 KB |
+| many2one link to form, again | 50.1 | 46 to 80.5 | 2 | messages, 1 KB |
+| count button to list | 48.3 | 47.4 to 54.2 | 6 | list views, 19 KB |
+| that list's row to form | 62.0 | 46.9 to 80.1 | 8 | line views, 10 KB |
+
+Every call's median time to first byte was under 15 ms. On the 500-line form the record read had finished about 35 ms
+after the click and the last request about 115 ms after it; the rest of the 300 ms until paint is the client's own
+work.
+
 ## Printed reports for native clients
 
 `GET /erp/report/pdf/<report>/<ids>` (`?download=1` for an attachment) answers the PDF of a report. A browser sends

@@ -4,7 +4,8 @@
 //! item create, write and delete, entry delete, Reset to Draft, Cancel, import), for the
 //! superuser, an elevated call and an accountant; a draft in a locked period stays editable; the
 //! tax lock date binds taxed entries only; matched items and reconciliation rows cannot be changed
-//! through the ORM; unmatching is subject to the lock dates; the Reset to Draft flag of an entry.
+//! through the ORM; unmatching is subject to the lock dates an administrator can lower (not the hard
+//! lock) and refuses a date without a fiscal period; the Reset to Draft flag of an entry.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -895,6 +896,112 @@ async fn walk_body() {
     assert_eq!(
         decimal(&february, &mut tx, "amount_residual").await,
         num("200")
+    );
+    tx.rollback().await.unwrap();
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
+
+#[test]
+fn a_match_into_a_hard_locked_period_can_be_undone_and_a_date_without_a_period_refuses() {
+    big_stack(hard_body);
+}
+
+async fn hard_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.commit().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let b = books(&mut tx, company).await;
+    let invoice = posted_invoice(
+        &mut tx,
+        &b,
+        "out_invoice",
+        b.customer,
+        "400",
+        d(2024, 1, 12),
+    )
+    .await;
+    let pay = posted_entry(
+        &mut tx,
+        &b,
+        b.receivable,
+        b.bank,
+        Some(b.customer),
+        "-400",
+        d(2024, 2, 12),
+    )
+    .await;
+    let name = string(&invoice, &mut tx, "name").await;
+    // the hard lock date cannot be lowered again: matching into its period is allowed, and so its
+    // undoing must stay possible
+    set_lock(&mut tx, company, "hard_lock_date", Some(d(2024, 1, 31))).await;
+    let items = items_on(&mut tx, &[&invoice, &pay], b.receivable).await;
+    try_call(&items, &mut tx, "reconcile").await.unwrap();
+    assert_eq!(
+        decimal(&invoice, &mut tx, "amount_residual").await,
+        num("0")
+    );
+    try_call(&items, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap();
+    assert_eq!(
+        decimal(&invoice, &mut tx, "amount_residual").await,
+        num("400")
+    );
+    // a lock date that can be lowered still refuses the unmatch, naming only that lock
+    try_call(&items, &mut tx, "reconcile").await.unwrap();
+    set_lock(
+        &mut tx,
+        company,
+        "fiscalyear_lock_date",
+        Some(d(2024, 1, 31)),
+    )
+    .await;
+    let error = try_call(&items, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap_err();
+    locked(&error, &name, "fiscalyear_lock_date through 2024-01-31");
+    assert!(
+        !error.message().contains("hard_lock_date"),
+        "{}",
+        error.message()
+    );
+    set_lock(&mut tx, company, "fiscalyear_lock_date", None).await;
+    try_call(&items, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap();
+    assert_eq!(
+        decimal(&invoice, &mut tx, "amount_residual").await,
+        num("400")
+    );
+    // a posted date without a fiscal period (posting creates it, so only a direct write removes
+    // it) refuses the unmatch instead of letting it through
+    try_call(&items, &mut tx, "reconcile").await.unwrap();
+    let gone = tx
+        .execute(
+            "DELETE FROM account_fiscal_period WHERE company_id = $1 AND kind = 'regular' \
+             AND $2 BETWEEN date_from AND date_to",
+            &[&company, &d(2024, 1, 12)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(gone, 1);
+    tx.invalidate_all().await.unwrap();
+    let error = try_call(&items, &mut tx, "remove_move_reconcile")
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Validation, "{}", error.message());
+    assert!(
+        error.message().contains(&name) && error.message().contains("No fiscal period"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(
+        decimal(&invoice, &mut tx, "amount_residual").await,
+        num("0")
     );
     tx.rollback().await.unwrap();
     drop(orm);

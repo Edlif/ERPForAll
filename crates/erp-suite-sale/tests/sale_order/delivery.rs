@@ -1251,6 +1251,11 @@ fn short_sales_delivery(always: bool, ask: bool) {
             } else {
                 "action_close_remainder"
             };
+            // read once more just before, so the value read after is the same transaction's
+            assert_eq!(
+                order.cell(&mut tx, "delivery_count").await.unwrap(),
+                Cell::Int(1)
+            );
             let result: Value = picking.call(&mut tx, choice, ()).await.unwrap();
             let result: Value = picking
                 .call(&mut tx, "erp_normalize_action_result", (1_u64, result))
@@ -1272,6 +1277,10 @@ fn short_sales_delivery(always: bool, ask: bool) {
                 assert_eq!(count, 0);
             }
         } else {
+            assert_eq!(
+                order.cell(&mut tx, "delivery_count").await.unwrap(),
+                Cell::Int(1)
+            );
             picking
                 .call::<(), ()>(&mut tx, "button_validate", ())
                 .await
@@ -1280,6 +1289,12 @@ fn short_sales_delivery(always: bool, ask: bool) {
         assert_eq!(
             line.cell(&mut tx, "qty_delivered").await.unwrap(),
             Cell::Decimal(Decimal::from(2))
+        );
+        // The backorder counts with its transfer, in the same transaction as the read before;
+        // closing the remainder makes none.
+        assert_eq!(
+            order.cell(&mut tx, "delivery_count").await.unwrap(),
+            Cell::Int(if always { 2 } else { 1 })
         );
         assert_eq!(
             line.cell(&mut tx, "qty_to_invoice").await.unwrap(),

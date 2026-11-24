@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The billed quantity, the quantity to bill and the billing status of purchase orders, the bill
-//! control of products and its Purchase setting, the filters and the upgrade of existing orders.
+//! control of products and its Purchase setting, the filters and the upgrade of existing orders,
+//! and what an edited quantity, a changed bill control and a cancelled order do to them.
 
 use super::*;
 use erp_addon_purchase::settings::BILL_CONTROL_SETTING;
@@ -109,6 +110,34 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
                 text(control)
             );
         }
+        // a service that becomes goods takes the setting's control, as on every type change
+        let repair = products
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", text("Repair"))
+                        .set_cell("type", text("service"))
+                        .set_cell("uom_id", Cell::Id(k.unit)),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            cell(&mut tx, &repair, "purchase_method").await,
+            text("purchase")
+        );
+        write(
+            &mut tx,
+            &repair,
+            RawVals::new().set_cell("type", text("consu")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cell(&mut tx, &repair, "purchase_method").await,
+            text("receive")
+        );
         let po = order(
             &mut tx,
             &[company],
@@ -197,6 +226,19 @@ fn bill_control_drives_billed_quantities_the_status_and_the_bill_buttons() {
         assert_eq!(status(&mut tx, &mine).await, "to invoice");
         let line = lines(&tx, &[company]).browse(goods.ids()).unwrap();
         assert_eq!(billed(&mut tx, &line).await, d("0/2"));
+        // the bill links are never written by a client, through x2many commands neither
+        for command in [Command::Clear, Command::create(RawVals::new())] {
+            refused(
+                write(
+                    &mut tx,
+                    &line,
+                    RawVals::new().set_commands("direct_bill_line_ids", [command]),
+                )
+                .await,
+                ErrorKind::Validation,
+                &["direct_bill_line_ids"],
+            );
+        }
         tx.rollback().await.unwrap();
         drop(tx);
 
@@ -622,6 +664,38 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
         assert_eq!(billed(&mut tx, &ordered).await, d("3/1"));
         assert_eq!(billed(&mut tx, &received).await, d("0/2"));
         assert_eq!(status(&mut tx, &po).await, "to invoice");
+        // the ordered quantity edited after a bill exists: the quantity to bill follows
+        write(
+            &mut tx,
+            &ordered,
+            RawVals::new().set_cell("product_qty", Cell::Decimal(dec("3.5"))),
+        )
+        .await
+        .unwrap();
+        assert_eq!(billed(&mut tx, &ordered).await, d("3/0.5"));
+        // a product's bill control changed after confirmation: its line follows
+        let bolt = tx
+            .env()
+            .sudo(true)
+            .with_company(company)
+            .unwrap()
+            .records("product.product")
+            .unwrap()
+            .browse([k.bolt])
+            .unwrap();
+        write(
+            &mut tx,
+            &bolt,
+            RawVals::new().set_cell("purchase_method", text("receive")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(billed(&mut tx, &received).await, d("0/0"));
+        // a cancelled order with a draft bill: nothing left to bill, the bill keeps its quantity
+        act(&mut tx, &po, "button_cancel").await.unwrap();
+        assert_eq!(billed(&mut tx, &ordered).await, d("3/0"));
+        assert_eq!(billed(&mut tx, &received).await, d("0/0"));
+        assert_eq!(status(&mut tx, &po).await, "no");
         tx.rollback().await.unwrap();
     })
 }

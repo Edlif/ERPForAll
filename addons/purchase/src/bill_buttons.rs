@@ -136,10 +136,18 @@ async fn invoice_views(tx: &mut Transaction) -> Result<Vec<(i64, &'static str)>>
             &[],
         )
         .await?;
+    let mut found = Vec::with_capacity(rows.len());
+    for row in &rows {
+        found.push((
+            row.try_get::<_, String>(0).map_err(decode)?,
+            row.try_get::<_, i64>(1).map_err(decode)?,
+        ));
+    }
     let find = |wanted: &str| -> Result<i64> {
-        rows.iter()
-            .find(|row| row.get::<_, String>(0) == wanted)
-            .map(|row| row.get::<_, i64>(1))
+        found
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .map(|(_, id)| *id)
             .ok_or_else(|| Error::invariant(format!("The invoice view {wanted} is missing.")))
     };
     Ok(vec![
@@ -155,7 +163,8 @@ pub fn flat(found: BTreeMap<i64, Vec<i64>>) -> Vec<i64> {
 
 #[methods(PurchaseOrder, addon = "purchase")]
 impl PurchaseOrder {
-    #[compute(depends = [], depends_context = ["uid", "allowed_company_ids"])]
+    /// Follows the bill links of the order's lines.
+    #[compute(depends = ["order_line.direct_bill_line_ids"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_invoice_count(
         this: &RecordSet<PurchaseOrder>,
         tx: &mut Transaction,
@@ -199,6 +208,8 @@ pub struct PurchaseBillOrders {
 
 #[methods(AccountMove, addon = "purchase")]
 impl PurchaseBillOrders {
+    /// The bill has no field over its links: the one writer of links, the vendor bill service,
+    /// drops this value when it links a bill ([`crate::direct_bill`]).
     #[compute(depends = [], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_purchase_order_count(
         this: &RecordSet<AccountMove>,

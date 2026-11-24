@@ -140,10 +140,18 @@ async fn invoice_views(tx: &mut Transaction) -> Result<Vec<(i64, &'static str)>>
             &[],
         )
         .await?;
+    let mut found = Vec::with_capacity(rows.len());
+    for row in &rows {
+        found.push((
+            row.try_get::<_, String>(0).map_err(decode)?,
+            row.try_get::<_, i64>(1).map_err(decode)?,
+        ));
+    }
     let find = |wanted: &str| -> Result<i64> {
-        rows.iter()
-            .find(|row| row.get::<_, String>(0) == wanted)
-            .map(|row| row.get::<_, i64>(1))
+        found
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .map(|(_, id)| *id)
             .ok_or_else(|| Error::invariant(format!("The invoice view {wanted} is missing.")))
     };
     Ok(vec![
@@ -159,8 +167,9 @@ pub fn flat(found: BTreeMap<i64, Vec<i64>>) -> Vec<i64> {
 
 #[methods(SaleOrder, addon = "sale")]
 impl SaleOrder {
-    /// How many readable customer invoices and credit notes the order has.
-    #[compute(depends = [], depends_context = ["uid", "allowed_company_ids"])]
+    /// How many readable customer invoices and credit notes the order has; it follows the links
+    /// of the order's lines.
+    #[compute(depends = ["order_line.invoice_item_link_ids"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_invoice_count(
         this: &RecordSet<SaleOrder>,
         tx: &mut Transaction,
@@ -204,7 +213,8 @@ pub struct SalesInvoiceOrders {
 
 #[methods(AccountMove, addon = "sale")]
 impl SalesInvoiceOrders {
-    #[compute(depends = [], depends_context = ["uid", "allowed_company_ids"])]
+    /// Follows the sales source of the invoice's items.
+    #[compute(depends = ["line_ids.sale_line_id"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_sale_order_count(
         this: &RecordSet<AccountMove>,
         tx: &mut Transaction,
