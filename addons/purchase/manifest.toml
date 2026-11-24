@@ -11,8 +11,11 @@ exact_only = true
 # account addon).
 data = [
     "security/purchase_security.xml",
+    "security/purchase_group_classification.xml",
     "data/purchase_data.xml",
     "views/purchase_views.xml",
+    "views/res_partner_views.xml",
+    "views/product_views.xml",
     "views/purchase_reports.xml",
     "views/bill_source_review.xml",
     "security/ir.access.csv",

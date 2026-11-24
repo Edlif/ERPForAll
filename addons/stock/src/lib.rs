@@ -68,6 +68,7 @@ pub mod storage;
 pub mod tracking;
 pub mod warehouse;
 mod warehouse_setup;
+mod warnings;
 
 pub use batch::{StockPickingBatch, StockPickingBatchResult, StockPickingToBatch};
 pub use error::StockError;

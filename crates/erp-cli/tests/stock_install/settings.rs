@@ -646,6 +646,7 @@ fn inventory_settings_denials_do_not_disclose_key_existence() {
             "stock.group_stock_production_lot",
             "stock.group_stock_tracking_lot",
             "stock.group_stock_tracking_owner",
+            "stock.group_warning_stock",
         ] {
             assert!(
                 !manager_json["items"]
@@ -835,6 +836,11 @@ fn inventory_settings_isolate_companies_and_describe_deferred_features() {
                 "stock.group_stock_tracking_owner",
                 "Consignment",
                 "group_tracking_owner",
+            ),
+            (
+                "stock.group_warning_stock",
+                "Partner stock warnings",
+                "group_warning_stock",
             ),
         ] {
             let item = json["items"]

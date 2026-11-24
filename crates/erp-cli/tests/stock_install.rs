@@ -45,6 +45,9 @@ mod policy_migration_utc;
 #[path = "stock_install/warehouse_setup.rs"]
 mod warehouse_setup;
 
+#[path = "stock_install/warnings.rs"]
+mod warnings;
+
 fn system(db: &TestDb) -> ModuleSystem {
     let mut index = AddonIndex::new(true);
     index.add_dev_path(
