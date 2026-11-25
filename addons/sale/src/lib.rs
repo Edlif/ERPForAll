@@ -6,7 +6,15 @@
 erp_sdk::addon!(
     name = "sale",
     exact_only = true,
-    depends = ["base", "web", "sales_team", "product", "mail", "account"]
+    depends = [
+        "base",
+        "web",
+        "reporting",
+        "sales_team",
+        "product",
+        "mail",
+        "account"
+    ]
 );
 
 mod amounts;
@@ -25,6 +33,7 @@ pub mod order_ops;
 pub mod order_status;
 mod partner_product_buttons;
 pub mod product;
+pub mod report;
 pub mod res_groups;
 pub mod send;
 pub mod settings;

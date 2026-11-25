@@ -12,6 +12,7 @@ publish.workspace = true
 erp-addon-account = { workspace = true }
 erp-addon-base = { workspace = true }
 erp-addon-product = { workspace = true }
+erp-addon-reporting = { workspace = true }
 erp-addon-uom = { workspace = true }
 erp-sdk = { workspace = true }
 

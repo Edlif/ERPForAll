@@ -218,7 +218,7 @@ impl ReportDef {
             "totals_below": self.totals_below,
         })
     }
-    pub(crate) fn totals_below(&self) -> bool {
+    pub fn totals_below(&self) -> bool {
         self.totals_below
     }
 }

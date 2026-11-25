@@ -3,8 +3,8 @@ summary = "Requests for quotation and purchase orders"
 category = "Supply Chain/Purchase"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.6.0"
-depends = ["base", "web", "account"]
+version = "1.7.0"
+depends = ["base", "web", "reporting", "account"]
 application = true
 exact_only = true
 # Groups first, then the default data, the views, actions and menus, access rows last (the order of the
@@ -13,6 +13,7 @@ data = [
     "security/purchase_security.xml",
     "security/purchase_group_classification.xml",
     "data/purchase_data.xml",
+    "data/purchase_report_data.xml",
     "views/purchase_agreements_views.xml",
     "views/purchase_views.xml",
     "views/purchase_analysis_views.xml",

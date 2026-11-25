@@ -3,7 +3,7 @@
 
 erp_sdk::addon!(
     name = "purchase",
-    depends = ["base", "web", "account"],
+    depends = ["base", "web", "reporting", "account"],
     exact_only = true
 );
 
@@ -17,6 +17,7 @@ mod direct_bill_integrity;
 pub mod line;
 pub mod order;
 mod partner_product_buttons;
+pub mod report;
 pub mod requisition;
 mod res_groups;
 pub mod rfq_send;

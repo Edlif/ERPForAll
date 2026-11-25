@@ -15,6 +15,7 @@ erp-addon-mail = { workspace = true }
 erp-addon-sales_team = { workspace = true }
 erp-addon-product = { workspace = true }
 erp-addon-account = { workspace = true }
+erp-addon-reporting = { workspace = true }
 erp-addon-uom = { workspace = true }
 
 [dev-dependencies]

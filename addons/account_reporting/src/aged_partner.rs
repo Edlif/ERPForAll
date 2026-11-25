@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Aged Receivable & Aged Payable report providers (`account_reporting.aged_receivable`,
-//! `account_reporting.aged_payable`) with exact-decimal 6-bucket aging and drill-down.
+//! Aged Receivable & Aged Payable dynamic report providers (`account_reporting.aged_receivable`,
+//! `account_reporting.aged_payable`) with ledger-style partner -> open item treegrid, locale due
+//! dates with overdue danger tone, caret actions (`journal_items`, `partner`, `entry`), subtotals,
+//! and exact-decimal 6-bucket aging.
 
 use std::collections::BTreeMap;
 
@@ -118,11 +120,37 @@ async fn load_open_rows(
     Ok((out, currency))
 }
 
-fn bucket_cells(buckets: [Decimal; 7], currency: Option<i64>, drillable: bool) -> Vec<ReportCell> {
-    buckets
-        .into_iter()
-        .map(|amt| ReportCell::monetary(Some(amt), 2, currency).with_drillable(drillable))
-        .collect()
+/// Builds the 8 cells (`due_date`, `not_due`, `d1_30`, `d31_60`, `d61_90`, `d91_120`, `older`,
+/// `total`) respecting the report's declared columns (so legacy 7-column layouts still stay safe).
+fn row_cells(
+    report: &ReportDef,
+    due_date: Option<Date>,
+    as_of: Date,
+    buckets: [Decimal; 7],
+    currency: Option<i64>,
+    drillable: bool,
+) -> Vec<ReportCell> {
+    let has_due_col = report
+        .columns
+        .first()
+        .is_some_and(|col| col.label == "due_date");
+    let mut cells = Vec::with_capacity(if has_due_col { 8 } else { 7 });
+    if has_due_col {
+        let date_cell = match due_date {
+            Some(d) => ReportCell::date(d).with_danger(d < as_of),
+            None => ReportCell::empty(),
+        };
+        cells.push(date_cell);
+    }
+    for (idx, amt) in buckets.into_iter().enumerate() {
+        let overdue_severe = (idx == 4 || idx == 5) && amt > Decimal::ZERO;
+        cells.push(
+            ReportCell::monetary(Some(amt), 2, currency)
+                .with_drillable(drillable)
+                .with_danger(overdue_severe),
+        );
+    }
+    cells
 }
 
 async fn render_lines(
@@ -135,7 +163,7 @@ async fn render_lines(
 ) -> Result<Expansion> {
     let as_of = options.period.to;
     let (rows, currency) = load_open_rows(cx, options, account_type, sign).await?;
-    let root = LineId::root(report.id).child(Segment::line("AGED"));
+    let root = LineId::root(report.id);
 
     let mut by_partner: BTreeMap<(String, i64), Vec<&OpenRow>> = BTreeMap::new();
     for row in &rows {
@@ -160,47 +188,53 @@ async fn render_lines(
         let unfolded = options.unfold_all || options.unfolded.contains(&line_id);
         let mut line = Line::new(
             line_id.clone(),
-            partner_name,
+            partner_name.clone(),
             LineKind::Group,
-            bucket_cells(buckets, currency, true),
+            row_cells(report, None, as_of, buckets, currency, true),
         );
         line.unfoldable = true;
         line.unfolded = unfolded;
+        line.caret = if partner_id > 0 {
+            vec!["journal_items", "partner"]
+        } else {
+            vec!["journal_items"]
+        };
         lines.push(line);
 
         if unfolded {
-            for r in partner_rows {
+            for r in &partner_rows {
                 let d_buckets = aging_buckets(&[(r.due_date, r.amount)], as_of);
                 let detail_id = line_id.child(Segment::group(
                     "move_id",
                     "account.move",
                     &r.move_id.to_string(),
                 ));
-                let detail = Line::new(
+                let mut detail = Line::new(
                     detail_id,
-                    format!("{} (Due {})", r.move_name, r.due_date),
+                    r.move_name.clone(),
                     LineKind::Detail,
-                    bucket_cells(d_buckets, currency, true),
+                    row_cells(report, Some(r.due_date), as_of, d_buckets, currency, true),
                 );
+                detail.caret = vec!["entry"];
                 lines.push(detail);
             }
         }
     }
 
     let grand = aging_buckets(&grand_items, as_of);
-    let total_line = Line::new(
+    lines.push(Line::new(
         root.child(Segment::total()),
         total_label,
         LineKind::Total,
-        bucket_cells(grand, currency, false),
-    );
-    lines.push(total_line);
+        row_cells(report, None, as_of, grand, currency, false),
+    ));
 
     Ok(Expansion::new(lines))
 }
 
 async fn expand_partner(
     cx: &mut ReportCx<'_>,
+    report: &ReportDef,
     options: &Options,
     line: &LineId,
     account_type: &str,
@@ -220,17 +254,19 @@ async fn expand_partner(
             "account.move",
             &r.move_id.to_string(),
         ));
-        children.push(Line::new(
+        let mut detail = Line::new(
             detail_id,
-            format!("{} (Due {})", r.move_name, r.due_date),
+            r.move_name,
             LineKind::Detail,
-            bucket_cells(d_buckets, currency, true),
-        ));
+            row_cells(report, Some(r.due_date), as_of, d_buckets, currency, true),
+        );
+        detail.caret = vec!["entry"];
+        children.push(detail);
     }
     Ok(Expansion::new(children))
 }
 
-fn drill_target(line: &LineId, account_type: &str) -> Result<Json> {
+fn drill_target(line: &LineId, target: &DrillTarget, account_type: &str) -> Result<Json> {
     let mut partner_id: Option<i64> = None;
     let mut move_id: Option<i64> = None;
     for seg in line.segments() {
@@ -241,6 +277,19 @@ fn drill_target(line: &LineId, account_type: &str) -> Result<Json> {
                 move_id = seg.value().parse().ok();
             }
         }
+    }
+    if matches!(target, DrillTarget::Item(name) if name == "partner")
+        && let Some(pid) = partner_id
+        && pid > 0
+    {
+        return Ok(json!({
+            "type": "ir.actions.act_window",
+            "name": "Partner",
+            "res_model": "res.partner",
+            "res_id": pid,
+            "target": "current",
+            "views": [[false, "form"]],
+        }));
     }
     if let Some(mid) = move_id {
         return Ok(json!({
@@ -309,13 +358,13 @@ impl ReportProvider for AgedReceivable {
     fn expand<'a>(
         &'a self,
         cx: &'a mut ReportCx<'_>,
-        _report: &'a ReportDef,
+        report: &'a ReportDef,
         options: &'a Options,
         line: &'a LineId,
         _page: ExpandPage,
     ) -> BoxFuture<'a, Result<Expansion>> {
         Box::pin(async move {
-            expand_partner(cx, options, line, "asset_receivable", Decimal::ONE).await
+            expand_partner(cx, report, options, line, "asset_receivable", Decimal::ONE).await
         })
     }
     fn drill<'a>(
@@ -324,9 +373,9 @@ impl ReportProvider for AgedReceivable {
         _report: &'a ReportDef,
         _options: &'a Options,
         line: &'a LineId,
-        _target: &'a DrillTarget,
+        target: &'a DrillTarget,
     ) -> BoxFuture<'a, Result<Json>> {
-        Box::pin(async move { drill_target(line, "asset_receivable") })
+        Box::pin(async move { drill_target(line, target, "asset_receivable") })
     }
 }
 
@@ -367,7 +416,7 @@ impl ReportProvider for AgedPayable {
     fn expand<'a>(
         &'a self,
         cx: &'a mut ReportCx<'_>,
-        _report: &'a ReportDef,
+        report: &'a ReportDef,
         options: &'a Options,
         line: &'a LineId,
         _page: ExpandPage,
@@ -375,6 +424,7 @@ impl ReportProvider for AgedPayable {
         Box::pin(async move {
             expand_partner(
                 cx,
+                report,
                 options,
                 line,
                 "liability_payable",
@@ -389,9 +439,9 @@ impl ReportProvider for AgedPayable {
         _report: &'a ReportDef,
         _options: &'a Options,
         line: &'a LineId,
-        _target: &'a DrillTarget,
+        target: &'a DrillTarget,
     ) -> BoxFuture<'a, Result<Json>> {
-        Box::pin(async move { drill_target(line, "liability_payable") })
+        Box::pin(async move { drill_target(line, target, "liability_payable") })
     }
 }
 
@@ -418,27 +468,27 @@ mod tests {
             (
                 Date::from_ymd(2026, 12, 10).unwrap(),
                 Decimal::from_str("100.10").unwrap(),
-            ), // not due
+            ),
             (
                 Date::from_ymd(2026, 11, 10).unwrap(),
                 Decimal::from_str("200.20").unwrap(),
-            ), // 15d -> 1-30
+            ),
             (
                 Date::from_ymd(2026, 10, 10).unwrap(),
                 Decimal::from_str("300.30").unwrap(),
-            ), // 46d -> 31-60
+            ),
             (
                 Date::from_ymd(2026, 9, 10).unwrap(),
                 Decimal::from_str("400.40").unwrap(),
-            ), // 76d -> 61-90
+            ),
             (
                 Date::from_ymd(2026, 8, 10).unwrap(),
                 Decimal::from_str("500.50").unwrap(),
-            ), // 107d -> 91-120
+            ),
             (
                 Date::from_ymd(2026, 6, 1).unwrap(),
                 Decimal::from_str("600.60").unwrap(),
-            ), // >120d -> older
+            ),
         ];
         let b = aging_buckets(&items, as_of);
         assert_eq!(b[0], Decimal::from_str("100.10").unwrap());

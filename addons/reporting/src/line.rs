@@ -287,6 +287,23 @@ impl CellKind {
     }
 }
 
+/// Semantic cell tone rendered by the report screen (design REPORTING.CORE §12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CellTone {
+    /// Marks a value the reader must notice, such as an overdue date.
+    Danger,
+}
+
+impl CellTone {
+    /// The wire name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Danger => "danger",
+        }
+    }
+}
+
 /// One cell: a number travels as a decimal string at its scale, never as a float.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cell {
@@ -296,6 +313,7 @@ pub struct Cell {
     scale: u32,
     currency: Option<i64>,
     drillable: Option<bool>,
+    tone: Option<CellTone>,
 }
 
 impl Cell {
@@ -309,6 +327,7 @@ impl Cell {
             scale,
             currency: None,
             drillable: None,
+            tone: None,
         }
     }
     /// An amount in `currency`, at that currency's decimal places.
@@ -327,6 +346,7 @@ impl Cell {
             scale: 0,
             currency: None,
             drillable: None,
+            tone: None,
         }
     }
     /// A calendar date, carried as ISO text with the date wire kind.
@@ -386,6 +406,12 @@ impl Cell {
         self.drillable = Some(supported && self.number.is_some());
         self
     }
+    /// Mark a cell with the `danger` tone (for example an overdue due date).
+    #[must_use]
+    pub fn with_danger(mut self, danger: bool) -> Self {
+        self.tone = danger.then_some(CellTone::Danger);
+        self
+    }
     /// Generated totals have their own line IDs and cannot reuse a definition cell's drill.
     pub(crate) fn suppress_declared_drill(&mut self) {
         if let Some(supported) = &mut self.drillable {
@@ -406,6 +432,9 @@ impl Cell {
                               "currency": self.currency, "zero": self.is_zero()});
         if let Some(supported) = self.drillable {
             cell["drillable"] = Json::Bool(supported);
+        }
+        if let Some(tone) = self.tone {
+            cell["tone"] = Json::String(tone.as_str().to_owned());
         }
         cell
     }
