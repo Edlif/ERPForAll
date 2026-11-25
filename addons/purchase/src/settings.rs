@@ -36,6 +36,7 @@ const APPROVAL_CHOICES: [(&str, &str); 2] = [
         "A manager approves orders from the minimum amount",
     ),
 ];
+pub(crate) const BILL_CONTROL_DEFAULT: &str = "receive";
 pub(crate) const BILL_CONTROL_CHOICES: [(&str, &str); 2] = [
     ("purchase", "Ordered quantities"),
     ("receive", "Received quantities"),
@@ -201,7 +202,7 @@ fn settings() -> Result<Vec<SettingDecl>> {
             BILL_CONTROL_SETTING,
             "Bill control of new products",
             ScopeKind::Global,
-            "receive",
+            BILL_CONTROL_DEFAULT,
             &BILL_CONTROL_CHOICES,
         )?
         .block("Invoicing")?
@@ -218,6 +219,20 @@ erp_sdk::setting_declarations!(settings);
 ///
 /// Settings read failures; a stored value that is not one of the declared choices.
 pub(crate) async fn default_bill_control(tx: &mut Transaction) -> Result<&'static str> {
+    // During first-time installation, schema update backfills `product.template.purchase_method`
+    // for pre-existing products before `purchase_security.xml` creates `purchase.group_purchase_user`.
+    // No administrator can have stored a setting yet, so use the declared default; `_register_hook`
+    // still validates every setting policy group after data files load.
+    let installing = tx
+        .query(
+            "SELECT 1 FROM ir_module_module WHERE name = 'purchase' AND state = 'to install' LIMIT 1",
+            &[],
+        )
+        .await
+        .map_err(|error| Error::db("purchase module state could not be read.").with_source(error))?;
+    if !installing.is_empty() {
+        return Ok(BILL_CONTROL_DEFAULT);
+    }
     let env = tx.env().sudo(true);
     let read = read_values(
         &env,
