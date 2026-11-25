@@ -3451,3 +3451,137 @@ fn direct_receipt_requires_readable_demand_and_matching_stock_parents() {
         db.cleanup().await.unwrap();
     });
 }
+
+/// The `domain` of a smart button's window action.
+fn action_domain(action: &Value) -> Value {
+    let Value::Map(map) = action else {
+        panic!("a window action is a map: {action:?}")
+    };
+    map.get("domain").cloned().unwrap()
+}
+
+fn leaf(field: &str, op: &str, value: Value) -> Value {
+    Value::list([Value::str(field), Value::str(op), value])
+}
+
+/// The vendor's and the product's Purchase buttons count readable confirmed orders only, the
+/// rule of the sales buttons (an RFQ and a cancelled order do not count), and open them by a
+/// domain; a user without purchase rights counts none.
+#[test]
+fn the_vendor_and_product_buttons_count_readable_confirmed_orders() {
+    run(async {
+        let db = TestDb::builder().pool_size(8).create().await.unwrap();
+        let orm = install(&db).await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let company = xmlid(&mut tx, "base", "main_company").await;
+        let system = xmlid(&mut tx, "base", "group_system").await;
+        user(&mut tx, "purchase-count-admin", &[system], &[company]).await;
+        let internal = xmlid(&mut tx, "base", "group_user").await;
+        let clerk = user(&mut tx, "purchase-count-clerk", &[internal], &[company]).await;
+        let k = catalog(&mut tx, company).await;
+        let template: i64 = tx
+            .query(
+                "SELECT product_tmpl_id::int8 FROM product_product WHERE id = $1",
+                &[&k.bolt],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        for operation in [
+            Some("button_confirm"),
+            Some("button_confirm"),
+            None,
+            Some("button_cancel"),
+        ] {
+            let po = order(
+                &mut tx,
+                &[company],
+                RawVals::new()
+                    .set_cell("partner_id", Cell::Id(k.vendor))
+                    .set_commands(
+                        "order_line",
+                        [Command::Create(
+                            line_vals(k.bolt).set_cell("product_qty", Cell::Decimal(dec("2"))),
+                        )],
+                    ),
+            )
+            .await;
+            if let Some(operation) = operation {
+                act(&mut tx, &po, operation).await.unwrap();
+            }
+        }
+        let env = tx.env().with_company(company).unwrap();
+        let vendor = env
+            .records("res.partner")
+            .unwrap()
+            .browse([k.vendor])
+            .unwrap();
+        assert_eq!(
+            vendor.cell(&mut tx, "purchase_order_count").await.unwrap(),
+            Cell::Int(2)
+        );
+        let action: Value = vendor
+            .call(&mut tx, "action_view_purchase_orders", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            action_domain(&action),
+            Value::list([
+                Value::str("&"),
+                leaf("partner_id", "=", Value::Int(k.vendor)),
+                leaf("state", "=", Value::str("purchase")),
+            ])
+        );
+        let product = env
+            .records("product.template")
+            .unwrap()
+            .browse([template])
+            .unwrap();
+        assert_eq!(
+            product.cell(&mut tx, "purchase_order_count").await.unwrap(),
+            Cell::Int(2)
+        );
+        let action: Value = product
+            .call(&mut tx, "action_view_purchases", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            action_domain(&action),
+            Value::list([
+                Value::str("&"),
+                leaf(
+                    "order_line.product_id.product_tmpl_id",
+                    "=",
+                    Value::Int(template)
+                ),
+                leaf("state", "=", Value::str("purchase")),
+            ])
+        );
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let mut tx = orm.begin(clerk).await.unwrap();
+        let env = tx.env().with_company(company).unwrap();
+        let vendor = env
+            .records("res.partner")
+            .unwrap()
+            .browse([k.vendor])
+            .unwrap();
+        assert_eq!(
+            vendor.cell(&mut tx, "purchase_order_count").await.unwrap(),
+            Cell::Int(0)
+        );
+        let product = env
+            .records("product.template")
+            .unwrap()
+            .browse([template])
+            .unwrap();
+        assert_eq!(
+            product.cell(&mut tx, "purchase_order_count").await.unwrap(),
+            Cell::Int(0)
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        db.cleanup().await.unwrap();
+    });
+}

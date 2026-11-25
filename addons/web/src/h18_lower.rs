@@ -5014,6 +5014,14 @@ mod tests {
                 "<form><widget name='web_ribbon' title='Ribbon'><field name='name'/></widget></form>",
                 "Display widgets cannot contain child nodes.",
             ),
+            (
+                "<form><widget name='web_ribbon' title='Ribbon' bg_color='bg-danger' invisible=''/></form>",
+                "Ribbon 'invisible' expression cannot be empty.",
+            ),
+            (
+                "<form><widget name='web_ribbon' title='Ribbon' bg_color='bg-danger' invisible='  '/></form>",
+                "Ribbon 'invisible' expression cannot be empty.",
+            ),
         ] {
             assert_attribute_refusal(fixture(xml, "form"), expected);
         }

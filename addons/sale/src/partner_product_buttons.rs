@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Smart buttons that connect contacts (`res.partner`) and products (`product.template`)
-//! directly to their readable sales orders.
+//! directly to their readable confirmed sales orders (`state = 'sale'`), the same rule as the
+//! purchase buttons. The partner count is one grouped read under the caller's read access; the
+//! product count follows the order lines, which no single relation field of the order names, so
+//! it filters the linked order ids by read access. Both actions open a domain, never an id list.
 
 use erp_addon_base::ResPartner;
 use erp_addon_product::ProductTemplate;
-use erp_sdk::Operation;
 use erp_sdk::prelude::*;
 
-use crate::invoice_buttons::{counts, flat, readable_links, window};
+use erp_addon_account::smart_buttons::{domain_window, grouped_counts, leaf, the_one};
 
-/// Partner id, sale order id.
-const PARTNER_SALES: &str =
-    "SELECT partner_id::int8, id::int8 FROM sale_order WHERE partner_id = ANY($1)";
+use crate::invoice_buttons::{counts, readable_links};
+
+/// The state of the orders the buttons count: confirmed sales orders.
+const CONFIRMED: &str = "sale";
 
 /// Product template id, confirmed sale order id.
 const PRODUCT_SALES: &str = "SELECT DISTINCT p.product_tmpl_id::int8, l.order_id::int8 \
@@ -23,7 +26,7 @@ const PRODUCT_SALES: &str = "SELECT DISTINCT p.product_tmpl_id::int8, l.order_id
 /// `res.partner` with its readable sales order count.
 #[extend(ResPartner, addon = "sale")]
 pub struct PartnerSalesOrders {
-    /// Readable quotations and sales orders placed by this contact.
+    /// Readable confirmed sales orders placed by this contact.
     #[field(
         integer,
         compute = "_compute_sale_order_count",
@@ -41,29 +44,31 @@ impl PartnerSalesOrders {
         out: &mut Assign<'_, ResPartner>,
     ) -> Result<()> {
         let records = this.as_records();
-        let found = readable_links(tx, records, PARTNER_SALES, "sale.order").await?;
-        for (index, count) in counts(records, &found)?.into_iter().enumerate() {
+        let confirmed = Domain::field("state")?.eq(CONFIRMED);
+        let found = grouped_counts(tx, records, "sale.order", "partner_id", confirmed).await?;
+        for (index, count) in found.into_iter().enumerate() {
             out.set(index, PartnerSalesOrders::SALE_ORDER_COUNT, count)?;
         }
         Ok(())
     }
 
-    /// Open the readable quotations and sales orders for this contact.
+    /// Open the confirmed sales orders of this contact.
     #[method]
     #[rpc(effect = read)]
     async fn action_view_sale_orders(
         this: &RecordSet<ResPartner>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, PARTNER_SALES, "sale.order").await?;
-        Ok(window(
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(domain_window(
             "Sales Orders",
             "sale.order",
             Vec::new(),
-            flat(found),
+            vec![
+                Value::str("&"),
+                leaf("partner_id", "=", Value::Int(id)),
+                leaf("state", "=", Value::str(CONFIRMED)),
+            ],
         ))
     }
 }
@@ -103,15 +108,16 @@ impl ProductTemplateSales {
         this: &RecordSet<ProductTemplate>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, PRODUCT_SALES, "sale.order").await?;
-        Ok(window(
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(domain_window(
             "Sales Orders",
             "sale.order",
             Vec::new(),
-            flat(found),
+            vec![
+                Value::str("&"),
+                leaf("order_line.product_id.product_tmpl_id", "=", Value::Int(id)),
+                leaf("state", "=", Value::str(CONFIRMED)),
+            ],
         ))
     }
 }

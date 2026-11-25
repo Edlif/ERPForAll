@@ -722,6 +722,75 @@ fn the_setting_decides_new_products_and_an_upgrade_fills_existing_orders() {
     })
 }
 
+/// Installing `purchase` over existing products fills their bill control before the setting's
+/// policy group exists: a first install, with no stored choice, gives the declared default; a
+/// reinstall over a stored choice gives that choice.
+#[test]
+fn installing_purchase_over_products_takes_the_stored_bill_control_or_the_default() {
+    for (stored, expected) in [(None, "receive"), (Some("purchase"), "purchase")] {
+        run(async move {
+            let db = TestDb::builder().pool_size(8).create().await.unwrap();
+            let orm = install_module(&db, "product").await;
+            let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+            let washer = tx
+                .env()
+                .records("product.template")
+                .unwrap()
+                .create(
+                    &mut tx,
+                    vec![RawVals::new().set_cell("name", text("Washer"))],
+                )
+                .await
+                .unwrap()
+                .ids()[0];
+            if let Some(choice) = stored {
+                tx.execute(
+                    "INSERT INTO ir_config_setting_scope(identity, revision) VALUES ('global', '0') \
+                     ON CONFLICT (identity) DO NOTHING",
+                    &[],
+                )
+                .await
+                .unwrap();
+                tx.execute(
+                    "INSERT INTO ir_config_setting_value(scope_id, setting_key, value_text) \
+                     SELECT id, $1, $2 FROM ir_config_setting_scope WHERE identity = 'global'",
+                    &[&BILL_CONTROL_SETTING, &choice],
+                )
+                .await
+                .unwrap();
+            }
+            tx.commit().await.unwrap();
+            drop(tx);
+            drop(orm);
+            let system = purchase_module_system(&db);
+            let installed = Box::pin(system.button_immediate_install(
+                &system.system_env(Context::new()),
+                &[ModuleName::new("purchase").unwrap()],
+            ))
+            .await
+            .unwrap();
+            assert!(
+                installed.post_commit.is_clean(),
+                "{:?}",
+                installed.post_commit
+            );
+            let mut tx = installed.orm.begin(SUPERUSER_ID).await.unwrap();
+            let method: String = tx
+                .query(
+                    "SELECT purchase_method::text FROM product_template WHERE id = $1",
+                    &[&washer],
+                )
+                .await
+                .unwrap()[0]
+                .get(0);
+            assert_eq!(method, expected, "stored choice {stored:?}");
+            tx.rollback().await.unwrap();
+            drop(tx);
+            db.cleanup().await.unwrap();
+        });
+    }
+}
+
 async fn bill_state(tx: &mut Transaction, bill: i64) -> String {
     tx.query(
         "SELECT state::text FROM account_move WHERE id = $1",

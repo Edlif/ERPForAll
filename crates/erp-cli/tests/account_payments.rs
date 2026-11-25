@@ -729,3 +729,93 @@ async fn race_body() {
     drop(orm);
     db.cleanup().await.unwrap();
 }
+
+/// The contact's Invoices & Bills button counts readable invoices, bills and credit notes in one
+/// grouped read and opens them by a domain on the contact; a user without accounting rights
+/// counts none.
+#[test]
+fn the_partner_invoice_button_counts_readable_documents_and_opens_them_by_domain() {
+    big_stack(partner_invoices_body);
+}
+
+async fn partner_invoices_body() {
+    let (db, orm) = install().await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let company = main_company(&mut tx).await;
+    tx.commit().await.unwrap();
+    periods(&orm, company).await;
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let b = books(&mut tx, company).await;
+    let day = d(2024, 3, 10);
+    posted_invoice(&mut tx, &b, "out_invoice", b.customer, "10", day).await;
+    posted_invoice(&mut tx, &b, "out_refund", b.customer, "4", day).await;
+    posted_invoice(&mut tx, &b, "in_invoice", b.vendor, "7", day).await;
+    let partners = tx
+        .env()
+        .with_company(company)
+        .unwrap()
+        .records("res.partner")
+        .unwrap();
+    assert_eq!(
+        partners
+            .browse([b.customer, b.vendor])
+            .unwrap()
+            .cells(&mut tx, "invoice_count")
+            .await
+            .unwrap(),
+        vec![Cell::Int(2), Cell::Int(1)]
+    );
+    let action: Value = partners
+        .browse([b.customer])
+        .unwrap()
+        .call(&mut tx, "action_view_partner_invoices", ())
+        .await
+        .unwrap();
+    let Value::Map(action) = action else {
+        panic!("a window action is a map")
+    };
+    let leaf = |field: &str, op: &str, value: Value| {
+        Value::list([Value::str(field), Value::str(op), value])
+    };
+    assert_eq!(
+        action.get("domain").cloned().unwrap(),
+        Value::list([
+            Value::str("&"),
+            leaf("partner_id", "=", Value::Int(b.customer)),
+            leaf(
+                "move_type",
+                "in",
+                Value::list(
+                    ["out_invoice", "out_refund", "in_invoice", "in_refund"].map(Value::str)
+                ),
+            ),
+        ])
+    );
+    // the user rules ask for an administrator before other users are created
+    let system = xml_id(&mut tx, "base", "group_system").await;
+    user(&mut tx, "invoice-count-admin", company, &[system]).await;
+    let clerk = user(&mut tx, "invoice-count-clerk", company, &[]).await;
+    tx.commit().await.unwrap();
+    let policy = policy_orm(&db, &orm).await;
+
+    let mut tx = policy
+        .begin(erp_orm::UserId::new(clerk).unwrap())
+        .await
+        .unwrap();
+    let counts = tx
+        .env()
+        .with_company(company)
+        .unwrap()
+        .records("res.partner")
+        .unwrap()
+        .browse([b.customer, b.vendor])
+        .unwrap()
+        .cells(&mut tx, "invoice_count")
+        .await
+        .unwrap();
+    assert_eq!(counts, vec![Cell::Int(0), Cell::Int(0)]);
+    tx.rollback().await.unwrap();
+    drop(policy);
+    drop(orm);
+    db.cleanup().await.unwrap();
+}
