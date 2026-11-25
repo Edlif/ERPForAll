@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="res_partner_form_purchase_on_time" model="ir.ui.view">
+    <field name="name">res.partner.form.purchase.on.time</field>
+    <field name="model">res.partner</field>
+    <field name="inherit_id" ref="base.partner_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//page[@name='details']" position="inside">
+        <group name="purchase_performance" string="Vendor Delivery Performance" groups="purchase.group_purchase_user">
+          <field name="on_time_rate" readonly="1"/>
+          <field name="purchase_receipt_done_count" readonly="1"/>
+        </group>
+      </xpath>
+    </field>
+  </record>
+</erp>

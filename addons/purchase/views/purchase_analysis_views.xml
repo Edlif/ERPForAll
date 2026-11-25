@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Purchase Order Kanban & Calendar views, plus Purchase Analysis (Pivot, Graph, List) -->
+<erp>
+  <record id="purchase_order_kanban" model="ir.ui.view">
+    <field name="name">purchase.order.kanban</field>
+    <field name="model">purchase.order</field>
+    <field name="arch" type="xml">
+      <kanban string="Purchase Orders">
+        <templates>
+          <t t-name="card">
+            <main>
+              <field name="name"/>
+              <field name="partner_id"/>
+              <field name="date_order"/>
+            </main>
+            <aside>
+              <field name="amount_total"/>
+              <field name="currency_id" invisible="1"/>
+            </aside>
+            <footer>
+              <field name="user_id" widget="many2one_avatar"/>
+              <field name="state" widget="badge" options="{'tone_success': ['purchase'], 'tone_info': ['sent'], 'tone_warning': ['draft', 'to approve'], 'tone_danger': ['cancel']}"/>
+            </footer>
+          </t>
+        </templates>
+      </kanban>
+    </field>
+  </record>
+
+  <record id="purchase_order_calendar" model="ir.ui.view">
+    <field name="name">purchase.order.calendar</field>
+    <field name="model">purchase.order</field>
+    <field name="arch" type="xml">
+      <calendar string="Purchase Orders" date_start="date_order" color="partner_id" mode="month">
+        <field name="name"/>
+        <field name="partner_id"/>
+        <field name="amount_total"/>
+        <field name="state"/>
+      </calendar>
+    </field>
+  </record>
+
+  <record id="purchase_rfq_kanban" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="purchase_rfq"/>
+    <field name="view_id" ref="purchase_order_kanban"/>
+    <field name="view_mode">kanban</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <record id="purchase_rfq_calendar" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="purchase_rfq"/>
+    <field name="view_id" ref="purchase_order_calendar"/>
+    <field name="view_mode">calendar</field>
+    <field name="sequence" eval="30"/>
+  </record>
+
+  <record id="purchase_form_action_kanban" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="purchase_form_action"/>
+    <field name="view_id" ref="purchase_order_kanban"/>
+    <field name="view_mode">kanban</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <record id="purchase_form_action_calendar" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="purchase_form_action"/>
+    <field name="view_id" ref="purchase_order_calendar"/>
+    <field name="view_mode">calendar</field>
+    <field name="sequence" eval="30"/>
+  </record>
+
+  <record id="view_purchase_order_analysis_search" model="ir.ui.view">
+    <field name="name">purchase.order.line.analysis.search</field>
+    <field name="model">purchase.order.line</field>
+    <field name="arch" type="xml">
+      <search string="Purchase Analysis">
+        <field name="order_id"/>
+        <field name="partner_id" string="Vendor"/>
+        <field name="product_id"/>
+        <filter name="has_received" string="Received" domain="[('qty_received', '&gt;', 0)]"/>
+        <filter name="to_bill" string="Waiting Bills" domain="[('qty_to_invoice', '&gt;', 0)]"/>
+        <group>
+          <filter name="group_vendor" string="Vendor" context="{'group_by': 'partner_id'}"/>
+          <filter name="group_product" string="Product" context="{'group_by': 'product_id'}"/>
+          <filter name="group_order" string="Order" context="{'group_by': 'order_id'}"/>
+          <filter name="group_company" string="Company" context="{'group_by': 'company_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="view_purchase_order_analysis_pivot" model="ir.ui.view">
+    <field name="name">purchase.order.line.analysis.pivot</field>
+    <field name="model">purchase.order.line</field>
+    <field name="arch" type="xml">
+      <pivot string="Purchase Analysis" display_quantity="1">
+        <field name="partner_id" type="row"/>
+        <field name="product_id" type="col"/>
+        <field name="product_qty" type="measure"/>
+        <field name="qty_received" type="measure"/>
+        <field name="qty_invoiced" type="measure"/>
+        <field name="price_subtotal" type="measure"/>
+      </pivot>
+    </field>
+  </record>
+
+  <record id="view_purchase_order_analysis_graph" model="ir.ui.view">
+    <field name="name">purchase.order.line.analysis.graph</field>
+    <field name="model">purchase.order.line</field>
+    <field name="arch" type="xml">
+      <graph string="Purchase Analysis" type="bar">
+        <field name="partner_id"/>
+        <field name="price_subtotal" type="measure"/>
+      </graph>
+    </field>
+  </record>
+
+  <record id="view_purchase_order_analysis_list" model="ir.ui.view">
+    <field name="name">purchase.order.line.analysis.list</field>
+    <field name="model">purchase.order.line</field>
+    <field name="priority" eval="40"/>
+    <field name="arch" type="xml">
+      <list string="Purchase Analysis" create="0" edit="0" delete="0">
+        <field name="order_id"/>
+        <field name="partner_id" string="Vendor"/>
+        <field name="product_id"/>
+        <field name="date_planned"/>
+        <field name="product_qty"/>
+        <field name="qty_received"/>
+        <field name="qty_invoiced"/>
+        <field name="price_unit"/>
+        <field name="price_subtotal"/>
+        <field name="currency_id" invisible="1"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="action_purchase_order_analysis" model="ir.actions.act_window">
+    <field name="name">Purchase Analysis</field>
+    <field name="res_model">purchase.order.line</field>
+    <field name="view_mode">pivot,graph,list</field>
+    <field name="view_id" ref="view_purchase_order_analysis_pivot"/>
+    <field name="search_view_id" ref="view_purchase_order_analysis_search"/>
+    <field name="domain">[('product_id', '!=', False)]</field>
+  </record>
+  <record id="action_purchase_order_analysis_pivot" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_purchase_order_analysis"/>
+    <field name="view_id" ref="view_purchase_order_analysis_pivot"/>
+    <field name="view_mode">pivot</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_purchase_order_analysis_graph" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_purchase_order_analysis"/>
+    <field name="view_id" ref="view_purchase_order_analysis_graph"/>
+    <field name="view_mode">graph</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <record id="action_purchase_order_analysis_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_purchase_order_analysis"/>
+    <field name="view_id" ref="view_purchase_order_analysis_list"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="30"/>
+  </record>
+
+  <menuitem id="menu_purchase_report" name="Reporting" parent="menu_purchase_root" sequence="50">
+    <menuitem id="menu_purchase_analysis" name="Purchase Analysis" action="action_purchase_order_analysis" sequence="10"/>
+  </menuitem>
+  <record id="menu_purchase_report" model="ir.ui.menu"><field name="web_icon">lucide:bar-chart-3</field></record>
+  <record id="menu_purchase_analysis" model="ir.ui.menu"><field name="web_icon">lucide:trending-up</field></record>
+</erp>

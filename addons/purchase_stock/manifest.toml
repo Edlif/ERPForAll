@@ -3,8 +3,8 @@ summary = "Purchase orders, receipts, and vendor bills for stock"
 category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.4.4"
+version = "1.5.0"
 depends = ["base", "stock", "stock_account", "purchase"]
 # An administrator enables this bridge for the configured direct-receipt workflow.
 auto_install = false
-data = ["data/buy_route.xml", "data/buy_receiving_rules.xml", "views/replenishment.xml", "security/ir.access.csv", "views/purchase_order_views.xml", "views/received_quantity.xml"]
+data = ["data/buy_route.xml", "data/buy_receiving_rules.xml", "views/replenishment.xml", "security/ir.access.csv", "views/purchase_order_views.xml", "views/received_quantity.xml", "views/partner_on_time_views.xml"]

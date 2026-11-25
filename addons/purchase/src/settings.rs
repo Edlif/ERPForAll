@@ -21,6 +21,10 @@ pub const LOCK_SETTING: &str = "purchase.po_lock";
 /// The bill control a new product takes: `purchase` bills ordered quantities, `receive` received
 /// ones (the product's own field decides afterwards; services always bill ordered quantities).
 pub const BILL_CONTROL_SETTING: &str = "purchase.default_purchase_method";
+/// Company purchase lead time in days added when planning vendor orders.
+pub const DAYS_TO_PURCHASE_SETTING: &str = "purchase.days_to_purchase";
+/// Enable vendor receipt confirmation reminders by default on new RFQs.
+pub const DEFAULT_RECEIPT_REMINDER_SETTING: &str = "purchase.default_receipt_reminder";
 
 /// Default of [`AMOUNT_SETTING`].
 pub const AMOUNT_DEFAULT: f64 = 5_000.0;
@@ -198,6 +202,15 @@ fn settings() -> Result<Vec<SettingDecl>> {
             )?,
             30,
         )?,
+        place(
+            SettingDecl::boolean(
+                DEFAULT_RECEIPT_REMINDER_SETTING,
+                "Receipt reminder by default",
+                ScopeKind::Global,
+                false,
+            )?,
+            40,
+        )?,
         SettingDecl::selection(
             BILL_CONTROL_SETTING,
             "Bill control of new products",
@@ -208,9 +221,42 @@ fn settings() -> Result<Vec<SettingDecl>> {
         .block("Invoicing")?
         .sequence(10)
         .access(&[USER_GROUP], &["base.group_system"])?,
+        SettingDecl::integer(
+            DAYS_TO_PURCHASE_SETTING,
+            "Days to Purchase (Lead Time)",
+            ScopeKind::Company,
+            0,
+            (0, 365),
+        )?
+        .block("Logistics")?
+        .sequence(10)
+        .access(&[USER_GROUP], &["base.group_system"])?,
     ])
 }
 erp_sdk::setting_declarations!(settings);
+
+/// Reads [`DEFAULT_RECEIPT_REMINDER_SETTING`] with framework rights.
+pub(crate) async fn default_receipt_reminder(tx: &mut Transaction) -> Result<bool> {
+    let env = tx.env().sudo(true);
+    let read = read_values(
+        &env,
+        tx,
+        SettingsScope::Global {},
+        vec![DEFAULT_RECEIPT_REMINDER_SETTING.to_owned()],
+    )
+    .await?;
+    let read = serde_json::to_value(&read)
+        .map_err(|error| Error::internal(format!("purchase settings: {error}")))?;
+    Ok(read["values"]
+        .as_array()
+        .and_then(|values| {
+            values
+                .iter()
+                .find(|v| v["key"] == DEFAULT_RECEIPT_REMINDER_SETTING)
+        })
+        .and_then(|entry| entry["value"].as_bool())
+        .unwrap_or(false))
+}
 
 /// Whether `purchase` is being installed, read once per transaction: the product create path
 /// asks for every new product.
@@ -389,7 +435,9 @@ mod tests {
                 APPROVAL_SETTING,
                 AMOUNT_SETTING,
                 LOCK_SETTING,
-                BILL_CONTROL_SETTING
+                DEFAULT_RECEIPT_REMINDER_SETTING,
+                BILL_CONTROL_SETTING,
+                DAYS_TO_PURCHASE_SETTING,
             ]
         );
         for decl in &declarations {
@@ -401,8 +449,10 @@ mod tests {
         };
         assert_eq!((*min, *max), (AMOUNT_FLOOR, AMOUNT_HARD));
         assert_eq!(declarations[2].default_value(), &Value::str("edit"));
-        assert_eq!(declarations[3].default_value(), &Value::str("receive"));
-        assert_eq!(declarations[3].block_title(), "Invoicing");
+        assert_eq!(declarations[3].default_value(), &Value::Bool(false));
+        assert_eq!(declarations[4].default_value(), &Value::str("receive"));
+        assert_eq!(declarations[4].block_title(), "Invoicing");
+        assert_eq!(declarations[5].block_title(), "Logistics");
     }
 
     #[test]

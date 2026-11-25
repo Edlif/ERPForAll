@@ -7,6 +7,7 @@ erp_sdk::addon!(
 );
 
 mod buy_route;
+pub mod on_time;
 mod receipt;
 mod receipt_access;
 mod receipt_buttons;

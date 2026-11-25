@@ -3,7 +3,7 @@
 
 erp_sdk::addon!(
     name = "purchase",
-    depends = ["base", "account"],
+    depends = ["base", "web", "account"],
     exact_only = true
 );
 

@@ -321,6 +321,10 @@ impl PurchaseOrder {
         if wanted(&values, "date_order") {
             values.insert("date_order".into(), Value::DateTime(DateTime::now()));
         }
+        if wanted(&values, "receipt_reminder_email") {
+            let remind = crate::settings::default_receipt_reminder(tx).await?;
+            values.insert("receipt_reminder_email".into(), Value::Bool(remind));
+        }
         let company = match values.get("company_id") {
             Some(Value::Int(company)) => Some(*company),
             _ => env.company_id()?,
