@@ -164,7 +164,10 @@ The total with taxes and
       <form string="Sales Order">
         <header>
           <button name="action_confirm" type="object" string="Confirm" class="btn-primary" invisible="state not in ('draft', 'sent')"/>
-          <button name="action_quotation_sent" type="object" string="Mark Sent" invisible="state != 'draft'"/>
+          <button name="action_open_send_wizard" type="object" string="Send by Email" invisible="state not in ('draft', 'sent')"/>
+          <button name="action_apply_template" type="object" string="Apply Template" invisible="state not in ('draft', 'sent') or locked or not sale_order_template_id"/>
+          <button name="action_add_optional_products" type="object" string="Add Options" invisible="state not in ('draft', 'sent') or locked or not sale_order_option_ids"/>
+          <button name="action_open_sign_wizard" type="object" string="Sign" invisible="state not in ('draft', 'sent') or locked"/>
           <button name="action_update_prices" type="object" string="Update Prices" invisible="state not in ('draft', 'sent') or locked or not pricelist_id"/>
           <button name="action_open_discount_wizard" type="object" string="Discount" invisible="state not in ('draft', 'sent') or locked"/>
           <button name="action_open_coupon_wizard" type="object" string="Coupon" invisible="state not in ('draft', 'sent') or locked"/>
@@ -194,6 +197,7 @@ The total with taxes and
               <field name="partner_shipping_id" readonly="locked or state == 'cancel'"/>
             </group>
             <group name="order_details">
+              <field name="sale_order_template_id" readonly="state not in ('draft', 'sent')"/>
               <field name="validity_date" readonly="state not in ('draft', 'sent')"/>
               <field name="date_order" readonly="state not in ('draft', 'sent')"/>
               <field name="pricelist_id" readonly="state not in ('draft', 'sent')"/>
@@ -217,6 +221,9 @@ The total with taxes and
                 </group>
               </group>
             </page>
+            <page string="Optional Products" name="optional_products">
+              <field name="sale_order_option_ids" readonly="locked or state == 'cancel'"/>
+            </page>
             <page string="Other Info" name="other_information">
               <group>
                 <group name="sales_person" string="Sales">
@@ -224,6 +231,8 @@ The total with taxes and
                   <field name="team_id" readonly="locked or state == 'cancel'"/>
                   <field name="client_order_ref" readonly="state == 'cancel'"/>
                   <field name="tag_ids" widget="many2many_tags" readonly="state == 'cancel'"/>
+                  <field name="require_signature" readonly="state not in ('draft', 'sent')"/>
+                  <field name="require_payment" readonly="state not in ('draft', 'sent')"/>
                 </group>
                 <group name="sale_info" string="Invoicing">
                   <field name="fiscal_position_id" readonly="state not in ('draft', 'sent')"/>
@@ -234,8 +243,10 @@ The total with taxes and
                   <field name="commitment_date" readonly="locked or state == 'cancel'"/>
                   <field name="delivery_status"/>
                 </group>
-                <group name="sale_reporting" string="Tracking">
+                <group name="sale_reporting" string="Customer Signature &amp; Tracking">
                   <field name="origin" readonly="state == 'cancel'"/>
+                  <field name="signed_by" readonly="1"/>
+                  <field name="signed_on" readonly="1"/>
                 </group>
               </group>
             </page>

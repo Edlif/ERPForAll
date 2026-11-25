@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Quotation Templates, Optional Products, Send by Email & Customer Online Signature -->
+<erp>
+  <record id="view_sale_order_template_line_list" model="ir.ui.view">
+    <field name="name">sale.order.template.line.list</field>
+    <field name="model">sale.order.template.line</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="sequence" invisible="1"/>
+        <field name="display_type"/>
+        <field name="product_id"/>
+        <field name="name"/>
+        <field name="product_uom_qty"/>
+        <field name="product_uom_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_sale_order_template_line_form" model="ir.ui.view">
+    <field name="name">sale.order.template.line.form</field>
+    <field name="model">sale.order.template.line</field>
+    <field name="arch" type="xml">
+      <form string="Template Line">
+        <sheet>
+          <group>
+            <field name="display_type"/>
+            <field name="product_id" invisible="display_type"/>
+            <field name="name"/>
+            <field name="product_uom_qty" invisible="display_type"/>
+            <field name="product_uom_id" invisible="display_type"/>
+            <field name="sequence"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_sale_order_template_option_list" model="ir.ui.view">
+    <field name="name">sale.order.template.option.list</field>
+    <field name="model">sale.order.template.option</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="product_id"/>
+        <field name="name"/>
+        <field name="quantity"/>
+        <field name="uom_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_sale_order_template_option_form" model="ir.ui.view">
+    <field name="name">sale.order.template.option.form</field>
+    <field name="model">sale.order.template.option</field>
+    <field name="arch" type="xml">
+      <form string="Optional Product">
+        <sheet>
+          <group>
+            <field name="product_id"/>
+            <field name="name"/>
+            <field name="quantity"/>
+            <field name="uom_id"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_sale_order_template_list" model="ir.ui.view">
+    <field name="name">sale.order.template.list</field>
+    <field name="model">sale.order.template</field>
+    <field name="arch" type="xml">
+      <list string="Quotation Templates">
+        <field name="name"/>
+        <field name="number_of_days"/>
+        <field name="require_signature"/>
+        <field name="require_payment"/>
+        <field name="company_id"/>
+        <field name="active"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_sale_order_template_form" model="ir.ui.view">
+    <field name="name">sale.order.template.form</field>
+    <field name="model">sale.order.template</field>
+    <field name="arch" type="xml">
+      <form string="Quotation Template">
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="e.g. Standard Starter Bundle"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="number_of_days"/>
+              <field name="company_id" readonly="1"/>
+              <field name="active"/>
+            </group>
+            <group>
+              <field name="require_signature"/>
+              <field name="require_payment"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Lines" name="lines">
+              <field name="line_ids"/>
+            </page>
+            <page string="Optional Products" name="optional_products">
+              <field name="option_ids"/>
+            </page>
+            <page string="Terms &amp; Conditions" name="terms">
+              <field name="note" placeholder="Default terms and conditions for quotations using this template..."/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_sale_order_template" model="ir.actions.act_window">
+    <field name="name">Quotation Templates</field>
+    <field name="res_model">sale.order.template</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_sale_order_template_list"/>
+  </record>
+
+  <record id="view_sale_order_option_list" model="ir.ui.view">
+    <field name="name">sale.order.option.list</field>
+    <field name="model">sale.order.option</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="product_id"/>
+        <field name="name"/>
+        <field name="quantity"/>
+        <field name="uom_id"/>
+        <field name="price_unit"/>
+        <field name="discount" string="Disc. %"/>
+        <field name="is_present"/>
+        <field name="currency_id" invisible="1"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_sale_order_option_form" model="ir.ui.view">
+    <field name="name">sale.order.option.form</field>
+    <field name="model">sale.order.option</field>
+    <field name="arch" type="xml">
+      <form string="Optional Product">
+        <header>
+          <button name="button_add_to_order" type="object" string="Add to Order Lines" class="btn-primary" invisible="is_present"/>
+        </header>
+        <sheet>
+          <group>
+            <field name="product_id"/>
+            <field name="name"/>
+            <field name="quantity"/>
+            <field name="uom_id"/>
+            <field name="price_unit"/>
+            <field name="discount"/>
+            <field name="is_present" readonly="1"/>
+            <field name="currency_id" invisible="1"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_sale_quotation_send_form" model="ir.ui.view">
+    <field name="name">sale.quotation.send.form</field>
+    <field name="model">sale.quotation.send</field>
+    <field name="arch" type="xml">
+      <form string="Send Quotation by Email" record_mode="record">
+        <group>
+          <field name="order_id" readonly="1"/>
+          <field name="partner_id"/>
+          <field name="email_to" placeholder="customer@example.com"/>
+          <field name="subject"/>
+          <field name="is_proforma"/>
+          <field name="body"/>
+          <field name="company_id" invisible="1"/>
+        </group>
+        <footer>
+          <button name="action_send_mail" type="object" string="Send" class="btn-primary"/>
+          <button special="cancel" string="Discard"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_sale_order_sign_wizard_form" model="ir.ui.view">
+    <field name="name">sale.order.sign.wizard.form</field>
+    <field name="model">sale.order.sign.wizard</field>
+    <field name="arch" type="xml">
+      <form string="Customer Online Signature &amp; Acceptance" record_mode="record">
+        <group>
+          <field name="order_id" readonly="1"/>
+          <field name="amount_total" readonly="1"/>
+          <field name="signed_by" placeholder="Full Name of Signatory"/>
+          <field name="accept_terms"/>
+          <field name="payment_reference" placeholder="Optional online payment reference"/>
+          <field name="currency_id" invisible="1"/>
+          <field name="company_id" invisible="1"/>
+        </group>
+        <footer>
+          <button name="action_sign_and_confirm" type="object" string="Sign &amp; Confirm Order" class="btn-primary"/>
+          <button special="cancel" string="Cancel"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+</erp>

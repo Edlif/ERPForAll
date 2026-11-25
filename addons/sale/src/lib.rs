@@ -24,7 +24,9 @@ pub mod order_status;
 mod partner_product_buttons;
 pub mod product;
 pub mod res_groups;
+pub mod send;
 pub mod settings;
+pub mod template;
 
 pub use line::SaleOrderLine;
 pub use order::{PLACEHOLDER, ProtectedFields, SEQUENCE_CODE, SaleOrder};

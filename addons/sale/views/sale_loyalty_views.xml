@@ -178,7 +178,7 @@
               <field name="reward_ids"/>
             </page>
             <page string="Coupons &amp; Cards" name="cards">
-              <field name="card_ids"/>
+              <field name="card_ids" context="{'active_test': False}"/>
             </page>
           </notebook>
         </sheet>

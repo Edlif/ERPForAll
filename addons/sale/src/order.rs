@@ -307,6 +307,35 @@ pub struct SaleOrder {
         string = "Total"
     )]
     pub amount_total: Decimal,
+    /// Optional quotation template used to populate lines and optional products.
+    #[field(
+        many2one,
+        comodel = "sale.order.template",
+        check_company = true,
+        string = "Quotation Template"
+    )]
+    pub sale_order_template_id: Option<RecId>,
+    /// Optional upsell products suggested on this quotation.
+    #[field(
+        one2many,
+        comodel = "sale.order.option",
+        inverse_name = "order_id",
+        copy = true,
+        string = "Optional Products"
+    )]
+    pub sale_order_option_ids: Vec<RecId>,
+    /// Whether customer online signature is requested before confirmation.
+    #[field(boolean, default = true, string = "Online Signature")]
+    pub require_signature: bool,
+    /// Whether customer online payment is requested before confirmation.
+    #[field(boolean, default = false, string = "Online Payment")]
+    pub require_payment: bool,
+    /// Full name of the customer representative who digitally signed the order.
+    #[field(char, copy = false, tracking = true, string = "Signed By")]
+    pub signed_by: Option<Arc<str>>,
+    /// Timestamp when the order was digitally signed.
+    #[field(datetime, copy = false, string = "Signed On")]
+    pub signed_on: Option<DateTime>,
 }
 
 /// The header fields a locked order refuses besides its protected fields: the salesperson and the
