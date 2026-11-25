@@ -35,6 +35,8 @@ access_stock_warehouse_orderpoint_user,Inventory: stock.warehouse.orderpoint (us
 access_stock_warehouse_orderpoint_manager,Inventory: stock.warehouse.orderpoint (manager),stock.model_stock_warehouse_orderpoint,stock.group_stock_manager,crud,
 access_stock_package_type_user,Inventory: stock.package.type (user),stock.model_stock_package_type,stock.group_stock_user,r,
 access_stock_package_type_manager,Inventory: stock.package.type (manager),stock.model_stock_package_type,stock.group_stock_manager,crud,
+access_stock_package_user,Inventory: stock.package (user),stock.model_stock_package,stock.group_stock_user,crud,
+access_stock_package_manager,Inventory: stock.package (manager),stock.model_stock_package,stock.group_stock_manager,crud,
 access_barcode_nomenclature_user,Inventory: barcode.nomenclature (user),barcodes.model_barcode_nomenclature,stock.group_stock_user,r,
 access_barcode_nomenclature_manager,Inventory: barcode.nomenclature (manager),barcodes.model_barcode_nomenclature,stock.group_stock_manager,crud,
 access_barcode_rule_user,Inventory: barcode.rule (user),barcodes.model_barcode_rule,stock.group_stock_user,r,

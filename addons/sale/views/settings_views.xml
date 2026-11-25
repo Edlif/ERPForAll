@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="sale_settings_form" model="ir.ui.view">
+    <field name="name">sale.settings.service</field>
+    <field name="model">ir.config.setting</field>
+    <field name="arch" type="xml">
+      <form record_mode="service"><widget name="web.settings" scope_kinds="global,company" app="sale"/></form>
+    </field>
+  </record>
+  <record id="sale_settings_action" model="ir.actions.act_window">
+    <field name="name">Sales settings</field>
+    <field name="res_model">ir.config.setting</field>
+    <field name="view_mode">form</field>
+    <field name="view_id" ref="sale_settings_form"/>
+  </record>
+</erp>

@@ -57,6 +57,24 @@
       </form>
     </field>
   </record>
+  <record id="view_stock_picking_type_search" model="ir.ui.view">
+    <field name="name">stock.picking.type.search</field>
+    <field name="model">stock.picking.type</field>
+    <field name="arch" type="xml">
+      <search>
+        <field name="name"/>
+        <field name="warehouse_id"/>
+        <filter name="incoming" string="Receipts" domain="[('code', '=', 'incoming')]"/>
+        <filter name="outgoing" string="Deliveries" domain="[('code', '=', 'outgoing')]"/>
+        <filter name="internal" string="Internal Transfers" domain="[('code', '=', 'internal')]"/>
+        <filter name="inactive" string="Archived" domain="[('active', '=', False)]"/>
+        <group>
+          <filter name="group_warehouse" string="Warehouse" context="{'group_by': 'warehouse_id'}"/>
+          <filter name="group_code" string="Type of Operation" context="{'group_by': 'code'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
   <record id="action_stock_picking_type_config" model="ir.actions.act_window">
     <field name="name">Operation Types</field>
     <field name="res_model">stock.picking.type</field>

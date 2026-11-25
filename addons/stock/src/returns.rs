@@ -458,45 +458,45 @@ impl StockPicking {
         tx: &mut Transaction,
         out: &mut Assign<'_, StockPicking>,
     ) -> Result<()> {
-        let ids = this.as_records().ids();
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let groups = this
-            .env()
-            .records("stock.picking")?
-            ._read_group(
-                tx,
-                ReadGroup::new(Domain::field("return_id")?.in_(ids.clone()))
-                    .groupby(["return_id"])
-                    .aggregates(["__count"]),
-            )
-            .await?;
+        let records = this.as_records();
+        let ids = records.ids();
         let mut counts = BTreeMap::new();
-        for (key, quantity) in groups.column(0).iter().zip(groups.column(1)) {
-            let id = key
-                .record_id()
-                .ok_or_else(|| Error::invariant("Return count group has no source transfer."))?;
-            let GroupValue::Int(count) = quantity else {
-                return Err(Error::invariant(
-                    "Return count aggregate is not an integer.",
-                ));
-            };
-            counts.insert(
-                id.get(),
-                i32::try_from(*count).map_err(|e| {
-                    Error::validation("Return count exceeds the supported integer range.")
-                        .with_source(e)
-                })?,
-            );
+        if !ids.is_empty() {
+            let groups = this
+                .env()
+                .records("stock.picking")?
+                ._read_group(
+                    tx,
+                    ReadGroup::new(Domain::field("return_id")?.in_(ids))
+                        .groupby(["return_id"])
+                        .aggregates(["__count"]),
+                )
+                .await?;
+            for (key, quantity) in groups.column(0).iter().zip(groups.column(1)) {
+                let id = key.record_id().ok_or_else(|| {
+                    Error::invariant("Return count group has no source transfer.")
+                })?;
+                let GroupValue::Int(count) = quantity else {
+                    return Err(Error::invariant(
+                        "Return count aggregate is not an integer.",
+                    ));
+                };
+                counts.insert(
+                    id.get(),
+                    i32::try_from(*count).map_err(|e| {
+                        Error::validation("Return count exceeds the supported integer range.")
+                            .with_source(e)
+                    })?,
+                );
+            }
         }
-        for (index, id) in ids.iter().enumerate() {
-            // A successful grouping omits source transfers with no visible returns.
-            out.set(
-                index,
-                StockPicking::RETURN_COUNT,
-                counts.get(id).copied().unwrap_or(0),
-            )?;
+        for (index, rec_id) in records.rec_ids().iter().enumerate() {
+            // New records and source transfers with no visible returns get 0.
+            let count = rec_id
+                .as_real()
+                .and_then(|id| counts.get(&id.get()).copied())
+                .unwrap_or(0);
+            out.set(index, StockPicking::RETURN_COUNT, count)?;
         }
         Ok(())
     }
