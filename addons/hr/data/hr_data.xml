@@ -45,18 +45,40 @@
     <field name="reason_code">other</field>
   </record>
 
+  <!-- Default Department -->
+  <record id="hr_department_administration" model="hr.department">
+    <field name="name">Administration</field>
+  </record>
+
+  <!-- Default Work Locations -->
+  <record id="hr_work_location_home" model="hr.work.location">
+    <field name="name">Home</field>
+    <field name="location_type">home</field>
+    <field name="address_id" ref="base.main_partner"/>
+  </record>
+  <record id="hr_work_location_office" model="hr.work.location">
+    <field name="name">Office</field>
+    <field name="location_type">office</field>
+    <field name="address_id" ref="base.main_partner"/>
+  </record>
+  <record id="hr_work_location_other" model="hr.work.location">
+    <field name="name">Other</field>
+    <field name="location_type">other</field>
+    <field name="address_id" ref="base.main_partner"/>
+  </record>
+
+  <!-- Employee tags ship no default records: tags are each organisation's own labels. -->
+
   <!-- Default Working Schedules -->
   <record id="hr_work_schedule_standard_40" model="hr.work.schedule">
     <field name="name">Standard 40 hours/week</field>
     <field name="hours_per_day">8.0</field>
     <field name="hours_per_week">40.0</field>
-    <field name="tz">Asia/Jakarta</field>
   </record>
   <record id="hr_work_schedule_part_time_20" model="hr.work.schedule">
     <field name="name">Part-Time 20 hours/week</field>
     <field name="hours_per_day">4.0</field>
     <field name="hours_per_week">20.0</field>
-    <field name="tz">Asia/Jakarta</field>
   </record>
 
   <!-- Default Resume Sections -->

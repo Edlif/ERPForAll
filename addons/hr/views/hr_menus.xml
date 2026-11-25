@@ -4,7 +4,7 @@
   <!-- App Root -->
   <menuitem id="hr_menu_root" name="Employees" sequence="80" web_icon="lucide:users"/>
 
-  <!-- Top-level App Navigation (Odoo 20 Employees parity) -->
+  <!-- Top-level App Navigation -->
   <menuitem id="hr_employee_menu" name="Management" parent="hr_menu_root" action="hr_employee_action" sequence="10" groups="hr.group_hr_user"/>
   <menuitem id="hr_directory_menu" name="Directory" parent="hr_menu_root" action="hr_employee_directory_action" sequence="20" groups="base.group_user"/>
   <menuitem id="hr_department_menu" name="Departments" parent="hr_menu_root" action="hr_department_action" sequence="30" groups="base.group_user"/>

@@ -328,8 +328,8 @@
             <group>
               <field name="date_start"/>
               <field name="date_end"/>
-              <field name="certificate_filename" invisible="1"/>
-              <field name="certificate_file" filename="certificate_filename"/>
+              <field name="certificate_filename" invisible="1" groups="hr.group_hr_user"/>
+              <field name="certificate_file" filename="certificate_filename" groups="hr.group_hr_user"/>
             </group>
           </group>
           <group string="Description">
@@ -481,8 +481,8 @@
               <field name="is_certification"/>
               <field name="valid_from"/>
               <field name="valid_to"/>
-              <field name="certificate_filename" invisible="1"/>
-              <field name="certificate_file" filename="certificate_filename"/>
+              <field name="certificate_filename" invisible="1" groups="hr.group_hr_user"/>
+              <field name="certificate_file" filename="certificate_filename" groups="hr.group_hr_user"/>
             </group>
           </group>
         </sheet>

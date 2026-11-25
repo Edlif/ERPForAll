@@ -5,6 +5,8 @@ use erp_addon_mail::MailThread;
 use erp_sdk::ValueMap;
 use erp_sdk::prelude::*;
 
+use crate::counts::{as_field, count_by};
+
 /// `hr.job`: a named job position, optionally tied to a company and department, archivable.
 #[model(
     name = "hr.job",
@@ -80,19 +82,25 @@ pub struct HrJob {
 
 #[methods(HrJob, addon = "hr")]
 impl HrJob {
-    #[compute(depends = ["no_of_recruitment"])]
+    #[compute(
+        depends = ["no_of_recruitment"],
+        depends_context = ["uid", "allowed_company_ids"]
+    )]
     async fn _compute_employees(
         this: &RecordSet<HrJob>,
         tx: &mut Transaction,
         out: &mut Assign<'_, HrJob>,
     ) -> Result<()> {
         let targets = this.mapped(tx, HrJob::NO_OF_RECRUITMENT).await?;
-        let employees = this.env().records("hr.employee")?;
-        for (index, (id, target)) in this.as_records().rec_ids().iter().zip(targets).enumerate() {
-            let domain = Domain::condition("job_id", Operator::Eq, id.get())?;
-            let count = employees.search_count(tx, &domain, None).await?;
-            let current = i32::try_from(count)
-                .map_err(|_| Error::programming(format!("employee count {count} exceeds i32")))?;
+        let ids: Vec<i64> = this
+            .as_records()
+            .rec_ids()
+            .iter()
+            .map(|id| id.get())
+            .collect();
+        let counts = count_by(tx, this.env(), "hr.employee", "job_id", &ids).await?;
+        for (index, (id, target)) in ids.iter().zip(targets).enumerate() {
+            let current = as_field(counts.get(id).copied().unwrap_or(0), "employee")?;
             out.set(index, HrJob::NO_OF_EMPLOYEE, current)?;
             out.set(
                 index,
