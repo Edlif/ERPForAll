@@ -6,7 +6,7 @@
 //! single relation field of the order names, so it filters the linked order ids by read access.
 //! Both actions open a domain, never an id list.
 
-use erp_addon_account::smart_buttons::{domain_window, grouped_counts, leaf, the_one};
+use erp_addon_account::smart_buttons::{domain_action, grouped_counts, leaf, the_one};
 use erp_addon_base::ResPartner;
 use erp_addon_product::ProductTemplate;
 use erp_sdk::prelude::*;
@@ -60,7 +60,9 @@ impl PartnerPurchaseOrders {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(domain_window(
+        domain_action(
+            tx,
+            this.as_records(),
             "Purchase Orders",
             "purchase.order",
             Vec::new(),
@@ -69,7 +71,8 @@ impl PartnerPurchaseOrders {
                 leaf("partner_id", "=", Value::Int(id)),
                 leaf("state", "=", Value::str(CONFIRMED)),
             ],
-        ))
+        )
+        .await
     }
 }
 
@@ -109,7 +112,9 @@ impl ProductTemplatePurchases {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(domain_window(
+        domain_action(
+            tx,
+            this.as_records(),
             "Purchase Orders",
             "purchase.order",
             Vec::new(),
@@ -118,6 +123,7 @@ impl ProductTemplatePurchases {
                 leaf("order_line.product_id.product_tmpl_id", "=", Value::Int(id)),
                 leaf("state", "=", Value::str(CONFIRMED)),
             ],
-        ))
+        )
+        .await
     }
 }

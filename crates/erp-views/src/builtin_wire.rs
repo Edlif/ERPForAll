@@ -439,6 +439,21 @@ impl Output {
         result.blacklisted_values = optional(source, "blacklisted_values")
             .map(|value| self.strings(value))
             .transpose()?;
+        result.tone_success = optional(source, "tone_success")
+            .map(|value| self.strings(value))
+            .transpose()?;
+        result.tone_info = optional(source, "tone_info")
+            .map(|value| self.strings(value))
+            .transpose()?;
+        result.tone_warning = optional(source, "tone_warning")
+            .map(|value| self.strings(value))
+            .transpose()?;
+        result.tone_danger = optional(source, "tone_danger")
+            .map(|value| self.strings(value))
+            .transpose()?;
+        result.tone_muted = optional(source, "tone_muted")
+            .map(|value| self.strings(value))
+            .transpose()?;
         if let Some(value) = optional(source, "digits") {
             let source = array(value)?;
             let mut values = self.vector(source.len())?;

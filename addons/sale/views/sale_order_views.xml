@@ -125,7 +125,7 @@ The total with taxes and
         <field name="currency_id" invisible="1"/>
         <field name="amount_untaxed"/>
         <field name="amount_total"/>
-        <field name="state" widget="badge"/>
+        <field name="state" widget="badge" options="{'tone_success': ['sale'], 'tone_info': ['sent'], 'tone_warning': ['draft'], 'tone_danger': ['cancel']}"/>
       </list>
     </field>
   </record>
@@ -150,9 +150,9 @@ The total with taxes and
         <field name="currency_id" invisible="1"/>
         <field name="amount_untaxed"/>
         <field name="amount_total"/>
-        <field name="state" widget="badge"/>
-        <field name="delivery_status" widget="badge"/>
-        <field name="invoice_status" widget="badge"/>
+        <field name="state" widget="badge" options="{'tone_success': ['sale'], 'tone_info': ['sent'], 'tone_warning': ['draft'], 'tone_danger': ['cancel']}"/>
+        <field name="delivery_status" widget="badge" options="{'tone_success': ['full'], 'tone_warning': ['pending', 'partial']}"/>
+        <field name="invoice_status" widget="badge" options="{'tone_success': ['invoiced'], 'tone_info': ['upselling', 'to invoice'], 'tone_muted': ['no']}"/>
       </list>
     </field>
   </record>

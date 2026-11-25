@@ -17,7 +17,7 @@
           <filter name="group_department" string="Department" context="{'group_by': 'department_id'}"/>
           <filter name="group_manager" string="Manager" context="{'group_by': 'parent_id'}"/>
           <filter name="group_job" string="Job Position" context="{'group_by': 'job_id'}"/>
-          <filter name="group_employee_type" string="Employee Type" context="{'group_by': 'employee_type_id'}"/>
+          <filter name="group_employee_type" string="Employee Type" context="{'group_by': 'employee_type_id'}" groups="hr.group_hr_user"/>
           <filter name="group_company" string="Company" context="{'group_by': 'company_id'}"/>
         </group>
         <searchpanel view_types="kanban,list,hierarchy,activity,graph,pivot">

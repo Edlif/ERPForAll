@@ -17,6 +17,8 @@ export interface Route {
   /** Page-lifetime method-action identity; its payload never travels in the URL. */
   method_action?: string;
   list_tab?: string;
+  /** Search panel selection: `{"<section id>": [value, ...]}`; when present it replaces the panel's default selection. */
+  search_panel?: string;
   /** Pivot state: groupings by axis, measures, expanded headers, sorted column. */
   pivot_rows?: string;
   pivot_cols?: string;
@@ -57,7 +59,7 @@ export function rpcId(value: string): number {
   if (!Number.isSafeInteger(id)) throw new ClientError("unsupported", "This record identifier exceeds the browser's safe integer range.");
   return id;
 }
-const queryKeys = ["debug", "menu", "model", "id", "view_type", "active_id", "search", "search_facets", "search_filters", "search_groupby", "method_action", "list_tab", "pivot_rows", "pivot_cols", "pivot_measures", "pivot_open", "pivot_sort", "calendar_scale", "calendar_date", "graph_mode", "graph_measure", "graph_groupby", "graph_order", "graph_stacked", "graph_cumulated"] as const;
+const queryKeys = ["debug", "menu", "model", "id", "view_type", "active_id", "search", "search_facets", "search_filters", "search_groupby", "method_action", "list_tab", "search_panel", "pivot_rows", "pivot_cols", "pivot_measures", "pivot_open", "pivot_sort", "calendar_scale", "calendar_date", "graph_mode", "graph_measure", "graph_groupby", "graph_order", "graph_stacked", "graph_cumulated"] as const;
 const routeKeys = new Set<string>(["action", ...queryKeys, "cids"]);
 const diagnosticKeys = new Set<string>([...routeKeys, "url", "path", "hash"]);
 const byteLength = (value: string): number => new TextEncoder().encode(value).length;
@@ -118,6 +120,15 @@ function pivotSort(value: string): boolean {
   return Array.isArray(parsed) && (parsed.length === 0 || parsed.length === 3 && typeof parsed[0] === "string" && (parsed[0] === "__count" || pivotField(parsed[0]))
     && (parsed[1] === "asc" || parsed[1] === "desc") && pivotPath(parsed[2]));
 }
+/** At most 64 sections (ids 1 to 4294967295), each at most 256 distinct values: a record id or a selection key of 1 to 256 characters (the server admits the same: crates/erp-server/src/redirect.rs). */
+function searchPanel(value: string): boolean {
+  const parsed = pivotJson(value);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
+  const entries = Object.entries(parsed);
+  return entries.length <= 64 && entries.every(([id, values]) => /^[1-9][0-9]{0,9}$/.test(id) && Number(id) <= 4294967295
+    && Array.isArray(values) && values.length <= 256 && new Set(values.map(item => JSON.stringify(item))).size === values.length
+    && values.every(item => typeof item === "string" ? item.length > 0 && item.length <= 256 : Number.isSafeInteger(item) && item > 0));
+}
 function validate(route: Route): void {
   if (typeof route !== "object" || route === null || Array.isArray(route)) return fail("url");
   for (const key of Object.keys(route)) if (!routeKeys.has(key)) return fail("url");
@@ -142,6 +153,7 @@ function validate(route: Route): void {
       case "graph_stacked": case "graph_cumulated": if (value !== "0" && value !== "1") return fail(key); break;
       case "pivot_rows": case "pivot_cols": if (!pivotSpecs(value, false)) return fail(key); break;
       case "pivot_measures": if (!pivotSpecs(value, true)) return fail(key); break;
+      case "search_panel": if (!searchPanel(value)) return fail(key); break;
       case "pivot_open": if (!pivotOpen(value)) return fail(key, pivotOpenOversize(value)); break;
       case "pivot_sort": if (!pivotSort(value)) return fail(key, pivotSortOversize(value)); break;
       case "method_action": {

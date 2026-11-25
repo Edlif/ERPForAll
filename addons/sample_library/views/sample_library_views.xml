@@ -128,7 +128,7 @@
                 <field name="borrower_id"/>
                 <field name="loan_date"/>
                 <field name="due_date"/>
-                <field name="state" widget="badge"/>
+                <field name="state" widget="badge" options="{'tone_warning': ['draft']}"/>
             </list>
         </field>
     </record>

@@ -497,6 +497,11 @@ object!(/// Closed optional presentation members; widget identity admission rest
         #[serde(default, skip_serializing_if="Option::is_none")] filename: Option<FieldRef>,
         #[serde(default, skip_serializing_if="Option::is_none")] whitelisted_values: Option<Vec<String>>,
         #[serde(default, skip_serializing_if="Option::is_none")] blacklisted_values: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if="Option::is_none")] tone_success: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if="Option::is_none")] tone_info: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if="Option::is_none")] tone_warning: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if="Option::is_none")] tone_danger: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if="Option::is_none")] tone_muted: Option<Vec<String>>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number[] | null"))] digits: Option<Vec<i64>>,
         #[serde(default, skip_serializing_if="Option::is_none")] #[cfg_attr(feature="schema-gen", ts(type="number[] | null"))] size: Option<Vec<i64>>,
         #[serde(default, skip_serializing_if="Option::is_none")] domain: Option<WireDocument>,
@@ -557,6 +562,11 @@ impl FieldPresentationOptions {
             filename: None,
             whitelisted_values: None,
             blacklisted_values: None,
+            tone_success: None,
+            tone_info: None,
+            tone_warning: None,
+            tone_danger: None,
+            tone_muted: None,
             digits: None,
             size: None,
             domain: None,
@@ -2023,6 +2033,10 @@ pub fn field_option_kind(widget: &str, key: &str) -> Option<FieldOptionKind> {
             widget == "filterable_selection"
         }
         "text" => widget == "url",
+        // The colour of each value of a badge, declared by the view (`tone_<name>`: the values shown in that tone).
+        "tone_success" | "tone_info" | "tone_warning" | "tone_danger" | "tone_muted" => {
+            matches!(widget, "badge" | "label_selection")
+        }
         "alt" | "img_class" | "zoom" | "zoom_delay" | "size" | "reload" => image,
         "accepted_file_extensions" => matches!(widget, "image" | "binary"),
         "convert_to_webp" | "preview_image" => widget == "image",
@@ -2076,6 +2090,9 @@ pub fn field_option_kind(widget: &str, key: &str) -> Option<FieldOptionKind> {
         "color_field" => FieldOptionKind::Field,
         "whitelisted_values" => FieldOptionKind::Strings,
         "blacklisted_values" => FieldOptionKind::Strings,
+        "tone_success" | "tone_info" | "tone_warning" | "tone_danger" | "tone_muted" => {
+            FieldOptionKind::Strings
+        }
         "digits" => FieldOptionKind::Digits,
         "size" => FieldOptionKind::Size,
         "alt" | "img_class" | "accepted_file_extensions" => FieldOptionKind::Text,

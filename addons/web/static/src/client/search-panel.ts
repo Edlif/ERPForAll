@@ -6,7 +6,7 @@ import { button, el } from "./dom.js";
 import { icon, type IconName } from "./icons.js";
 import type { AdmittedSection, SectionsPanel } from "./panel-metadata.js";
 import { array, object } from "./metadata.js";
-import type { RpcClient } from "./transport.js";
+import { ClientError, type RpcClient } from "./transport.js";
 
 export interface SearchPanelValue {
   id: number | string;
@@ -24,6 +24,8 @@ export interface SearchPanelSidebar {
   readonly toggleButton: HTMLButtonElement;
   /** Active domain contributed by selected categories and filters. */
   getDomain(): unknown[];
+  /** The selection as the address keeps it (`search_panel`). */
+  getSelection(): string;
   /** Reload section values and counters against the current search domain. */
   refresh(searchDomain: readonly unknown[]): Promise<void>;
   dispose(): void;
@@ -34,8 +36,10 @@ export interface SearchPanelOptions {
   panel: SectionsPanel;
   rpc: RpcClient;
   context: Record<string, unknown>;
-  /** Called whenever the user changes a category or filter selection. */
-  onChange: () => void;
+  /** The address's `search_panel` value: it replaces the sections' default selection. */
+  selection?: string;
+  /** Called whenever the user changes a category or filter selection, with the new `getSelection()`. */
+  onChange: (selection: string) => void;
   /** Report non-fatal load failures to the shell without crashing the view. */
   report?: (error: unknown) => void;
 }
@@ -108,7 +112,7 @@ function parseRangeValues(raw: unknown): { parentField: string | false; values: 
 
 /** Build the reusable left-hand Search Panel sidebar for any view matching `panel.viewTypes`. */
 export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPanelSidebar {
-  const { model, panel, rpc, context, onChange, report } = options;
+  const { model, panel, rpc, context, selection, report } = options;
 
   // Selection state: categories keep at most one active value; filters keep a set of checked values.
   const activeCategories = new Map<number, number | string>();
@@ -124,6 +128,27 @@ export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPan
     }
     expandedNodes.set(section.id, new Set());
   }
+  if (selection !== undefined) {
+    activeCategories.clear();
+    activeFilters.clear();
+    const refused = (): never => { throw new ClientError("validation", "Invalid navigation parameter: search_panel."); };
+    // route.ts admitted the shape; what each section accepts is checked here.
+    for (const [key, values] of Object.entries(JSON.parse(selection) as Record<string, (number | string)[]>)) {
+      const section = panel.sections.find(candidate => candidate.id === Number(key));
+      if (!section || (section.kind === "category" && values.length > 1)
+          || values.some(value => typeof value !== (section.field.kind === "selection" ? "string" : "number"))) refused();
+      if (!values.length) continue;
+      if (section!.kind === "category") activeCategories.set(section!.id, values[0]!);
+      else activeFilters.set(section!.id, new Set(values));
+    }
+  }
+  const getSelection = (): string => {
+    const kept: Record<string, (number | string)[]> = {};
+    for (const [id, value] of activeCategories) kept[id] = [value];
+    for (const [id, values] of activeFilters) if (values.size) kept[id] = [...values];
+    return JSON.stringify(kept);
+  };
+  const onChange = (): void => options.onChange(getSelection());
 
   let collapsed = false;
   let mobileOpen = false;
@@ -430,6 +455,7 @@ export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPan
     element: sidebar,
     toggleButton,
     getDomain,
+    getSelection,
     refresh,
     dispose: () => {
       disposed = true;

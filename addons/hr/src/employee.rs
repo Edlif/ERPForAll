@@ -256,6 +256,7 @@ pub struct HrEmployee {
         ondelete = "set null",
         index = true,
         tracking = true,
+        groups = "hr.group_hr_user",
         string = "Employee Type"
     )]
     pub employee_type_id: Option<RecId>,

@@ -2604,8 +2604,25 @@ fn field_option_value(
             output.field_handle(spec.name, field.name)
         }
         (K::Strings, Expr::List(values) | Expr::Tuple(values)) => {
+            // A badge tone names keys of its own selection, so a typo fails here instead of drawing no colour.
+            let tone = key.starts_with("tone_");
+            let choices = match &occurrence.ty {
+                FieldType::Selection {
+                    values: Some(choices),
+                    ..
+                } if tone => Some(choices),
+                _ if tone => return Err(wrong()),
+                _ => None,
+            };
             output.array(values.len(), |index, output| match &values[index] {
-                Expr::Literal(Literal::Str(value)) => output.text(value),
+                Expr::Literal(Literal::Str(value))
+                    if choices.is_none_or(|choices| {
+                        let wanted: &str = value;
+                        choices.iter().any(|(choice, _)| choice == wanted)
+                    }) =>
+                {
+                    output.text(value)
+                }
                 _ => Err(wrong()),
             })
         }

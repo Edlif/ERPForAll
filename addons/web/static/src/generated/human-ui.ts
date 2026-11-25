@@ -648,6 +648,26 @@ whitelisted_values?: Array<string> | null,
  */
 blacklisted_values?: Array<string> | null,
 /**
+ *Wire member `tone_success`.
+ */
+tone_success?: Array<string> | null,
+/**
+ *Wire member `tone_info`.
+ */
+tone_info?: Array<string> | null,
+/**
+ *Wire member `tone_warning`.
+ */
+tone_warning?: Array<string> | null,
+/**
+ *Wire member `tone_danger`.
+ */
+tone_danger?: Array<string> | null,
+/**
+ *Wire member `tone_muted`.
+ */
+tone_muted?: Array<string> | null,
+/**
  *Wire member `digits`.
  */
 digits?: number[] | null,

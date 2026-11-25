@@ -2701,8 +2701,8 @@ export class HumanApp {
     }), pivotDomain, limits, initial, accept);
     if (pivotSections) {
       pivotSidebar = createSearchPanelSidebar({
-        model: description.model, panel: pivotSections, rpc: this.rpc, context,
-        onChange: () => this.run(async () => { void pivotSidebar?.refresh(searchModel.getDomain()); await model.load(); pivot.render(); }),
+        model: description.model, panel: pivotSections, rpc: this.rpc, context, selection: route.search_panel,
+        onChange: selection => this.run(async () => { this.keepSearchPanel(route, selection); void pivotSidebar?.refresh(searchModel.getDomain()); await model.load(); pivot.render(); }),
         report: error => this.reportError(error),
       });
       void pivotSidebar.refresh(searchModel.getDomain());
@@ -2950,8 +2950,8 @@ export class HumanApp {
     }), graphDomain, maxGroups, initial);
     if (graphSections) {
       graphSidebar = createSearchPanelSidebar({
-        model: description.model, panel: graphSections, rpc: this.rpc, context,
-        onChange: () => this.run(async () => { void graphSidebar?.refresh(searchModel.getDomain()); await model.load(); graph.render(); }),
+        model: description.model, panel: graphSections, rpc: this.rpc, context, selection: route.search_panel,
+        onChange: selection => this.run(async () => { this.keepSearchPanel(route, selection); void graphSidebar?.refresh(searchModel.getDomain()); await model.load(); graph.render(); }),
         report: error => this.reportError(error),
       });
       void graphSidebar.refresh(searchModel.getDomain());
@@ -3151,8 +3151,8 @@ export class HumanApp {
     };
     if (sectionsPanel) {
       sidebar = createSearchPanelSidebar({
-        model: description.model, panel: sectionsPanel, rpc: this.rpc, context,
-        onChange: () => this.run(async () => { offset = 0; await load(); }),
+        model: description.model, panel: sectionsPanel, rpc: this.rpc, context, selection: route.search_panel,
+        onChange: selection => this.run(async () => { this.keepSearchPanel(route, selection); offset = 0; await load(); }),
         report: error => this.reportError(error),
       });
     }
@@ -3228,6 +3228,13 @@ export class HumanApp {
       return search.searchPanel;
     }
     return undefined;
+  }
+
+  /** The search panel's selection goes into the address, so a reload, Back or Forward and a copied link keep the filter. */
+  private keepSearchPanel(route: Route, selection: string): void {
+    const url = routeUrl({ ...route, search_panel: selection }); // validated whole before anything is committed
+    route.search_panel = selection;
+    if (url !== this.currentUrl) { history.replaceState({ erpIndex: this.historyIndex }, "", url); this.currentUrl = url; }
   }
 
   private wrapWithSearchPanel(staging: HTMLElement, content: HTMLElement, sidebar: SearchPanelSidebar | undefined): void {
@@ -3350,8 +3357,8 @@ export class HumanApp {
 
     if (sectionsPanel) {
       sidebar = createSearchPanelSidebar({
-        model: description.model, panel: sectionsPanel, rpc: this.rpc, context,
-        onChange: () => this.run(() => load()),
+        model: description.model, panel: sectionsPanel, rpc: this.rpc, context, selection: route.search_panel,
+        onChange: selection => this.run(() => { this.keepSearchPanel(route, selection); return load(); }),
         report: error => this.reportError(error),
       });
     }
@@ -3511,8 +3518,8 @@ export class HumanApp {
 
     if (sectionsPanel) {
       sidebar = createSearchPanelSidebar({
-        model: description.model, panel: sectionsPanel, rpc: this.rpc, context,
-        onChange: () => this.run(() => load()),
+        model: description.model, panel: sectionsPanel, rpc: this.rpc, context, selection: route.search_panel,
+        onChange: selection => this.run(() => { this.keepSearchPanel(route, selection); return load(); }),
         report: error => this.reportError(error),
       });
     }
@@ -4011,8 +4018,8 @@ export class HumanApp {
     let listSidebar: SearchPanelSidebar | undefined;
     if (listSections) {
       listSidebar = createSearchPanelSidebar({
-        model: description.model, panel: listSections, rpc: this.rpc, context,
-        onChange: () => this.run(async () => { offset = 0; resetGroups(); await load(); }),
+        model: description.model, panel: listSections, rpc: this.rpc, context, selection: route.search_panel,
+        onChange: selection => this.run(async () => { this.keepSearchPanel(route, selection); offset = 0; resetGroups(); await load(); }),
         report: error => this.reportError(error),
       });
     }
