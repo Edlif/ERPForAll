@@ -71,4 +71,23 @@ test("an answer in an unknown form is refused by name", () => {
 test("dates are written in the user's locale and an unreadable one is left as sent", () => {
   expect(data.formatDate("2026-11-19", "en_US")).toContain("2026");
   expect(data.formatDate("not-a-date", "en_US")).toBe("not-a-date");
+  const [date, broken] = decoded([wireLine(root, "Item", { cells: [cell("2026-11-05", "date"), cell("soon", "date")] })])[0]!.cells;
+  expect(data.formatCell(date!, "en_US")).toBe("11/05/2026");
+  expect(data.formatCell(date!, "de_DE")).toBe("05.11.2026");
+  expect(data.formatCell(broken!, "en_US")).toBe("soon");
+  expect(data.formatStamp("2026-11-19 10:00:00", "en_US", "Asia/Jakarta")).toContain("5:00");
+  expect(data.formatStamp("later", "en_US", "UTC")).toBe("later");
+  expect(data.formatStamp("2026-11-19 10:00:00", "en_US", "Nowhere/None")).toBe("2026-11-19 10:00:00");
+});
+
+test("a monetary cell shows the symbol of its currency on the side the currency names, and nothing invented without it", () => {
+  const lines = decoded([wireLine(root, "Item", { cells: [{ ...cell("-1250.50", "monetary", 2), currency: 3 }, { ...cell("7.00", "monetary", 2), currency: 4 }, { ...cell("7.00", "decimal", 2), currency: null }] })]);
+  const cells = lines[0]!.cells, known = data.decodeCurrencies([{ id: 3, symbol: "$", position: "before" }]);
+  expect(data.missingCurrencies(lines, known)).toEqual([4]);
+  expect(cells.map(c => data.formatCell(c, "en_US", known))).toEqual(["$\u00a0-1,250.50", "7.00", "7.00"]);
+  known.set(4, { symbol: "kr", position: "after" });
+  expect(data.formatCell(cells[1]!, "en_US", known)).toBe("7.00\u00a0kr");
+  expect(() => data.decodeCurrencies([{ id: 3, symbol: "$", position: "above" }])).toThrow("unknown symbol position");
+  expect(() => decoded([wireLine(root, "Item", { cells: [{ ...cell("1", "integer"), tone: "loud" }] })])).toThrow("unknown tone 'loud'");
+  expect(() => decoded([wireLine(root, "Item", { cells: [{ ...cell("1", "integer"), currency: "USD" }] })])).toThrow("a cell currency in an unknown form");
 });

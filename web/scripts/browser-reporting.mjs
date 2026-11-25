@@ -46,13 +46,25 @@ const files = {
 const calls = [], errors = [], unknown = [], checks = [], screenshots = [];
 let serverError;
 let showPartnerLedger = false;
+// The Partner Ledger fixture: partners over their journal items with a running balance, one partner unfolded.
+const ledgerKinds = { Journal: "text", Account: "text", Date: "date", "Due date": "date", Matching: "text", Debit: "monetary", Credit: "monetary", Balance: "monetary" };
 const ledgerOptions = { ...baseOptions, provider: { unreconciled: false },
-  columns: ["Opening", "Debit", "Credit", "Closing"].map(name => ({ group: 0, name, label: name.toLowerCase(), kind: "monetary", sortable: false })) };
+  columns: Object.entries(ledgerKinds).map(([name, kind]) => ({ group: 0, name, label: name.toLowerCase().replace(" ", "_"), kind, sortable: false })) };
+const ledgerCell = (value, kind, tone) => value === null ? cell(null, "empty")
+  : { kind, value, scale: kind === "monetary" ? 2 : 0, currency: kind === "monetary" ? 1 : null, zero: kind === "monetary" && Number(value) === 0, ...(tone ? { tone } : {}) };
+const ledgerLine = (id, parent, name, kind, values, over = {}) => ({ id, parent, name, level: parent === null ? 0 : 1, kind, unfoldable: false, unfolded: false,
+  cells: Object.values(ledgerKinds).map((cellKind, index) => ledgerCell(values[index] ?? null, cellKind, index === 3 ? over.due : undefined)), caret: over.caret ?? [], remaining: null, next_offset: null, ...(over.line ?? {}) });
+const harbor = `${rootId}|group:partner_id~res.partner~1`, north = `${rootId}|group:partner_id~res.partner~2`;
 const ledgerLines = [
-  { code: "RECEIVABLE", name: "Receivables", amounts: ["100", "50", "30", "120"] },
-  { code: "PAYABLE", name: "Payables", amounts: ["-80", "10", "20", "-90"] },
-].map(({ code, name, amounts }) => ({ ...topLine(false), id: rootId + "|line:" + code + "~~", name,
-  cells: amounts.map(value => ({ ...cell(value, "monetary"), currency: "USD", scale: 2 })) }));
+  ledgerLine(harbor, null, "Harbor Supplies", "group", [null, null, null, null, null, "58650.00", "36512.50", "23137.50"], { caret: ["journal_items", "partner"], line: { unfoldable: true, unfolded: true } }),
+  ledgerLine(`${harbor}|initial~~`, harbor, "Initial balance", "detail", [null, null, null, null, null, null, null, "1000.00"]),
+  ledgerLine(`${harbor}|item~~11`, harbor, "INV/2026/00004", "detail", ["INV", "121000", "2026-11-05", "2026-11-05", "A12", "36512.50", null, "37512.50"], { caret: ["entry"] }),
+  ledgerLine(`${harbor}|item~~12`, harbor, "RINV/2026/00003", "detail", ["INV", "121000", "2026-11-10", "2026-11-10", "A12", null, "36512.50", "1000.00"], { caret: ["entry"] }),
+  ledgerLine(`${harbor}|item~~13`, harbor, "INV/2026/00007", "detail", ["INV", "121000", "2026-11-17", "2026-11-17", null, "22137.50", null, "23137.50"], { caret: ["entry"], due: "danger" }),
+  ledgerLine(`${harbor}|total~~`, harbor, "Total Harbor Supplies", "total", [null, null, null, null, null, "58650.00", "36512.50", "23137.50"]),
+  ledgerLine(north, null, "Northfield Trading", "group", [null, null, null, null, null, "34.50", "8010.90", "-7976.40"], { caret: ["journal_items", "partner"], line: { unfoldable: true } }),
+  ledgerLine(`${rootId}|total~~`, null, "Total Partner Ledger", "total", [null, null, null, null, null, "58684.50", "44523.40", "15161.10"]),
+];
 const server = createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url, "http://fixture").pathname, asset = assets.get(pathname);
@@ -79,6 +91,7 @@ const server = createServer(async (req, res) => {
     else if (pathname.endsWith("mail.activity/erp_activity_groups")) value = { activity_counter: 0, groups: [] };
     else if (pathname.endsWith("erp_load_web_menus")) value = { wire_major: 1, registry_version: "r1", roots: [10], nodes: [{ module: null, id: 10, parent_id: null, label: reportName, action_id: 30, action_kind: "client", children: [], icon: null }] };
     else if (pathname.endsWith("ir.actions.client/erp_load_web_client_action")) value = { wire_major: 1, result: { kind: "client", id: 30, name: reportName, tag: "reporting.report", params: { report: REPORT } } };
+    else if (pathname.endsWith("res.currency/web_read")) value = [{ id: 1, symbol: "$", position: "before" }];
     else if (pathname.endsWith("reporting.report/erp_report_options")) value = {
       name: reportName, options: { ...(showPartnerLedger ? ledgerOptions : baseOptions), ...(body.previous || {}) },
       filters: showPartnerLedger ? { ...filters, provider: "account_reporting.partner_ledger", unfold_all: false, hide_zero: "never" } : filters,
@@ -203,8 +216,19 @@ try {
   showPartnerLedger = true;
   await page.setViewportSize({ width: 820, height: 900 });
   await page.goto(origin + "/erp/action-30?menu=10");
-  await page.locator("tr.report-line", { hasText: "Receivables" }).waitFor();
-  assert.deepEqual(await rowNames(page), ["Receivables", "Payables"]);
+  await page.locator("tr.report-line", { hasText: "Northfield Trading" }).waitFor();
+  assert.deepEqual(await rowNames(page), ledgerLines.map(line => line.name));
+  // The symbol arrives after the table: wait for it, then check the cells a reader relies on.
+  await page.locator("tr.report-line td", { hasText: "$" }).first().waitFor();
+  const item = page.locator("tr.report-line", { hasText: "INV/2026/00007" }).locator("td");
+  assert.deepEqual(await item.allTextContents(), ["INV", "121000", "11/17/2026", "11/17/2026", "", "$\u00a022,137.50", "", "$\u00a023,137.50"]);
+  assert.ok((await item.nth(3).getAttribute("class")).includes("report-tone-danger"), "an overdue date carries its tone");
+  assert.ok((await page.locator("tr.report-line", { hasText: "Northfield Trading" }).locator("td").last().getAttribute("class")).includes("report-negative"), "a negative balance is marked");
+  for (const [width, scheme] of [[1440, "light"], [1440, "dark"], [820, "light"]]) {
+    await page.setViewportSize({ width, height: 900 }); await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, scheme);
+    const shot = `report-ledger-${width}-${scheme}.png`;
+    await page.screenshot({ path: path.join(output, shot), fullPage: true }); screenshots.push(shot);
+  }
   for (const enabled of [true, false]) {
     await page.getByRole("button", { name: "Options", exact: true }).click();
     const box = page.getByRole("checkbox", { name: "Unreconciled at period end", exact: true });

@@ -40,7 +40,12 @@ export function rig(handlers: Record<string, Handler>, params: Record<string, un
   const messages = new MessageServices(notices, error => errors.push(error));
   const open = vi.fn(async () => undefined), notice = vi.fn(), postFile = vi.fn();
   const rpc = { call: async (model: string, method: string, args: Record<string, unknown>) => {
-    if (model !== "reporting.report") throw new Error(`unexpected model ${model}`);
+    if (model !== "reporting.report") {
+      // Another model's call is scripted as `<model>.<method>` and stays out of the report call log.
+      const other = handlers[`${model}.${method}`];
+      if (!other) throw new Error(`unexpected model ${model}`);
+      return other(args);
+    }
     calls.push({ method, args });
     const handler = handlers[method];
     if (!handler) throw new Error(`unexpected method ${method}`);

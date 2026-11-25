@@ -12,6 +12,9 @@ const MODEL = "reporting.report";
 /** The options a returning user gets back: what the user chose, not what the server derived (columns, periods). */
 const KEPT = ["companies", "date", "comparison", "unfold_all", "unfolded", "loaded_pages", "hide_zero", "search", "order", "provider"] as const;
 
+/** What a line's menu calls each action the server offers; a name this client does not know is shown as sent. */
+const CARET_LABELS: Readonly<Record<string, string>> = { open: "Open", journal_items: "Journal items", partner: "Open partner", entry: "View journal entry" };
+
 function canDrill(cell: Cell): boolean {
   return cell.drillable ?? (cell.kind !== "empty" && cell.kind !== "text");
 }
@@ -45,6 +48,9 @@ export class ReportScreen implements ClientActionHandle {
   private generation = 0;
   private disposed = false;
   private activeId: string | undefined;
+  private readonly currencies = new Map<number, data.Currency>();
+  /** Currency ids already asked for, so a refused read is reported once and not repeated on every render. */
+  private readonly askedCurrencies = new Set<number>();
   private readonly report: number;
   private readonly lang: string;
 
@@ -127,6 +133,17 @@ export class ReportScreen implements ClientActionHandle {
     data.validateProviderOptions(next.options, next.filters);
     this.shown = next; this.initialOptions = undefined; this.failure = undefined; this.phase = "ready"; this.busy.clear();
     this.render();
+  }
+  /** Reads the symbol and position of the currencies the table shows; the amounts stay bare until the answer arrives. */
+  private syncCurrencies(lines: readonly Line[]): void {
+    const ids = data.missingCurrencies(lines, this.currencies).filter(id => !this.askedCurrencies.has(id));
+    if (!ids.length) return;
+    for (const id of ids) this.askedCurrencies.add(id);
+    void this.env.rpc.call("res.currency", "web_read", { ids, specification: { symbol: {}, position: {} } }).then(raw => {
+      if (this.disposed) return;
+      for (const [id, currency] of data.decodeCurrencies(raw)) this.currencies.set(id, currency);
+      this.renderTable();
+    }).catch((error: unknown) => { if (!this.disposed) this.env.notice(`Currency symbols are not shown: ${message(error)}`); });
   }
   private fail(error: unknown, retry: () => void): void {
     this.failure = { message: message(error), retry }; this.phase = "ready"; this.render();
@@ -212,7 +229,10 @@ export class ReportScreen implements ClientActionHandle {
     const s = this.shown;
     if (!s) { this.status.append(make("span", "report-note", "Loading report")); return; }
     if (this.phase === "refreshing") this.status.append(make("span", "report-note", "Refreshing"));
-    else this.status.append(make("span", "report-note", `Computed ${s.computedAt}`));
+    else {
+      const note = make("span", "report-note", `Computed ${data.formatStamp(s.computedAt, this.lang, this.env.editorLocale.tz)}`);
+      note.title = `${s.computedAt} UTC`; this.status.append(note);
+    }
     if (s.hidden.length) this.status.append(make("span", "report-note", `Not shown, no access: ${s.hidden.join(", ")}`));
   }
   private renderTable(): void {
@@ -229,6 +249,7 @@ export class ReportScreen implements ClientActionHandle {
     this.scroller.dataset["dim"] = String(this.phase === "refreshing");
     const visible = data.visibleLines(s.lines, s.options, s.filters.serverSearch);
     if (!visible.length) { this.scroller.append(make("p", "report-empty", "No data for these filters")); return; }
+    this.syncCurrencies(s.lines);
     const cols = data.columns(s.options), groups = data.periods(s.options);
     this.root.dataset["singleColumn"] = String(cols.length === 1);
     const perGroup = groups.length ? cols.length / groups.length : cols.length;
@@ -242,11 +263,11 @@ export class ReportScreen implements ClientActionHandle {
       }
       head.append(row);
     }
-    const names = make("tr"); names.dataset["names"] = "true"; names.append(make("th", "report-name-head", "Line"));
+    const names = make("tr"); names.dataset["names"] = "true"; names.append(make("th", "report-name-head", s.name));
     const main = data.mainGroup(s.options), ordered = s.options["order"];
     const order = typeof ordered === "object" && ordered !== null ? ordered as { column?: unknown; direction?: unknown } : null;
     for (const col of cols) {
-      const th = make("th", "report-col"); th.scope = "col";
+      const th = make("th", `report-col report-col-${col.kind}`); th.scope = "col";
       const sortable = col.sortable && col.group === main;
       const active = sortable && order?.column === col.label;
       if (sortable) {
@@ -287,11 +308,12 @@ export class ReportScreen implements ClientActionHandle {
     const hasCellAction = line.cells.some((cell, index) => columns[index]?.group === mainGroup && canDrill(cell));
     if (line.kind !== "total" && (line.caret.length > 0 || hasCellAction)) {
       const caret = make("button", "report-caret"); caret.type = "button"; caret.tabIndex = -1; caret.dataset["action"] = "caret";
-      caret.append(icon("chevron-down")); caret.setAttribute("aria-label", `Actions of ${line.name}`); inner.append(caret);
+      caret.append(icon("menu")); caret.setAttribute("aria-label", `Actions of ${line.name}`); inner.append(caret);
     }
     name.append(inner); tr.append(name);
     line.cells.forEach((cell, index) => {
-      const td = make("td", `report-cell report-cell-${cell.kind}${cell.zero ? " report-zero" : ""}`, data.formatCell(cell, this.lang));
+      const negative = !cell.zero && cell.kind !== "text" && cell.kind !== "date" && cell.value?.startsWith("-") === true;
+      const td = make("td", `report-cell report-cell-${cell.kind}${cell.zero ? " report-zero" : ""}${negative ? " report-negative" : ""}${cell.tone ? ` report-tone-${cell.tone}` : ""}`, data.formatCell(cell, this.lang, this.currencies));
       td.dataset["col"] = String(index); td.setAttribute("role", "gridcell");
       if (line.kind !== "total" && canDrill(cell)) td.dataset["drill"] = "true";
       tr.append(td);
@@ -315,6 +337,8 @@ export class ReportScreen implements ClientActionHandle {
     else if (action === "more") this.loadMore(id);
     else if (action === "caret") this.openCaret(id, target.closest("button") as HTMLElement);
     else if (cell) this.drill(id, { cell: Number(cell.dataset["col"]) });
+    // The whole name cell folds and unfolds, not only its chevron.
+    else if (target.closest(".report-name") && this.line(id)?.unfoldable) this.toggle(id);
   }
   private onKey(event: KeyboardEvent): void {
     const tr = (event.target as Element).closest<HTMLElement>("tr[data-id]");
@@ -421,7 +445,7 @@ export class ReportScreen implements ClientActionHandle {
     if (!s || !line || !trigger) return;
     if (this.caret?.disclosure.isOpen() && this.caret.trigger === trigger) { this.closeCaret(true); return; }
     this.caret?.disclosure.dispose(); this.menu.replaceChildren();
-    const items: { text: string; target: { item: string } | { cell: number } }[] = line.caret.map(item => ({ text: item === "open" ? "Open" : item, target: { item } }));
+    const items: { text: string; target: { item: string } | { cell: number } }[] = line.caret.map(item => ({ text: CARET_LABELS[item] ?? item, target: { item } }));
     const main = data.mainGroup(s.options);
     if (line.kind !== "total") data.columns(s.options).forEach((col, index) => {
       const cell = line.cells[index];
