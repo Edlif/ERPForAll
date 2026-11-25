@@ -7,8 +7,9 @@ use std::collections::BTreeSet;
 use erp_addon_base::ImageMixin;
 use erp_addon_mail::{MailActivityMixin, MailThread};
 use erp_sdk::prelude::*;
-use erp_sdk::{Operation, SearchOptions, ValueMap};
+use erp_sdk::{Operation, ValueMap};
 
+use crate::counts::{as_field, count_by};
 use crate::{HIERARCHY_DEPTH_KEY, ORG_CHART_ROWS_KEY, count_parameter};
 
 fn too_deep(depth: usize) -> Error {
@@ -551,36 +552,41 @@ impl HrEmployee {
         Ok(())
     }
 
-    #[compute(depends = ["child_ids"])]
+    #[compute(depends = ["child_ids"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_subordinate_count(
         this: &RecordSet<HrEmployee>,
         tx: &mut Transaction,
         out: &mut Assign<'_, HrEmployee>,
     ) -> Result<()> {
-        let employees = this.env().records("hr.employee")?;
-        for (index, id) in this.as_records().rec_ids().iter().enumerate() {
-            let domain = Domain::condition("parent_id", Operator::Eq, id.get())?;
-            let count = employees.search_count(tx, &domain, None).await?;
-            let count = i32::try_from(count).map_err(|_| {
-                Error::programming(format!("subordinate count {count} exceeds i32"))
-            })?;
+        let ids: Vec<i64> = this
+            .as_records()
+            .rec_ids()
+            .iter()
+            .map(|id| id.get())
+            .collect();
+        let counts = count_by(tx, this.env(), "hr.employee", "parent_id", &ids).await?;
+        for (index, id) in ids.iter().enumerate() {
+            let count = as_field(counts.get(id).copied().unwrap_or(0), "subordinate")?;
             out.set(index, HrEmployee::SUBORDINATE_COUNT, count)?;
         }
         Ok(())
     }
 
-    #[compute(depends = ["version_ids"])]
+    #[compute(depends = ["version_ids"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_versions_count(
         this: &RecordSet<HrEmployee>,
         tx: &mut Transaction,
         out: &mut Assign<'_, HrEmployee>,
     ) -> Result<()> {
-        let versions = this.env().records("hr.employee.version")?;
-        for (index, id) in this.as_records().rec_ids().iter().enumerate() {
-            let domain = Domain::condition("employee_id", Operator::Eq, id.get())?;
-            let count = versions.search_count(tx, &domain, None).await?;
-            let count = i32::try_from(count)
-                .map_err(|_| Error::programming(format!("version count {count} exceeds i32")))?;
+        let ids: Vec<i64> = this
+            .as_records()
+            .rec_ids()
+            .iter()
+            .map(|id| id.get())
+            .collect();
+        let counts = count_by(tx, this.env(), "hr.employee.version", "employee_id", &ids).await?;
+        for (index, id) in ids.iter().enumerate() {
+            let count = as_field(counts.get(id).copied().unwrap_or(0), "version")?;
             out.set(index, HrEmployee::VERSIONS_COUNT, count)?;
         }
         Ok(())

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `hr.department`: hierarchical organizational units with managers, colors, and chart RPCs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use erp_addon_mail::{MailActivityMixin, MailThread};
+use erp_sdk::ValueMap;
 use erp_sdk::prelude::*;
-use erp_sdk::{SearchOptions, ValueMap};
 
+use crate::counts::{as_field, count_by};
 use crate::{HIERARCHY_DEPTH_KEY, ORG_CHART_ROWS_KEY, count_parameter};
 
 fn too_deep(depth: usize) -> Error {
@@ -140,31 +141,69 @@ impl HrDepartment {
         Ok(())
     }
 
-    #[compute(depends = ["child_ids"])]
+    #[compute(depends = ["child_ids"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_counts(
         this: &RecordSet<HrDepartment>,
         tx: &mut Transaction,
         out: &mut Assign<'_, HrDepartment>,
     ) -> Result<()> {
-        let ids = this.as_records().rec_ids();
+        let ids: Vec<i64> = this
+            .as_records()
+            .rec_ids()
+            .iter()
+            .map(|id| id.get())
+            .collect();
         if ids.is_empty() {
             return Ok(());
         }
-        let employees = this.env().records("hr.employee")?;
-        let depts = this.env().records("hr.department")?;
+        let env = this.env();
+        // every department under the asked ones, archived included, with its materialized path
+        let tree = env
+            .records("hr.department")?
+            .search_with(
+                tx,
+                &Domain::field("id")?.child_of(ids.clone()),
+                &SearchOptions {
+                    active_test: false,
+                    ..SearchOptions::default()
+                },
+            )
+            .await?
+            .read(tx, &["parent_path"])
+            .await?;
+        let mut paths = BTreeMap::new();
+        for row in &tree {
+            let (Some(Value::Int(id)), Some(Value::Str(path))) =
+                (row.get("id"), row.get("parent_path"))
+            else {
+                return Err(Error::internal(format!(
+                    "a department of the tree has no parent path: {row:?}"
+                )));
+            };
+            paths.insert(*id, path.clone());
+        }
+        let tree_ids: Vec<i64> = paths.keys().copied().collect();
+        let employees = count_by(tx, env, "hr.employee", "department_id", &tree_ids).await?;
+        let children = count_by(tx, env, "hr.department", "parent_id", &ids).await?;
         for (index, id) in ids.iter().enumerate() {
-            let emp_domain = Domain::condition("department_id", Operator::ChildOf, id.get())?;
-            let emp_count = employees.search_count(tx, &emp_domain, None).await?;
-            let emp_i32 = i32::try_from(emp_count).map_err(|_| {
-                Error::programming(format!("department employee count {emp_count} exceeds i32"))
-            })?;
-            let child_domain = Domain::condition("parent_id", Operator::Eq, id.get())?;
-            let child_count = depts.search_count(tx, &child_domain, None).await?;
-            let child_i32 = i32::try_from(child_count).map_err(|_| {
-                Error::programming(format!("child department count {child_count} exceeds i32"))
-            })?;
-            out.set(index, HrDepartment::TOTAL_EMPLOYEE, emp_i32)?;
-            out.set(index, HrDepartment::CHILD_COUNT, child_i32)?;
+            // an unsaved department is in no stored path: it has no employees yet
+            let total: i64 = paths.get(id).map_or(0, |own| {
+                paths
+                    .iter()
+                    .filter(|(_, path)| path.starts_with(own.as_ref()))
+                    .map(|(dept, _)| employees.get(dept).copied().unwrap_or(0))
+                    .sum()
+            });
+            out.set(
+                index,
+                HrDepartment::TOTAL_EMPLOYEE,
+                as_field(total, "department employee")?,
+            )?;
+            out.set(
+                index,
+                HrDepartment::CHILD_COUNT,
+                as_field(children.get(id).copied().unwrap_or(0), "child department")?,
+            )?;
         }
         Ok(())
     }

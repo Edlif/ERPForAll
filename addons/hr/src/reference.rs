@@ -9,6 +9,8 @@
 use erp_sdk::ValueMap;
 use erp_sdk::prelude::*;
 
+use crate::counts::{as_field, count_by};
+
 /// `hr.employee.category`: colored tags attached to employees.
 #[model(
     name = "hr.employee.category",
@@ -69,18 +71,21 @@ pub struct HrEmployeeType {
 
 #[methods(HrEmployeeType, addon = "hr")]
 impl HrEmployeeType {
-    #[compute(depends = [])]
+    #[compute(depends = [], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_employees_count(
         this: &RecordSet<HrEmployeeType>,
         tx: &mut Transaction,
         out: &mut Assign<'_, HrEmployeeType>,
     ) -> Result<()> {
-        let employees = this.env().records("hr.employee")?;
-        for (index, id) in this.as_records().rec_ids().iter().enumerate() {
-            let domain = Domain::condition("employee_type_id", Operator::Eq, id.get())?;
-            let count = employees.search_count(tx, &domain, None).await?;
-            let count = i32::try_from(count)
-                .map_err(|_| Error::programming(format!("employee count {count} exceeds i32")))?;
+        let ids: Vec<i64> = this
+            .as_records()
+            .rec_ids()
+            .iter()
+            .map(|id| id.get())
+            .collect();
+        let counts = count_by(tx, this.env(), "hr.employee", "employee_type_id", &ids).await?;
+        for (index, id) in ids.iter().enumerate() {
+            let count = as_field(counts.get(id).copied().unwrap_or(0), "employee")?;
             out.set(index, HrEmployeeType::EMPLOYEES_COUNT, count)?;
         }
         Ok(())

@@ -121,7 +121,11 @@ impl HrEmployeeVersion {
         let emp_ids = this.mapped(tx, HrEmployeeVersion::EMPLOYEE_ID).await?;
         for (index, emp_opt) in emp_ids.into_iter().enumerate() {
             let company = match emp_opt {
-                Some(eid) => match employees.browse([eid.get()])?.cell(tx, "company_id").await? {
+                Some(eid) => match employees
+                    .browse([eid.get()])?
+                    .cell(tx, "company_id")
+                    .await?
+                {
                     Cell::Id(cid) => RecId::from_real(cid),
                     _ => None,
                 },

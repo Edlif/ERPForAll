@@ -5,6 +5,7 @@
 
 erp_sdk::addon!(name = "hr", depends = ["base", "web", "mail"]);
 
+mod counts;
 pub mod department;
 pub mod departure_wizard;
 pub mod employee;
