@@ -3005,3 +3005,158 @@ async fn a_draft_move_with_an_empty_line_is_validated_with_its_demand() {
     assert_eq!(lines_of(&mut tx, mv).await.len(), 1);
     assert_eq!(f.quant(&mut tx, f.p).await, Some((dec("4"), Decimal::ZERO)));
 }
+
+/// The `domain` of a smart button's window action.
+fn action_domain(action: &Value) -> Value {
+    let Value::Map(map) = action else {
+        panic!("a window action is a map: {action:?}")
+    };
+    map.get("domain").cloned().unwrap()
+}
+
+fn leaf(field: &str, op: &str, value: Value) -> Value {
+    Value::list([Value::str(field), Value::str(op), value])
+}
+
+/// The inventory count buttons count the readable linked records (on hand summed exactly) and
+/// open them by a domain on the relation field; a user who may not read transfers counts none.
+#[tokio::test]
+async fn the_count_buttons_count_readable_links_and_open_them_by_domain() {
+    let policy = DomainPolicy::builder(Otherwise::Allow)
+        .deny("stock.picking", erp_sdk::Operation::Read)
+        .build()
+        .unwrap();
+    let f = fixture_with(Some(policy)).await;
+    let mut tx = f.h.begin().await.unwrap();
+    let partner = create(
+        &mut tx,
+        "res.partner",
+        RawVals::new().set_cell("name", text("Buyer")),
+    )
+    .await;
+    let out = f.picking(&mut tx, f.delivery_type, f.l, f.customer).await;
+    let back = f.picking(&mut tx, f.receipt_type, f.vendor, f.l).await;
+    // a transfer inside L counts once at L
+    f.picking(&mut tx, f.manual_type, f.l, f.l).await;
+    let env = f.env(&tx);
+    env.records("stock.picking")
+        .unwrap()
+        .browse([out, back])
+        .unwrap()
+        .write(&mut tx, RawVals::new().set_cell("partner_id", Cell::Id(partner)))
+        .await
+        .unwrap();
+    let shelf = location(&mut tx, "L2", "internal").await;
+    f.stock(&mut tx, f.p, "0.1").await;
+    apply_quant_changes(
+        &mut tx,
+        &[QuantChange::new(
+            QuantKey::new(f.company, f.p, shelf),
+            dec("0.2"),
+            Decimal::ZERO,
+        )],
+    )
+    .await
+    .unwrap();
+    f.move_in(&mut tx, None, f.p, f.l, f.customer, "1").await;
+    f.move_in(&mut tx, None, f.p, f.vendor, f.l, "2").await;
+    let template: i64 = tx
+        .query(
+            "SELECT product_tmpl_id::int8 FROM product_product WHERE id = $1",
+            &[&f.p],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+
+    let partners = env.records("res.partner").unwrap().browse([partner]).unwrap();
+    assert_eq!(
+        partners.cell(&mut tx, "picking_count").await.unwrap(),
+        Cell::Int(2)
+    );
+    let action: Value = partners
+        .call(&mut tx, "action_view_pickings", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        action_domain(&action),
+        Value::list([leaf("partner_id", "=", Value::Int(partner))])
+    );
+    let locations = env
+        .records("stock.location")
+        .unwrap()
+        .browse([f.l, f.customer, f.vendor])
+        .unwrap();
+    assert_eq!(
+        locations.cells(&mut tx, "picking_count").await.unwrap(),
+        vec![Cell::Int(3), Cell::Int(1), Cell::Int(1)]
+    );
+    let at_l = env.records("stock.location").unwrap().browse([f.l]).unwrap();
+    let action: Value = at_l.call(&mut tx, "action_view_pickings", ()).await.unwrap();
+    assert_eq!(
+        action_domain(&action),
+        Value::list([
+            Value::str("|"),
+            leaf("location_id", "=", Value::Int(f.l)),
+            leaf("location_dest_id", "=", Value::Int(f.l)),
+        ])
+    );
+    let templates = env
+        .records("product.template")
+        .unwrap()
+        .browse([template])
+        .unwrap();
+    assert_eq!(
+        templates.cell(&mut tx, "qty_on_hand").await.unwrap(),
+        Cell::Decimal(dec("0.3"))
+    );
+    assert_eq!(
+        templates.cell(&mut tx, "stock_move_count").await.unwrap(),
+        Cell::Int(2)
+    );
+    let action: Value = templates
+        .call(&mut tx, "action_open_quants", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        action_domain(&action),
+        Value::list([
+            Value::str("&"),
+            leaf("product_id.product_tmpl_id", "=", Value::Int(template)),
+            leaf("location_id.usage", "=", Value::str("internal")),
+        ])
+    );
+    tx.query(
+        "INSERT INTO res_users (id, name, login, active, company_id) \
+         VALUES (7, 'Clerk', 'clerk', true, $1)",
+        &[&f.company],
+    )
+    .await
+    .unwrap();
+    tx.query(
+        "INSERT INTO res_company_users_rel (user_id, cid) VALUES (7, $1)",
+        &[&f.company],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // without read on transfers the clerk counts none of them
+    let mut tx = f.h.begin_as(7).await.unwrap();
+    let env = f.env(&tx);
+    let partners = env.records("res.partner").unwrap().browse([partner]).unwrap();
+    assert_eq!(
+        partners.cell(&mut tx, "picking_count").await.unwrap(),
+        Cell::Int(0)
+    );
+    let locations = env
+        .records("stock.location")
+        .unwrap()
+        .browse([f.l, f.customer])
+        .unwrap();
+    assert_eq!(
+        locations.cells(&mut tx, "picking_count").await.unwrap(),
+        vec![Cell::Int(0), Cell::Int(0)]
+    );
+    tx.rollback().await.unwrap();
+}

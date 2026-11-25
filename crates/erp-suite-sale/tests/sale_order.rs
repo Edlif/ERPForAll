@@ -1199,3 +1199,151 @@ fn sale_order_form_offers_inline_line_entry_like_purchase_orders() {
         db.cleanup().await.unwrap();
     });
 }
+
+/// The `domain` of a smart button's window action.
+fn action_domain(action: &Value) -> Value {
+    let Value::Map(map) = action else {
+        panic!("a window action is a map: {action:?}")
+    };
+    map.get("domain").cloned().unwrap()
+}
+
+fn leaf(field: &str, op: &str, value: Value) -> Value {
+    Value::list([Value::str(field), Value::str(op), value])
+}
+
+/// The contact's and the product's Sales buttons count readable confirmed orders only, the rule
+/// of the purchase buttons (a quotation does not count), and open them by a domain; a salesman
+/// whose rule hides every one of them counts none.
+#[test]
+fn the_partner_and_product_buttons_count_readable_confirmed_orders() {
+    run(async {
+        let (db, orm) = cloned_sale().await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let world = world(&mut tx).await;
+        admin(&mut tx).await;
+        let other = user(&mut tx, "sales-count-other", "group_sale_salesman").await;
+        let seller = user(&mut tx, "sales-count-seller", "group_sale_salesman").await;
+        let product = tx
+            .env()
+            .records("product.product")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", Cell::Str("Desk".into()))
+                        .set_cell("type", Cell::Str("consu".into())),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let template: i64 = tx
+            .query(
+                "SELECT product_tmpl_id::int8 FROM product_product WHERE id = $1",
+                &[&product],
+            )
+            .await
+            .unwrap()[0]
+            .get(0);
+        for confirm in [true, true, false] {
+            let placed = order(
+                &mut tx,
+                &world,
+                RawVals::new()
+                    .set_cell("user_id", Cell::Id(other))
+                    .set_commands(
+                        "order_line",
+                        [Command::create(
+                            RawVals::new()
+                                .set_cell("product_id", Cell::Id(product))
+                                .set_cell(
+                                    "product_uom_qty",
+                                    Cell::Decimal(erp_fields::Decimal::from(2)),
+                                ),
+                        )],
+                    ),
+            )
+            .await;
+            if confirm {
+                act(&mut tx, &placed, "action_confirm").await.unwrap();
+            }
+        }
+        let env = tx.env().with_company(world.company).unwrap();
+        let customer = env
+            .records("res.partner")
+            .unwrap()
+            .browse([world.customer])
+            .unwrap();
+        assert_eq!(
+            customer.cell(&mut tx, "sale_order_count").await.unwrap(),
+            Cell::Int(2)
+        );
+        let action: Value = customer
+            .call(&mut tx, "action_view_sale_orders", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            action_domain(&action),
+            Value::list([
+                Value::str("&"),
+                leaf("partner_id", "=", Value::Int(world.customer)),
+                leaf("state", "=", Value::str("sale")),
+            ])
+        );
+        let desk = env
+            .records("product.template")
+            .unwrap()
+            .browse([template])
+            .unwrap();
+        assert_eq!(
+            desk.cell(&mut tx, "sales_order_count").await.unwrap(),
+            Cell::Int(2)
+        );
+        let action: Value = desk.call(&mut tx, "action_view_sales", ()).await.unwrap();
+        assert_eq!(
+            action_domain(&action),
+            Value::list([
+                Value::str("&"),
+                leaf(
+                    "order_line.product_id.product_tmpl_id",
+                    "=",
+                    Value::Int(template)
+                ),
+                leaf("state", "=", Value::str("sale")),
+            ])
+        );
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        let policy = policy_orm(&db, &orm).await;
+        let mut tx = policy
+            .begin(erp_orm::UserId::new(seller).unwrap())
+            .await
+            .unwrap();
+        let env = tx.env().with_company(world.company).unwrap();
+        let customer = env
+            .records("res.partner")
+            .unwrap()
+            .browse([world.customer])
+            .unwrap();
+        assert_eq!(
+            customer.cell(&mut tx, "sale_order_count").await.unwrap(),
+            Cell::Int(0)
+        );
+        let desk = env
+            .records("product.template")
+            .unwrap()
+            .browse([template])
+            .unwrap();
+        assert_eq!(
+            desk.cell(&mut tx, "sales_order_count").await.unwrap(),
+            Cell::Int(0)
+        );
+        tx.rollback().await.unwrap();
+        drop(tx);
+        drop(policy);
+        db.cleanup().await.unwrap();
+    });
+}
