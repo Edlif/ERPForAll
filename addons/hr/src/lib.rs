@@ -57,10 +57,12 @@ pub(crate) async fn default_tz(
 ) -> erp_sdk::Result<Option<std::sync::Arc<str>>> {
     use erp_sdk::Cell;
     let user = env.records("res.users")?.browse([env.uid()])?;
-    if let Cell::Str(tz) = user.cell(tx, "tz").await?
-        && !tz.is_empty()
-    {
-        return Ok(Some(tz));
+    match user.cell(tx, "tz").await {
+        Ok(Cell::Str(tz)) if !tz.is_empty() => return Ok(Some(tz)),
+        Ok(_) => {}
+        // the bootstrap superuser may have no user row: it has no preference
+        Err(error) if error.kind() == erp_sdk::ErrorKind::Missing => {}
+        Err(error) => return Err(error),
     }
     let Some(company) = env.company_id()? else {
         return Ok(None);
