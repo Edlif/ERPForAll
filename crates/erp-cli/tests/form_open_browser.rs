@@ -210,6 +210,22 @@ async fn form_open_times_in_the_browser() {
     let invoice = drafted["res_id"]
         .as_i64()
         .unwrap_or_else(|| panic!("the draft invoice action names its invoice: {drafted}"));
+    // a second invoice, for a line added after the first, so the count button opens a list (one invoice opens its form)
+    create(
+        &fixture,
+        "sale.order.line",
+        company,
+        vec![
+            json!({"order_id": invoiced, "product_id": products[3], "product_uom_qty": 1, "price_unit": 7}),
+        ],
+    );
+    call(
+        &fixture,
+        "sale.order",
+        "action_create_draft_invoice",
+        company,
+        json!({"ids": [invoiced]}),
+    );
 
     let mut child = Command::new("bash")
         .current_dir(root)

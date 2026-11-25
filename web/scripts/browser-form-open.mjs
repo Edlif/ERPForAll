@@ -5,7 +5,8 @@
 // Input (stdin, JSON): origin, cookies, quotations action, orders {zero, fifty, many, invoiced} (ids), the
 // invoice id, and line counts. Environment: FORM_OPEN_OUTPUT (required, a directory), FORM_OPEN_REPS (samples
 // per scenario, default 7, 3 to 50), FORM_OPEN_HOST_LABEL (the host name written to the result; default the
-// machine's own name), FORM_OPEN_REVISION and FORM_OPEN_PROFILE (written as given).
+// machine's own name), FORM_OPEN_REVISION and FORM_OPEN_PROFILE (written as given), FORM_OPEN_CPU_PROFILE (set: one
+// more 500-line open under the CPU profiler, its profile written next to the result and its costliest functions in it).
 //
 // A sample is the page clock from the click (a capture listener) to the first animation frame in which the
 // destination is on the page (its route in the address bar, which the client writes only after it put the
@@ -137,6 +138,24 @@ try {
     await load(formRoute(orders.invoiced));
     await sample("count_button_to_list", rep, page.locator(".form-button-box button", { hasText: "Invoices" }), list);
     await sample("count_list_row_to_form", rep, openRow(invoice), form(invoice));
+  }
+  if (process.env.FORM_OPEN_CPU_PROFILE) {
+    // one more 500-line open under the page's CPU profiler: the functions that took the most time themselves
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Profiler.enable");
+    await cdp.send("Profiler.setSamplingInterval", { interval: 100 });
+    await load(listRoute);
+    await cdp.send("Profiler.start");
+    await sample(`profiled_list_row_to_form_${lines.many}_lines_first`, 1, openRow(orders.many), form(orders.many));
+    const { profile } = await cdp.send("Profiler.stop");
+    await writeFile(path.join(output, "form-open.cpuprofile"), JSON.stringify(profile));
+    const byNode = new Map(profile.nodes.map(node => [node.id, node])), self = new Map();
+    profile.samples.forEach((id, index) => {
+      const { functionName, url, lineNumber } = byNode.get(id).callFrame;
+      const key = `${functionName || "(anonymous)"} ${url.split("/").pop()}:${lineNumber + 1}`;
+      self.set(key, (self.get(key) ?? 0) + (profile.timeDeltas[index] ?? 0) / 1000);
+    });
+    result.cpu_self_ms = Object.fromEntries([...self].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([key, ms]) => [key, round(ms)]));
   }
 
   for (const scenario of [...new Set(result.samples.map(sample => sample.scenario))]) {
