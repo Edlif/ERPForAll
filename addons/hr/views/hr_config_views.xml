@@ -217,7 +217,7 @@
         <field name="date_start"/>
         <field name="date_end"/>
         <field name="wage"/>
-        <field name="state" widget="badge"/>
+        <field name="state" widget="badge" options="{'tone_warning': ['draft']}"/>
       </list>
     </field>
   </record>

@@ -86,8 +86,8 @@
         <field name="amount_untaxed"/>
         <field name="amount_total"/>
         <field name="currency_id"/>
-        <field name="state" widget="badge"/>
-        <field name="invoice_status" widget="badge"/>
+        <field name="state" widget="badge" options="{'tone_success': ['purchase'], 'tone_info': ['sent'], 'tone_warning': ['draft', 'to approve'], 'tone_danger': ['cancel']}"/>
+        <field name="invoice_status" widget="badge" options="{'tone_success': ['invoiced'], 'tone_info': ['to invoice'], 'tone_muted': ['no']}"/>
       </list>
     </field>
   </record>

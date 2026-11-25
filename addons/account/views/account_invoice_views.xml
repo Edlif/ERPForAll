@@ -21,8 +21,8 @@
         <field name="amount_total"/>
         <field name="amount_residual"/>
         <field name="currency_id"/>
-        <field name="state" widget="badge"/>
-        <field name="payment_state" widget="badge"/>
+        <field name="state" widget="badge" options="{'tone_success': ['posted'], 'tone_warning': ['draft'], 'tone_danger': ['cancel']}"/>
+        <field name="payment_state" widget="badge" options="{'tone_success': ['in_payment', 'paid'], 'tone_warning': ['not_paid', 'partial']}"/>
       </list>
     </field>
   </record>

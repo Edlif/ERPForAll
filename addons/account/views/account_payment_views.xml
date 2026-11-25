@@ -16,7 +16,7 @@
         <field name="memo"/>
         <field name="amount_signed" string="Amount"/>
         <field name="currency_id"/>
-        <field name="state" widget="badge"/>
+        <field name="state" widget="badge" options="{'tone_success': ['paid', 'reconciled'], 'tone_warning': ['draft'], 'tone_danger': ['canceled', 'rejected']}"/>
       </list>
     </field>
   </record>

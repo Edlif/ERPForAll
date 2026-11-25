@@ -14,7 +14,7 @@
         <field name="ref"/>
         <field name="currency_id" invisible="1"/>
         <field name="amount_total"/>
-        <field name="state" widget="badge"/>
+        <field name="state" widget="badge" options="{'tone_success': ['posted'], 'tone_warning': ['draft'], 'tone_danger': ['cancel']}"/>
       </list>
     </field>
   </record>

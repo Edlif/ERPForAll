@@ -13,7 +13,7 @@
         <field name="picking_type_id"/>
         <field name="user_id"/>
         <field name="scheduled_date"/>
-        <field name="state" widget="badge"/>
+        <field name="state" widget="badge" options="{'tone_success': ['done'], 'tone_info': ['in_progress'], 'tone_warning': ['draft'], 'tone_danger': ['cancel']}"/>
       </list>
     </field>
   </record>
@@ -64,7 +64,7 @@
       <list>
         <field name="run"/>
         <field name="picking_id"/>
-        <field name="outcome" widget="badge"/>
+        <field name="outcome" widget="badge" options="{'tone_success': ['done']}"/>
         <field name="message"/>
       </list>
     </field>

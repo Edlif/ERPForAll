@@ -1,6 +1,6 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 import { button, el } from "./dom.js";
-import { absentPlaceholderInput } from "./field-options.js";
+import { absentPlaceholderInput, badgeTones } from "./field-options.js";
 import { fieldShell } from "./field-shell.js";
 import { icon } from "./icons.js";
 import { ClientError } from "./transport.js";
@@ -21,46 +21,6 @@ export function safeLink(widget: string, value: string): string | null {
   try { url = new URL(href); } catch { return null; }
   return ["http:", "https:", "ftp:"].includes(url.protocol) ? href : null;
 }
-function badgeTone(value: unknown): "success" | "info" | "warning" | "danger" | "muted" | undefined {
-  if (typeof value !== "string") return undefined;
-  switch (value) {
-    case "paid":
-    case "in_payment":
-    case "done":
-    case "sale":
-    case "purchase":
-    case "invoiced":
-    case "reconciled":
-    case "posted":
-    case "assigned":
-    case "full":
-      return "success";
-    case "sent":
-    case "to invoice":
-    case "upselling":
-    case "confirmed":
-    case "in_progress":
-      return "info";
-    case "partial":
-    case "waiting":
-    case "to approve":
-    case "draft":
-    case "not_paid":
-    case "pending":
-      return "warning";
-    case "cancel":
-    case "canceled":
-    case "rejected":
-    case "overdue":
-      return "danger";
-    case "no":
-    case "nothing":
-      return "muted";
-    default:
-      return undefined;
-  }
-}
-
 /** Scalar adapters never save independently; invalid drafts retain their represented value. */
 export function scalarControl(options: FieldControlOptions): FieldControl {
   const { field, value, change } = options, config = field.options ?? {}, widget = field.widget ?? field.kind;
@@ -124,7 +84,7 @@ export function scalarControl(options: FieldControlOptions): FieldControl {
     if (field.readonly || widget === "badge" || widget === "label_selection") {
       const span = el("span", label, widget === "badge" || widget === "label_selection" ? "field-badge" : "field-read-value");
       if (widget === "badge" || widget === "label_selection") {
-        const tone = badgeTone(value);
+        const tone = badgeTones.find(name => config[`tone_${name}`]?.includes(String(value)));
         if (tone) span.dataset["tone"] = tone;
       }
       return { node: wrap(span).node, dispose: () => {} };
