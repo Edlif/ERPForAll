@@ -340,6 +340,16 @@ incremental = false
 panic = "unwind"
 overflow-checks = false
 
+# Fast incremental profile for local development (`cargo build --profile local` or `scripts/install.sh --fast`):
+# compiles only changed codegen units without bloated DWARF debug tables.
+[profile.local]
+inherits = "release"
+opt-level = 1
+debug = false
+lto = false
+codegen-units = 256
+incremental = true
+
 # Timing runs of the test binaries (`cargo nextest run --cargo-profile release-tests ...`): optimized
 # like `release`, with `debug-assertions` on, because the test crates enable `erp-orm/test-faults`,
 # which does not compile without them (`erp-orm/src/lib.rs`). The `debug_assert!` checks cost time:

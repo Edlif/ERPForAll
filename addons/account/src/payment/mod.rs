@@ -455,6 +455,20 @@ pub struct AccountPayment {
         string = "Amount Signed"
     )]
     pub amount_signed: Decimal,
+    /// Readable invoices and vendor bills reconciled with this payment.
+    #[field(
+        integer,
+        compute = "_compute_reconciled_invoice_count",
+        string = "Reconciled Invoices"
+    )]
+    pub reconciled_invoice_count: i32,
+    /// 1 when this payment has a readable journal entry, else 0.
+    #[field(
+        integer,
+        compute = "_compute_reconciled_invoice_count",
+        string = "Journal Entry"
+    )]
+    pub journal_entry_count: i32,
 }
 
 #[methods(AccountPayment, addon = "account")]

@@ -227,6 +227,16 @@ pub struct StockWarehouse {
     /// Display order.
     #[field(integer, default = 10)]
     pub sequence: i32,
+    /// Readable operation types belonging to this warehouse.
+    #[field(
+        integer,
+        compute = "_compute_warehouse_counts",
+        string = "Operation Types"
+    )]
+    pub picking_type_count: i32,
+    /// Readable transfers routed through this warehouse.
+    #[field(integer, compute = "_compute_warehouse_counts", string = "Transfers")]
+    pub picking_count: i32,
 }
 
 /// `stock.picking.type`: an operation type (receipt, delivery, internal transfer).

@@ -1699,8 +1699,13 @@ dialog .client-notifications { position: sticky; inset: auto; width: auto; margi
 .field-shell .field-boolean-button[aria-pressed="true"] { color: var(--warning, #d4a72c); background: transparent; }
 .field-boolean-button:active:not(:disabled) { transform: translateY(1px); }
 .field-badge-choices { display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; }
-.field-badge { border-radius: 999px; padding: .125rem .5rem; border: 1px solid var(--line); background: var(--surface-subtle); color: var(--text); font-size: 12px; font-weight: 500; }
+.field-badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--line); background: var(--surface-subtle); color: var(--text); font-size: 12px; font-weight: 600; line-height: 1.3; white-space: nowrap; }
 .field-badge[aria-pressed="true"] { background: var(--selected); }
+.field-badge[data-tone="success"] { background: var(--success-bg); border-color: var(--success-line); color: var(--success); }
+.field-badge[data-tone="info"] { background: var(--info-bg); border-color: var(--info-line); color: var(--info); }
+.field-badge[data-tone="warning"] { background: var(--warning-bg); border-color: var(--warning-line); color: var(--warning); }
+.field-badge[data-tone="danger"] { background: var(--danger-bg); border-color: var(--danger-line); color: var(--danger); }
+.field-badge[data-tone="muted"] { background: var(--surface-subtle); border-color: var(--line); color: var(--muted); }
 /* An empty value draws no pill (reference badge_field.xml:5 renders nothing for a false value). */
 .field-badge:empty { display: none; }
 .field-priority, .o_priority { display: inline-flex; align-items: center; gap: 2px; }
@@ -2869,23 +2874,26 @@ dialog, .client-block-feedback { box-shadow: var(--shadow-dialog); }
 .control-panel-form:has(> .form-record-smart) [data-control-tools] { grid-column: 4; }
 .form-record-smart { grid-column: 3; grid-row: 1; justify-self: center; min-width: 0; max-width: 100%; }
 .form-record-smart:not(:has(> .form-button-box)) { display: none; }
-.form-record-smart .form-button-box { display: flex; flex-wrap: nowrap; gap: 0; max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--surface); }
-.form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle) { flex: 0 0 auto; box-sizing: border-box; min-width: 0; height: 34px; min-height: 34px; margin: 0; padding: 3px 12px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-.form-record-smart .form-button-box > .form-stat-button { min-width: 96px; }
-.form-record-smart .form-button-box > .form-overflow-toggle { padding: 0 10px; gap: 4px; font-size: 12px; font-weight: 500; color: var(--text); }
+.form-record-smart .form-button-box { display: flex; flex-wrap: nowrap; gap: 0; max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--surface); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); overflow: hidden; }
+.form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle) { flex: 0 0 auto; box-sizing: border-box; min-width: 0; height: 38px; min-height: 38px; margin: 0; padding: 4px 14px; border: 0; border-radius: 0; background: transparent; box-shadow: none; transition: background-color 0.12s ease; }
+.form-record-smart .form-button-box > .form-stat-button { min-width: 104px; }
+.form-record-smart .form-button-box > .form-overflow-toggle { padding: 0 12px; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .form-record-smart .form-button-box > .form-overflow-toggle > svg.erp-icon { width: 14px; height: 14px; flex: none; color: var(--muted); }
 .form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle) + :is(.form-stat-button, .form-overflow-toggle) { border-inline-start: 1px solid var(--line); }
-.form-record-smart .form-button-box > :first-child { border-start-start-radius: calc(var(--radius-control) - 1px); border-end-start-radius: calc(var(--radius-control) - 1px); }
-.form-record-smart .form-button-box > :last-child { border-start-end-radius: calc(var(--radius-control) - 1px); border-end-end-radius: calc(var(--radius-control) - 1px); }
-.form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle):hover:not(:disabled) { background: var(--hover); }
+.form-record-smart .form-button-box > :first-child { border-start-start-radius: calc(var(--radius-panel) - 1px); border-end-start-radius: calc(var(--radius-panel) - 1px); }
+.form-record-smart .form-button-box > :last-child { border-start-end-radius: calc(var(--radius-panel) - 1px); border-end-end-radius: calc(var(--radius-panel) - 1px); }
+.form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle):hover:not(:disabled) { background: var(--selected); }
 .form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle):focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.form-record-smart .form-stat-button { display: inline-flex; align-items: center; gap: 8px; text-align: start; }
+.form-record-smart .form-stat-button { display: inline-flex; align-items: center; gap: 9px; text-align: start; }
 .form-record-smart .form-stat-button > svg.erp-icon { width: 18px; height: 18px; flex: none; color: var(--accent); }
-.form-record-smart .form-stat-content { display: flex; flex-direction: column; gap: 0; min-width: 0; }
-.form-record-smart .form-stat-field { display: flex; flex-direction: column-reverse; gap: 0; min-width: 0; }
-.form-record-smart :is(.form-stat-value, .form-stat-label) { display: block; min-height: 0; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.form-record-smart .form-stat-label { font-size: 12px; font-weight: 500; color: var(--text); }
-.form-record-smart .form-stat-value { font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.form-record-smart .form-stat-content { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.form-record-smart .form-stat-field { display: flex; flex-direction: column-reverse; gap: 1px; min-width: 0; }
+.form-record-smart :is(.form-stat-value, .form-stat-label) { display: block; min-height: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.form-record-smart .form-stat-value { font-size: 13px; font-weight: 700; line-height: 15px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.form-record-smart .form-stat-label { font-size: 11px; font-weight: 500; line-height: 13px; color: var(--muted); }
+/* Dynamic status ribbons on form sheets (Paid, Done, Locked, Cancelled, Archived) */
+.form-sheet-layout > .message-ribbon { grid-column: 1 / -1; justify-self: end; align-self: start; padding: 3px 12px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; line-height: 1.4; }
+.form-sheet-layout > .message-ribbon[hidden] { display: none; }
 /* The control row sits on the page background like the rows below it, so the three rows are three bands 12px apart. */
 .control-panel-form:has(> .form-record-smart) { background: var(--canvas); border-bottom: 0; padding-block: 12px; row-gap: 0; }
 .form-viewport:has(> .record-form-viewport > .form-record-header), .record-form-viewport.record-form-viewport:has(> .form-record-header):has(> .content-sheet) { padding-top: 0; }

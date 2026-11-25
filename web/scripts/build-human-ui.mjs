@@ -1,6 +1,6 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 // Trusted XML is compiled ahead of publication. No template strings reach the browser compiler.
-import { readFile, mkdir, writeFile, realpath } from "node:fs/promises";
+import { readFile, mkdir, writeFile, realpath, readdir, unlink } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -77,4 +77,10 @@ for (const [name, data, content_type] of [["client.js", output.outputFiles[0].co
   assets.push({ name, path: filename, sha256, content_type });
 }
 await writeFile(path.join(destination, "manifest.json"), JSON.stringify({ schema: 1, assets }, null, 2) + "\n");
+const keep = new Set(["manifest.json", ...assets.map(asset => asset.path)]);
+for (const entry of await readdir(destination)) {
+  if (!keep.has(entry) && /^client\.[0-9a-f]+\.(?:js|css)$/.test(entry)) {
+    await unlink(path.join(destination, entry));
+  }
+}
 console.log(JSON.stringify({ destination, addons, templates: [...modules.keys()], assets }));

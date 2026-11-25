@@ -24,4 +24,5 @@ pub mod payterm;
 pub mod reconcile;
 
 mod settings_migration;
+pub mod smart_buttons;
 pub mod tax;

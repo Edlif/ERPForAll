@@ -127,6 +127,7 @@ pub use done::{CANCELLED_PICKING_WRITABLE, DONE_MOVE_WRITABLE, DONE_PICKING_WRIT
 // The transfer's own rules: defaults and reference from the operation type, cancel, delete.
 mod picking_flow;
 mod returns;
+mod smart_buttons;
 
 // Status changes of transfers written by the stock statements, reported for their history.
 mod state_history;

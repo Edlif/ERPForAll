@@ -128,6 +128,13 @@ pub struct StockPicking {
     /// Directly linked returns and exchanges visible to the reader.
     #[field(integer, compute = "_compute_return_count")]
     pub return_count: i32,
+    /// Readable backorder transfers created from this transfer.
+    #[field(
+        integer,
+        compute = "_compute_backorder_count",
+        string = "Backorder Count"
+    )]
+    pub backorder_count: i32,
     /// Shipping policy; computed from the type.
     #[field(
         selection,

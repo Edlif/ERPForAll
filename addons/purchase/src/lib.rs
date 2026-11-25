@@ -16,6 +16,7 @@ mod direct_bill;
 mod direct_bill_integrity;
 pub mod line;
 pub mod order;
+mod partner_product_buttons;
 mod res_groups;
 pub mod settings;
 mod warnings;

@@ -19,6 +19,9 @@ PORT=8069
 DB_NAME=erpforall_local
 CONTAINER=erpforall-local-postgres
 MODULES="$DEFAULT_MODULES"
+PROFILE="release"
+REBUILD=0
+CLEAN_CACHE=0
 RESET=0
 YES=0
 DRY=0
@@ -59,6 +62,9 @@ Flags:
   --modules LIST      comma- or space-separated modules to install with demo data
                       (default: contacts account account_reporting stock sale sale_management purchase
                       sale_stock purchase_stock account_mail purchase_mail stock_mail product_mail)
+  --fast              build with Cargo's incremental `local` profile (faster rebuilds, smaller cache)
+  --rebuild           incrementally rebuild changed Rust/web code, sync addons, and restart without resetting DB
+  --clean-cache       remove stale debug/tmp caches and old hashed web bundles while keeping the active binary cache
   --reset             stop the server and remove only what this script created (listed first); needs --yes
   --yes               confirm --reset
   --dry-run           print the steps and the checks that would fail, change nothing
@@ -91,6 +97,9 @@ while [ "$#" -gt 0 ]; do
     --pg-port) need_value "$@"; ARG_PG_PORT="$2"; shift 2 ;;
     --pg-container) need_value "$@"; ARG_CONTAINER="$2"; shift 2 ;;
     --modules) need_value "$@"; MODULES="$(printf '%s' "$2" | tr ',' ' ')"; shift 2 ;;
+    --fast) PROFILE="local"; shift ;;
+    --rebuild) REBUILD=1; shift ;;
+    --clean-cache) CLEAN_CACHE=1; shift ;;
     --reset) RESET=1; shift ;;
     --yes) YES=1; shift ;;
     --dry-run) DRY=1; shift ;;
@@ -132,7 +141,9 @@ if [ -f "$STATE_FILE" ]; then
 fi
 ROLE_OWNER="${DB_NAME}_owner"; ROLE_WEB="${DB_NAME}_web"; ROLE_NODE="${DB_NAME}_node"; ROLE_MAINT="${DB_NAME}_maint"
 CFG="$PRIV/server.toml"
-ERP="$ROOT/target/release/erp"
+CARGO_PROFILE_DIR="$PROFILE"
+ERP="$ROOT/target/$CARGO_PROFILE_DIR/erp"
+ERP_UI_COMPILER_BIN="$ROOT/target/$CARGO_PROFILE_DIR/erp-ui-compile"
 
 # ---- platform and helpers -----------------------------------------------------------------------
 OS="${ERPFORALL_INSTALL_UNAME_S:-$(uname -s)}"   # the two overrides exist for tests/scripts/test_install.py
@@ -224,14 +235,16 @@ choose_postgres() {
 
 # ---- 3. build -----------------------------------------------------------------------------------
 build_binaries() {
-  step "3/8 Building erp and erp-ui-compile (release)"
-  dry "cd $ROOT && cargo build --release -p erp-cli --bin erp -p erp-ui-compiler-cli --bin erp-ui-compile" && return 0
+  step "3/8 Building erp and erp-ui-compile ($PROFILE)"
+  local cargo_flag=(--release)
+  [ "$PROFILE" = release ] || cargo_flag=(--profile "$PROFILE")
+  dry "cd $ROOT && cargo build ${cargo_flag[*]} -p erp-cli --bin erp -p erp-ui-compiler-cli --bin erp-ui-compile" && return 0
   local first=rebuild t0
   [ -x "$ERP" ] || first="first build"
   t0="$(date +%s)"
-  ( cd "$ROOT" && cargo build --release -p erp-cli --bin erp -p erp-ui-compiler-cli --bin erp-ui-compile )
+  ( cd "$ROOT" && cargo build "${cargo_flag[@]}" -p erp-cli --bin erp -p erp-ui-compiler-cli --bin erp-ui-compile )
   BUILD_SECONDS=$(( $(date +%s) - t0 ))
-  [ -x "$ERP" ] && [ -x "$ROOT/target/release/erp-ui-compile" ] || die "the build finished but target/release/erp or erp-ui-compile is missing"
+  [ -x "$ERP" ] && [ -x "$ERP_UI_COMPILER_BIN" ] || die "the build finished but $ERP or $ERP_UI_COMPILER_BIN is missing"
   say "  build time: ${BUILD_SECONDS}s ($first)"
 }
 
@@ -243,7 +256,7 @@ build_web() {
     scripts/web-toolchain.sh install
     eval "$(scripts/web-toolchain.sh env)"
     pnpm --dir web install --frozen-lockfile
-    ERP_UI_COMPILER="$ROOT/target/release/erp-ui-compile" node web/scripts/build-human-ui.mjs --addons web,reporting,stock_account,hr )
+    ERP_UI_COMPILER="$ERP_UI_COMPILER_BIN" node web/scripts/build-human-ui.mjs --addons web,reporting,stock_account,hr )
   [ -f "$ROOT/web/dist/human-ui/manifest.json" ] || die "the web client build left no web/dist/human-ui/manifest.json"
 }
 
@@ -441,7 +454,34 @@ SQL
   say "removed."
 }
 
+# ---- clean-cache --------------------------------------------------------------------------------
+do_clean_cache() {
+  step "Cleaning stale build caches"
+  if [ "$DRY" = 1 ]; then
+    say "  [dry-run] remove $ROOT/target/debug and $ROOT/target/tmp (keeping target/$CARGO_PROFILE_DIR)"
+    say "  [dry-run] prune unreferenced client.*.js|css in $ROOT/web/dist/human-ui"
+    return 0
+  fi
+  rm -rf "$ROOT/target/debug" "$ROOT/target/tmp"
+  if [ -f "$ROOT/web/dist/human-ui/manifest.json" ] && command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, pathlib, sys
+dist = pathlib.Path(sys.argv[1])
+manifest = json.loads((dist / "manifest.json").read_text())
+keep = {"manifest.json"} | {a["path"] for a in manifest.get("assets", [])}
+for f in dist.iterdir():
+    if f.is_file() and f.name not in keep:
+        f.unlink()
+' "$ROOT/web/dist/human-ui"
+  fi
+  say "  cleaned stale debug/tmp caches and old web bundles (kept target/$CARGO_PROFILE_DIR)."
+}
+
 # ---- main ---------------------------------------------------------------------------------------
+if [ "$CLEAN_CACHE" = 1 ]; then
+  do_clean_cache
+  [ "$REBUILD" = 1 ] || [ "$RESET" = 1 ] || exit 0
+fi
 if [ "$RESET" = 1 ]; then
   do_reset
   exit 0
@@ -450,6 +490,24 @@ fi
 [ "$DRY" = 0 ] || say "Dry run: nothing is created or started."
 DATABASE_FRESH=0
 if [ "$DATABASE_PHASE" = done ]; then
+  if [ "$REBUILD" = 1 ]; then
+    step "Rebuilding incrementally for $STATE ($PROFILE)"
+    check_prereqs
+    build_binaries
+    build_web
+    if [ "$DRY" = 0 ]; then
+      rsync -a --delete --exclude node_modules --exclude target "$ROOT/addons/" "$STATE/addons/"
+      local_pid="$(server_pid)"
+      if [ -n "$local_pid" ]; then
+        kill "$local_pid"; i=0
+        while [ -n "$(server_pid)" ] && [ "$i" -lt 60 ]; do sleep 1; i=$((i + 1)); done
+      fi
+    fi
+    start_postgres
+    start_server
+    [ "$DRY" = 1 ] || finish
+    exit 0
+  fi
   # Installed already: reuse everything, only start what is not running.
   step "Reusing the installation in $STATE"
   need curl "Install curl (for example: apt-get install curl ca-certificates)."

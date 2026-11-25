@@ -6,6 +6,12 @@
     <field name="model">res.partner</field>
     <field name="inherit_id" ref="base.partner_form"/>
     <field name="arch" type="xml">
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button name="action_view_purchase_orders" type="object" class="oe_stat_button" icon="lucide:shopping-cart"
+                groups="purchase.group_purchase_user" invisible="purchase_order_count == 0">
+          <field name="purchase_order_count" widget="statinfo" string="Purchases"/>
+        </button>
+      </xpath>
       <xpath expr="//page[@name='details']" position="inside">
         <group name="purchase_warnings" string="Notice on purchase orders" groups="purchase.group_warning_purchase">
           <field name="purchase_warn_msg" placeholder="e.g. Confirm lead time before ordering."/>

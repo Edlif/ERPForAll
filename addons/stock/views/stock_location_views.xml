@@ -19,6 +19,15 @@
     <field name="arch" type="xml">
       <form record_mode="record">
         <sheet>
+          <div class="oe_button_box" name="button_box">
+            <button name="action_view_quants" type="object" class="oe_stat_button" icon="lucide:boxes" invisible="usage != 'internal'">
+              <field name="quant_count" widget="statinfo" string="Current Stock"/>
+            </button>
+            <button name="action_view_pickings" type="object" class="oe_stat_button" icon="lucide:truck">
+              <field name="picking_count" widget="statinfo" string="Transfers"/>
+            </button>
+          </div>
+          <widget name="web_ribbon" title="Archived" bg_color="bg-danger" invisible="active"/>
           <div class="oe_title"><h1><field name="name"/></h1></div>
           <group>
             <group>

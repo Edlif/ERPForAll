@@ -111,10 +111,15 @@ The total with taxes and
     <field name="priority" eval="10"/>
     <field name="arch" type="xml">
       <list string="Quotations">
+        <dashboard>
+          <count name="quotations" string="Quotations" filter="draft" color="info"/>
+          <count name="sales" string="Sales Orders" filter="sales" color="success"/>
+          <count name="to_invoice" string="To Invoice" filter="to_invoice" color="warning"/>
+        </dashboard>
         <field name="name" string="Number"/>
         <field name="date_order" string="Creation Date"/>
         <field name="partner_id"/>
-        <field name="user_id"/>
+        <field name="user_id" widget="many2one_avatar"/>
         <field name="team_id"/>
         <field name="company_id"/>
         <field name="currency_id" invisible="1"/>
@@ -131,10 +136,15 @@ The total with taxes and
     <field name="priority" eval="20"/>
     <field name="arch" type="xml">
       <list string="Sales Orders">
+        <dashboard>
+          <count name="quotations" string="Quotations" filter="draft" color="info"/>
+          <count name="sales" string="Sales Orders" filter="sales" color="success"/>
+          <count name="to_invoice" string="To Invoice" filter="to_invoice" color="warning"/>
+        </dashboard>
         <field name="name" string="Number"/>
         <field name="date_order" string="Order Date"/>
         <field name="partner_id"/>
-        <field name="user_id"/>
+        <field name="user_id" widget="many2one_avatar"/>
         <field name="team_id"/>
         <field name="company_id"/>
         <field name="currency_id" invisible="1"/>
@@ -165,10 +175,12 @@ The total with taxes and
         </header>
         <sheet>
           <div class="oe_button_box" name="button_box">
-            <button name="action_view_invoice" type="object" class="oe_stat_button" invisible="invoice_count == 0">
+            <button name="action_view_invoice" type="object" class="oe_stat_button" icon="lucide:receipt-text" invisible="invoice_count == 0">
               <field name="invoice_count" widget="statinfo" string="Invoices"/>
             </button>
           </div>
+          <widget name="web_ribbon" title="Locked" bg_color="bg-info" invisible="not locked"/>
+          <widget name="web_ribbon" title="Cancelled" bg_color="bg-danger" invisible="state != 'cancel'"/>
           <div class="oe_title">
             <h1><field name="name" readonly="1"/></h1>
           </div>
@@ -277,5 +289,32 @@ The total with taxes and
     <field name="view_mode">list,form</field>
     <field name="view_id" ref="base.partner_list"/>
     <field name="search_view_id" ref="base.partner_search"/>
+  </record>
+  <record id="res_partner_form_sale_orders_button" model="ir.ui.view">
+    <field name="name">res.partner.form.sale.orders.button</field>
+    <field name="model">res.partner</field>
+    <field name="inherit_id" ref="base.partner_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button name="action_view_sale_orders" type="object" class="oe_stat_button" icon="lucide:shopping-bag"
+                groups="sales_team.group_sale_salesman" invisible="sale_order_count == 0">
+          <field name="sale_order_count" widget="statinfo" string="Sales"/>
+        </button>
+      </xpath>
+    </field>
+  </record>
+
+  <record id="product_template_form_sale_orders_button" model="ir.ui.view">
+    <field name="name">product.template.form.sale.orders.button</field>
+    <field name="model">product.template</field>
+    <field name="inherit_id" ref="product.product_template_form_view"/>
+    <field name="arch" type="xml">
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button name="action_view_sales" type="object" class="oe_stat_button" icon="lucide:trending-up"
+                groups="sales_team.group_sale_salesman" invisible="sales_order_count == 0">
+          <field name="sales_order_count" widget="statinfo" string="Sales"/>
+        </button>
+      </xpath>
+    </field>
   </record>
 </erp>

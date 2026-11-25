@@ -27,6 +27,8 @@ Contact views (partner part).
     <field name="arch" type="xml">
       <form string="Contact">
         <sheet>
+          <div class="oe_button_box" name="button_box"/>
+          <widget name="web_ribbon" title="Archived" bg_color="bg-danger" invisible="active"/>
           <div class="oe_title">
             <h1><field name="name" placeholder="e.g. Lumbung Teknik"/></h1>
           </div>

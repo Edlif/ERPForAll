@@ -19,6 +19,7 @@ mod numbering;
 pub mod order;
 pub mod order_ops;
 pub mod order_status;
+mod partner_product_buttons;
 pub mod product;
 pub mod res_groups;
 pub mod settings;

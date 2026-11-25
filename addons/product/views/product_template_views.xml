@@ -29,11 +29,12 @@
         </header>
         <sheet>
           <div class="oe_button_box" name="button_box">
-            <button name="action_open_variants" type="object" class="oe_stat_button"
+            <button name="action_open_variants" type="object" class="oe_stat_button" icon="lucide:boxes"
                     invisible="product_variant_count &lt;= 1">
               <field name="product_variant_count" widget="statinfo" string="Variants"/>
             </button>
           </div>
+          <widget name="web_ribbon" title="Archived" bg_color="bg-danger" invisible="active"/>
           <div class="oe_title">
             <field name="image_1920" widget="image" options="{'preview_image': 'image_128', 'size': [100, 100]}" alt="Product picture"/>
             <h1><field name="name" placeholder="e.g. Cheese Burger"/></h1>

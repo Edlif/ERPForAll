@@ -29,7 +29,7 @@
     <field name="inherit_id" ref="account.view_invoice_form"/>
     <field name="arch" type="xml">
       <xpath expr="//div[@name='button_box']" position="inside">
-        <button name="action_view_purchase_orders" type="object" class="oe_stat_button" invisible="purchase_order_count == 0">
+        <button name="action_view_purchase_orders" type="object" class="oe_stat_button" icon="lucide:shopping-cart" invisible="purchase_order_count == 0">
           <field name="purchase_order_count" widget="statinfo" string="Purchase Orders"/>
         </button>
       </xpath>

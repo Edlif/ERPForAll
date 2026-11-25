@@ -6,10 +6,38 @@
     <field name="model">res.partner</field>
     <field name="inherit_id" ref="base.partner_form"/>
     <field name="arch" type="xml">
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button name="action_view_pickings" type="object" class="oe_stat_button" icon="lucide:truck"
+                groups="stock.group_stock_user" invisible="picking_count == 0">
+          <field name="picking_count" widget="statinfo" string="Transfers"/>
+        </button>
+      </xpath>
       <xpath expr="//page[@name='details']" position="inside">
         <group name="stock_warnings" string="Notice on stock transfers" groups="stock.group_warning_stock">
           <field name="picking_warn_msg" placeholder="e.g. Call the site contact before arriving."/>
         </group>
+      </xpath>
+    </field>
+  </record>
+
+  <record id="product_template_form_stock_buttons" model="ir.ui.view">
+    <field name="name">product.template.form.stock.buttons</field>
+    <field name="model">product.template</field>
+    <field name="inherit_id" ref="product.product_template_form_view"/>
+    <field name="arch" type="xml">
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button name="action_open_quants" type="object" class="oe_stat_button" icon="lucide:boxes"
+                groups="stock.group_stock_user" invisible="not is_storable">
+          <field name="qty_on_hand" widget="statinfo" string="On Hand"/>
+        </button>
+        <button name="action_open_stock_moves" type="object" class="oe_stat_button" icon="lucide:workflow"
+                groups="stock.group_stock_user" invisible="stock_move_count == 0">
+          <field name="stock_move_count" widget="statinfo" string="Moves"/>
+        </button>
+        <button name="action_open_orderpoints" type="object" class="oe_stat_button" icon="lucide:refresh-cw"
+                groups="stock.group_stock_user" invisible="not is_storable">
+          <field name="reordering_rule_count" widget="statinfo" string="Reordering"/>
+        </button>
       </xpath>
     </field>
   </record>

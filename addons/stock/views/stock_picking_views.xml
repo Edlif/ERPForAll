@@ -11,6 +11,8 @@
         <dashboard>
           <count name="ready" string="Ready" filter="available" color="success"/>
           <count name="waiting" string="Waiting" filter="waiting" color="warning"/>
+          <count name="draft" string="Draft" filter="draft" color="info"/>
+          <count name="done" string="Done" filter="done" color="success"/>
         </dashboard>
         <field name="name"/>
         <field name="location_id"/>
@@ -54,7 +56,16 @@
           <field name="state" widget="statusbar" statusbar_visible="draft,confirmed,assigned,done"/>
         </header>
         <sheet>
-          <div class="oe_button_box" name="button_box"/>
+          <div class="oe_button_box" name="button_box">
+            <button name="action_view_returns" type="object" class="oe_stat_button" icon="lucide:undo-2" invisible="return_count == 0">
+              <field name="return_count" widget="statinfo" string="Returns"/>
+            </button>
+            <button name="action_view_backorders" type="object" class="oe_stat_button" icon="lucide:git-branch" invisible="backorder_count == 0">
+              <field name="backorder_count" widget="statinfo" string="Backorders"/>
+            </button>
+          </div>
+          <widget name="web_ribbon" title="Done" bg_color="bg-success" invisible="state != 'done'"/>
+          <widget name="web_ribbon" title="Cancelled" bg_color="bg-danger" invisible="state != 'cancel'"/>
           <div class="oe_title"><h1><field name="name" readonly="state in ('done', 'cancel')"/></h1></div>
           <field name="picking_warning_text" readonly="1" invisible="not picking_warning_text" groups="stock.group_warning_stock"/>
           <!-- a done or cancelled transfer keeps only the server's allow-list editable (origin, responsible) -->
@@ -68,6 +79,8 @@
             <group>
               <field name="scheduled_date" readonly="state in ('done', 'cancel')"/>
               <field name="origin"/>
+              <field name="backorder_id" readonly="1" invisible="not backorder_id"/>
+              <field name="return_id" readonly="1" invisible="not return_id"/>
             </group>
           </group>
           <notebook>

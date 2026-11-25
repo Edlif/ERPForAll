@@ -239,6 +239,9 @@ pub struct AccountMove {
         string = "Reset to Draft Blocked"
     )]
     pub reset_blocked: bool,
+    /// Readable payments linked to or reconciled with this move.
+    #[field(integer, compute = "_compute_payment_count", string = "Payment Count")]
+    pub payment_count: i32,
 }
 
 #[methods(AccountMove, addon = "account")]

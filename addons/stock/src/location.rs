@@ -164,6 +164,12 @@ pub struct StockLocation {
     /// Role name within the warehouse and addon.
     #[field(char, copy = false)]
     pub generated_role: Option<Arc<str>>,
+    /// Readable quants currently stored in this location.
+    #[field(integer, compute = "_compute_location_counts", string = "Stock Quants")]
+    pub quant_count: i32,
+    /// Readable transfers sourcing from or destined for this location.
+    #[field(integer, compute = "_compute_location_counts", string = "Transfers")]
+    pub picking_count: i32,
 }
 
 #[methods(StockLocation, addon = "stock")]

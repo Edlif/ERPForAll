@@ -32,7 +32,7 @@
     <field name="inherit_id" ref="sale.view_order_form"/>
     <field name="arch" type="xml">
       <xpath expr="//div[@name='button_box']" position="inside">
-        <button name="action_view_delivery" type="object" class="oe_stat_button" invisible="delivery_count == 0">
+        <button name="action_view_delivery" type="object" class="oe_stat_button" icon="lucide:truck" invisible="delivery_count == 0">
           <field name="delivery_count" widget="statinfo" string="Delivery"/>
         </button>
       </xpath>
@@ -44,7 +44,7 @@
     <field name="inherit_id" ref="stock.view_picking_form"/>
     <field name="arch" type="xml">
       <xpath expr="//div[@name='button_box']" position="inside">
-        <button name="action_view_sale_order" type="object" class="oe_stat_button" invisible="sale_order_count == 0">
+        <button name="action_view_sale_order" type="object" class="oe_stat_button" icon="lucide:shopping-bag" invisible="sale_order_count == 0">
           <field name="sale_order_count" widget="statinfo" string="Sales Order"/>
         </button>
       </xpath>
