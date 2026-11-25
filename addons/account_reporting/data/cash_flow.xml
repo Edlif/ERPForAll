@@ -4,7 +4,9 @@
   <data noupdate="1">
     <record id="report_cash_flow" model="reporting.report">
       <field name="name">Cash Flow Statement</field>
+      <field name="date_default">this_year</field>
       <field name="multi_company" eval="False"/>
+      <field name="totals_below" eval="True"/>
     </record>
     <record id="cash_flow_amount" model="reporting.report.column">
       <field name="report_id" ref="report_cash_flow"/>

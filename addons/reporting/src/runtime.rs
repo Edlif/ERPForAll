@@ -162,9 +162,14 @@ async fn unfold(
             for cell in &mut cells {
                 cell.suppress_declared_drill();
             }
+            let total_name = if lines[j].name.starts_with("Total ") {
+                lines[j].name.clone()
+            } else {
+                format!("Total {}", lines[j].name)
+            };
             let total = Line::new(
                 lines[j].id.child(Segment::total()),
-                lines[j].name.clone(),
+                total_name,
                 LineKind::Total,
                 cells,
             );

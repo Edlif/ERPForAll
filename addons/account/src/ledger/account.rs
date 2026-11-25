@@ -47,6 +47,9 @@ pub struct AccountAccount {
         string = "Account Name"
     )]
     pub name: Option<Arc<str>>,
+    /// Display name combining the company-scoped code and the account name.
+    #[field(char, compute = "_compute_display_name", string = "Display Name")]
+    pub display_name: Option<Arc<str>>,
     /// Description.
     #[field(text, translate = true)]
     pub description: Option<Arc<str>>,
@@ -287,6 +290,34 @@ impl AccountAccount {
                 .and_then(|real| codes.get(&real.get()))
                 .map(|code| Arc::<str>::from(code.as_str()));
             out.set(index, AccountAccount::CODE, code)?;
+        }
+        Ok(())
+    }
+
+    /// Display name combining the active company's account code and the account name (`"101401 Bank"`).
+    #[compute(depends = ["name", "code"], depends_context = ["company"])]
+    async fn _compute_display_name(
+        this: &RecordSet<AccountAccount>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, AccountAccount>,
+    ) -> Result<()> {
+        let names = this.mapped(tx, AccountAccount::NAME).await?;
+        let codes = if this.env().company_id()?.is_some() {
+            this.mapped(tx, AccountAccount::CODE).await?
+        } else {
+            vec![None; names.len()]
+        };
+        for (index, (name, code)) in names.into_iter().zip(codes).enumerate() {
+            let label = match (
+                code.as_deref().filter(|s| !s.is_empty()),
+                name.as_deref().filter(|s| !s.is_empty()),
+            ) {
+                (Some(c), Some(n)) => Some(Arc::<str>::from(format!("{c} {n}"))),
+                (None, Some(n)) => Some(Arc::<str>::from(n)),
+                (Some(c), None) => Some(Arc::<str>::from(c)),
+                (None, None) => None,
+            };
+            out.set(index, AccountAccount::DISPLAY_NAME, label)?;
         }
         Ok(())
     }

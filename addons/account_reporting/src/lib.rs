@@ -11,4 +11,5 @@ mod general_ledger;
 mod migrations;
 mod partner_ledger;
 pub mod schema;
+mod trial_balance;
 erp_addon_reporting::provider_declarations!(general_ledger::GeneralLedger);

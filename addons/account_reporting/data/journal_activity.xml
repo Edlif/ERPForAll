@@ -4,7 +4,9 @@
     <data noupdate="1">
         <record id="report_posted_journal_activity" model="reporting.report">
             <field name="name">Posted Journal Activity</field>
+            <field name="date_default">this_year</field>
             <field name="multi_company" eval="False"/>
+            <field name="totals_below" eval="True"/>
         </record>
         <record id="activity_by_journal" model="reporting.report.line">
             <field name="report_id" ref="report_posted_journal_activity"/>

@@ -5,121 +5,72 @@
         <record id="report_partner_ledger" model="reporting.report">
             <field name="name">Partner Ledger</field>
             <field name="provider">account_reporting.partner_ledger</field>
+            <field name="date_mode">range</field>
+            <field name="date_default">this_year</field>
             <field name="multi_company" eval="False"/>
+            <field name="comparison" eval="False"/>
+            <field name="totals_below" eval="True"/>
+            <field name="unfold_all" eval="True"/>
+            <field name="search_bar" eval="True"/>
+            <field name="hide_zero">optional</field>
         </record>
-        <record id="partner_ledger_column_opening" model="reporting.report.column">
+        <record id="partner_ledger_column_journal" model="reporting.report.column">
             <field name="report_id" ref="report_partner_ledger"/>
             <field name="sequence">10</field>
-            <field name="name">Opening</field>
-            <field name="label">opening</field>
-            <field name="kind">monetary</field>
+            <field name="name">Journal</field>
+            <field name="label">journal</field>
+            <field name="kind">text</field>
+        </record>
+        <record id="partner_ledger_column_account" model="reporting.report.column">
+            <field name="report_id" ref="report_partner_ledger"/>
+            <field name="sequence">20</field>
+            <field name="name">Account</field>
+            <field name="label">account</field>
+            <field name="kind">text</field>
+        </record>
+        <record id="partner_ledger_column_date" model="reporting.report.column">
+            <field name="report_id" ref="report_partner_ledger"/>
+            <field name="sequence">30</field>
+            <field name="name">Date</field>
+            <field name="label">date</field>
+            <field name="kind">date</field>
+        </record>
+        <record id="partner_ledger_column_due_date" model="reporting.report.column">
+            <field name="report_id" ref="report_partner_ledger"/>
+            <field name="sequence">40</field>
+            <field name="name">Due Date</field>
+            <field name="label">due_date</field>
+            <field name="kind">date</field>
+        </record>
+        <record id="partner_ledger_column_matching" model="reporting.report.column">
+            <field name="report_id" ref="report_partner_ledger"/>
+            <field name="sequence">50</field>
+            <field name="name">Matching</field>
+            <field name="label">matching</field>
+            <field name="kind">text</field>
         </record>
         <record id="partner_ledger_column_debit" model="reporting.report.column">
             <field name="report_id" ref="report_partner_ledger"/>
-            <field name="sequence">20</field>
-            <field name="name">Period debit</field>
+            <field name="sequence">60</field>
+            <field name="name">Debit</field>
             <field name="label">debit</field>
             <field name="kind">monetary</field>
+            <field name="blank_if_zero" eval="True"/>
         </record>
         <record id="partner_ledger_column_credit" model="reporting.report.column">
             <field name="report_id" ref="report_partner_ledger"/>
-            <field name="sequence">30</field>
-            <field name="name">Period credit</field>
+            <field name="sequence">70</field>
+            <field name="name">Credit</field>
             <field name="label">credit</field>
             <field name="kind">monetary</field>
+            <field name="blank_if_zero" eval="True"/>
         </record>
-        <record id="partner_ledger_column_closing" model="reporting.report.column">
+        <record id="partner_ledger_column_balance" model="reporting.report.column">
             <field name="report_id" ref="report_partner_ledger"/>
-            <field name="sequence">40</field>
-            <field name="name">Closing</field>
-            <field name="label">closing</field>
+            <field name="sequence">80</field>
+            <field name="name">Balance</field>
+            <field name="label">balance</field>
             <field name="kind">monetary</field>
-        </record>
-        <record id="partner_ledger_receivable" model="reporting.report.line">
-            <field name="report_id" ref="report_partner_ledger"/>
-            <field name="name">Receivables</field>
-            <field name="code">RECEIVABLE</field>
-            <field name="groupby">partner_id,account_id</field>
-            <field name="sequence">10</field>
-        </record>
-        <record id="partner_ledger_receivable_opening" model="reporting.report.expression">
-            <field name="line_id" ref="partner_ledger_receivable"/>
-            <field name="label">opening</field>
-            <field name="model">account.move.line</field>
-            <field name="field">balance</field>
-            <field name="date_field">date</field>
-            <field name="date_scope">before_period</field>
-            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_receivable"]]</field>
-        </record>
-        <record id="partner_ledger_receivable_debit" model="reporting.report.expression">
-            <field name="line_id" ref="partner_ledger_receivable"/>
-            <field name="label">debit</field>
-            <field name="model">account.move.line</field>
-            <field name="field">debit</field>
-            <field name="date_field">date</field>
-            <field name="date_scope">strict_range</field>
-            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_receivable"]]</field>
-        </record>
-        <record id="partner_ledger_receivable_credit" model="reporting.report.expression">
-            <field name="line_id" ref="partner_ledger_receivable"/>
-            <field name="label">credit</field>
-            <field name="model">account.move.line</field>
-            <field name="field">credit</field>
-            <field name="date_field">date</field>
-            <field name="date_scope">strict_range</field>
-            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_receivable"]]</field>
-        </record>
-        <record id="partner_ledger_receivable_closing" model="reporting.report.expression">
-            <field name="line_id" ref="partner_ledger_receivable"/>
-            <field name="label">closing</field>
-            <field name="model">account.move.line</field>
-            <field name="field">balance</field>
-            <field name="date_field">date</field>
-            <field name="date_scope">from_beginning</field>
-            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_receivable"]]</field>
-        </record>
-        <record id="partner_ledger_payable" model="reporting.report.line">
-            <field name="report_id" ref="report_partner_ledger"/>
-            <field name="name">Payables</field>
-            <field name="code">PAYABLE</field>
-            <field name="groupby">partner_id,account_id</field>
-            <field name="sequence">20</field>
-        </record>
-        <record id="partner_ledger_payable_opening" model="reporting.report.expression">
-            <field name="line_id" ref="partner_ledger_payable"/>
-            <field name="label">opening</field>
-            <field name="model">account.move.line</field>
-            <field name="field">balance</field>
-            <field name="date_field">date</field>
-            <field name="date_scope">before_period</field>
-            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","liability_payable"]]</field>
-        </record>
-        <record id="partner_ledger_payable_debit" model="reporting.report.expression">
-            <field name="line_id" ref="partner_ledger_payable"/>
-            <field name="label">debit</field>
-            <field name="model">account.move.line</field>
-            <field name="field">debit</field>
-            <field name="date_field">date</field>
-            <field name="date_scope">strict_range</field>
-            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","liability_payable"]]</field>
-        </record>
-        <record id="partner_ledger_payable_credit" model="reporting.report.expression">
-            <field name="line_id" ref="partner_ledger_payable"/>
-            <field name="label">credit</field>
-            <field name="model">account.move.line</field>
-            <field name="field">credit</field>
-            <field name="date_field">date</field>
-            <field name="date_scope">strict_range</field>
-            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","liability_payable"]]</field>
-        </record>
-        <record id="partner_ledger_payable_closing" model="reporting.report.expression">
-            <field name="line_id" ref="partner_ledger_payable"/>
-            <field name="label">closing</field>
-            <field name="model">account.move.line</field>
-            <field name="field">balance</field>
-            <field name="date_field">date</field>
-            <field name="date_scope">from_beginning</field>
-            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","liability_payable"]]</field>
         </record>
     </data>
     <record id="action_partner_ledger" model="ir.actions.client">
