@@ -18,6 +18,21 @@ fn too_deep(depth: usize) -> Error {
     ))
 }
 
+/// Random codes tried before giving up on a company whose codes are nearly all taken.
+const BADGE_ATTEMPTS: usize = 8;
+
+/// A 12-digit badge code: `041` and nine digits from a randomly keyed hash of the clock, so a
+/// code cannot be derived from the record id.
+fn random_badge() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    hasher.write_u128(nanos);
+    format!("041{:09}", hasher.finish() % 1_000_000_000)
+}
+
 fn recursive_managers() -> Error {
     Error::validation("You cannot create a recursive manager hierarchy.")
 }
@@ -31,11 +46,18 @@ fn recursive_managers() -> Error {
     inherit = [ImageMixin, MailThread, MailActivityMixin],
     order = "name, id",
     company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
-    constraints = [(
-        "_user_company_uniq",
-        "UNIQUE (company_id, user_id)",
-        "This user is already linked to another employee of this company."
-    )]
+    constraints = [
+        (
+            "_user_company_uniq",
+            "UNIQUE (company_id, user_id)",
+            "This user is already linked to another employee of this company."
+        ),
+        (
+            "_barcode_company_uniq",
+            "UNIQUE (company_id, barcode)",
+            "This Badge ID is already used by another employee of this company."
+        ),
+    ]
 )]
 pub struct HrEmployee {
     // ── Identity & Work Contact (Public Directory) ──────────────────────────
@@ -911,9 +933,33 @@ impl HrEmployee {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let rec = this.as_records();
-        let id = rec.ensure_one()?.int()?;
+        rec.ensure_one()?;
         rec.check_access(tx, Operation::Write).await?;
-        let code = format!("0410{:08}", id.unsigned_abs());
+        let Cell::Id(company) = rec.cell(tx, "company_id").await? else {
+            return Err(Error::validation("The employee has no company."));
+        };
+        let employees = this.env().records("hr.employee")?;
+        let mut code = None;
+        for _ in 0..BADGE_ATTEMPTS {
+            let candidate = random_badge();
+            let taken = Domain::and([
+                Domain::field("company_id")?.eq(company),
+                Domain::field("barcode")?.eq(candidate.as_str()),
+            ]);
+            let search = SearchOptions {
+                active_test: false,
+                ..SearchOptions::default()
+            };
+            if employees.search_with(tx, &taken, &search).await?.is_empty() {
+                code = Some(candidate);
+                break;
+            }
+        }
+        let Some(code) = code else {
+            return Err(Error::user(
+                "No free Badge ID was found for this company; try again.",
+            ));
+        };
         rec.write(
             tx,
             RawVals::new().set_cell("barcode", Cell::Str(code.clone().into())),
