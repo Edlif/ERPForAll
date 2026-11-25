@@ -61,6 +61,11 @@ impl HrDepartureWizard {
         };
         let reason_cell = wiz.cell(tx, "departure_reason_id").await?;
         let date_cell = wiz.cell(tx, "departure_date").await?;
+        if !matches!(date_cell, Cell::Date(_)) {
+            return Err(Error::validation(
+                "Set the departure date before registering the departure.",
+            ));
+        }
         let desc_cell = wiz.cell(tx, "departure_description").await?;
         let update_end = matches!(wiz.cell(tx, "update_contract_end").await?, Cell::Bool(true));
         let archive = matches!(wiz.cell(tx, "archive_employee").await?, Cell::Bool(true));
