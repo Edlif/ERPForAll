@@ -127,6 +127,16 @@ pub struct AccountMoveLine {
         string = "Partner"
     )]
     pub partner_id: Option<RecId>,
+    /// Optional analytic account for cost/revenue tracking; generates an analytic item on posting.
+    #[field(
+        many2one,
+        comodel = "account.analytic.account",
+        check_company = true,
+        ondelete = "set null",
+        index = "btree_not_null",
+        string = "Analytic Account"
+    )]
+    pub analytic_account_id: Option<RecId>,
     /// Label.
     #[field(char, string = "Label")]
     pub name: Option<Arc<str>>,

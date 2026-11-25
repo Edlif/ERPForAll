@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Fixed Assets & Depreciation Schedules: Accounting > Accounting > Assets -->
+<erp>
+  <record id="view_account_asset_dep_line_list" model="ir.ui.view">
+    <field name="name">account.asset.depreciation.line.list</field>
+    <field name="model">account.asset.depreciation.line</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="sequence"/>
+        <field name="depreciation_date"/>
+        <field name="amount"/>
+        <field name="depreciated_value"/>
+        <field name="remaining_value"/>
+        <field name="move_id"/>
+        <field name="state" widget="badge" options="{'tone_warning': ['draft'], 'tone_success': ['posted']}"/>
+        <field name="currency_id" invisible="1"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_account_asset_dep_line_form" model="ir.ui.view">
+    <field name="name">account.asset.depreciation.line.form</field>
+    <field name="model">account.asset.depreciation.line</field>
+    <field name="arch" type="xml">
+      <form string="Depreciation Line">
+        <sheet>
+          <group>
+            <field name="sequence"/>
+            <field name="depreciation_date"/>
+            <field name="amount"/>
+            <field name="depreciated_value" readonly="1"/>
+            <field name="remaining_value" readonly="1"/>
+            <field name="move_id" readonly="1"/>
+            <field name="state" readonly="1"/>
+            <field name="currency_id" invisible="1"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_account_asset_list" model="ir.ui.view">
+    <field name="name">account.asset.list</field>
+    <field name="model">account.asset</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="acquisition_date"/>
+        <field name="original_value"/>
+        <field name="value_residual"/>
+        <field name="method"/>
+        <field name="currency_id"/>
+        <field name="state" widget="badge" options="{'tone_warning': ['draft'], 'tone_info': ['open'], 'tone_success': ['close']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_account_asset_form" model="ir.ui.view">
+    <field name="name">account.asset.form</field>
+    <field name="model">account.asset</field>
+    <field name="arch" type="xml">
+      <form string="Fixed Asset">
+        <header>
+          <button name="action_compute_depreciation_board" type="object" string="Compute Depreciation" invisible="state == 'close'"/>
+          <button name="action_validate" type="object" string="Confirm" class="btn-primary" invisible="state != 'draft'"/>
+          <button name="action_post_next_depreciation" type="object" string="Post Next Depreciation" class="btn-primary" invisible="state != 'open'"/>
+          <button name="action_close" type="object" string="Close Asset" invisible="state != 'open'"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,open,close"/>
+        </header>
+        <sheet>
+          <div class="oe_title"><h1><field name="name" placeholder="e.g. Office Equipment" readonly="state != 'draft'"/></h1></div>
+          <group>
+            <group string="Asset Values">
+              <field name="acquisition_date" readonly="state != 'draft'"/>
+              <field name="original_value" readonly="state != 'draft'"/>
+              <field name="salvage_value" readonly="state != 'draft'"/>
+              <field name="value_residual" readonly="1"/>
+              <field name="currency_id" readonly="1"/>
+              <field name="company_id" readonly="1"/>
+            </group>
+            <group string="Depreciation Method">
+              <field name="method" readonly="state != 'draft'"/>
+              <field name="method_number" readonly="state != 'draft'"/>
+              <field name="method_period" readonly="state != 'draft'"/>
+              <field name="method_progress_factor" readonly="state != 'draft'" invisible="method != 'degressive'"/>
+            </group>
+          </group>
+          <group string="Accounting">
+            <group>
+              <field name="journal_id" readonly="state != 'draft'"/>
+              <field name="account_asset_id" readonly="state != 'draft'"/>
+            </group>
+            <group>
+              <field name="account_depreciation_id" readonly="state != 'draft'"/>
+              <field name="account_depreciation_expense_id" readonly="state != 'draft'"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Depreciation Board" name="board">
+              <field name="depreciation_line_ids" readonly="1"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_account_asset" model="ir.actions.act_window">
+    <field name="name">Assets</field>
+    <field name="res_model">account.asset</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_account_asset_list"/>
+  </record>
+
+  <menuitem id="menu_account_asset" name="Assets" parent="menu_finance_entries" action="action_account_asset" sequence="50"/>
+  <record id="menu_account_asset" model="ir.ui.menu"><field name="web_icon">lucide:archive</field></record>
+</erp>

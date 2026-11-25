@@ -8,7 +8,9 @@ erp_sdk::addon!(
     exact_only = true
 );
 
+pub mod asset;
 pub mod bank;
+pub mod budget;
 pub mod company;
 mod costing;
 pub mod fiscal;
@@ -24,6 +26,7 @@ pub mod numbering;
 pub mod payment;
 pub mod payterm;
 pub mod reconcile;
+pub mod recurring;
 
 mod settings_migration;
 pub mod smart_buttons;

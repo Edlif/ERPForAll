@@ -1,0 +1,5 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_account_analytic_plan_user,account.analytic.plan.user,model_account_analytic_plan,base.group_user,crud,
+access_account_analytic_account_user,account.analytic.account.user,model_account_analytic_account,base.group_user,crud,
+access_account_analytic_line_user,account.analytic.line.user,model_account_analytic_line,base.group_user,crud,
+access_account_analytic_distribution_model_user,account.analytic.distribution.model.user,model_account_analytic_distribution_model,base.group_user,crud,
