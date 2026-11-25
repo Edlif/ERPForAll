@@ -16,7 +16,8 @@ const KEPT = ["companies", "date", "comparison", "unfold_all", "unfolded", "load
 const CARET_LABELS: Readonly<Record<string, string>> = { open: "Open", journal_items: "Journal items", partner: "Open partner", entry: "View journal entry" };
 
 function canDrill(cell: Cell): boolean {
-  return cell.drillable ?? (cell.kind !== "empty" && cell.kind !== "text");
+  // Unless the server says otherwise, only a number has records behind it: a date or a text names a line, it does not sum one.
+  return cell.drillable ?? (cell.kind !== "empty" && cell.kind !== "text" && cell.kind !== "date");
 }
 
 interface Shown { name: string; filters: data.Filters; options: Options; lines: Line[]; computedAt: string; hidden: readonly string[] }

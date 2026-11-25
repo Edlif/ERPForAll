@@ -5039,6 +5039,17 @@ export class HumanApp {
       if (origin && previous) {
         const divider = el("span", "›", "form-breadcrumb-divider"); divider.setAttribute("aria-hidden", "true");
         previous.prepend(this.originCrumb(origin), divider);
+      } else if (origin && !backIsOrigin && !originInTrail) {
+        // A record opened straight from a page that keeps no crumb of its own (a report line's journal entry) is the only
+        // item of its trail: without this link nothing on the page leads back to where the user came from.
+        const current = breadcrumbs.querySelector<HTMLElement>(".breadcrumb-current");
+        if (current) {
+          const trail = el("div", undefined, "form-breadcrumb-path"), divider = el("span", "›", "form-breadcrumb-divider");
+          divider.setAttribute("aria-hidden", "true");
+          current.replaceWith(trail);
+          current.classList.add("form-breadcrumb-record");
+          trail.append(this.originCrumb(origin), divider, current);
+        }
       }
       if (recordMenu) breadcrumbs.append(recordMenu);
       breadcrumbs.append(statusIndicator);

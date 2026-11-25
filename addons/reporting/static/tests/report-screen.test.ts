@@ -675,6 +675,16 @@ test("a formula amount without source records has no cell drill or empty actions
   expect(row.querySelector(".report-caret")).toBeNull();
 });
 
+test("a date has no records behind it unless the server says so", async () => {
+  const columns = [["Date", "date", "date"], ["Due date", "due", "date"], ["Debit", "debit", "integer"]].map(([name, label, kind]) => ({ group: 0, name, label, kind, sortable: false }));
+  const item = wireLine(root, "INV/0001", { cells: [cell("2026-11-05", "date"), { ...cell("2026-11-20", "date"), drillable: true }, cell("7")] });
+  const r = mount(standard({ erp_report_lines: () => linesAnswer([item], wireOptions({ columns })) }));
+  await settle();
+  expect([...rows(r)[0]!.querySelectorAll<HTMLElement>(".report-cell")].map(td => td.dataset["drill"] === "true")).toEqual([false, true, true]);
+  click(rows(r)[0]?.querySelector(".report-caret"));
+  expect([...r.env.host.querySelectorAll(".report-menu-item")].map(node => node.textContent)).toEqual(["Records behind Due date", "Records behind Debit"]);
+});
+
 test("Stock Position can narrow and replace a refused initial product set", async () => {
   const filters = wireFilters({ provider: "example.sku_search", server_search: true, current_only: true });
   const r = mount(standard({

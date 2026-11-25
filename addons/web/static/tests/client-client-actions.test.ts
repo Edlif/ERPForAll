@@ -139,3 +139,47 @@ test("a client action requests the existing source record using the returned for
   expect(document.querySelector("dialog")?.textContent).toContain("Source");
   expect(location.search).toBe("?menu=10");
 });
+
+test("a record opened in the page from a client action keeps a link back to that screen", async () => {
+  history.replaceState(null, "", "/erp/action-30?menu=10");
+  let screen: ClientActionEnvironment | undefined;
+  let mounts = 0;
+  registerClientAction("demo.origin_link", { create: async environment => {
+    screen = environment; mounts++;
+    return { dispose() {} };
+  } });
+  const baseFetch = fetchMock({ 30: "demo.origin_link" });
+  vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
+    if (path.endsWith("erp_normalize_action_result")) return json({ wire_major: 1, result: {
+      kind: "current_window", name: "Journal entry", model: "account.move", res_id: 42,
+      views: [{ id: null, type: "form" }], domain: [["id", "=", 42]], context: {}
+    } });
+    if (path.endsWith("account.move/get_views")) return json({
+      wire_major: 1, registry_version: "r1", description_version: "d1", model: "account.move", notices: [],
+      fields: { "account.move": { name: { type: "char", label: "Number", required: false, readonly: true, selection: null, relation: null, relation_field: null } } },
+      views: [{ identity: { kind: "stored", id: 1 }, type: "form", schema_major: 1, renderer: "web.form", root: 0, nodes: [
+        { kind: "form", record_mode: "record", children: [1] },
+        { kind: "field", field: { model: "account.move", name: "name" }, widget: "char", label: "Number", force_save: false, options: {}, modifiers: { readonly: null, required: null, invisible: null } }
+      ] }]
+    });
+    if (path.endsWith("account.move/web_read")) return json([{ id: 42, name: "INV/42" }]);
+    return baseFetch(path, init);
+  }));
+  app = new HumanApp(host(), bootstrap);
+  await app.start();
+  expect(mounts).toBe(1);
+  await screen!.open({ type: "ir.actions.act_window" });
+  await vi.waitFor(() => expect(new URL(location.href).searchParams.get("id")).toBe("42"));
+  const crumb = await vi.waitFor(() => {
+    const link = document.querySelector<HTMLButtonElement>(".breadcrumb-origin");
+    expect(link).not.toBeNull();
+    return link!;
+  });
+  // The link names the screen the user came from and sits before the record's own title.
+  expect(crumb.textContent).toBe("Action 30");
+  expect(crumb.parentElement?.querySelector(".breadcrumb-current")?.textContent).toBe("INV/42");
+  crumb.click();
+  await vi.waitFor(() => expect(mounts).toBe(2));
+  expect(new URL(location.href).searchParams.get("id")).toBeNull();
+  expect(new URL(location.href).pathname).toBe("/erp/action-30");
+});
