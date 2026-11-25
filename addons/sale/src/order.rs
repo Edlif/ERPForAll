@@ -336,6 +336,26 @@ pub struct SaleOrder {
     /// Timestamp when the order was digitally signed.
     #[field(datetime, copy = false, string = "Signed On")]
     pub signed_on: Option<DateTime>,
+    /// Total exact-decimal profit margin across all product lines.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        compute = "_compute_margin",
+        store = true,
+        groups = "sales_team.group_sale_salesman",
+        string = "Margin"
+    )]
+    pub margin: Decimal,
+    /// Overall profit margin percentage.
+    #[field(
+        float,
+        digits = (16, 2),
+        compute = "_compute_margin",
+        store = true,
+        groups = "sales_team.group_sale_salesman",
+        string = "Margin (%)"
+    )]
+    pub margin_percent: Decimal,
 }
 
 /// The header fields a locked order refuses besides its protected fields: the salesperson and the

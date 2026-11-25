@@ -32,7 +32,9 @@ Sales teams: search, list and form (fields of sales_team/views/crm_team_views.xm
         <field name="sequence"/>
         <field name="name"/>
         <field name="user_id"/>
+        <field name="invoiced_target"/>
         <field name="company_id"/>
+        <field name="currency_id" invisible="1"/>
       </list>
     </field>
   </record>
@@ -50,6 +52,7 @@ Sales teams: search, list and form (fields of sales_team/views/crm_team_views.xm
             <group>
               <field name="user_id"/>
               <field name="company_id"/>
+              <field name="invoiced_target"/>
               <field name="currency_id" invisible="1"/>
             </group>
             <group>

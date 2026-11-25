@@ -368,6 +368,37 @@ pub struct SaleOrderLine {
         string = "Invoice Status"
     )]
     pub invoice_status: Option<Arc<str>>,
+    /// Unit cost of the product in the order currency (sales users only).
+    #[field(
+        float,
+        digits = "Product Price",
+        compute = "_compute_purchase_price",
+        store = true,
+        readonly = false,
+        groups = "sales_team.group_sale_salesman",
+        string = "Cost"
+    )]
+    pub purchase_price: Decimal,
+    /// Line profit margin (`price_subtotal - purchase_price * product_uom_qty`).
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        compute = "_compute_margin",
+        store = true,
+        groups = "sales_team.group_sale_salesman",
+        string = "Margin"
+    )]
+    pub margin: Decimal,
+    /// Line profit margin percentage.
+    #[field(
+        float,
+        digits = (16, 2),
+        compute = "_compute_margin",
+        store = true,
+        groups = "sales_team.group_sale_salesman",
+        string = "Margin (%)"
+    )]
+    pub margin_percent: Decimal,
 }
 
 /// What the rules read of one line.

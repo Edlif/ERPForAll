@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Down Payment Wizard, Sales Order Kanban & Calendar, Sales Team Dashboard & Sales Analysis -->
+<erp>
+  <record id="view_sale_advance_payment_inv_form" model="ir.ui.view">
+    <field name="name">sale.advance.payment.inv.form</field>
+    <field name="model">sale.advance.payment.inv</field>
+    <field name="arch" type="xml">
+      <form string="Create Invoice" record_mode="record">
+        <group>
+          <field name="sale_order_id" readonly="1"/>
+          <field name="advance_payment_method" widget="radio"/>
+          <field name="amount" invisible="advance_payment_method != 'percentage'"/>
+          <field name="fixed_amount" invisible="advance_payment_method != 'fixed'"/>
+          <field name="currency_id" invisible="1"/>
+          <field name="company_id" invisible="1"/>
+        </group>
+        <footer>
+          <button name="action_create_invoices" type="object" string="Create Draft Invoice" class="btn-primary"/>
+          <button special="cancel" string="Cancel"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_sale_order_kanban" model="ir.ui.view">
+    <field name="name">sale.order.kanban</field>
+    <field name="model">sale.order</field>
+    <field name="arch" type="xml">
+      <kanban string="Sales Orders">
+        <templates>
+          <t t-name="card">
+            <main>
+              <field name="name"/>
+              <field name="partner_id"/>
+              <field name="date_order"/>
+            </main>
+            <aside>
+              <field name="amount_total"/>
+              <field name="currency_id" invisible="1"/>
+            </aside>
+            <footer>
+              <field name="user_id" widget="many2one_avatar"/>
+              <field name="state" widget="badge" options="{'tone_success': ['sale'], 'tone_info': ['sent'], 'tone_warning': ['draft'], 'tone_danger': ['cancel']}"/>
+            </footer>
+          </t>
+        </templates>
+      </kanban>
+    </field>
+  </record>
+
+  <record id="view_sale_order_calendar" model="ir.ui.view">
+    <field name="name">sale.order.calendar</field>
+    <field name="model">sale.order</field>
+    <field name="arch" type="xml">
+      <calendar string="Sales Orders" date_start="date_order" color="user_id" mode="month">
+        <field name="name"/>
+        <field name="partner_id"/>
+        <field name="amount_total"/>
+        <field name="state"/>
+      </calendar>
+    </field>
+  </record>
+
+  <record id="action_quotations_kanban" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_quotations"/>
+    <field name="view_id" ref="view_sale_order_kanban"/>
+    <field name="view_mode">kanban</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <record id="action_quotations_calendar" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_quotations"/>
+    <field name="view_id" ref="view_sale_order_calendar"/>
+    <field name="view_mode">calendar</field>
+    <field name="sequence" eval="30"/>
+  </record>
+
+  <record id="action_orders_kanban" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_orders"/>
+    <field name="view_id" ref="view_sale_order_kanban"/>
+    <field name="view_mode">kanban</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <record id="action_orders_calendar" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_orders"/>
+    <field name="view_id" ref="view_sale_order_calendar"/>
+    <field name="view_mode">calendar</field>
+    <field name="sequence" eval="30"/>
+  </record>
+
+  <record id="crm_team_view_kanban_sale" model="ir.ui.view">
+    <field name="name">crm.team.kanban.sale</field>
+    <field name="model">crm.team</field>
+    <field name="arch" type="xml">
+      <kanban string="Sales Teams" can_open="1">
+        <templates>
+          <t t-name="card">
+            <main>
+              <field name="name"/>
+              <field name="user_id"/>
+              <field name="sale_dashboard_card" widget="dashboard_card"/>
+            </main>
+          </t>
+        </templates>
+      </kanban>
+    </field>
+  </record>
+
+  <record id="action_sale_teams_dashboard" model="ir.actions.act_window">
+    <field name="name">Sales Teams</field>
+    <field name="res_model">crm.team</field>
+    <field name="view_mode">kanban,list,form</field>
+    <field name="view_id" ref="crm_team_view_kanban_sale"/>
+    <field name="search_view_id" ref="sales_team.crm_team_view_search"/>
+  </record>
+  <record id="action_sale_teams_dashboard_kanban" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_sale_teams_dashboard"/>
+    <field name="view_id" ref="crm_team_view_kanban_sale"/>
+    <field name="view_mode">kanban</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_sale_teams_dashboard_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_sale_teams_dashboard"/>
+    <field name="view_id" ref="sales_team.crm_team_view_tree"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <record id="action_sale_teams_dashboard_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_sale_teams_dashboard"/>
+    <field name="view_id" ref="sales_team.crm_team_view_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="30"/>
+  </record>
+
+  <record id="view_sale_order_analysis_search" model="ir.ui.view">
+    <field name="name">sale.order.line.analysis.search</field>
+    <field name="model">sale.order.line</field>
+    <field name="arch" type="xml">
+      <search string="Sales Analysis">
+        <field name="order_id"/>
+        <field name="product_id"/>
+        <field name="order_partner_id"/>
+        <field name="salesman_id"/>
+        <filter name="confirmed_sales" string="Sales Orders" domain="[('state', '=', 'sale')]"/>
+        <filter name="quotations" string="Quotations" domain="[('state', 'in', ('draft', 'sent'))]"/>
+        <separator/>
+        <filter name="my_sales" string="My Sales" domain="[('salesman_id', '=', uid)]"/>
+        <group>
+          <filter name="group_product" string="Product" context="{'group_by': 'product_id'}"/>
+          <filter name="group_customer" string="Customer" context="{'group_by': 'order_partner_id'}"/>
+          <filter name="group_salesperson" string="Salesperson" context="{'group_by': 'salesman_id'}"/>
+          <filter name="group_status" string="Status" context="{'group_by': 'state'}"/>
+          <filter name="group_company" string="Company" context="{'group_by': 'company_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="view_sale_order_analysis_pivot" model="ir.ui.view">
+    <field name="name">sale.order.line.analysis.pivot</field>
+    <field name="model">sale.order.line</field>
+    <field name="arch" type="xml">
+      <pivot string="Sales Analysis" display_quantity="1">
+        <field name="product_id" type="row"/>
+        <field name="state" type="col"/>
+        <field name="product_uom_qty" type="measure"/>
+        <field name="price_subtotal" type="measure"/>
+        <field name="margin" type="measure"/>
+      </pivot>
+    </field>
+  </record>
+
+  <record id="view_sale_order_analysis_graph" model="ir.ui.view">
+    <field name="name">sale.order.line.analysis.graph</field>
+    <field name="model">sale.order.line</field>
+    <field name="arch" type="xml">
+      <graph string="Sales Analysis" type="bar">
+        <field name="product_id"/>
+        <field name="price_subtotal" type="measure"/>
+      </graph>
+    </field>
+  </record>
+
+  <record id="view_sale_order_analysis_list" model="ir.ui.view">
+    <field name="name">sale.order.line.analysis.list</field>
+    <field name="model">sale.order.line</field>
+    <field name="priority" eval="30"/>
+    <field name="arch" type="xml">
+      <list string="Sales Analysis" create="0" edit="0" delete="0">
+        <field name="order_id"/>
+        <field name="order_partner_id"/>
+        <field name="salesman_id"/>
+        <field name="product_id"/>
+        <field name="product_uom_qty"/>
+        <field name="price_subtotal"/>
+        <field name="margin" groups="sales_team.group_sale_salesman"/>
+        <field name="margin_percent" groups="sales_team.group_sale_salesman"/>
+        <field name="state" widget="badge" options="{'tone_success': ['sale'], 'tone_info': ['sent'], 'tone_warning': ['draft'], 'tone_danger': ['cancel']}"/>
+        <field name="currency_id" invisible="1"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="action_sale_order_analysis" model="ir.actions.act_window">
+    <field name="name">Sales Analysis</field>
+    <field name="res_model">sale.order.line</field>
+    <field name="view_mode">pivot,graph,list</field>
+    <field name="view_id" ref="view_sale_order_analysis_pivot"/>
+    <field name="search_view_id" ref="view_sale_order_analysis_search"/>
+    <field name="domain">[('display_type', '=', False), ('state', '!=', 'cancel')]</field>
+  </record>
+  <record id="action_sale_order_analysis_pivot" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_sale_order_analysis"/>
+    <field name="view_id" ref="view_sale_order_analysis_pivot"/>
+    <field name="view_mode">pivot</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_sale_order_analysis_graph" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_sale_order_analysis"/>
+    <field name="view_id" ref="view_sale_order_analysis_graph"/>
+    <field name="view_mode">graph</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <record id="action_sale_order_analysis_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_sale_order_analysis"/>
+    <field name="view_id" ref="view_sale_order_analysis_list"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="30"/>
+  </record>
+</erp>

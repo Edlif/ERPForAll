@@ -6,17 +6,19 @@
 erp_sdk::addon!(
     name = "sale",
     exact_only = true,
-    depends = ["base", "sales_team", "product", "mail", "account"]
+    depends = ["base", "web", "sales_team", "product", "mail", "account"]
 );
 
 mod amounts;
 mod create_invoice;
 pub mod discount;
+pub mod downpayment;
 mod invoice_buttons;
 pub use invoice_buttons::{counts, flat, readable_links, window};
 mod invoice_lineage;
 pub mod line;
 pub mod loyalty;
+pub mod margin;
 mod numbering;
 pub mod order;
 pub mod order_ops;
@@ -26,6 +28,7 @@ pub mod product;
 pub mod res_groups;
 pub mod send;
 pub mod settings;
+pub mod team_dashboard;
 pub mod template;
 
 pub use line::SaleOrderLine;

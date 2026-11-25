@@ -132,6 +132,13 @@ impl SaleOrder {
             if !to_lock.is_empty() {
                 to_lock.write_base(tx, lock_value(true)).await?;
             }
+            if crate::settings::automatic_invoice(tx).await? {
+                for single in records.iter() {
+                    if single.cell(tx, "invoice_status").await? == Cell::Str("to invoice".into()) {
+                        let _: Value = single.call(tx, "action_create_draft_invoice", ()).await?;
+                    }
+                }
+            }
             Ok(())
         })
         .await

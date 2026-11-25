@@ -190,9 +190,15 @@ async fn invoice_items(
         if qty.is_zero() {
             continue;
         }
-        if advances[index] == Cell::Bool(true) || qty < Decimal::ZERO {
+        if advances[index] == Cell::Bool(true) {
+            if qty < Decimal::ZERO {
+                eligible.push((id, qty));
+            }
+            continue;
+        }
+        if qty < Decimal::ZERO {
             return Err(Error::user(
-                "This order needs a credit or down-payment invoice. Use Accounting for these lines.",
+                "This order needs a credit invoice. Use Accounting for negative lines.",
             ));
         }
         eligible.push((id, qty));

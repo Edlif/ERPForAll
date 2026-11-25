@@ -3,8 +3,8 @@ summary = "Quotations and sales orders"
 category = "Sales/Sales"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.6.0"
-depends = ["base", "sales_team", "product", "mail", "account"]
+version = "1.7.0"
+depends = ["base", "web", "sales_team", "product", "mail", "account"]
 exact_only = true
 # Groups first, then the order sequence, the screens and menus, the access rows last (B5).
 data = [
@@ -15,6 +15,7 @@ data = [
     "views/sale_order_views.xml",
     "views/sale_loyalty_views.xml",
     "views/sale_template_views.xml",
+    "views/sale_analysis_views.xml",
     "views/sale_menus.xml",
     "views/invoice_line_views.xml",
     "views/sale_reports.xml",

@@ -400,7 +400,8 @@ async fn check_links(tx: &mut Transaction, ids: Vec<i64>, owner: &'static str) -
         OR m.partner_id IS DISTINCT FROM o.partner_invoice_id
         OR m.company_id IS DISTINCT FROM o.company_id OR m.currency_id IS DISTINCT FROM o.currency_id
         OR s.display_type IS NOT NULL OR l.display_type IS DISTINCT FROM 'product'
-        OR s.product_id IS NULL OR s.product_id IS DISTINCT FROM l.product_id
+        OR (NOT COALESCE(s.is_downpayment, false) AND s.product_id IS NULL)
+        OR s.product_id IS DISTINCT FROM l.product_id
         OR s.product_uom_id IS DISTINCT FROM l.product_uom_id) LIMIT 1");
     if !tx.query(&query, &[&ids]).await?.is_empty() {
         return Err(Error::validation(INCOMPATIBLE));

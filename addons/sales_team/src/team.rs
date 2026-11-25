@@ -79,6 +79,14 @@ pub struct CrmTeam {
         string = "Currency"
     )]
     pub currency_id: Option<RecId>,
+    /// Monthly invoicing target for this sales team.
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        default = 0,
+        string = "Invoicing Target"
+    )]
+    pub invoiced_target: Decimal,
     /// The team leader.
     #[field(
         many2one,

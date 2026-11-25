@@ -3,7 +3,7 @@ summary = "Sales teams, their members and tags, and the Sales access groups"
 category = "Sales/Sales"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.0.1"
+version = "1.1.0"
 depends = ["base", "mail"]
 exact_only = true
 # Data order (B1): the groups first, then the default team, then the views, and the access
