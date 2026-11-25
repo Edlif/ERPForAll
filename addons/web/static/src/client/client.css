@@ -1755,6 +1755,23 @@ span.o_priority_star {
   --palette-9: #d0457f;
   --palette-10: #4fa864;
   --palette-11: #7b63d4;
+  /* Initials tiles, indexes 0-11: solid fills under --on-tile text, each at least 4.5:1 against it, so they hold in
+     both themes; --tile-wash-N is the pale header tint, mixed with --surface so it follows the theme on its own. */
+  --on-tile: #ffffff;
+  --tile-0: #5a6679; --tile-1: #b05454; --tile-2: #a35f2c; --tile-3: #8a6d1f; --tile-4: #3f72a8; --tile-5: #7d5b92;
+  --tile-6: #8c6650; --tile-7: #2f7a71; --tile-8: #4660a8; --tile-9: #b34d76; --tile-10: #3d7d4d; --tile-11: #6b5cb5;
+  --tile-wash-0: color-mix(in srgb, var(--tile-0) 18%, var(--surface));
+  --tile-wash-1: color-mix(in srgb, var(--tile-1) 24%, var(--surface));
+  --tile-wash-2: color-mix(in srgb, var(--tile-2) 24%, var(--surface));
+  --tile-wash-3: color-mix(in srgb, var(--tile-3) 24%, var(--surface));
+  --tile-wash-4: color-mix(in srgb, var(--tile-4) 24%, var(--surface));
+  --tile-wash-5: color-mix(in srgb, var(--tile-5) 24%, var(--surface));
+  --tile-wash-6: color-mix(in srgb, var(--tile-6) 24%, var(--surface));
+  --tile-wash-7: color-mix(in srgb, var(--tile-7) 24%, var(--surface));
+  --tile-wash-8: color-mix(in srgb, var(--tile-8) 24%, var(--surface));
+  --tile-wash-9: color-mix(in srgb, var(--tile-9) 24%, var(--surface));
+  --tile-wash-10: color-mix(in srgb, var(--tile-10) 24%, var(--surface));
+  --tile-wash-11: color-mix(in srgb, var(--tile-11) 24%, var(--surface));
 }
 .field-color { display: inline-flex; align-items: center; gap: .5rem; }
 .field-color-swatch {
@@ -2874,7 +2891,7 @@ dialog, .client-block-feedback { box-shadow: var(--shadow-dialog); }
 .control-panel-form:has(> .form-record-smart) [data-control-tools] { grid-column: 4; }
 .form-record-smart { grid-column: 3; grid-row: 1; justify-self: center; min-width: 0; max-width: 100%; }
 .form-record-smart:not(:has(> .form-button-box)) { display: none; }
-.form-record-smart .form-button-box { display: flex; flex-wrap: nowrap; gap: 0; max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--surface); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); overflow: hidden; }
+.form-record-smart .form-button-box { display: flex; flex-wrap: nowrap; gap: 0; max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--surface); box-shadow: var(--shadow-sm); overflow: hidden; }
 .form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle) { flex: 0 0 auto; box-sizing: border-box; min-width: 0; height: 38px; min-height: 38px; margin: 0; padding: 4px 14px; border: 0; border-radius: 0; background: transparent; box-shadow: none; transition: background-color 0.12s ease; }
 .form-record-smart .form-button-box > .form-stat-button { min-width: 104px; }
 .form-record-smart .form-button-box > .form-overflow-toggle { padding: 0 12px; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
@@ -4193,7 +4210,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 }
 
 /* ============================================================================
-   Rich Portrait Kanban Cards (Odoo 20 Employees & Departments parity)
+   Rich portrait kanban cards (a card whose aside is an image)
    ============================================================================ */
 .kanban-grid:has(.kanban-card-has-media) {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr));
@@ -4252,21 +4269,21 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   font-size: 34px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: #ffffff;
+  color: var(--on-tile);
   user-select: none;
 }
-.kanban-tone-0  { background: #5a6679; }
-.kanban-tone-1  { background: #b85d5d; }
-.kanban-tone-2  { background: #c07a44; }
-.kanban-tone-3  { background: #b38e32; }
-.kanban-tone-4  { background: #4a7fb5; }
-.kanban-tone-5  { background: #7d5b92; }
-.kanban-tone-6  { background: #9c745c; }
-.kanban-tone-7  { background: #36887e; }
-.kanban-tone-8  { background: #4660a8; }
-.kanban-tone-9  { background: #b34d76; }
-.kanban-tone-10 { background: #4a8f5c; }
-.kanban-tone-11 { background: #6b5cb5; }
+.kanban-tone-0  { background: var(--tile-0); }
+.kanban-tone-1  { background: var(--tile-1); }
+.kanban-tone-2  { background: var(--tile-2); }
+.kanban-tone-3  { background: var(--tile-3); }
+.kanban-tone-4  { background: var(--tile-4); }
+.kanban-tone-5  { background: var(--tile-5); }
+.kanban-tone-6  { background: var(--tile-6); }
+.kanban-tone-7  { background: var(--tile-7); }
+.kanban-tone-8  { background: var(--tile-8); }
+.kanban-tone-9  { background: var(--tile-9); }
+.kanban-tone-10 { background: var(--tile-10); }
+.kanban-tone-11 { background: var(--tile-11); }
 
 .kanban-card.kanban-card-has-media {
   text-align: start;
@@ -4552,13 +4569,6 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .search-panel-main .list-results {
   overflow-x: auto;
 }
-.search-panel-main .list-results .list-table {
-  min-width: max(100%, 1020px);
-  table-layout: auto;
-}
-.search-panel-main .list-results .list-table col {
-  width: auto !important;
-}
 .search-panel-main .list-results .list-table thead th {
   top: 0;
   white-space: nowrap;
@@ -4626,7 +4636,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  color: #ffffff;
+  color: var(--on-tile);
   font-size: 10px;
   font-weight: 700;
   flex: none;
@@ -4729,16 +4739,38 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--surface);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  box-shadow: var(--shadow-sm);
   overflow: hidden;
   transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 .hierarchy-card-clickable { cursor: pointer; }
 .hierarchy-card:hover {
   border-color: var(--input-line);
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  box-shadow: var(--shadow-menu);
 }
 .hierarchy-card.is-dragging { opacity: 0.55; }
+.hierarchy-card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.hierarchy-card-move {
+  position: absolute;
+  top: 6px;
+  inset-inline-end: 6px;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+.hierarchy-card-move:hover { border-color: var(--accent); color: var(--accent); }
+.hierarchy-card-move .erp-icon { width: 14px; height: 14px; }
+.view-limit-notice { margin: 0 0 10px; font-size: 13px; }
 .hierarchy-card.is-drop-target {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
@@ -4751,7 +4783,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   justify-content: center;
   min-height: 44px;
   padding: 10px 12px;
-  background: #e2e8f0;
+  background: var(--tile-wash-0);
 }
 .hierarchy-card-header-text {
   min-height: 40px;
@@ -4760,23 +4792,23 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .hierarchy-card-header-title {
   font-size: 14px;
   font-weight: 700;
-  color: #1e293b;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.hierarchy-color-0  { background: #e2e8f0; }
-.hierarchy-color-1  { background: #f6c9c9; }
-.hierarchy-color-2  { background: #f8d8be; }
-.hierarchy-color-3  { background: #f5e6b8; }
-.hierarchy-color-4  { background: #c6dff5; }
-.hierarchy-color-5  { background: #decce8; }
-.hierarchy-color-6  { background: #ebd5c9; }
-.hierarchy-color-7  { background: #bfe5df; }
-.hierarchy-color-8  { background: #c9d4f5; }
-.hierarchy-color-9  { background: #f5c6da; }
-.hierarchy-color-10 { background: #c5e8ce; }
-.hierarchy-color-11 { background: #d5cdf5; }
+.hierarchy-color-0  { background: var(--tile-wash-0); }
+.hierarchy-color-1  { background: var(--tile-wash-1); }
+.hierarchy-color-2  { background: var(--tile-wash-2); }
+.hierarchy-color-3  { background: var(--tile-wash-3); }
+.hierarchy-color-4  { background: var(--tile-wash-4); }
+.hierarchy-color-5  { background: var(--tile-wash-5); }
+.hierarchy-color-6  { background: var(--tile-wash-6); }
+.hierarchy-color-7  { background: var(--tile-wash-7); }
+.hierarchy-color-8  { background: var(--tile-wash-8); }
+.hierarchy-color-9  { background: var(--tile-wash-9); }
+.hierarchy-color-10 { background: var(--tile-wash-10); }
+.hierarchy-color-11 { background: var(--tile-wash-11); }
 
 .hierarchy-avatar {
   display: inline-grid;
@@ -4788,7 +4820,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   border: 3px solid var(--surface);
   overflow: hidden;
   background: var(--surface-subtle);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+  box-shadow: var(--shadow-sm);
 }
 .hierarchy-avatar.is-small,
 .hierarchy-manager-chip .hierarchy-avatar,
@@ -4811,7 +4843,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   place-items: center;
   width: 100%;
   height: 100%;
-  color: #ffffff;
+  color: var(--on-tile);
   font-size: 18px;
   font-weight: 700;
 }
@@ -5069,7 +5101,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   font-size: 11px;
   padding: 0 5px;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.08);
+  background: color-mix(in srgb, currentColor 14%, transparent);
 }
 .activity-cell-add {
   display: inline-flex;
@@ -5094,47 +5126,18 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   color: var(--accent);
   background: var(--hover);
 }
-.activity-modal-backdrop,
-.activity-dialog-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 220;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  background: rgba(15, 23, 42, 0.45);
-}
-.activity-modal,
-.activity-dialog {
-  width: min(440px, 100%);
-  max-height: 88dvh;
-  overflow: auto;
-  border-radius: var(--radius-panel);
-  border: 1px solid var(--line);
-  background: var(--surface);
-  box-shadow: var(--shadow-menu);
-  padding: 16px;
-  box-sizing: border-box;
-}
-.activity-modal-title {
-  margin: 0 0 12px;
-  font-size: 16px;
-  font-weight: 600;
-}
 .activity-modal-form {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
-.activity-modal-field,
-.activity-dialog-field {
+.activity-modal-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
   font-size: 13px;
 }
-.activity-modal-field :is(input, select, textarea),
-.activity-dialog-field :is(input, select, textarea) {
+.activity-modal-field :is(input, select, textarea) {
   padding: 7px 10px;
   border: 1px solid var(--input-line);
   border-radius: var(--radius-control);
@@ -5164,27 +5167,10 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
   gap: 2px;
   min-width: 0;
 }
-.activity-modal-actions,
-.activity-dialog-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
-}
-.activity-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-bottom: 10px;
-  margin-bottom: 10px;
-  border-bottom: 1px solid var(--line);
-  font-weight: 600;
-}
-.activity-dialog-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+@media (prefers-reduced-motion: reduce) {
+  .hierarchy-card, .field-progressbar-fill, .record-form .form-title-hero-media .field-image > .field-image-actions,
+  .form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle) { transition: none; }
+  .hierarchy-card.is-drop-target { transform: none; }
 }
 @media (max-width: 640px) {
   .activity-view { padding: 8px 8px 20px; }
