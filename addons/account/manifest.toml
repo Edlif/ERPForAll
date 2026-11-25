@@ -3,7 +3,7 @@ summary = "Journals, ledgers, taxes, invoices and payments"
 category = "Accounting"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.14.0"
+version = "1.15.0"
 depends = ["base", "web", "product", "analytic"]
 application = true
 exact_only = true
@@ -35,6 +35,10 @@ data = [
     "views/account_batch_payment_views.xml",
     "views/account_bank_statement_views.xml",
     "views/account_followup_views.xml",
+    "views/account_analytic_views.xml",
+    "views/account_budget_views.xml",
+    "views/account_asset_views.xml",
+    "views/account_recurring_views.xml",
     "views/account_fiscal_position_views.xml",
     "views/account_reports.xml",
     "views/account_incoterms_views.xml",

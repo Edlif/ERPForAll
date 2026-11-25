@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Financial Budgets: Accounting > Accounting > Budgets -->
+<erp>
+  <record id="view_account_budget_line_list" model="ir.ui.view">
+    <field name="name">account.budget.line.list</field>
+    <field name="model">account.budget.line</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="account_id"/>
+        <field name="analytic_account_id"/>
+        <field name="date_from"/>
+        <field name="date_to"/>
+        <field name="planned_amount"/>
+        <field name="practical_amount"/>
+        <field name="theoretical_amount"/>
+        <field name="percentage" string="Achievement %"/>
+        <field name="currency_id" invisible="1"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_account_budget_line_form" model="ir.ui.view">
+    <field name="name">account.budget.line.form</field>
+    <field name="model">account.budget.line</field>
+    <field name="arch" type="xml">
+      <form string="Budget Line">
+        <sheet>
+          <group>
+            <group>
+              <field name="name"/>
+              <field name="account_id"/>
+              <field name="analytic_account_id"/>
+              <field name="planned_amount"/>
+            </group>
+            <group>
+              <field name="date_from"/>
+              <field name="date_to"/>
+              <field name="practical_amount" readonly="1"/>
+              <field name="theoretical_amount" readonly="1"/>
+              <field name="percentage" readonly="1"/>
+              <field name="currency_id" invisible="1"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_account_budget_list" model="ir.ui.view">
+    <field name="name">account.budget.list</field>
+    <field name="model">account.budget</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="date_from"/>
+        <field name="date_to"/>
+        <field name="total_planned"/>
+        <field name="total_practical"/>
+        <field name="currency_id"/>
+        <field name="state" widget="badge" options="{'tone_warning': ['draft'], 'tone_info': ['confirm'], 'tone_success': ['validate', 'done'], 'tone_danger': ['cancel']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_account_budget_form" model="ir.ui.view">
+    <field name="name">account.budget.form</field>
+    <field name="model">account.budget</field>
+    <field name="arch" type="xml">
+      <form string="Budget">
+        <header>
+          <button name="action_budget_confirm" type="object" string="Confirm" class="btn-primary" invisible="state != 'draft'"/>
+          <button name="action_budget_validate" type="object" string="Approve" class="btn-primary" invisible="state != 'confirm'"/>
+          <button name="action_refresh_practical" type="object" string="Compute Practical" invisible="state not in ('confirm', 'validate')"/>
+          <button name="action_budget_done" type="object" string="Done" invisible="state != 'validate'"/>
+          <button name="action_budget_cancel" type="object" string="Cancel" invisible="state not in ('draft', 'confirm')"/>
+          <button name="action_budget_draft" type="object" string="Reset to Draft" invisible="state != 'cancel'"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,confirm,validate,done"/>
+        </header>
+        <sheet>
+          <div class="oe_title"><h1><field name="name" placeholder="e.g. FY2026 Operating Budget" readonly="state in ('done', 'cancel')"/></h1></div>
+          <group>
+            <group>
+              <field name="date_from" readonly="state in ('done', 'cancel')"/>
+              <field name="date_to" readonly="state in ('done', 'cancel')"/>
+            </group>
+            <group>
+              <field name="total_planned" readonly="1"/>
+              <field name="total_practical" readonly="1"/>
+              <field name="currency_id" readonly="1"/>
+              <field name="company_id" readonly="1"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Budget Lines" name="lines">
+              <field name="line_ids" readonly="state in ('done', 'cancel')"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_account_budget" model="ir.actions.act_window">
+    <field name="name">Budgets</field>
+    <field name="res_model">account.budget</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_account_budget_list"/>
+  </record>
+
+  <menuitem id="menu_account_budget" name="Budgets" parent="menu_finance_entries" action="action_account_budget" sequence="45"/>
+  <record id="menu_account_budget" model="ir.ui.menu"><field name="web_icon">lucide:trending-up</field></record>
+</erp>

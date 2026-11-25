@@ -305,9 +305,66 @@ pub async fn post_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
                 .map(|((id, date), h)| (*id, Cell::Date(h.date), Cell::Date(*date))),
         )?;
         number(tx, moves, &headers, &dates).await?;
+        create_analytic_lines_for_moves(tx, moves.env(), &ids).await?;
         invalidate(tx, moves).await
     })
     .await
+}
+
+async fn create_analytic_lines_for_moves(
+    tx: &mut Transaction,
+    env: &Env,
+    move_ids: &[i64],
+) -> Result<()> {
+    if move_ids.is_empty() {
+        return Ok(());
+    }
+    let rows = tx
+        .query(
+            "SELECT l.analytic_account_id::int8, COALESCE(l.name, m.name, 'Journal Item')::text, \
+                    l.date, l.partner_id::int8, -COALESCE(l.balance, 0), COALESCE(l.quantity, 0), \
+                    m.name::text \
+             FROM account_move_line l \
+             JOIN account_move m ON m.id = l.move_id \
+             WHERE l.move_id = ANY($1::int8[]) \
+               AND l.analytic_account_id IS NOT NULL \
+               AND COALESCE(l.balance, 0) <> 0 \
+             ORDER BY l.id",
+            &[&move_ids],
+        )
+        .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut vals_list = Vec::with_capacity(rows.len());
+    for row in rows {
+        let aid: i64 = row.try_get(0).map_err(db)?;
+        let label: String = row.try_get(1).map_err(db)?;
+        let date: Date = row.try_get(2).map_err(db)?;
+        let partner: Option<i64> = row.try_get(3).map_err(db)?;
+        let amount: Decimal = row.try_get(4).map_err(db)?;
+        let qty: Decimal = row.try_get(5).map_err(db)?;
+        let mref: Option<String> = row.try_get(6).map_err(db)?;
+        let mut v = RawVals::new();
+        v.insert("account_id".into(), Cell::Id(aid));
+        v.insert("name".into(), Cell::Str(label.into()));
+        v.insert("date".into(), Cell::Date(date));
+        v.insert("amount".into(), Cell::Decimal(amount));
+        v.insert("unit_amount".into(), Cell::Decimal(qty));
+        if let Some(pid) = partner {
+            v.insert("partner_id".into(), Cell::Id(pid));
+        }
+        if let Some(r) = mref {
+            v.insert("ref".into(), Cell::Str(r.into()));
+        }
+        vals_list.push(v);
+    }
+    let clean_env = env.with_context_replaced(erp_sdk::Context::default());
+    clean_env
+        .records("account.analytic.line")?
+        .create(tx, vals_list)
+        .await?;
+    Ok(())
 }
 
 /// Return the cancelled entries of `moves` to draft; a posted entry is refused (
