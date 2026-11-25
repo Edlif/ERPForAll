@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <menuitem id="menu_stock_delivery_carriers" name="Shipping Methods" parent="stock.menu_stock_config_settings" action="delivery.action_delivery_carrier" groups="stock.group_stock_manager" sequence="85"/>
+  <record id="menu_stock_delivery_carriers" model="ir.ui.menu"><field name="web_icon">lucide:truck</field></record>
+
+  <record id="view_picking_form_delivery" model="ir.ui.view">
+    <field name="name">stock.picking.form.delivery</field>
+    <field name="model">stock.picking</field>
+    <field name="inherit_id" ref="stock.view_picking_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//header" position="inside">
+        <button name="action_compute_shipping_cost" type="object" string="Compute Shipping" invisible="not carrier_id or state == 'cancel'"/>
+        <button name="action_send_to_shipper" type="object" string="Dispatch to Carrier" invisible="not carrier_id or state in ('draft', 'cancel')"/>
+      </xpath>
+      <xpath expr="//page[@name='extra']/group" position="inside">
+        <group name="carrier_data" string="Shipping Information">
+          <field name="carrier_id" readonly="state in ('done', 'cancel')"/>
+          <field name="carrier_tracking_ref" readonly="state in ('done', 'cancel')"/>
+          <field name="shipping_weight" readonly="1"/>
+          <field name="carrier_price" readonly="1"/>
+        </group>
+      </xpath>
+    </field>
+  </record>
+
+  <record id="view_sale_order_form_delivery" model="ir.ui.view">
+    <field name="name">sale.order.form.delivery</field>
+    <field name="model">sale.order</field>
+    <field name="inherit_id" ref="sale.view_order_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//header" position="inside">
+        <button name="action_add_shipping" type="object" string="Add Shipping" invisible="not carrier_id or state not in ('draft', 'sent')"/>
+      </xpath>
+      <xpath expr="//group[@name='sale_shipping']" position="inside">
+        <field name="carrier_id" readonly="state not in ('draft', 'sent')"/>
+        <field name="delivery_price" readonly="1"/>
+      </xpath>
+    </field>
+  </record>
+</erp>

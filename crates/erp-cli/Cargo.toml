@@ -29,6 +29,8 @@ erp-addon-stock_dropshipping.workspace = true
 erp-addon-barcodes_gs1_nomenclature.workspace = true
 erp-addon-stock.workspace = true
 erp-addon-product_expiry.workspace = true
+erp-addon-delivery.workspace = true
+erp-addon-stock_sms.workspace = true
 # message thread and chatter on entries, purchase orders and transfers (bridges, auto-installed with mail)
 erp-addon-account-mail.workspace = true
 erp-addon-purchase-mail.workspace = true
@@ -39,6 +41,7 @@ erp-addon-sales_team.workspace = true
 # sales: quotations and sales orders
 erp-addon-sale.workspace = true
 erp-addon-sale_stock.workspace = true
+erp-addon-stock_delivery.workspace = true
 # dynamic reports: options, line tree and engines of the report screen
 erp-addon-reporting.workspace = true
 erp-addon-account-reporting.workspace = true

@@ -1567,6 +1567,7 @@ name = "erp-addon-delivery"
 version = "0.1.0"
 dependencies = [
  "erp-addon-base",
+ "erp-addon-product",
  "erp-sdk",
 ]
 
@@ -1800,7 +1801,9 @@ name = "erp-addon-stock_delivery"
 version = "0.1.0"
 dependencies = [
  "erp-addon-delivery",
+ "erp-addon-sale",
  "erp-addon-sale_stock",
+ "erp-addon-stock",
  "erp-sdk",
 ]
 
@@ -1847,6 +1850,7 @@ dependencies = [
 name = "erp-addon-stock_sms"
 version = "0.1.0"
 dependencies = [
+ "erp-addon-base",
  "erp-addon-stock",
  "erp-sdk",
 ]
@@ -2057,6 +2061,7 @@ dependencies = [
  "erp-addon-barcodes",
  "erp-addon-barcodes_gs1_nomenclature",
  "erp-addon-base",
+ "erp-addon-delivery",
  "erp-addon-hr",
  "erp-addon-mail",
  "erp-addon-product",
@@ -2074,8 +2079,10 @@ dependencies = [
  "erp-addon-stock",
  "erp-addon-stock-mail",
  "erp-addon-stock_account",
+ "erp-addon-stock_delivery",
  "erp-addon-stock_dropshipping",
  "erp-addon-stock_landed_costs",
+ "erp-addon-stock_sms",
  "erp-addon-theme-office-blue",
  "erp-addon-uom",
  "erp-addon-valuation",

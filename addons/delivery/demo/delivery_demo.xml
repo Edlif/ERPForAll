@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="product_delivery_standard" model="product.template">
+      <field name="name">Standard Delivery Charges</field>
+      <field name="type">service</field>
+      <field name="list_price">15</field>
+      <field name="standard_price">10</field>
+    </record>
+
+    <record id="product_delivery_express" model="product.template">
+      <field name="name">Express Courier Charges</field>
+      <field name="type">service</field>
+      <field name="list_price">35</field>
+      <field name="standard_price">25</field>
+    </record>
+
+    <record id="carrier_standard_delivery" model="delivery.carrier">
+      <field name="name">Standard Delivery</field>
+      <field name="delivery_type">fixed</field>
+      <field name="product_id" search="[('product_tmpl_id', '=', ref('delivery.product_delivery_standard'))]"/>
+      <field name="fixed_price">15</field>
+      <field name="free_over">true</field>
+      <field name="amount">500</field>
+      <field name="sequence">10</field>
+      <field name="carrier_description">Flat-rate shipping, free for orders over 500.</field>
+    </record>
+
+    <record id="carrier_express_rules" model="delivery.carrier">
+      <field name="name">Express Courier (Weight Rules)</field>
+      <field name="delivery_type">base_on_rule</field>
+      <field name="product_id" search="[('product_tmpl_id', '=', ref('delivery.product_delivery_express'))]"/>
+      <field name="margin">10</field>
+      <field name="sequence">20</field>
+      <field name="carrier_description">Tiered weight pricing with 10% handling margin.</field>
+    </record>
+
+    <record id="rule_express_light" model="delivery.price.rule">
+      <field name="carrier_id" ref="carrier_express_rules"/>
+      <field name="sequence">10</field>
+      <field name="variable">weight</field>
+      <field name="operator">&lt;=</field>
+      <field name="max_value">5</field>
+      <field name="list_base_price">20</field>
+      <field name="list_price">2</field>
+      <field name="variable_factor">weight</field>
+    </record>
+
+    <record id="rule_express_heavy" model="delivery.price.rule">
+      <field name="carrier_id" ref="carrier_express_rules"/>
+      <field name="sequence">20</field>
+      <field name="variable">weight</field>
+      <field name="operator">&gt;</field>
+      <field name="max_value">5</field>
+      <field name="list_base_price">35</field>
+      <field name="list_price">4</field>
+      <field name="variable_factor">weight</field>
+    </record>
+  </data>
+</erp>

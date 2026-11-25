@@ -3,6 +3,9 @@ summary = "Carrier shipping contract and delivery hooks for stock pickings"
 category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.0.0"
-depends = ["sale_stock", "delivery"]
-data = []
+version = "1.1.0"
+depends = ["base", "stock", "sale", "sale_stock", "delivery"]
+data = [
+    "views/stock_delivery_views.xml",
+]
+exact_only = true

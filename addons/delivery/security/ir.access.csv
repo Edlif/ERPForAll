@@ -1,0 +1,5 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_delivery_carrier_user,Delivery: delivery.carrier (user),delivery.model_delivery_carrier,base.group_user,r,
+access_delivery_carrier_admin,Delivery: delivery.carrier (system),delivery.model_delivery_carrier,base.group_system,crud,
+access_delivery_price_rule_user,Delivery: delivery.price.rule (user),delivery.model_delivery_price_rule,base.group_user,r,
+access_delivery_price_rule_admin,Delivery: delivery.price.rule (system),delivery.model_delivery_price_rule,base.group_system,crud,

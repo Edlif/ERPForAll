@@ -1,9 +1,12 @@
 name = "Stock SMS"
-summary = "SMS notifications on delivery validation"
+summary = "Delivery email and SMS confirmation notifications on transfer validation"
 category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.0.0"
-depends = ["stock"]
-data = []
+version = "1.1.0"
+depends = ["base", "stock"]
+data = [
+    "security/ir.access.csv",
+    "views/stock_sms_views.xml",
+]
 exact_only = true

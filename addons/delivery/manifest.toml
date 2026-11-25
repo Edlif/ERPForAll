@@ -3,6 +3,13 @@ summary = "Shipping carriers and delivery methods"
 category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.0.0"
-depends = ["base"]
-data = []
+version = "1.1.0"
+depends = ["base", "product"]
+data = [
+    "security/ir.access.csv",
+    "views/delivery_views.xml",
+]
+demo = [
+    "demo/delivery_demo.xml",
+]
+exact_only = true

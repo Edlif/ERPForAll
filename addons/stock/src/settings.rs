@@ -155,11 +155,11 @@ fn declarations() -> Result<Vec<SettingDecl>> {
         company(SettingDecl::integer(DAY, "Annual count day", Company, 31, (1, 31))?,
             "Counting", 31, "Default: 31. Day of the month for annual physical inventory count scheduling; February ends at 28.")?,
         company(SettingDecl::boolean("stock.stock_move_email_validation", "Delivery email", Company, false)?,
-            "Shipping", 40, "Default: off. Saved only; delivery email is not sent by this setting yet.")?,
+            "Shipping", 40, "Send an automatic delivery confirmation email log when an outgoing delivery is validated.")?,
         company(SettingDecl::boolean("stock.stock_text_confirmation", "Delivery text message", Company, false)?,
-            "Shipping", 41, "Default: off. Saved only; delivery text messages are not sent yet.")?,
+            "Shipping", 41, "Send an automatic delivery SMS confirmation log when an outgoing delivery is validated.")?,
         company(SettingDecl::selection("stock.stock_confirmation_type", "Delivery text channel", Company, "sms", &[("sms", "SMS")])?,
-            "Shipping", 42, "Default and available channel: SMS. Saved only; no message is sent yet.")?,
+            "Shipping", 42, "Channel used for delivery text confirmations (SMS).")?,
         SettingDecl::string("stock.barcode_separator", "Combined barcode separator", Global, ",", 16)?
             .validator(separator)?.block("Barcode")?.sequence(50)
             .help("Default: comma. Allowed: 1 to 16 UTF-8 bytes without control characters. Shared by all companies to split combined barcode scans.")?

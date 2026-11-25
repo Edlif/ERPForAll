@@ -1,6 +1,6 @@
 [package]
 name = "erp-addon-stock_sms"
-description = "ERPForAll addon stock_sms: SMS notifications on delivery validation"
+description = "ERPForAll addon stock_sms: delivery email and SMS confirmation notifications on transfer validation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 erp-sdk = { workspace = true }
+erp-addon-base = { workspace = true }
 erp-addon-stock = { workspace = true }
 
 [lints]

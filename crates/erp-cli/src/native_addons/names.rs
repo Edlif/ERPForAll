@@ -26,6 +26,8 @@ pub const LINKED: &[&str] = &[
     "account_reporting",
     "stock",
     "product_expiry",
+    "delivery",
+    "stock_sms",
     "stock_account",
     "valuation",
     "stock_mail",
@@ -34,6 +36,7 @@ pub const LINKED: &[&str] = &[
     "sales_team",
     "sale",
     "sale_stock",
+    "stock_delivery",
     "stock_dropshipping",
     "ai_base",
     "hr",
@@ -46,8 +49,4 @@ pub const DECLARED_ONLY: &str = "declared, no behaviour yet (manifest and depend
 
 /// The addons of `addons/` with a Rust crate that the `erp` binary does not link, with the reason
 /// the addon catalogue logs for each. Every crate under `addons/` is in [`LINKED`] or here.
-pub const NOT_LINKED: &[(&str, &str)] = &[
-    ("delivery", DECLARED_ONLY),
-    ("stock_delivery", DECLARED_ONLY),
-    ("stock_sms", DECLARED_ONLY),
-];
+pub const NOT_LINKED: &[(&str, &str)] = &[];

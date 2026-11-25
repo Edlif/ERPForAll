@@ -1,0 +1,3 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_stock_delivery_notification_user,Stock SMS: stock.delivery.notification (user),stock_sms.model_stock_delivery_notification,stock.group_stock_user,r,
+access_stock_delivery_notification_manager,Stock SMS: stock.delivery.notification (manager),stock_sms.model_stock_delivery_notification,stock.group_stock_manager,crud,
