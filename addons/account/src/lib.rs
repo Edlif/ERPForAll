@@ -8,9 +8,11 @@ erp_sdk::addon!(
     exact_only = true
 );
 
+pub mod bank;
 pub mod company;
 mod costing;
 pub mod fiscal;
+pub mod followup;
 pub mod fpos;
 pub mod invoice;
 pub mod journal;

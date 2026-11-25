@@ -51,6 +51,10 @@ pub mod labels {
     pub const NEW_BILL: &str = "New Bill";
     /// Button of a miscellaneous journal.
     pub const NEW_ENTRY: &str = "New Entry";
+    /// Button of a bank, cash or credit card journal.
+    pub const NEW_STATEMENT: &str = "New Statement";
+    /// Stat of a bank, cash or credit card journal: unreconciled bank statement lines.
+    pub const TO_RECONCILE: &str = "To Reconcile";
     /// Stat of a bank, cash or credit card journal: its journal entries.
     pub const TRANSACTIONS: &str = "Transactions";
     /// Draft documents or entries.
@@ -378,6 +382,8 @@ struct Figures {
     opening: BTreeMap<(i64, i64), Decimal>,
     /// Liquidity: posted movement by (account, company) and day inside the chart window.
     daily: BTreeMap<(i64, i64, Date), Decimal>,
+    /// Liquidity: unreconciled bank statement lines by journal.
+    to_reconcile: BTreeMap<i64, Sum>,
 }
 
 async fn figures(
@@ -604,6 +610,30 @@ async fn figures(
             }
         }
     }
+    let liquidity_ids = ids_where(Kind::is_liquidity);
+    if !liquidity_ids.is_empty() {
+        let groups = grouped(
+            tx,
+            env,
+            "account.bank.statement.line",
+            Domain::and([
+                Domain::field("journal_id")?.in_(liquidity_ids),
+                Domain::field("is_reconciled")?.eq(false),
+            ]),
+            &["journal_id"],
+            &["amount:sum", "__count"],
+        )
+        .await?;
+        for r in 0..groups.len() {
+            f.to_reconcile.insert(
+                group_id(&groups.column(0)[r], "journal")?,
+                Sum {
+                    amount: group_decimal(&groups.column(1)[r])?,
+                    count: group_int(&groups.column(2)[r])?,
+                },
+            );
+        }
+    }
     Ok(f)
 }
 
@@ -632,11 +662,17 @@ fn stat(journal: &Journal, label: &str, sum: Sum, money: bool, target: Target, t
     })
 }
 
-/// The button that starts a new document in the journal. A bank, cash or credit card journal has
-/// none: the reference opens the journal's statements there, and until statements exist the
-/// journal's entries are reached from the Transactions stat, whose domain names the journal (a
-/// button carries no domain in contract v1).
+/// The button that starts a new document or statement in the journal.
 fn button(journal: &Journal) -> Option<Json> {
+    if journal.kind.is_liquidity() {
+        return Some(json!({
+            "label": labels::NEW_STATEMENT,
+            "action": "account.action_bank_statement_tree",
+            "view_mode": "form",
+            "context": {"default_journal_id": journal.id},
+            "primary": true,
+        }));
+    }
     let (label, move_type) = match journal.kind {
         Kind::Sale => (labels::NEW_INVOICE, "out_invoice"),
         Kind::Purchase => (labels::NEW_BILL, "in_invoice"),
@@ -768,6 +804,7 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                     .sum(),
                 amount: Decimal::ZERO,
             };
+            let to_reconcile = f.to_reconcile.get(&id).copied().unwrap_or_default();
             let stats = [
                 stat(
                     journal,
@@ -780,6 +817,18 @@ fn card(journal: &Journal, f: &Figures, today: Date, settings: DashboardSettings
                         context: json!({}),
                     },
                     "neutral",
+                ),
+                stat(
+                    journal,
+                    labels::TO_RECONCILE,
+                    to_reconcile,
+                    true,
+                    Target {
+                        action: "account.action_bank_statement_line_reconcile",
+                        domain: json!([["journal_id", "=", id], ["is_reconciled", "=", false]]),
+                        context: json!({"default_journal_id": id}),
+                    },
+                    "warning",
                 ),
                 stat(
                     journal,
@@ -981,11 +1030,13 @@ mod tests {
         }
     }
 
-    /// A liquidity journal has no button; the others start a new document in their journal.
+    /// A liquidity journal starts a new bank statement; the others start a new document in their journal.
     #[test]
-    fn a_liquidity_journal_has_no_button() {
+    fn a_liquidity_journal_opens_new_statement() {
         for kind in [Kind::Bank, Kind::Cash, Kind::Credit] {
-            assert!(button(&journal_of(kind)).is_none(), "{kind:?}");
+            let btn = button(&journal_of(kind)).expect("liquidity button");
+            assert_eq!(btn["action"], "account.action_bank_statement_tree");
+            assert_eq!(btn["context"]["default_journal_id"], 7);
         }
         let sale = button(&journal_of(Kind::Sale)).unwrap();
         assert_eq!(sale["action"], "account.action_move_out_invoice_type");

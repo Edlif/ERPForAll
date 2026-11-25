@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Bank Statements & Bank Reconciliation: Accounting > Accounting -->
+<erp>
+  <!-- Compact line views used inside a Bank Statement form's One2many table -->
+  <record id="view_bank_statement_line_list" model="ir.ui.view">
+    <field name="name">account.bank.statement.line.list</field>
+    <field name="model">account.bank.statement.line</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="date"/>
+        <field name="journal_id"/>
+        <field name="payment_ref"/>
+        <field name="partner_id"/>
+        <field name="matched_move_id"/>
+        <field name="counterpart_account_id"/>
+        <field name="amount"/>
+        <field name="currency_id"/>
+        <field name="is_reconciled"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_bank_statement_line_inline_form" model="ir.ui.view">
+    <field name="name">account.bank.statement.line.inline.form</field>
+    <field name="model">account.bank.statement.line</field>
+    <field name="priority" eval="30"/>
+    <field name="arch" type="xml">
+      <form string="Statement Transaction">
+        <sheet>
+          <group>
+            <group>
+              <field name="date" readonly="is_reconciled"/>
+              <field name="payment_ref" readonly="is_reconciled"/>
+              <field name="ref" readonly="is_reconciled"/>
+              <field name="amount" readonly="is_reconciled"/>
+              <field name="currency_id" readonly="1"/>
+            </group>
+            <group>
+              <field name="journal_id" readonly="is_reconciled"/>
+              <field name="partner_id" readonly="is_reconciled"/>
+              <field name="matched_move_id" readonly="is_reconciled"/>
+              <field name="counterpart_account_id" readonly="is_reconciled"/>
+              <field name="move_id" readonly="1"/>
+              <field name="is_reconciled" readonly="1"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <!-- Dedicated Bank Reconciliation form with 1-click Reconcile header action -->
+  <record id="view_bank_statement_line_reconcile_form" model="ir.ui.view">
+    <field name="name">account.bank.statement.line.reconcile.form</field>
+    <field name="model">account.bank.statement.line</field>
+    <field name="arch" type="xml">
+      <form string="Bank Reconciliation">
+        <header>
+          <button name="action_reconcile_line" type="object" string="Reconcile" class="btn-primary" invisible="is_reconciled"/>
+        </header>
+        <sheet>
+          <widget name="web_ribbon" title="Reconciled" bg_color="bg-success" invisible="not is_reconciled"/>
+          <div class="oe_title">
+            <h1><field name="payment_ref" readonly="is_reconciled"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="statement_id" readonly="is_reconciled"/>
+              <field name="journal_id" readonly="is_reconciled"/>
+              <field name="date" readonly="is_reconciled"/>
+              <field name="ref" readonly="is_reconciled"/>
+              <field name="amount" readonly="is_reconciled"/>
+              <field name="currency_id" readonly="1"/>
+            </group>
+            <group>
+              <field name="partner_id" readonly="is_reconciled"/>
+              <field name="matched_move_id" readonly="is_reconciled"/>
+              <field name="counterpart_account_id" readonly="is_reconciled"/>
+              <field name="move_id" readonly="1" invisible="not move_id"/>
+              <field name="is_reconciled" readonly="1"/>
+              <field name="company_id" readonly="1"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_bank_statement_line_search" model="ir.ui.view">
+    <field name="name">account.bank.statement.line.search</field>
+    <field name="model">account.bank.statement.line</field>
+    <field name="arch" type="xml">
+      <search string="Bank Reconciliation">
+        <field name="payment_ref"/>
+        <field name="partner_id"/>
+        <field name="journal_id"/>
+        <field name="statement_id"/>
+        <filter name="to_reconcile" string="To Reconcile" domain="[('is_reconciled', '=', False)]"/>
+        <filter name="reconciled" string="Reconciled" domain="[('is_reconciled', '=', True)]"/>
+        <group>
+          <filter name="groupby_journal" string="Journal" context="{'group_by': 'journal_id'}"/>
+          <filter name="groupby_statement" string="Statement" context="{'group_by': 'statement_id'}"/>
+          <filter name="groupby_partner" string="Partner" context="{'group_by': 'partner_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="view_bank_statement_list" model="ir.ui.view">
+    <field name="name">account.bank.statement.list</field>
+    <field name="model">account.bank.statement</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="date"/>
+        <field name="journal_id"/>
+        <field name="balance_start"/>
+        <field name="balance_end_real"/>
+        <field name="balance_end"/>
+        <field name="unreconciled_count" string="To Reconcile"/>
+        <field name="currency_id"/>
+        <field name="state" widget="badge" options="{'tone_warning': ['open'], 'tone_success': ['posted']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_bank_statement_form" model="ir.ui.view">
+    <field name="name">account.bank.statement.form</field>
+    <field name="model">account.bank.statement</field>
+    <field name="arch" type="xml">
+      <form string="Bank Statement">
+        <header>
+          <button name="action_import_csv" type="object" string="Import CSV Lines" invisible="state != 'open'"/>
+          <button name="action_reconcile_all" type="object" string="Reconcile All" class="btn-primary" invisible="state != 'open' or unreconciled_count == 0"/>
+          <button name="action_post_statement" type="object" string="Post Statement" class="btn-primary" invisible="state != 'open'"/>
+          <button name="action_reopen" type="object" string="Reopen" invisible="state != 'posted'"/>
+          <field name="state" widget="statusbar" statusbar_visible="open,posted"/>
+        </header>
+        <sheet>
+          <widget name="web_ribbon" title="Posted" bg_color="bg-success" invisible="state != 'posted'"/>
+          <div class="oe_title">
+            <h1><field name="name" readonly="state != 'open'"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="journal_id" readonly="state != 'open'"/>
+              <field name="date" readonly="state != 'open'"/>
+              <field name="company_id" readonly="1"/>
+              <field name="currency_id" readonly="1"/>
+            </group>
+            <group>
+              <field name="balance_start" readonly="state != 'open'"/>
+              <field name="balance_end_real" readonly="state != 'open'"/>
+              <field name="balance_end" readonly="1"/>
+              <field name="is_complete" readonly="1"/>
+              <field name="unreconciled_count" readonly="1"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Transactions" name="transactions">
+              <field name="line_ids" readonly="state != 'open'"
+                     context="{'list_view_ref': 'account.view_bank_statement_line_list', 'form_view_ref': 'account.view_bank_statement_line_inline_form'}"/>
+            </page>
+            <page string="CSV Import" name="csv_import">
+              <group>
+                <field name="csv_import_data" readonly="state != 'open'" placeholder="date,label,amount,ref&#10;2026-11-25,Customer Wire,250.00,WIRE-01&#10;2026-11-25,Bank Fee,-10.00,FEE-01"/>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_bank_statement_search" model="ir.ui.view">
+    <field name="name">account.bank.statement.search</field>
+    <field name="model">account.bank.statement</field>
+    <field name="arch" type="xml">
+      <search string="Bank Statements">
+        <field name="name"/>
+        <field name="journal_id"/>
+        <filter name="open" string="Open" domain="[('state', '=', 'open')]"/>
+        <filter name="posted" string="Posted" domain="[('state', '=', 'posted')]"/>
+        <group>
+          <filter name="groupby_journal" string="Journal" context="{'group_by': 'journal_id'}"/>
+          <filter name="groupby_state" string="Status" context="{'group_by': 'state'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_bank_statement_tree" model="ir.actions.act_window">
+    <field name="name">Bank Statements</field>
+    <field name="res_model">account.bank.statement</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_bank_statement_list"/>
+    <field name="search_view_id" ref="view_bank_statement_search"/>
+  </record>
+
+  <record id="action_bank_statement_line_reconcile" model="ir.actions.act_window">
+    <field name="name">Bank Reconciliation</field>
+    <field name="res_model">account.bank.statement.line</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_bank_statement_line_list"/>
+    <field name="search_view_id" ref="view_bank_statement_line_search"/>
+    <field name="context">{'search_default_to_reconcile': 1}</field>
+  </record>
+  <record id="action_bank_statement_line_reconcile_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_bank_statement_line_reconcile"/>
+    <field name="view_id" ref="view_bank_statement_line_list"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="action_bank_statement_line_reconcile_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="action_bank_statement_line_reconcile"/>
+    <field name="view_id" ref="view_bank_statement_line_reconcile_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+
+  <menuitem id="menu_bank_statements"
+            name="Bank Statements"
+            parent="menu_finance_entries"
+            action="action_bank_statement_tree"
+            sequence="30"/>
+  <menuitem id="menu_bank_reconciliation"
+            name="Bank Reconciliation"
+            parent="menu_finance_entries"
+            action="action_bank_statement_line_reconcile"
+            sequence="35"/>
+  <record id="menu_bank_statements" model="ir.ui.menu"><field name="web_icon">lucide:wallet</field></record>
+  <record id="menu_bank_reconciliation" model="ir.ui.menu"><field name="web_icon">lucide:refresh-cw</field></record>
+</erp>

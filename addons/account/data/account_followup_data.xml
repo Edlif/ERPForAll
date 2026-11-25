@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Standard overdue follow-up escalation levels for the main company. -->
+<erp>
+  <data noupdate="1">
+    <record id="followup_level_first_reminder" model="account.followup.level">
+      <field name="name">First Reminder</field>
+      <field name="delay">15</field>
+      <field name="company_id" ref="base.main_company"/>
+      <field name="send_email" eval="True"/>
+      <field name="join_invoices" eval="True"/>
+      <field name="note">Friendly reminder: one or more invoices are past due. Please review your statement and arrange payment.</field>
+    </record>
+    <record id="followup_level_second_reminder" model="account.followup.level">
+      <field name="name">Second Reminder</field>
+      <field name="delay">30</field>
+      <field name="company_id" ref="base.main_company"/>
+      <field name="send_email" eval="True"/>
+      <field name="join_invoices" eval="True"/>
+      <field name="note">Second notice: your overdue balance is now more than 30 days past due. Please remit payment promptly.</field>
+    </record>
+    <record id="followup_level_final_notice" model="account.followup.level">
+      <field name="name">Final Notice</field>
+      <field name="delay">60</field>
+      <field name="company_id" ref="base.main_company"/>
+      <field name="send_email" eval="True"/>
+      <field name="send_sms" eval="True"/>
+      <field name="join_invoices" eval="True"/>
+      <field name="note">Final notice: account is more than 60 days overdue. Immediate settlement is required to avoid hold.</field>
+    </record>
+  </data>
+</erp>
