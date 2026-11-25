@@ -35,14 +35,6 @@ use crate::stock_move::StockMove;
 const PICKING_DEFAULTS: &str = "SELECT id, company_id, location_id, location_dest_id, \
        picking_type_id, partner_id FROM stock_picking WHERE id = ANY($1)";
 
-/// Draft moves of `$1` that need a procurement to confirm: make-to-order without origins, or
-/// created by a rule that falls back to an order.
-const NEEDS_PROCUREMENT: &str = "SELECT count(*) FROM stock_move m \
-     LEFT JOIN stock_rule r ON r.id = m.rule_id \
-     WHERE m.id = ANY($1) AND m.state = 'draft' \
-       AND NOT EXISTS (SELECT 1 FROM stock_move_move_rel o WHERE o.move_dest_id = m.id) \
-       AND (m.procure_method = 'make_to_order' OR r.procure_method = 'mts_else_mto')";
-
 /// Confirm the draft moves of `$1`: `waiting` behind origin moves, else `confirmed`; today's date
 /// `$2` as reservation date where the operation type reserves at confirmation.
 const CONFIRM: &str = "UPDATE stock_move m SET \
@@ -165,15 +157,9 @@ pub(crate) async fn confirm_moves(
     }
     tx.flush().await?;
     let roots = lock_move_roots(tx, moves, &[]).await?;
-    let blocked: i64 = tx
-        .query(NEEDS_PROCUREMENT, &[&moves])
-        .await?
-        .first()
-        .ok_or_else(|| Error::internal("A count returned no row."))?
-        .try_get(0)
-        .map_err(decode)?;
-    if blocked > 0 {
-        return Err(StockError::NeedsProcurement.into());
+    let upstream = crate::procurement::procure_mto_moves(records, tx, moves).await?;
+    if !upstream.is_empty() {
+        Box::pin(confirm_moves(records, tx, &upstream, assign)).await?;
     }
     // The whole request is locked above, before partitioning by company. Resolve every calendar
     // before changing any move so a bad zone cannot leave an earlier company confirmed.

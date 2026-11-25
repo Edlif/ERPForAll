@@ -46,7 +46,7 @@ fn registry() -> SettingsRegistry {
 #[test]
 fn scalar_domains_are_typed_bounded_and_named() {
     let declarations = declarations();
-    assert_eq!(declarations.len(), 8);
+    assert_eq!(declarations.len(), 9);
     let cases = [
         (
             "stock.horizon_days",
@@ -124,7 +124,7 @@ fn scalar_domains_are_typed_bounded_and_named() {
             .iter()
             .filter(|d| d.scope() == ScopeKind::Company)
             .count(),
-        7
+        8
     );
 }
 

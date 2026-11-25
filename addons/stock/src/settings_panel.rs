@@ -3,15 +3,8 @@
 use erp_sdk::prelude::*;
 use erp_sdk::settings::{PanelItemDecl, PanelItemValue, ScopeKind, SettingsScope};
 
-const ROUTES: &str = "Unavailable until a later release supplies route activation.";
 const ADDONS: &str = "Unavailable until a later release supplies this addon.";
 const FEATURES: &[(&str, &str, &str, &str)] = &[
-    (
-        "stock.replenish_on_order",
-        "Replenish on order",
-        "Warehouse",
-        ROUTES,
-    ),
     (
         "stock.module_stock_fleet",
         "Transport",

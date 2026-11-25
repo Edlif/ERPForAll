@@ -7,6 +7,8 @@
 
   <menuitem id="menu_stock_reporting" name="Reporting" parent="menu_stock_root" sequence="50" groups="stock.group_stock_user"/>
   <menuitem id="menu_stock_quant" name="Stock" parent="menu_stock_reporting" action="action_stock_quant" groups="stock.group_stock_manager" sequence="10"/>
+  <menuitem id="menu_stock_move_line_history" name="Moves History" parent="menu_stock_reporting" action="action_stock_move_line_history" groups="stock.group_stock_user" sequence="40"/>
+  <menuitem id="menu_stock_returns" name="Returns" parent="menu_stock_reporting" action="action_picking_tree_returns" groups="stock.group_stock_user" sequence="50"/>
 
   <menuitem id="menu_stock_warehouse" name="Warehouses" parent="menu_stock_config_settings" action="action_stock_warehouse" groups="stock.group_stock_multi_warehouses" sequence="20"/>
   <menuitem id="menu_stock_picking_type_config" name="Operation Types" parent="menu_stock_config_settings" action="action_stock_picking_type_config" sequence="30"/>
@@ -23,6 +25,8 @@
   <record id="menu_stock_lot" model="ir.ui.menu"><field name="web_icon">lucide:scan-barcode</field></record>
   <record id="menu_stock_reporting" model="ir.ui.menu"><field name="web_icon">lucide:chart-column</field></record>
   <record id="menu_stock_quant" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+  <record id="menu_stock_move_line_history" model="ir.ui.menu"><field name="web_icon">lucide:list</field></record>
+  <record id="menu_stock_returns" model="ir.ui.menu"><field name="web_icon">lucide:undo-2</field></record>
   <record id="menu_stock_warehouse" model="ir.ui.menu"><field name="web_icon">lucide:warehouse</field></record>
   <record id="menu_stock_picking_type_config" model="ir.ui.menu"><field name="web_icon">lucide:workflow</field></record>
   <record id="menu_stock_location" model="ir.ui.menu"><field name="web_icon">lucide:map-pin</field></record>

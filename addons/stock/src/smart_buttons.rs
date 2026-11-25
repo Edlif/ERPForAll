@@ -246,7 +246,7 @@ impl StockPicking {
     }
 }
 
-/// `product.template` inventory smart buttons: On Hand, Moves, Reordering Rules.
+/// `product.template` inventory smart buttons: On Hand, Forecasted, Moves, Reordering Rules.
 #[extend(ProductTemplate, addon = "stock")]
 pub struct ProductTemplateStockButtons {
     /// On-hand quantity summed across readable internal stock quants of this product's variants.
@@ -257,6 +257,41 @@ pub struct ProductTemplateStockButtons {
         string = "On Hand"
     )]
     pub qty_on_hand: Decimal,
+    /// Open incoming quantity into internal locations across this product's variants.
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_stock_counters",
+        string = "Incoming"
+    )]
+    pub qty_incoming: Decimal,
+    /// Open outgoing quantity leaving internal locations across this product's variants.
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_stock_counters",
+        string = "Outgoing"
+    )]
+    pub qty_outgoing: Decimal,
+    /// Forecasted stock (`qty_on_hand + qty_incoming - qty_outgoing`).
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_stock_counters",
+        string = "Forecasted"
+    )]
+    pub virtual_available: Decimal,
+    /// Inventory routes assigned specifically to this product (e.g. Replenish on Order / MTO).
+    #[field(
+        many2many,
+        comodel = "stock.route",
+        relation = "stock_route_product",
+        column1 = "product_id",
+        column2 = "route_id",
+        groups = "stock.group_adv_location",
+        string = "Routes"
+    )]
+    pub route_ids: Vec<RecId>,
     /// Readable stock moves touching this product's variants.
     #[field(integer, compute = "_compute_stock_counters", string = "Stock Moves")]
     pub stock_move_count: i32,
@@ -281,11 +316,12 @@ impl ProductTemplateStockButtons {
         out: &mut Assign<'_, ProductTemplate>,
     ) -> Result<()> {
         let records = this.as_records();
+        let tmpl_ids = source_ids(records);
         let sums = grouped(
             tx,
             records,
             "stock.quant",
-            linked(TEMPLATE, source_ids(records), &[INTERNAL])?,
+            linked(TEMPLATE, tmpl_ids.clone(), &[INTERNAL])?,
             &[TEMPLATE],
             "quantity:sum",
         )
@@ -301,14 +337,58 @@ impl ProductTemplateStockButtons {
                 *on_hand.entry(*template).or_insert(Decimal::ZERO) += *quantity;
             }
         }
+        let mut incoming: BTreeMap<i64, Decimal> = BTreeMap::new();
+        let mut outgoing: BTreeMap<i64, Decimal> = BTreeMap::new();
+        if !tmpl_ids.is_empty() {
+            let flow_rows = tx
+                .query(
+                    "SELECT pp.product_tmpl_id::int8, \
+                            COALESCE(sum(CASE WHEN ld.usage = 'internal' AND ls.usage <> 'internal' THEN m.product_qty ELSE 0 END), 0), \
+                            COALESCE(sum(CASE WHEN ls.usage = 'internal' AND ld.usage <> 'internal' THEN m.product_qty ELSE 0 END), 0) \
+                     FROM stock_move m \
+                     JOIN product_product pp ON pp.id = m.product_id \
+                     JOIN stock_location ls ON ls.id = m.location_id \
+                     JOIN stock_location ld ON ld.id = m.location_dest_id \
+                     WHERE pp.product_tmpl_id = ANY($1) \
+                       AND m.state NOT IN ('draft', 'done', 'cancel') \
+                     GROUP BY pp.product_tmpl_id",
+                    &[&tmpl_ids],
+                )
+                .await?;
+            for row in flow_rows {
+                let decode = |e| Error::internal(format!("forecasted move read: {e}"));
+                let tid: i64 = row.try_get(0).map_err(decode)?;
+                let inc: Decimal = row.try_get(1).map_err(decode)?;
+                let out_q: Decimal = row.try_get(2).map_err(decode)?;
+                incoming.insert(tid, inc);
+                outgoing.insert(tid, out_q);
+            }
+        }
         let move_counts = counts(tx, records, "stock.move", TEMPLATE, &[]).await?;
         let rule_counts = counts(tx, records, "stock.warehouse.orderpoint", TEMPLATE, &[]).await?;
         for (index, rec_id) in records.rec_ids().iter().enumerate() {
-            let quantity = row_of(rec_id)
+            let tid = row_of(rec_id);
+            let quantity = tid
                 .and_then(|id| on_hand.get(&id))
                 .copied()
                 .unwrap_or(Decimal::ZERO);
+            let inc = tid
+                .and_then(|id| incoming.get(&id))
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            let out_q = tid
+                .and_then(|id| outgoing.get(&id))
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            let forecast = quantity + inc - out_q;
             out.set(index, ProductTemplateStockButtons::QTY_ON_HAND, quantity)?;
+            out.set(index, ProductTemplateStockButtons::QTY_INCOMING, inc)?;
+            out.set(index, ProductTemplateStockButtons::QTY_OUTGOING, out_q)?;
+            out.set(
+                index,
+                ProductTemplateStockButtons::VIRTUAL_AVAILABLE,
+                forecast,
+            )?;
             out.set(
                 index,
                 ProductTemplateStockButtons::STOCK_MOVE_COUNT,
@@ -321,6 +401,32 @@ impl ProductTemplateStockButtons {
             )?;
         }
         Ok(())
+    }
+
+    /// Open open/forecasted stock moves for this product.
+    #[method]
+    #[rpc(effect = read)]
+    async fn action_open_forecasted(
+        this: &RecordSet<ProductTemplate>,
+        tx: &mut Transaction,
+    ) -> Result<Value> {
+        let id = the_one(this.as_records(), tx).await?;
+        window(
+            tx,
+            this.as_records(),
+            "Forecasted Moves",
+            "stock.move",
+            vec![
+                Value::str("&"),
+                leaf(TEMPLATE, "=", Value::Int(id)),
+                leaf(
+                    "state",
+                    "not in",
+                    Value::list([Value::str("done"), Value::str("cancel")]),
+                ),
+            ],
+        )
+        .await
     }
 
     /// Open internal stock quants on hand for this product.

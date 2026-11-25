@@ -30,6 +30,10 @@
                 groups="stock.group_stock_user" invisible="not is_storable">
           <field name="qty_on_hand" widget="statinfo" string="On Hand"/>
         </button>
+        <button name="action_open_forecasted" type="object" class="oe_stat_button" icon="lucide:trending-up"
+                groups="stock.group_stock_user" invisible="not is_storable">
+          <field name="virtual_available" widget="statinfo" string="Forecasted"/>
+        </button>
         <button name="action_open_stock_moves" type="object" class="oe_stat_button" icon="lucide:workflow"
                 groups="stock.group_stock_user" invisible="stock_move_count == 0">
           <field name="stock_move_count" widget="statinfo" string="Moves"/>
@@ -42,6 +46,12 @@
       <xpath expr="//notebook" position="inside">
         <page name="inventory" string="Inventory" groups="stock.group_stock_user">
           <group>
+            <group name="operations" string="Operations">
+              <field name="route_ids" groups="stock.group_adv_location"/>
+              <field name="qty_incoming" readonly="1" invisible="not is_storable"/>
+              <field name="qty_outgoing" readonly="1" invisible="not is_storable"/>
+              <field name="virtual_available" readonly="1" invisible="not is_storable"/>
+            </group>
             <group name="traceability" string="Traceability">
               <field name="tracking" groups="stock.group_production_lot"/>
             </group>

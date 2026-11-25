@@ -662,6 +662,7 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
         .await?;
     notify_pickings(records, tx, &roots).await?;
     confirm_moves(records, tx, &backorders, true).await?;
+    crate::procurement::propagate_push_and_downstream(records, tx, &done_moves).await?;
     Ok(original_lines)
 }
 

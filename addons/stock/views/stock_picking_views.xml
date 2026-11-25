@@ -254,6 +254,41 @@
     <field name="domain">[('picking_type_id.code', '=', 'internal')]</field>
     <field name="search_view_id" ref="view_picking_search"/>
   </record>
+  <record id="action_picking_tree_returns" model="ir.actions.act_window">
+    <field name="name">Returns</field>
+    <field name="res_model">stock.picking</field>
+    <field name="view_mode">list,form</field>
+    <field name="domain">[('return_id', '!=', False)]</field>
+    <field name="search_view_id" ref="view_picking_search"/>
+  </record>
+  <record id="view_stock_move_line_search" model="ir.ui.view">
+    <field name="name">stock.move.line.search</field>
+    <field name="model">stock.move.line</field>
+    <field name="arch" type="xml">
+      <search string="Moves History">
+        <field name="product_id"/>
+        <field name="lot_id"/>
+        <field name="location_id"/>
+        <field name="location_dest_id"/>
+        <field name="picking_id"/>
+        <filter name="done" string="Done" domain="[('membership', '=', 'done')]"/>
+        <filter name="open" string="Open" domain="[('membership', '=', 'open')]"/>
+        <group>
+          <filter name="groupby_product" string="Product" context="{'group_by': 'product_id'}"/>
+          <filter name="groupby_location" string="From" context="{'group_by': 'location_id'}"/>
+          <filter name="groupby_location_dest" string="To" context="{'group_by': 'location_dest_id'}"/>
+          <filter name="groupby_lot" string="Lot/Serial" context="{'group_by': 'lot_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+  <record id="action_stock_move_line_history" model="ir.actions.act_window">
+    <field name="name">Moves History</field>
+    <field name="res_model">stock.move.line</field>
+    <field name="view_mode">list,form</field>
+    <field name="domain">[('membership', '=', 'done')]</field>
+    <field name="search_view_id" ref="view_stock_move_line_search"/>
+  </record>
   <menuitem id="menu_stock_operations" name="Operations" parent="menu_stock_root" sequence="10"/>
   <menuitem id="menu_stock_receipts" name="Receipts" parent="menu_stock_operations" action="action_picking_tree_incoming" sequence="10"/>
   <menuitem id="menu_stock_deliveries" name="Deliveries" parent="menu_stock_operations" action="action_picking_tree_outgoing" sequence="20"/>

@@ -9,6 +9,7 @@ const READ: &[&str] = &["stock.group_stock_manager", ADMIN];
 const MONTH: &str = "stock.annual_inventory_month";
 const DAY: &str = "stock.annual_inventory_day";
 const PICKING_POLICY: &str = "stock.picking_policy";
+const REPLENISH_ON_ORDER: &str = "stock.replenish_on_order";
 
 /// The stock unit policy: declared technical system parameters,
 /// read by the runner with `erp_sdk::params::get_int`. One snapshot uses exactly these keys.
@@ -142,8 +143,10 @@ fn declarations() -> Result<Vec<SettingDecl>> {
     use ScopeKind::{Company, Global};
     let declarations = vec![
         picking_policy()?,
+        company(SettingDecl::boolean(REPLENISH_ON_ORDER, "Replenish on order (MTO)", Company, false)?,
+            "Warehouse", 15, "Activates the Replenish on Order (MTO) route so confirmed demand automatically procures upstream transfers.")?,
         company(SettingDecl::integer("stock.horizon_days", "Replenishment horizon (days)", Company, 365, (1, 3650))?,
-            "Planning", 20, "Default: 365 days. Allowed: 1 to 3650 days. Saved only; replenishment does not use this value yet.")?,
+            "Planning", 20, "Default: 365 days. Allowed: 1 to 3650 days. Bounds incoming and outgoing moves included in replenishment forecasts.")?,
         company(SettingDecl::selection(MONTH, "Annual count month", Company, "12", &[
             ("1", "January"), ("2", "February"), ("3", "March"), ("4", "April"),
             ("5", "May"), ("6", "June"), ("7", "July"), ("8", "August"),
@@ -287,6 +290,14 @@ impl StockSettings {
                     .await?;
             }
         }
+        if let Some(Value::Bool(enabled)) = changes.get(REPLENISH_ON_ORDER) {
+            let Some(company) = company else {
+                return Err(Error::programming(
+                    "Replenish on order requires a company scope.",
+                ));
+            };
+            crate::procurement::toggle_mto_route(this.env(), tx, company, *enabled).await?;
+        }
         sup.call(tx, this.as_records(), (company, changes)).await
     }
 
@@ -298,6 +309,7 @@ impl StockSettings {
     ) -> Result<()> {
         let expected: std::collections::BTreeSet<_> = [
             PICKING_POLICY,
+            REPLENISH_ON_ORDER,
             "stock.horizon_days",
             MONTH,
             DAY,

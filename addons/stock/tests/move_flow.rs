@@ -3345,3 +3345,76 @@ async fn physical_inventory_apply_adjusts_quant_and_schedules_annual_count_date(
     assert!(row[0].get::<_, bool>(2));
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn mto_procurement_chains_upstream_move_when_pull_rule_exists() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let env = f.env(&tx);
+
+    // Create an active MTO route + pull rule from Vendors -> Stock (f.l)
+    let route = env
+        .records("stock.route")
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("Test MTO Route"))
+                    .set_cell("company_id", Cell::Id(f.company)),
+            ],
+        )
+        .await
+        .unwrap();
+    let route_id = route.ids()[0];
+    env.records("stock.rule")
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![
+                RawVals::new()
+                    .set_cell("name", text("Vendors -> Stock MTO"))
+                    .set_cell("action", text("pull"))
+                    .set_cell("procure_method", text("make_to_stock"))
+                    .set_cell("location_src_id", Cell::Id(f.vendor))
+                    .set_cell("location_dest_id", Cell::Id(f.l))
+                    .set_cell("picking_type_id", Cell::Id(f.receipt_type))
+                    .set_cell("route_id", Cell::Id(route_id))
+                    .set_cell("company_id", Cell::Id(f.company)),
+            ],
+        )
+        .await
+        .unwrap();
+
+    // Confirming an MTO delivery move creates and chains an upstream receipt move
+    let delivery = f.picking(&mut tx, f.delivery_type, f.l, f.customer).await;
+    let out_mv = f
+        .move_in(&mut tx, Some(delivery), f.p, f.l, f.customer, "4")
+        .await;
+    env.records("stock.move")
+        .unwrap()
+        .browse([out_mv])
+        .unwrap()
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("procure_method", text("make_to_order")),
+        )
+        .await
+        .unwrap();
+    f.call(&mut tx, delivery, "action_confirm").await.unwrap();
+
+    // Delivery move is waiting on its newly created upstream receipt move
+    assert_eq!(move_row(&mut tx, out_mv).await.2, "waiting");
+    let origs: Vec<i64> = tx
+        .query(
+            "SELECT move_orig_id::int8 FROM stock_move_move_rel WHERE move_dest_id = $1",
+            &[&out_mv],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    assert_eq!(origs.len(), 1);
+    tx.rollback().await.unwrap();
+}

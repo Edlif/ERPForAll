@@ -621,10 +621,14 @@ impl StockWarehouse {
         vals: RawVals,
         sup: Super,
     ) -> Result<()> {
+        let steps_changed = vals.contains("reception_steps") || vals.contains("delivery_steps");
         if !this.is_empty() && vals.contains("company_id") {
             check_company_write(this.as_records(), tx, &vals).await?;
         }
         sup.call(tx, this.as_records(), (vals,)).await?;
+        if steps_changed && !this.is_empty() {
+            crate::procurement::sync_warehouse_step_rules(this.env(), tx, &this.ids()).await?;
+        }
         crate::res_company::invalidate_company_locations(tx).await
     }
 }

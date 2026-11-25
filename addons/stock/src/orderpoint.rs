@@ -153,4 +153,31 @@ pub struct StockWarehouseOrderpoint {
     /// Quantity to order set by hand.
     #[field(float, digits = "Product Unit", string = "To Order Manual")]
     pub qty_to_order_manual: Decimal,
+    /// Current on-hand balance at `location_id`.
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_quantities",
+        readonly = true,
+        string = "On Hand"
+    )]
+    pub qty_on_hand: Decimal,
+    /// Forecasted quantity within the company's replenishment horizon (`stock.horizon_days`).
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_quantities",
+        readonly = true,
+        string = "Forecast"
+    )]
+    pub qty_forecast: Decimal,
+    /// Suggested quantity to order to reach `product_max_qty` (or `qty_to_order_manual`).
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_quantities",
+        readonly = true,
+        string = "To Order"
+    )]
+    pub qty_to_order: Decimal,
 }
