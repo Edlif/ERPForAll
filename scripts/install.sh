@@ -60,10 +60,11 @@ Flags:
   --pg-port PORT      its port (also PGPORT)
   --pg-container NAME name of the container of option 2 (default erpforall-local-postgres)
   --modules LIST      comma- or space-separated modules to install with demo data
-                      (default: contacts account account_reporting stock sale sale_management purchase
+                      (default: contacts hr account account_reporting stock sale sale_management purchase
                       sale_stock purchase_stock account_mail purchase_mail stock_mail product_mail)
   --fast              build with Cargo's incremental `local` profile (faster rebuilds, smaller cache)
   --rebuild           incrementally rebuild changed Rust/web code, sync addons, and restart without resetting DB
+                      (it upgrades no module: the install guide says how to apply changed views and data)
   --clean-cache       remove stale debug/tmp caches and old hashed web bundles while keeping the active binary cache
   --reset             stop the server and remove only what this script created (listed first); needs --yes
   --yes               confirm --reset
@@ -126,6 +127,14 @@ set_state() { # key value: record a fact the script owns, so a second run and --
   local t="$STATE_FILE.tmp"
   { if [ -f "$STATE_FILE" ]; then grep -v "^$1=" "$STATE_FILE" || true; fi; printf '%s=%q\n' "$1" "$2"; } > "$t"
   mv "$t" "$STATE_FILE"
+}
+# The copy of addons/ is replaced with --delete, so the target must be this script's own state directory: one that
+# holds the state file it writes (PG_MODE is recorded before the first copy) and is not the checkout itself.
+sync_addons() {
+  { [ -f "$STATE_FILE" ] && grep -q '^PG_MODE=' "$STATE_FILE"; } \
+    || die "$STATE holds no state file of this script ($STATE_FILE); refusing to replace $STATE/addons"
+  [ "$(cd "$STATE" && pwd -P)" != "$(cd "$ROOT" && pwd -P)" ] || die "the state directory must not be the checkout ($ROOT)"
+  rsync -a --delete --exclude node_modules --exclude target "$ROOT/addons/" "$STATE/addons/"
 }
 secret_write() { ( umask 077; cat > "$1" ); chmod 600 "$1"; }
 rand_hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -279,7 +288,7 @@ prepare_state() {
   [ -f "$PRIV/admin-password" ] || rand_hex 24 | secret_write "$PRIV/admin-password"
   [ "$PG_MODE" != docker ] || [ -f "$PRIV/pg.env" ] || printf 'POSTGRES_PASSWORD=%s\n' "$(rand_hex 24)" | secret_write "$PRIV/pg.env"
   # The server refuses a tree with symbolic links; pnpm links under addons/web/static/node_modules.
-  rsync -a --delete --exclude node_modules --exclude target "$ROOT/addons/" "$STATE/addons/"
+  sync_addons
   if [ -n "$(find "$STATE/addons" -type l | head -1)" ]; then
     die "the copy of addons/ in $STATE/addons still holds symbolic links ($(find "$STATE/addons" -type l | head -3 | tr '\n' ' ')); the server refuses them. Remove the links from addons/ in the checkout and run again."
   fi
@@ -496,7 +505,7 @@ if [ "$DATABASE_PHASE" = done ]; then
     build_binaries
     build_web
     if [ "$DRY" = 0 ]; then
-      rsync -a --delete --exclude node_modules --exclude target "$ROOT/addons/" "$STATE/addons/"
+      sync_addons
       local_pid="$(server_pid)"
       if [ -n "$local_pid" ]; then
         kill "$local_pid"; i=0
