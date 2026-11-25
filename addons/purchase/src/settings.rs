@@ -212,6 +212,11 @@ fn settings() -> Result<Vec<SettingDecl>> {
 }
 erp_sdk::setting_declarations!(settings);
 
+/// Whether `purchase` is being installed, read once per transaction: the product create path
+/// asks for every new product.
+#[derive(Default)]
+struct PurchaseInstalling(Option<bool>);
+
 /// The value of [`BILL_CONTROL_SETTING`], read with the framework's rights: whoever creates a
 /// product needs no settings group.
 ///
@@ -219,19 +224,47 @@ erp_sdk::setting_declarations!(settings);
 ///
 /// Settings read failures; a stored value that is not one of the declared choices.
 pub(crate) async fn default_bill_control(tx: &mut Transaction) -> Result<&'static str> {
-    // During first-time installation, schema update backfills `product.template.purchase_method`
-    // for pre-existing products before `purchase_security.xml` creates `purchase.group_purchase_user`.
-    // No administrator can have stored a setting yet, so use the declared default; `_register_hook`
-    // still validates every setting policy group after data files load.
-    let installing = tx
-        .query(
-            "SELECT 1 FROM ir_module_module WHERE name = 'purchase' AND state = 'to install' LIMIT 1",
-            &[],
-        )
-        .await
-        .map_err(|error| Error::db("purchase module state could not be read.").with_source(error))?;
-    if !installing.is_empty() {
-        return Ok(BILL_CONTROL_DEFAULT);
+    let installing = match tx.extension::<PurchaseInstalling>().0 {
+        Some(installing) => installing,
+        None => {
+            let installing = !tx
+                .query(
+                    "SELECT 1 FROM ir_module_module WHERE name = 'purchase' AND state = 'to install' LIMIT 1",
+                    &[],
+                )
+                .await
+                .map_err(|error| {
+                    Error::db("purchase module state could not be read.").with_source(error)
+                })?
+                .is_empty();
+            tx.extension::<PurchaseInstalling>().0 = Some(installing);
+            installing
+        }
+    };
+    if installing {
+        // Schema update backfills `product.template.purchase_method` for existing products
+        // before `purchase_security.xml` creates the setting's policy group, so the settings
+        // service cannot answer yet: read the stored global choice directly (a reinstall keeps
+        // it), and only a first install, with no stored choice, takes the declared default.
+        // `_register_hook` still validates every setting policy group after data files load.
+        let stored = tx
+            .query(
+                "SELECT v.value_text FROM ir_config_setting_value v \
+                 JOIN ir_config_setting_scope s ON s.id = v.scope_id \
+                 WHERE s.identity = 'global' AND v.setting_key = $1",
+                &[&BILL_CONTROL_SETTING],
+            )
+            .await
+            .map_err(|error| {
+                Error::db("the stored bill control could not be read.").with_source(error)
+            })?;
+        let Some(row) = stored.first() else {
+            return Ok(BILL_CONTROL_DEFAULT);
+        };
+        let value: Option<String> = row.try_get(0).map_err(|error| {
+            Error::db("the stored bill control could not be read.").with_source(error)
+        })?;
+        return bill_control_choice(value.as_deref());
     }
     let env = tx.env().sudo(true);
     let read = read_values(
@@ -247,10 +280,15 @@ pub(crate) async fn default_bill_control(tx: &mut Transaction) -> Result<&'stati
         .as_array()
         .and_then(|values| values.iter().find(|v| v["key"] == BILL_CONTROL_SETTING))
         .and_then(|entry| entry["value"].as_str().map(str::to_owned));
+    bill_control_choice(value.as_deref())
+}
+
+/// The declared choice `value` names.
+fn bill_control_choice(value: Option<&str>) -> Result<&'static str> {
     BILL_CONTROL_CHOICES
         .iter()
         .map(|(choice, _)| *choice)
-        .find(|choice| value.as_deref() == Some(*choice))
+        .find(|choice| value == Some(*choice))
         .ok_or_else(|| {
             Error::validation(format!(
                 "{BILL_CONTROL_SETTING} must be one of: purchase, receive."
