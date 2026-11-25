@@ -229,3 +229,23 @@ fn the_graph_state_in_the_address_survives_a_reload_and_a_malformed_value_is_ref
         assert!(policy.shell(&address).is_err(), "{address}");
     }
 }
+
+#[test]
+fn the_search_panel_selection_in_the_address_is_admitted_with_a_closed_shape() {
+    let policy = RedirectPolicy::new("https://erp.example.test", SHELL_VIEW_TYPES).unwrap();
+    let address = "/erp/action-28?view_type=list&search_panel=%7B%221%22%3A%5B7%5D%2C%222%22%3A%5B%22draft%22%2C3%5D%7D";
+    assert_eq!(policy.shell(address).unwrap(), address);
+    for bad in [
+        "%5B%5D",
+        "%7B%220%22%3A%5B1%5D%7D",
+        "%7B%224294967296%22%3A%5B1%5D%7D",
+        "%7B%221%22%3A7%7D",
+        "%7B%221%22%3A%5B0%5D%7D",
+        "%7B%221%22%3A%5B1%2C1%5D%7D",
+        "%7B%221%22%3A%5B%22%22%5D%7D",
+        "%7B%221%22%3A%5Bnull%5D%7D",
+    ] {
+        let address = format!("/erp/action-28?view_type=list&search_panel={bad}");
+        assert!(policy.shell(&address).is_err(), "{address}");
+    }
+}

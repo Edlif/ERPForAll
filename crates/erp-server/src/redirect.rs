@@ -157,6 +157,7 @@ impl RedirectPolicy {
                     // deliberately refuses. Refuse before publishing a non-reloadable URL.
                     value.len() <= SHELL_URI_BYTES && !value.contains("//")
                 }
+                "search_panel" => search_panel(value),
                 "pivot_rows" | "pivot_cols" => pivot_specs(value, false),
                 "pivot_measures" => pivot_specs(value, true),
                 "pivot_open" => pivot_open(value),
@@ -199,6 +200,7 @@ impl RedirectPolicy {
             "search_groupby",
             "method_action",
             "list_tab",
+            "search_panel",
             "pivot_rows",
             "pivot_cols",
             "pivot_measures",
@@ -339,6 +341,36 @@ fn pivot_sort(value: &str) -> bool {
     matches!(parts.as_slice(), [])
         || matches!(parts.as_slice(), [serde_json::Value::String(measure), serde_json::Value::String(order), path]
         if (measure == "__count" || pivot_field(measure)) && matches!(order.as_str(), "asc" | "desc") && pivot_path(path))
+}
+/// `{"<section id>": [value, ...]}`: the search panel's selection (the client's `searchPanel` in `route.ts`). At most
+/// 64 sections with ids 1 to 4294967295, each at most 256 distinct values: a record id or a selection key of 1 to 256
+/// UTF-16 units (the client counts the same).
+fn search_panel(value: &str) -> bool {
+    let Ok(serde_json::Value::Object(sections)) = serde_json::from_str::<serde_json::Value>(value)
+    else {
+        return false;
+    };
+    sections.len() <= 64
+        && sections.iter().all(|(id, values)| {
+            record_id(id)
+                && id.parse::<u32>().is_ok()
+                && values.as_array().is_some_and(|values| {
+                    let mut unique = BTreeSet::new();
+                    values.len() <= 256
+                        && values.iter().all(|item| {
+                            let ok = match item {
+                                serde_json::Value::String(text) => {
+                                    !text.is_empty() && text.encode_utf16().count() <= 256
+                                }
+                                serde_json::Value::Number(number) => number
+                                    .as_u64()
+                                    .is_some_and(|n| n > 0 && n <= 9_007_199_254_740_991),
+                                _ => false,
+                            };
+                            ok && unique.insert(item.to_string())
+                        })
+                })
+        })
 }
 fn method_identity(value: &str) -> bool {
     let Some((uuid, counter)) = value.split_once(':') else {
