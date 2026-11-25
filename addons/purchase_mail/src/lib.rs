@@ -13,7 +13,9 @@ erp_sdk::addon!(
     depends = ["base", "purchase", "mail"]
 );
 
-use erp_addon_mail::{MailActivityMixin, MailThread};
+use erp_addon_mail::{
+    Body, MailActivityMixin, MailThread, PostRequest, PostSubtype, PostType, Posted,
+};
 use erp_addon_purchase::order::PurchaseOrder;
 use erp_sdk::Operation;
 use erp_sdk::prelude::*;
@@ -48,5 +50,33 @@ impl PurchaseOrderThread {
         _sup: Super,
     ) -> Result<Operation> {
         Ok(Operation::Read)
+    }
+
+    /// Posts the emailed RFQ content to the order's chatter thread.
+    #[method(override)]
+    async fn _on_rfq_emailed(
+        this: &RecordSet<PurchaseOrder>,
+        tx: &mut Transaction,
+        email_to: String,
+        subject: String,
+        body: String,
+        sup: Super,
+    ) -> Result<()> {
+        let _: () = sup
+            .call(
+                tx,
+                this.as_records(),
+                (email_to.clone(), subject.clone(), body.clone()),
+            )
+            .await?;
+        let text = format!("RFQ emailed to {email_to}\n\n{body}");
+        let mut req = PostRequest::new(Body::Text(text));
+        req.subject = Some(subject);
+        req.message_type = PostType::Comment;
+        req.subtype = PostSubtype::Comment;
+        for rec in this.as_records().iter() {
+            let _: Posted = rec.call(tx, "message_post", (req.clone(),)).await?;
+        }
+        Ok(())
     }
 }

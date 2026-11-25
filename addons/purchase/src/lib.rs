@@ -17,7 +17,9 @@ mod direct_bill_integrity;
 pub mod line;
 pub mod order;
 mod partner_product_buttons;
+pub mod requisition;
 mod res_groups;
+pub mod rfq_send;
 pub mod settings;
 mod warnings;
 

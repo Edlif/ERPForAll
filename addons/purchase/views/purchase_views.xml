@@ -100,9 +100,12 @@
       <form string="Purchase Order">
         <header>
           <button name="button_confirm" type="object" string="Confirm Order" class="btn-primary" invisible="state not in ('draft', 'sent')"/>
+          <button name="action_open_rfq_send" type="object" string="Send by Email" invisible="state not in ('draft', 'sent')"/>
+          <button name="action_open_alternative_wizard" type="object" string="Alternative" invisible="state not in ('draft', 'sent')"/>
           <button name="button_approve" type="object" string="Approve Order" class="btn-primary" invisible="state != 'to approve'" groups="purchase.group_purchase_manager"/>
-          <button name="action_create_vendor_bill" type="object" string="First Vendor Bill" groups="account.group_account_user" invisible="state != 'purchase'"/>
-          <button name="action_bill_remaining" type="object" string="Bill Remaining Received Goods" groups="account.group_account_user" invisible="state != 'purchase'"/>
+          <button name="action_create_vendor_bill" type="object" string="Create Bill" groups="account.group_account_user" invisible="state != 'purchase'"/>
+          <button name="action_bill_remaining" type="object" string="Bill Remaining" groups="account.group_account_user" invisible="state != 'purchase'"/>
+          <button name="action_send_receipt_reminder" type="object" string="Reminder" invisible="state != 'purchase' or mail_reminder_confirmed"/>
           <button name="button_lock" type="object" string="Lock" invisible="state != 'purchase' or locked"/>
           <button name="button_unlock" type="object" string="Unlock" invisible="not locked" groups="purchase.group_purchase_manager"/>
           <button name="button_draft" type="object" string="Set to Draft" invisible="state != 'cancel'"/>
@@ -111,6 +114,9 @@
         </header>
         <sheet>
           <div class="oe_button_box" name="button_box">
+            <button name="action_compare_alternatives" type="object" class="oe_stat_button" icon="lucide:layers" invisible="alternative_count == 0">
+              <field name="alternative_count" widget="statinfo" string="Alternatives"/>
+            </button>
             <button name="action_view_invoice" type="object" class="oe_stat_button" icon="lucide:receipt-text" invisible="invoice_count == 0">
               <field name="invoice_count" widget="statinfo" string="Vendor Bills"/>
             </button>
@@ -124,6 +130,7 @@
           <group>
             <group>
               <field name="partner_id" readonly="state in ('purchase', 'cancel')"/>
+              <field name="requisition_id" readonly="state in ('purchase', 'cancel')"/>
               <field name="origin" readonly="state == 'cancel'"/>
               <field name="currency_id" readonly="state in ('purchase', 'cancel')"/>
               <field name="company_id" readonly="state != 'draft'"/>
@@ -147,6 +154,18 @@
                   <field name="amount_untaxed"/>
                   <field name="amount_tax"/>
                   <field name="amount_total"/>
+                </group>
+              </group>
+            </page>
+            <page string="Other Info" name="other_info">
+              <group>
+                <group string="Receipt Reminder">
+                  <field name="receipt_reminder_email" readonly="state == 'cancel'"/>
+                  <field name="reminder_date_before_receipt" readonly="state == 'cancel'"/>
+                  <field name="mail_reminder_confirmed" readonly="1"/>
+                </group>
+                <group string="Alternatives">
+                  <field name="rfq_group_key" readonly="1"/>
                 </group>
               </group>
             </page>
@@ -245,15 +264,30 @@
     <menuitem id="menu_procurement_management" name="Orders" sequence="10">
       <menuitem id="menu_purchase_rfq" name="Requests for Quotation" action="purchase_rfq" sequence="10"/>
       <menuitem id="menu_purchase_form_action" name="Purchase Orders" action="purchase_form_action" sequence="20"/>
+      <menuitem id="menu_purchase_requisition" name="Purchase Agreements" action="action_purchase_requisition" sequence="25"/>
+      <menuitem id="menu_purchase_vendors" name="Vendors" action="action_purchase_vendors" sequence="30"/>
+    </menuitem>
+    <menuitem id="menu_purchase_products" name="Products" sequence="20">
+      <menuitem id="menu_purchase_product_template" name="Products" action="product.product_template_action" sequence="10"/>
+      <menuitem id="menu_purchase_product_variant" name="Product Variants" action="product.product_product_action" sequence="20"/>
+      <menuitem id="menu_purchase_supplierinfo" name="Vendor Pricelists" action="action_product_supplierinfo" sequence="30"/>
     </menuitem>
     <menuitem id="menu_purchase_config" name="Configuration" sequence="100" groups="purchase.group_purchase_manager">
       <menuitem id="menu_purchase_general_settings" name="Settings" action="purchase_settings_action" sequence="10"/>
+      <menuitem id="menu_purchase_config_supplierinfo" name="Vendor Pricelists" action="action_product_supplierinfo" sequence="20"/>
     </menuitem>
   </menuitem>
 
   <record id="menu_procurement_management" model="ir.ui.menu"><field name="web_icon">lucide:clipboard-list</field></record>
   <record id="menu_purchase_rfq" model="ir.ui.menu"><field name="web_icon">lucide:file-text</field></record>
   <record id="menu_purchase_form_action" model="ir.ui.menu"><field name="web_icon">lucide:shopping-cart</field></record>
+  <record id="menu_purchase_requisition" model="ir.ui.menu"><field name="web_icon">lucide:file-text</field></record>
+  <record id="menu_purchase_vendors" model="ir.ui.menu"><field name="web_icon">lucide:contact</field></record>
+  <record id="menu_purchase_products" model="ir.ui.menu"><field name="web_icon">lucide:package</field></record>
+  <record id="menu_purchase_product_template" model="ir.ui.menu"><field name="web_icon">lucide:package</field></record>
+  <record id="menu_purchase_product_variant" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+  <record id="menu_purchase_supplierinfo" model="ir.ui.menu"><field name="web_icon">lucide:tag</field></record>
   <record id="menu_purchase_config" model="ir.ui.menu"><field name="web_icon">lucide:sliders-horizontal</field></record>
   <record id="menu_purchase_general_settings" model="ir.ui.menu"><field name="web_icon">lucide:settings</field></record>
+  <record id="menu_purchase_config_supplierinfo" model="ir.ui.menu"><field name="web_icon">lucide:tag</field></record>
 </erp>

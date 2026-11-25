@@ -1,0 +1,280 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Vendor Pricelists, Vendors, Purchase Agreements, RFQ Send Wizard, Alternative RFQs & Line Comparison -->
+<erp>
+  <record id="view_product_supplierinfo_search_purchase" model="ir.ui.view">
+    <field name="name">product.supplierinfo.search.purchase</field>
+    <field name="model">product.supplierinfo</field>
+    <field name="arch" type="xml">
+      <search string="Vendor Pricelists">
+        <field name="partner_id"/>
+        <field name="product_tmpl_id"/>
+        <field name="product_id"/>
+        <field name="product_code"/>
+        <group>
+          <filter name="groupby_vendor" string="Vendor" context="{'group_by': 'partner_id'}"/>
+          <filter name="groupby_product" string="Product" context="{'group_by': 'product_tmpl_id'}"/>
+          <filter name="groupby_currency" string="Currency" context="{'group_by': 'currency_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="view_product_supplierinfo_list_purchase" model="ir.ui.view">
+    <field name="name">product.supplierinfo.list.purchase</field>
+    <field name="model">product.supplierinfo</field>
+    <field name="priority" eval="15"/>
+    <field name="arch" type="xml">
+      <list string="Vendor Pricelists">
+        <field name="partner_id"/>
+        <field name="product_tmpl_id"/>
+        <field name="product_code"/>
+        <field name="min_qty"/>
+        <field name="uom_id"/>
+        <field name="price"/>
+        <field name="discount" string="Disc. %"/>
+        <field name="currency_id"/>
+        <field name="delay"/>
+        <field name="date_start"/>
+        <field name="date_end"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_product_supplierinfo_form_purchase" model="ir.ui.view">
+    <field name="name">product.supplierinfo.form.purchase</field>
+    <field name="model">product.supplierinfo</field>
+    <field name="priority" eval="15"/>
+    <field name="arch" type="xml">
+      <form string="Vendor Pricelist">
+        <sheet>
+          <group>
+            <group string="Vendor">
+              <field name="partner_id"/>
+              <field name="product_name"/>
+              <field name="product_code"/>
+              <field name="delay"/>
+              <field name="company_id"/>
+            </group>
+            <group string="Price List">
+              <field name="product_tmpl_id"/>
+              <field name="product_id"/>
+              <field name="min_qty"/>
+              <field name="uom_id"/>
+              <field name="price"/>
+              <field name="discount"/>
+              <field name="currency_id"/>
+              <field name="date_start"/>
+              <field name="date_end"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_product_supplierinfo" model="ir.actions.act_window">
+    <field name="name">Vendor Pricelists</field>
+    <field name="res_model">product.supplierinfo</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_product_supplierinfo_list_purchase"/>
+    <field name="search_view_id" ref="view_product_supplierinfo_search_purchase"/>
+  </record>
+
+  <record id="action_purchase_vendors" model="ir.actions.act_window">
+    <field name="name">Vendors</field>
+    <field name="res_model">res.partner</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="base.partner_list"/>
+    <field name="search_view_id" ref="base.partner_search"/>
+  </record>
+
+  <record id="view_purchase_requisition_line_list" model="ir.ui.view">
+    <field name="name">purchase.requisition.line.list</field>
+    <field name="model">purchase.requisition.line</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="product_id"/>
+        <field name="product_qty"/>
+        <field name="product_uom_id"/>
+        <field name="qty_ordered"/>
+        <field name="qty_remaining"/>
+        <field name="price_unit"/>
+        <field name="currency_id" invisible="1"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_purchase_requisition_line_form" model="ir.ui.view">
+    <field name="name">purchase.requisition.line.form</field>
+    <field name="model">purchase.requisition.line</field>
+    <field name="arch" type="xml">
+      <form string="Agreement Line">
+        <sheet>
+          <group>
+            <field name="product_id"/>
+            <field name="product_qty"/>
+            <field name="product_uom_id"/>
+            <field name="price_unit"/>
+            <field name="qty_ordered" readonly="1"/>
+            <field name="qty_remaining" readonly="1"/>
+            <field name="currency_id" invisible="1"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_purchase_requisition_search" model="ir.ui.view">
+    <field name="name">purchase.requisition.search</field>
+    <field name="model">purchase.requisition</field>
+    <field name="arch" type="xml">
+      <search string="Purchase Agreements">
+        <field name="name"/>
+        <field name="vendor_id"/>
+        <field name="reference"/>
+        <filter name="draft" string="Draft" domain="[('state', '=', 'draft')]"/>
+        <filter name="confirmed" string="Confirmed" domain="[('state', '=', 'confirmed')]"/>
+        <filter name="done" string="Closed" domain="[('state', '=', 'done')]"/>
+        <group>
+          <filter name="groupby_vendor" string="Vendor" context="{'group_by': 'vendor_id'}"/>
+          <filter name="groupby_type" string="Agreement Type" context="{'group_by': 'requisition_type'}"/>
+          <filter name="groupby_state" string="Status" context="{'group_by': 'state'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="view_purchase_requisition_list" model="ir.ui.view">
+    <field name="name">purchase.requisition.list</field>
+    <field name="model">purchase.requisition</field>
+    <field name="arch" type="xml">
+      <list string="Purchase Agreements">
+        <field name="name"/>
+        <field name="requisition_type"/>
+        <field name="vendor_id"/>
+        <field name="user_id" widget="many2one_avatar"/>
+        <field name="date_start"/>
+        <field name="date_end"/>
+        <field name="order_count"/>
+        <field name="state" widget="badge" options="{'tone_success': ['confirmed'], 'tone_info': ['done'], 'tone_warning': ['draft'], 'tone_danger': ['cancel']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_purchase_requisition_form" model="ir.ui.view">
+    <field name="name">purchase.requisition.form</field>
+    <field name="model">purchase.requisition</field>
+    <field name="arch" type="xml">
+      <form string="Purchase Agreement">
+        <header>
+          <button name="action_confirm" type="object" string="Confirm" class="btn-primary" invisible="state != 'draft'"/>
+          <button name="action_create_rfq" type="object" string="New Quotation" class="btn-primary" invisible="state != 'confirmed'"/>
+          <button name="action_done" type="object" string="Close" invisible="state != 'confirmed'"/>
+          <button name="action_draft" type="object" string="Set to Draft" invisible="state != 'cancel'"/>
+          <button name="action_cancel" type="object" string="Cancel" invisible="state in ('done', 'cancel')"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,confirmed,done" readonly="1"/>
+        </header>
+        <sheet>
+          <div class="oe_button_box" name="button_box">
+            <button name="action_view_orders" type="object" class="oe_stat_button" icon="lucide:shopping-cart" invisible="order_count == 0">
+              <field name="order_count" widget="statinfo" string="RFQs / Orders"/>
+            </button>
+          </div>
+          <div class="oe_title">
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="requisition_type" readonly="state != 'draft'"/>
+              <field name="vendor_id" readonly="state in ('done', 'cancel')"/>
+              <field name="user_id" readonly="state in ('done', 'cancel')"/>
+              <field name="reference"/>
+            </group>
+            <group>
+              <field name="date_start"/>
+              <field name="date_end"/>
+              <field name="company_id" readonly="state != 'draft'"/>
+              <field name="currency_id" readonly="1"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Products" name="products">
+              <field name="line_ids" readonly="state in ('done', 'cancel')"/>
+            </page>
+            <page string="Terms &amp; Conditions" name="terms">
+              <field name="description"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_purchase_requisition" model="ir.actions.act_window">
+    <field name="name">Purchase Agreements</field>
+    <field name="res_model">purchase.requisition</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_purchase_requisition_list"/>
+    <field name="search_view_id" ref="view_purchase_requisition_search"/>
+  </record>
+
+  <record id="view_purchase_rfq_send_form" model="ir.ui.view">
+    <field name="name">purchase.rfq.send.form</field>
+    <field name="model">purchase.rfq.send</field>
+    <field name="arch" type="xml">
+      <form string="Send RFQ by Email" record_mode="record">
+        <group>
+          <field name="order_id" readonly="1"/>
+          <field name="partner_id"/>
+          <field name="email_to" placeholder="vendor@example.com"/>
+          <field name="subject"/>
+          <field name="body"/>
+          <field name="company_id" invisible="1"/>
+        </group>
+        <footer>
+          <button name="action_send_rfq" type="object" string="Send" class="btn-primary"/>
+          <button special="cancel" string="Discard"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_purchase_alternative_wizard_form" model="ir.ui.view">
+    <field name="name">purchase.alternative.wizard.form</field>
+    <field name="model">purchase.alternative.wizard</field>
+    <field name="arch" type="xml">
+      <form string="Create Alternative RFQ" record_mode="record">
+        <group>
+          <field name="origin_po_id" readonly="1"/>
+          <field name="partner_id"/>
+          <field name="copy_products"/>
+          <field name="company_id" invisible="1"/>
+        </group>
+        <footer>
+          <button name="action_create_alternative" type="object" string="Create Alternative" class="btn-primary"/>
+          <button special="cancel" string="Cancel"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_purchase_order_line_compare" model="ir.ui.view">
+    <field name="name">purchase.order.line.compare</field>
+    <field name="model">purchase.order.line</field>
+    <field name="priority" eval="30"/>
+    <field name="arch" type="xml">
+      <list string="Compare Alternative Order Lines" create="0" delete="0">
+        <field name="product_id"/>
+        <field name="partner_id" string="Vendor"/>
+        <field name="order_id"/>
+        <field name="date_planned"/>
+        <field name="product_qty"/>
+        <field name="uom_id"/>
+        <field name="price_unit"/>
+        <field name="discount" string="Disc. %"/>
+        <field name="price_subtotal"/>
+        <field name="currency_id" invisible="1"/>
+      </list>
+    </field>
+  </record>
+</erp>

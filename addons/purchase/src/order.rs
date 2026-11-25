@@ -260,6 +260,41 @@ pub struct PurchaseOrder {
         string = "Billing Status"
     )]
     pub invoice_status: Option<Arc<str>>,
+    /// Blanket Order or Call for Tenders agreement this RFQ / PO belongs to.
+    #[field(
+        many2one,
+        comodel = "purchase.requisition",
+        check_company = true,
+        ondelete = "set null",
+        index = true,
+        string = "Purchase Agreement"
+    )]
+    pub requisition_id: Option<RecId>,
+    /// Shared comparison group key linking alternative RFQs for vendor comparison.
+    #[field(char, copy = false, index = true, string = "Alternative Group")]
+    pub rfq_group_key: Option<Arc<str>>,
+    /// Number of sibling alternative RFQs in the same comparison group.
+    #[field(
+        integer,
+        compute = "_compute_alternative_count",
+        string = "Alternatives"
+    )]
+    pub alternative_count: i32,
+    /// Automatically remind the vendor before expected receipt date.
+    #[field(boolean, default = false, string = "Ask Confirmation")]
+    pub receipt_reminder_email: bool,
+    /// Number of days before receipt to send the reminder.
+    #[field(integer, default = 1, string = "Days Before Receipt")]
+    pub reminder_date_before_receipt: i32,
+    /// Whether the receipt confirmation reminder has been sent.
+    #[field(
+        boolean,
+        default = false,
+        readonly = true,
+        copy = false,
+        string = "Reminder Sent"
+    )]
+    pub mail_reminder_confirmed: bool,
 }
 
 #[methods(PurchaseOrder, addon = "purchase")]

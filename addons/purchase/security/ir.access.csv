@@ -4,3 +4,8 @@ access_purchase_order_account_readonly,purchase.order.account.readonly,model_pur
 access_purchase_order_line_user,purchase.order.line.user,model_purchase_order_line,purchase.group_purchase_user,crud,
 access_purchase_order_line_account_readonly,purchase.order.line.account.readonly,model_purchase_order_line,account.group_account_readonly,r,
 access_purchase_partner_manager,purchase.partner.manager,base.model_res_partner,purchase.group_purchase_manager,cru,
+access_product_supplierinfo_purchase_user,product.supplierinfo.purchase.user,product.model_product_supplierinfo,purchase.group_purchase_user,crud,
+access_purchase_requisition_user,purchase.requisition.user,model_purchase_requisition,purchase.group_purchase_user,crud,
+access_purchase_requisition_line_user,purchase.requisition.line.user,model_purchase_requisition_line,purchase.group_purchase_user,crud,
+access_purchase_rfq_send_user,purchase.rfq.send.user,model_purchase_rfq_send,purchase.group_purchase_user,crud,"[('create_uid', '=', user.id)]"
+access_purchase_alternative_wizard_user,purchase.alternative.wizard.user,model_purchase_alternative_wizard,purchase.group_purchase_user,crud,"[('create_uid', '=', user.id)]"
