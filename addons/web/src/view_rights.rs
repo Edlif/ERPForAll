@@ -109,6 +109,9 @@ pub(crate) fn restrict_root(view: &mut wire::View, rights: ModelRights) -> Resul
             *edit &= rights.write;
             *delete &= rights.unlink;
         }
+        wire::ViewNode::Hierarchy { draggable, .. } => {
+            *draggable &= rights.write;
+        }
         _ => {}
     }
     Ok(())

@@ -13,7 +13,7 @@ erp-addon-base = { workspace = true }
 erp-addon-hr = { workspace = true }
 erp-addon-mail = { workspace = true }
 erp-addon-uom = { workspace = true }
-erp-addon-web = { workspace = true }
+erp-addon-web = { workspace = true, features = ["test-support"] }
 erp-fields = { workspace = true }
 erp-modules = { workspace = true }
 erp-orm = { workspace = true }
@@ -21,6 +21,7 @@ erp-rpc = { workspace = true }
 erp-sdk = { workspace = true }
 erp-security = { workspace = true, features = ["test-support"] }
 erp-testkit = { workspace = true }
+erp-views = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 tokio-postgres = { workspace = true }

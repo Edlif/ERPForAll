@@ -70,10 +70,12 @@ impl DescriptionPayload {
                 wire::ViewType::Kanban => "web.kanban",
                 wire::ViewType::Calendar => "web.calendar",
                 wire::ViewType::Graph => "web.graph",
+                wire::ViewType::Hierarchy => "web.hierarchy",
+                wire::ViewType::Activity => "web.activity",
                 _ => {
                     return Err(refuse(
                         budget,
-                        "Builtin wire adapter supports only list, form, search, pivot, calendar, graph and kanban; later types require a later release",
+                        "Builtin wire adapter supports only list, form, search, pivot, calendar, graph, kanban, hierarchy and activity; later types require a later release",
                     ));
                 }
             };
@@ -106,10 +108,12 @@ impl DescriptionPayload {
                 wire::ViewType::Kanban => "kanban",
                 wire::ViewType::Calendar => "calendar",
                 wire::ViewType::Graph => "graph",
+                wire::ViewType::Hierarchy => "hierarchy",
+                wire::ViewType::Activity => "activity",
                 _ => {
                     return Err(refuse(
                         budget,
-                        "Builtin wire adapter supports only list, form, search, pivot, calendar, graph and kanban; later types require a later release",
+                        "Builtin wire adapter supports only list, form, search, pivot, calendar, graph, kanban, hierarchy and activity; later types require a later release",
                     ));
                 }
             };
@@ -1038,6 +1042,9 @@ impl Output {
                         "danger" => wire::RibbonBackground::Danger,
                         _ => return Err(invalid("Builtin ribbon background is invalid")),
                     },
+                    invisible: optional(object, "invisible")
+                        .map(|value| self.expression(value))
+                        .transpose()?,
                 }
             }
             "notification_alert" => wire::ViewNode::NotificationAlert {},
@@ -1139,6 +1146,29 @@ impl Output {
             },
             "kanban_card" => wire::ViewNode::KanbanCard {
                 children: self.indices(object)?,
+            },
+            "hierarchy" => {
+                let optional_field = |output: &mut Self, key| {
+                    optional(object, key)
+                        .map(|value| output.field(value))
+                        .transpose()
+                };
+                wire::ViewNode::Hierarchy {
+                    children: self.indices(object)?,
+                    parent_field: self.field(required(object, "parent_field")?)?,
+                    child_field: optional_field(self, "child_field")?,
+                    avatar_field: optional_field(self, "avatar_field")?,
+                    color_field: optional_field(self, "color_field")?,
+                    count_field: optional_field(self, "count_field")?,
+                    draggable: boolean(required(object, "draggable")?)?,
+                    label: self.optional_text(object, "label")?,
+                }
+            }
+            "activity" => wire::ViewNode::Activity {
+                children: self.indices(object)?,
+                avatar_field: optional(object, "avatar_field")
+                    .map(|value| self.field(value))
+                    .transpose()?,
             },
             "kanban_section" => wire::ViewNode::KanbanSection {
                 region: match text_value(object, "region")? {
@@ -1413,6 +1443,8 @@ fn children(node: &wire::ViewNode) -> &[u32] {
         | wire::ViewNode::KanbanSection { children, .. }
         | wire::ViewNode::Calendar { children, .. }
         | wire::ViewNode::Graph { children, .. }
+        | wire::ViewNode::Hierarchy { children, .. }
+        | wire::ViewNode::Activity { children, .. }
         | wire::ViewNode::SearchGroup { children, .. } => children,
         wire::ViewNode::Dashboard { .. }
         | wire::ViewNode::Field { .. }
@@ -1568,6 +1600,7 @@ fn validate_layout(
         Some(N::KanbanSection { .. }) => matches!(node, N::Field { .. }),
         Some(N::Calendar { .. }) => matches!(node, N::CalendarField { .. }),
         Some(N::Graph { .. }) => matches!(node, N::GraphField { .. }),
+        Some(N::Hierarchy { .. }) | Some(N::Activity { .. }) => matches!(node, N::Field { .. }),
         Some(N::Search { .. }) => matches!(
             node,
             N::SearchField { .. }

@@ -88,6 +88,7 @@ export function fieldControl(options: FieldControlOptions): HTMLElement {
 export function createFieldControl(options: FieldControlOptions): FieldControl {
   const { field, value } = options;
   if (field.widget === "monetary" || field.kind === "monetary" && field.widget !== "float") return monetaryControl(options);
+  if (field.widget === "progressbar") return progressbarControl(options);
   if (field.kind === "date" || field.kind === "datetime") return createDateFieldControl(options);
   if (field.widget === "badge" && field.kind === "many2one") return scalarControl({ ...options, field: { ...field, kind: "char", readonly: true }, value: displayValue(field, value, "en-US") });
   if (field.widget === "radio") return radioControl(options);
@@ -184,6 +185,45 @@ function combobox({ field, className, placeholder, values, fields }: Pick<FieldC
   return input;
 }
 
+function progressbarControl({ field, value, change, viewContext }: FieldControlOptions): FieldControl {
+  const num = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+  const wrap = el("div", undefined, "field-progressbar");
+  const track = el("div", undefined, "field-progressbar-track");
+  const fill = el("div", undefined, "field-progressbar-fill");
+  fill.style.width = `${num}%`;
+  track.append(fill);
+  const label = el("span", `${Math.round(num)} %`, "field-progressbar-value");
+  if (!field.readonly && viewContext !== "list" && viewContext !== "card") {
+    const input = el("input", undefined, "field-progressbar-input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "100";
+    input.value = String(Math.round(num));
+    input.name = field.name;
+    input.addEventListener("change", () => {
+      const parsed = Math.max(0, Math.min(100, Number(input.value) || 0));
+      fill.style.width = `${parsed}%`;
+      label.textContent = `${Math.round(parsed)} %`;
+      change(field.kind === "integer" ? Math.round(parsed) : parsed);
+    });
+    wrap.append(track, input);
+    const shell = fieldShell(field, wrap, viewContext);
+    return { node: shell.node, dispose: () => {} };
+  }
+  wrap.append(track, label);
+  return { node: fieldShell(field, wrap, viewContext).node, dispose: () => {} };
+}
+
+function avatarChip(name: string): HTMLElement {
+  const parts = name.trim().split(/\s+/u).filter(Boolean);
+  const text = (parts.length > 1 ? [parts[0]!, parts[parts.length - 1]!] : parts.slice(0, 1)).map(w => [...w][0]!.toLocaleUpperCase()).join("") || "?";
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0;
+  const chip = el("span", text, `many2one-avatar-chip kanban-tone-${(hash % 11) + 1}`);
+  chip.setAttribute("aria-hidden", "true");
+  return chip;
+}
+
 function many2oneControl({ field, value, rpc, context, change: changed, run, openRecord, editor: owner, values, fields: authorizedFields, viewContext }: FieldControlOptions): FieldControl {
   const editor = owner && "messages" in owner ? owner : undefined;
   let currentId: number | null = null;
@@ -199,8 +239,9 @@ function many2oneControl({ field, value, rpc, context, change: changed, run, ope
   }
 
   if (field.readonly) {
-    const area = el(viewContext === "list" ? "span" : "div", undefined, "many2one-readonly");
+    const area = el(viewContext === "list" ? "span" : "div", undefined, `many2one-readonly${field.widget === "many2one_avatar" ? " many2one-avatar-wrap" : ""}`);
     if (currentId !== null) {
+      if (field.widget === "many2one_avatar" && currentName) area.append(avatarChip(currentName));
       if (openRecord && !field.options?.no_open) {
         const id = currentId;
         const open = button(currentName, () => run(() => openRecord(field.relation!, id)), "many2one-open-btn link-button");
@@ -376,7 +417,7 @@ for (const kind of ["char", "text", "boolean", "integer", "float", "monetary", "
     }), environment) });
 }
 
-for (const [widget, kinds] of Object.entries({ password: ["char", "text"], email: ["char"], phone: ["char"], url: ["char"], percentage: ["integer", "float"], boolean_checkbox: ["boolean"], boolean_toggle: ["boolean"], boolean_favorite: ["boolean"], boolean_icon: ["boolean"], badge: ["selection", "char", "many2one"], label_selection: ["selection"], badges_selection: ["selection"], filterable_selection: ["selection"], radio: ["selection", "many2one"], priority: ["selection"], color: ["char"], color_picker: ["integer"], image: ["binary"], binary: ["binary"], image_url: ["char"], CopyClipboardChar: ["char"], CopyClipboardText: ["text"], CopyClipboardURL: ["char"], many2many_tags: ["many2many"], many2many_tags_avatar: ["many2many"], many2many_tags_color_dot: ["many2many"] } as const)) {
+for (const [widget, kinds] of Object.entries({ password: ["char", "text"], email: ["char"], phone: ["char"], url: ["char"], percentage: ["integer", "float"], progressbar: ["integer", "float"], boolean_checkbox: ["boolean"], boolean_toggle: ["boolean"], boolean_favorite: ["boolean"], boolean_icon: ["boolean"], badge: ["selection", "char", "many2one"], label_selection: ["selection"], badges_selection: ["selection"], filterable_selection: ["selection"], radio: ["selection", "many2one"], priority: ["selection"], color: ["char"], color_picker: ["integer"], image: ["binary"], binary: ["binary"], image_url: ["char"], CopyClipboardChar: ["char"], CopyClipboardText: ["text"], CopyClipboardURL: ["char"], many2one_avatar: ["many2one"], many2many_tags: ["many2many"], many2many_tags_avatar: ["many2many"], many2many_tags_color_dot: ["many2many"] } as const)) {
   registerFieldWidget(widget, { kinds, render: environment => createFieldControl({ viewContext: environment.viewContext, field: { ...environment.field, widget }, value: environment.value, rpc: environment.rpc, context: environment.context, numericLocale: environment.numericLocale, currencies: environment.currencies, values: environment.values, ...(environment.model === undefined ? {} : { model: environment.model }), fields: environment.fields, changeValues: environment.changeValues, change: environment.change, run: environment.run, openRecord: environment.openRecord, changed: environment.changed, ...(environment.messages ? { editor: { messages: environment.messages, report: environment.report, signal: environment.signal } } : {}) }) });
 }
 

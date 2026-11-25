@@ -36,12 +36,16 @@ fn layout_error(message: impl std::fmt::Display) -> ViewError {
     ))
 }
 
+#[path = "h18_activity.rs"]
+mod activity;
 #[path = "h18_calendar.rs"]
 mod calendar;
 #[path = "h18_dashboard.rs"]
 mod dashboard;
 #[path = "h18_graph.rs"]
 mod graph;
+#[path = "h18_hierarchy.rs"]
+mod hierarchy;
 #[path = "h18_kanban.rs"]
 mod kanban;
 
@@ -570,6 +574,8 @@ fn classify<'a, N: Node<'a>>(
                 ],
                 "kanban" => kanban::ROOT_ATTRS,
                 "graph" => graph::ROOT_ATTRS,
+                "hierarchy" => hierarchy::ROOT_ATTRS,
+                "activity" => activity::ROOT_ATTRS,
                 _ => return Err(invalid("Unknown builtin view type.")),
             },
         )?;
@@ -584,6 +590,12 @@ fn classify<'a, N: Node<'a>>(
         if key == "graph" {
             graph::admit_root(node)?;
         }
+        if key == "hierarchy" {
+            hierarchy::admit_root(node, spec)?;
+        }
+        if key == "activity" {
+            activity::admit_root(node, spec)?;
+        }
         return Ok(match key {
             "form" => "form",
             "list" => "list",
@@ -591,6 +603,8 @@ fn classify<'a, N: Node<'a>>(
             "pivot" => "pivot",
             "kanban" => "kanban",
             "graph" => "graph",
+            "hierarchy" => "hierarchy",
+            "activity" => "activity",
             _ => return Err(invalid("Unknown builtin view type.")),
         });
     }
@@ -604,7 +618,7 @@ fn classify<'a, N: Node<'a>>(
     let allowed = match parent.tag() {
         "form" if service => node.tag() == "widget",
         "list" => matches!(node.tag(), "field" | "dashboard"),
-        "pivot" | "graph" => node.tag() == "field",
+        "pivot" | "graph" | "hierarchy" | "activity" => node.tag() == "field",
         "search" => matches!(
             node.tag(),
             "field" | "filter" | "separator" | "group" | "searchpanel"
@@ -1404,7 +1418,15 @@ fn validate_display_widget<'a>(node: impl Node<'a>) -> ViewResult<&'static str> 
         Some("web_ribbon") => {
             attrs(
                 node,
-                &["name", "title", "text", "tooltip", "bg_color", "groups"],
+                &[
+                    "name",
+                    "title",
+                    "text",
+                    "tooltip",
+                    "bg_color",
+                    "groups",
+                    "invisible",
+                ],
             )?;
             for key in ["title", "text", "tooltip"] {
                 if node.attr(key).is_some_and(|text| text.len() > MAX_LABEL) {
@@ -1415,6 +1437,12 @@ fn validate_display_widget<'a>(node: impl Node<'a>) -> ViewResult<&'static str> 
             }
             ribbon_text(node)?;
             ribbon_background(node)?;
+            if let Some(source) = node.attr("invisible")
+                && boolean(node, "invisible", false).is_err()
+                && source.trim().is_empty()
+            {
+                return Err(invalid("Ribbon 'invisible' expression cannot be empty."));
+            }
             Ok("ribbon")
         }
         Some("notification_alert") => {
@@ -1565,9 +1593,9 @@ fn plan<'a, N: Node<'a>>(
         if kind == "searchpanel" {
             return Ok(());
         } // the authorized host panel service attaches the panel after callback construction
-        if kind == "page" {
-            // A page may hide per record (an expression lowered with the page); only a static
-            // `invisible="1"` page is pruned here.
+        if kind == "page" || kind == "ribbon" {
+            // A page or ribbon may hide per record (an expression lowered with the node); only a
+            // static `invisible="1"` node is pruned here.
             if page_invisible(node) == Some(true) {
                 return Ok(());
             }
@@ -2138,6 +2166,14 @@ fn build_entry<'a, N: Node<'a>>(
                     graph::build_root(node, object)?;
                 }
                 "graph_field" => graph::build_field(node, spec, object)?,
+                "hierarchy" => {
+                    set_children(object, plan, index)?;
+                    hierarchy::build_root(node, spec, object)?;
+                }
+                "activity" => {
+                    set_children(object, plan, index)?;
+                    activity::build_root(node, spec, object)?;
+                }
                 "pivot_field" => {
                     let field = field(spec, node)?;
                     object.set("field", |value| value.field_handle(spec.name, field.name))?;
@@ -2319,10 +2355,18 @@ fn build_entry<'a, N: Node<'a>>(
                     }
                 }
                 "ribbon" => {
-                    object.set("text", |value| value.text(ribbon_text(node)?))?;
+                    let text = ribbon_text(node)?;
+                    object.set("text", |value| value.text(text))?;
                     object.set("background", |value| value.text(ribbon_background(node)?))?;
                     if let Some(tooltip) = node.attr("tooltip") {
                         object.set("tooltip", |value| value.text(tooltip))?;
+                    }
+                    if let (None, Some(source)) = (page_invisible(node), node.attr("invisible")) {
+                        object.set("invisible", |value| {
+                            source_expression(source, value, |expr| {
+                                invisible_expression(expr, "Ribbon", text, plan)
+                            })
+                        })?;
                     }
                 }
                 "notification_alert" => {}
@@ -2825,8 +2869,8 @@ fn source_expression(
 mod tests {
     use erp_sdk::views::{
         DescriptionBudget, DescriptionBuilder, DescriptionEncoder, ViewCatalogue, ViewDescriptor,
-        ViewError, ViewLimits, calendar_schema, form_schema, graph_schema, kanban_schema,
-        list_schema, pivot_schema, search_schema,
+        ViewError, ViewLimits, activity_schema, calendar_schema, form_schema, graph_schema,
+        hierarchy_schema, kanban_schema, list_schema, pivot_schema, search_schema,
     };
     use erp_sdk::{
         __private::{FieldDecl, ModelDecl},
@@ -2903,6 +2947,8 @@ mod tests {
             "kanban" => kanban_schema()?,
             "calendar" => calendar_schema()?,
             "graph" => graph_schema()?,
+            "hierarchy" => hierarchy_schema()?,
+            "activity" => activity_schema()?,
             _ => panic!("test kind"),
         };
         let payload = DescriptionBuilder::new(&schema, budget)
@@ -4961,10 +5007,6 @@ mod tests {
                 "Unregistered record-form display widget.",
             ),
             (
-                "<form><widget name='web_ribbon' title='Ribbon' invisible='0'/></form>",
-                "View attribute 'invisible' is unsupported by the current human UI contract.",
-            ),
-            (
                 "<form><widget name='notification_alert' permission='denied'/></form>",
                 "View attribute 'permission' is unsupported by the current human UI contract.",
             ),
@@ -4975,6 +5017,34 @@ mod tests {
         ] {
             assert_attribute_refusal(fixture(xml, "form"), expected);
         }
+        let dyn_ribbon = fixture(
+            "<form><sheet><field name='active' invisible='1'/><widget name='web_ribbon' title='Archived' bg_color='bg-danger' invisible='active'/></sheet></form>",
+            "form",
+        )
+        .unwrap();
+        assert!(
+            dyn_ribbon["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["kind"] == "ribbon" && !node["invisible"].is_null())
+        );
+
+        let hierarchy = fixture(
+            "<hierarchy parent_field='parent_id' child_field='child_ids' color_field='count' draggable='1' label='people'><field name='name'/></hierarchy>",
+            "hierarchy",
+        )
+        .unwrap();
+        assert_eq!(hierarchy["nodes"][0]["kind"], "hierarchy");
+        assert_eq!(hierarchy["nodes"][0]["draggable"], true);
+        assert_eq!(hierarchy["nodes"][0]["label"], "people");
+
+        let activity = fixture(
+            "<activity string='Items'><field name='name'/></activity>",
+            "activity",
+        )
+        .unwrap();
+        assert_eq!(activity["nodes"][0]["kind"], "activity");
     }
 
     #[test]

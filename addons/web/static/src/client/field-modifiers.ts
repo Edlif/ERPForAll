@@ -36,8 +36,16 @@ export function effectiveNodes(nodes: readonly Node[], fields: readonly Field[],
       const hidden = ancestorHidden || pageHidden(node, fields, values);
       return { ...node, hidden, children: effectiveNodes(node.children, fields, values, hidden) };
     }
+    if (node.kind === "ribbon") {
+      const hidden = ancestorHidden || (node.invisible ? ribbonHidden(node.invisible, node.text, fields, values) : false);
+      return { ...node, hidden };
+    }
     return "children" in node ? { ...node, children: effectiveNodes(node.children, fields, values, ancestorHidden) } : node;
   });
+}
+function ribbonHidden(expression: ValidatedAst, label: string, fields: readonly Field[], values: Readonly<Record<string, unknown>>): boolean {
+  try { return truthy(expression, fields, values); }
+  catch (error) { throw new ClientError("validation", `Cannot evaluate invisible for the ribbon ${label}: ${error instanceof Error ? error.message : String(error)}`); }
 }
 /** A page hides per record while its `invisible` expression is true; the shape of the node tree is kept. */
 function pageHidden(page: PageNode, fields: readonly Field[], values: Readonly<Record<string, unknown>>): boolean {

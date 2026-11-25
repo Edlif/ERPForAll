@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <template id="report_employee_badge_document">
+    <div class="page">
+      <div class="border p-4">
+        <div class="text-muted" t-if="doc.company_id">
+          <span t-field="doc.company_id.name"/>
+        </div>
+        <h2 class="mt-2" t-field="doc.name"/>
+        <p class="text-muted" t-if="doc.job_title">
+          <span t-field="doc.job_title"/>
+        </p>
+        <table class="table table-sm mt-3">
+          <tbody>
+            <tr t-if="doc.department_id">
+              <th>Department</th>
+              <td t-field="doc.department_id"/>
+            </tr>
+            <tr t-if="doc.work_email">
+              <th>Email</th>
+              <td t-field="doc.work_email"/>
+            </tr>
+            <tr t-if="doc.work_phone">
+              <th>Phone</th>
+              <td t-field="doc.work_phone"/>
+            </tr>
+            <tr t-if="doc.work_location_id">
+              <th>Location</th>
+              <td t-field="doc.work_location_id"/>
+            </tr>
+            <tr t-if="doc.barcode">
+              <th>Badge ID</th>
+              <td t-field="doc.barcode"/>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </template>
+
+  <template id="report_employee_badge">
+    <t t-call="web.html_container">
+      <t t-call="web.external_layout">
+        <t t-foreach="docs" t-as="doc">
+          <div t-att-class="None if doc_first else 'page-break-before'">
+            <t t-call="hr.report_employee_badge_document"/>
+          </div>
+        </t>
+      </t>
+    </t>
+  </template>
+
+  <record id="action_report_employee_badge" model="ir.actions.report">
+    <field name="name">Print Badge</field>
+    <field name="model">hr.employee</field>
+    <field name="report_type">qweb-pdf</field>
+    <field name="report_name">hr.report_employee_badge</field>
+    <field name="print_report_name">'Badge - ' + object.name</field>
+    <field name="binding_model_id" ref="hr.model_hr_employee"/>
+    <field name="binding_type">report</field>
+  </record>
+</erp>

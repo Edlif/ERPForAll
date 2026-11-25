@@ -90,6 +90,8 @@ pub struct IrUiView {
             ("pivot", "Pivot"),
             ("calendar", "Calendar"),
             ("kanban", "Kanban"),
+            ("hierarchy", "Hierarchy"),
+            ("activity", "Activity"),
             ("search", "Search"),
             ("card", "Card"),
             ("qweb", "QWeb"),

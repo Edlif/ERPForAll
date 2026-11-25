@@ -1,18 +1,116 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
-<!-- Employees: list, form, action and the Employees entry of the Employees menu. -->
 <erp>
+  <record id="hr_employee_view_search" model="ir.ui.view">
+    <field name="name">hr.employee.search</field>
+    <field name="model">hr.employee</field>
+    <field name="arch" type="xml">
+      <search string="Search Employees">
+        <field name="name"/>
+        <field name="job_title"/>
+        <field name="work_email"/>
+        <field name="department_id"/>
+        <field name="parent_id"/>
+        <filter name="filter_my_team" string="Has Manager" domain="[('parent_id', '!=', False)]"/>
+        <filter name="filter_top_level" string="Leadership (No Manager)" domain="[('parent_id', '=', False)]"/>
+        <group string="Group By">
+          <filter name="group_department" string="Department" context="{'group_by': 'department_id'}"/>
+          <filter name="group_manager" string="Manager" context="{'group_by': 'parent_id'}"/>
+          <filter name="group_job" string="Job Position" context="{'group_by': 'job_id'}"/>
+          <filter name="group_employee_type" string="Employee Type" context="{'group_by': 'employee_type_id'}"/>
+          <filter name="group_company" string="Company" context="{'group_by': 'company_id'}"/>
+        </group>
+        <searchpanel view_types="kanban,list,hierarchy,activity,graph,pivot">
+          <field name="company_id" icon="building" enable_counters="1" expand="1"/>
+          <field name="department_id" icon="users" enable_counters="1" hierarchize="1" expand="1"/>
+        </searchpanel>
+      </search>
+    </field>
+  </record>
+
+  <record id="hr_employee_view_kanban" model="ir.ui.view">
+    <field name="name">hr.employee.kanban</field>
+    <field name="model">hr.employee</field>
+    <field name="arch" type="xml">
+      <kanban string="Employees">
+        <templates>
+          <t t-name="card">
+            <aside>
+              <field name="image_128" widget="image"/>
+            </aside>
+            <main>
+              <field name="name"/>
+              <field name="job_title"/>
+              <field name="work_email" widget="email"/>
+              <field name="work_phone" widget="phone"/>
+              <field name="contract_period_label"/>
+            </main>
+            <footer>
+              <field name="category_ids" widget="many2many_tags"/>
+            </footer>
+          </t>
+        </templates>
+      </kanban>
+    </field>
+  </record>
+
   <record id="hr_employee_view_list" model="ir.ui.view">
     <field name="name">hr.employee.list</field>
     <field name="model">hr.employee</field>
     <field name="arch" type="xml">
-      <list>
+      <list string="Employees">
         <field name="name"/>
-        <field name="work_email"/>
-        <field name="work_phone"/>
-        <field name="user_id"/>
-        <field name="company_id"/>
+        <field name="work_phone" widget="phone"/>
+        <field name="work_email" widget="email"/>
+        <field name="department_id"/>
+        <field name="job_title"/>
+        <field name="parent_id" widget="many2one_avatar"/>
+        <field name="category_ids" widget="many2many_tags"/>
       </list>
+    </field>
+  </record>
+
+  <record id="hr_employee_view_hierarchy" model="ir.ui.view">
+    <field name="name">hr.employee.hierarchy</field>
+    <field name="model">hr.employee</field>
+    <field name="arch" type="xml">
+      <hierarchy parent_field="parent_id" child_field="child_ids" avatar_field="image_128" color_field="department_color" draggable="1" label="people">
+        <field name="name"/>
+        <field name="job_title"/>
+        <field name="department_id"/>
+      </hierarchy>
+    </field>
+  </record>
+
+  <record id="hr_employee_view_activity" model="ir.ui.view">
+    <field name="name">hr.employee.activity</field>
+    <field name="model">hr.employee</field>
+    <field name="arch" type="xml">
+      <activity avatar_field="image_128">
+        <field name="name"/>
+        <field name="job_title"/>
+      </activity>
+    </field>
+  </record>
+
+  <record id="hr_employee_view_graph" model="ir.ui.view">
+    <field name="name">hr.employee.graph</field>
+    <field name="model">hr.employee</field>
+    <field name="arch" type="xml">
+      <graph string="Headcount Analysis" type="bar">
+        <field name="department_id"/>
+      </graph>
+    </field>
+  </record>
+
+  <record id="hr_employee_view_pivot" model="ir.ui.view">
+    <field name="name">hr.employee.pivot</field>
+    <field name="model">hr.employee</field>
+    <field name="arch" type="xml">
+      <pivot string="Headcount Pivot">
+        <field name="department_id" type="row"/>
+        <field name="employee_type_id" type="col"/>
+      </pivot>
     </field>
   </record>
 
@@ -20,27 +118,211 @@
     <field name="name">hr.employee.form</field>
     <field name="model">hr.employee</field>
     <field name="arch" type="xml">
-      <form record_mode="record">
+      <form string="Employee">
+        <header>
+          <button name="action_open_departure_wizard" type="object" string="End of Collaboration" class="btn-secondary" invisible="not active" groups="hr.group_hr_user"/>
+          <button name="action_cancel_departure" type="object" string="Restore Collaboration" class="btn-primary" invisible="active" groups="hr.group_hr_user"/>
+          <button name="action_generate_barcode" type="object" string="Generate Badge ID" class="btn-secondary" groups="hr.group_hr_user"/>
+        </header>
         <sheet>
-          <group>
-            <field name="name"/>
-            <field name="company_id"/>
-            <field name="user_id"/>
-            <field name="work_email"/>
-            <field name="work_phone"/>
-            <field name="active"/>
-          </group>
+          <div class="oe_button_box" name="button_box">
+            <button name="action_open_versions" type="object" class="oe_stat_button" icon="lucide:file-text" groups="hr.group_hr_user">
+              <field name="versions_count" widget="statinfo" string="History"/>
+            </button>
+            <button name="action_open_subordinates" type="object" class="oe_stat_button" icon="lucide:users">
+              <field name="subordinate_count" widget="statinfo" string="Team"/>
+            </button>
+            <button name="action_open_org_chart" type="object" class="oe_stat_button" icon="lucide:network">
+              <field name="subordinate_count" widget="statinfo" string="Org Chart"/>
+            </button>
+          </div>
+          <widget name="web_ribbon" title="Archived" bg_color="bg-danger" invisible="active"/>
+          <div class="oe_title">
+            <field name="image_1920" widget="image"/>
+            <h1><field name="name" placeholder="Employee's Name"/></h1>
+            <field name="job_title" placeholder="Job Title"/>
+            <field name="work_email" widget="email" placeholder="Work Email"/>
+            <field name="work_phone" widget="phone" placeholder="Work Phone"/>
+            <field name="mobile_phone" widget="phone" placeholder="Work Mobile"/>
+            <field name="category_ids" widget="many2many_tags"/>
+          </div>
+          <notebook>
+            <page string="Work">
+              <group>
+                <group string="Work Information">
+                  <field name="company_id"/>
+                  <field name="department_id"/>
+                  <field name="job_id"/>
+                  <field name="parent_id" widget="many2one_avatar"/>
+                  <field name="coach_id" widget="many2one_avatar"/>
+                  <field name="address_id"/>
+                  <field name="work_location_id"/>
+                </group>
+                <group string="Organization Chart">
+                  <field name="child_ids" widget="hr.org_chart"/>
+                </group>
+              </group>
+              <group>
+                <group string="Weekly Work Location">
+                  <field name="monday_location_id"/>
+                  <field name="tuesday_location_id"/>
+                  <field name="wednesday_location_id"/>
+                  <field name="thursday_location_id"/>
+                  <field name="friday_location_id"/>
+                  <field name="saturday_location_id"/>
+                  <field name="sunday_location_id"/>
+                </group>
+                <group string="Note">
+                  <field name="additional_note"/>
+                </group>
+              </group>
+            </page>
+
+            <page string="Payroll" groups="hr.group_hr_user">
+              <group>
+                <group string="Contract Overview">
+                  <field name="employee_type_id"/>
+                  <field name="contract_date_start"/>
+                  <field name="contract_date_end"/>
+                  <field name="work_schedule_id"/>
+                </group>
+                <group string="Compensation">
+                  <field name="currency_id" invisible="1"/>
+                  <field name="wage"/>
+                  <field name="hourly_cost"/>
+                </group>
+              </group>
+              <group string="Contract History">
+                <field name="version_ids"/>
+              </group>
+            </page>
+
+            <page string="Resume">
+              <group>
+                <group string="Experience &amp; Education">
+                  <field name="resume_line_ids" widget="hr.resume_timeline"/>
+                </group>
+                <group string="Skills &amp; Proficiency">
+                  <field name="employee_skill_ids" widget="hr.skills_panel"/>
+                </group>
+              </group>
+            </page>
+
+            <page string="Certifications">
+              <field name="employee_skill_ids"/>
+            </page>
+
+            <page string="Personal" groups="hr.group_hr_user">
+              <group>
+                <group string="Private Contact">
+                  <field name="private_email" widget="email"/>
+                  <field name="private_phone" widget="phone"/>
+                  <field name="bank_name"/>
+                  <field name="bank_account_number"/>
+                  <field name="private_street"/>
+                  <field name="private_street2"/>
+                  <field name="private_city"/>
+                  <field name="private_state_id"/>
+                  <field name="private_zip"/>
+                  <field name="private_country_id"/>
+                  <field name="distance_home_work"/>
+                  <field name="distance_home_work_unit"/>
+                </group>
+                <group string="Citizenship &amp; Identity">
+                  <field name="legal_name"/>
+                  <field name="country_id"/>
+                  <field name="identification_id"/>
+                  <field name="passport_id"/>
+                  <field name="passport_expiration_date"/>
+                  <field name="sex"/>
+                  <field name="birthday"/>
+                  <field name="birthday_public_display"/>
+                  <field name="place_of_birth"/>
+                  <field name="country_of_birth_id"/>
+                </group>
+              </group>
+              <group>
+                <group string="Emergency &amp; Family">
+                  <field name="emergency_contact"/>
+                  <field name="emergency_phone" widget="phone"/>
+                  <field name="marital"/>
+                  <field name="spouse_complete_name"/>
+                  <field name="spouse_birthdate"/>
+                  <field name="children"/>
+                </group>
+                <group string="Education &amp; Work Permit">
+                  <field name="certificate"/>
+                  <field name="study_field"/>
+                  <field name="study_school"/>
+                  <field name="visa_no"/>
+                  <field name="visa_expire"/>
+                  <field name="permit_no"/>
+                  <field name="work_permit_expiration_date"/>
+                  <field name="work_permit_name" invisible="1"/>
+                  <field name="work_permit_file" filename="work_permit_name"/>
+                </group>
+              </group>
+              <group string="Identity Documents">
+                <group>
+                  <field name="id_card_name" invisible="1"/>
+                  <field name="id_card" filename="id_card_name"/>
+                </group>
+                <group>
+                  <field name="driving_license_name" invisible="1"/>
+                  <field name="driving_license" filename="driving_license_name"/>
+                </group>
+              </group>
+            </page>
+
+            <page string="End of Collaboration" groups="hr.group_hr_user">
+              <group>
+                <group>
+                  <field name="departure_reason_id"/>
+                  <field name="departure_date"/>
+                </group>
+                <group>
+                  <field name="departure_description"/>
+                </group>
+              </group>
+            </page>
+
+            <page string="Settings" groups="hr.group_hr_user">
+              <group>
+                <group string="Application &amp; Access">
+                  <field name="user_id"/>
+                  <field name="hr_responsible_id"/>
+                  <field name="tz"/>
+                  <field name="active"/>
+                </group>
+                <group string="Attendance &amp; Badge">
+                  <field name="pin"/>
+                  <field name="barcode"/>
+                </group>
+              </group>
+            </page>
+          </notebook>
         </sheet>
+        <chatter/>
       </form>
     </field>
   </record>
 
+  <!-- Window Actions -->
   <record id="hr_employee_action" model="ir.actions.act_window">
     <field name="name">Employees</field>
     <field name="res_model">hr.employee</field>
-    <field name="view_mode">list,form</field>
-    <field name="view_id" ref="hr_employee_view_list"/>
+    <field name="view_mode">kanban,list,hierarchy,activity,graph,pivot,form</field>
   </record>
 
-  <menuitem id="hr_employee_menu" name="Employees" parent="hr_menu_root" action="hr_employee_action" groups="base.group_user" sequence="5"/>
+  <record id="hr_employee_directory_action" model="ir.actions.act_window">
+    <field name="name">Employee Directory</field>
+    <field name="res_model">hr.employee</field>
+    <field name="view_mode">kanban,list,hierarchy,form</field>
+  </record>
+
+  <record id="hr_employee_reporting_action" model="ir.actions.act_window">
+    <field name="name">Headcount Analysis</field>
+    <field name="res_model">hr.employee</field>
+    <field name="view_mode">graph,pivot,list,form</field>
+  </record>
 </erp>

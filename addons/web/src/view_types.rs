@@ -7,8 +7,9 @@
 //! invokes these callbacks from the exact generation's published declarations.
 use erp_sdk::views::{
     CheckedViewInput, DescriptionBudget, DescriptionValue, DescriptionValueBuilder, FieldPredicate,
-    MetadataFieldSet, ViewResult, ViewSchema, ViewTypeDecl, calendar_schema, form_schema,
-    graph_schema, kanban_schema, list_schema, pivot_schema, search_schema,
+    MetadataFieldSet, ViewResult, ViewSchema, ViewTypeDecl, activity_schema, calendar_schema,
+    form_schema, graph_schema, hierarchy_schema, kanban_schema, list_schema, pivot_schema,
+    search_schema,
 };
 
 macro_rules! builtin_callbacks {
@@ -31,6 +32,8 @@ builtin_callbacks!(validate_pivot, build_pivot, "pivot");
 builtin_callbacks!(validate_kanban, build_kanban, "kanban");
 builtin_callbacks!(validate_calendar, build_calendar, "calendar");
 builtin_callbacks!(validate_graph, build_graph, "graph");
+builtin_callbacks!(validate_hierarchy, build_hierarchy, "hierarchy");
+builtin_callbacks!(validate_activity, build_activity, "activity");
 
 fn declare(
     key: &'static str,
@@ -49,6 +52,8 @@ fn declare(
             "kanban" => "web.kanban",
             "calendar" => "web.calendar",
             "graph" => "web.graph",
+            "hierarchy" => "web.hierarchy",
+            "activity" => "web.activity",
             _ => {
                 return Err(erp_sdk::views::ViewError::InvalidDescription(
                     "Unknown builtin view type.".to_owned(),
@@ -125,6 +130,30 @@ pub(crate) fn graph_view_type() -> ViewResult<ViewTypeDecl> {
     )
 }
 
+/// `hierarchy` (H18): metadata for the fields its arch references (parent, child, avatar, color, count and card fields).
+pub(crate) fn hierarchy_view_type() -> ViewResult<ViewTypeDecl> {
+    let fields = MetadataFieldSet::builder().arch_references().finish()?;
+    declare(
+        "hierarchy",
+        &hierarchy_schema()?,
+        validate_hierarchy,
+        build_hierarchy,
+        fields,
+    )
+}
+
+/// `activity` (H18): metadata for the record summary fields its arch references.
+pub(crate) fn activity_view_type() -> ViewResult<ViewTypeDecl> {
+    let fields = MetadataFieldSet::builder().arch_references().finish()?;
+    declare(
+        "activity",
+        &activity_schema()?,
+        validate_activity,
+        build_activity,
+        fields,
+    )
+}
+
 /// `search` (H18): the arch references plus every readable field of the root model, for
 /// the custom filter/domain editor.
 pub(crate) fn search_view_type() -> ViewResult<ViewTypeDecl> {
@@ -155,6 +184,8 @@ mod tests {
             kanban_view_type,
             calendar_view_type,
             graph_view_type,
+            hierarchy_view_type,
+            activity_view_type,
         ]
         .into_iter()
         .map(|declare| declare().unwrap())
@@ -189,6 +220,8 @@ mod tests {
                 ("web", "kanban", 1, "web.kanban", 1),
                 ("web", "calendar", 1, "web.calendar", 1),
                 ("web", "graph", 1, "web.graph", 1),
+                ("web", "hierarchy", 1, "web.hierarchy", 1),
+                ("web", "activity", 1, "web.activity", 1),
             ]
         );
     }
@@ -226,7 +259,15 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "calendar", "form", "graph", "kanban", "list", "pivot", "search"
+                "activity",
+                "calendar",
+                "form",
+                "graph",
+                "hierarchy",
+                "kanban",
+                "list",
+                "pivot",
+                "search",
             ]
         );
     }

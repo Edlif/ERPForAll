@@ -660,7 +660,8 @@ pub struct IrActionsActWindowView {
         selection,
         selection = [
             ("list", "List"), ("form", "Form"), ("graph", "Graph"), ("pivot", "Pivot"),
-            ("calendar", "Calendar"), ("kanban", "Kanban")
+            ("calendar", "Calendar"), ("kanban", "Kanban"),
+            ("hierarchy", "Hierarchy"), ("activity", "Activity")
         ],
         required = true,
         string = "View Type"

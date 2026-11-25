@@ -1,0 +1,568 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <!-- Employee Types -->
+  <record id="hr_employee_type_view_list" model="ir.ui.view">
+    <field name="name">hr.employee.type.list</field>
+    <field name="model">hr.employee.type</field>
+    <field name="arch" type="xml">
+      <list string="Employee Types">
+        <field name="sequence"/>
+        <field name="name"/>
+        <field name="code"/>
+        <field name="country_id"/>
+        <field name="company_id"/>
+        <field name="employees_count"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_employee_type_view_form" model="ir.ui.view">
+    <field name="name">hr.employee.type.form</field>
+    <field name="model">hr.employee.type</field>
+    <field name="arch" type="xml">
+      <form string="Employee Type">
+        <sheet>
+          <div class="oe_button_box" name="button_box">
+            <button name="action_open_employees" type="object" class="oe_stat_button" icon="lucide:users">
+              <field name="employees_count" widget="statinfo" string="Employees"/>
+            </button>
+          </div>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="e.g. Full-Time Employee"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="code"/>
+              <field name="sequence"/>
+            </group>
+            <group>
+              <field name="country_id"/>
+              <field name="company_id"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_employee_type_action" model="ir.actions.act_window">
+    <field name="name">Employee Types</field>
+    <field name="res_model">hr.employee.type</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <!-- Work Locations -->
+  <record id="hr_work_location_view_list" model="ir.ui.view">
+    <field name="name">hr.work.location.list</field>
+    <field name="model">hr.work.location</field>
+    <field name="arch" type="xml">
+      <list string="Work Locations">
+        <field name="name"/>
+        <field name="location_type"/>
+        <field name="address_id"/>
+        <field name="company_id"/>
+        <field name="active"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_work_location_view_form" model="ir.ui.view">
+    <field name="name">hr.work.location.form</field>
+    <field name="model">hr.work.location</field>
+    <field name="arch" type="xml">
+      <form string="Work Location">
+        <sheet>
+          <widget name="web_ribbon" title="Archived" bg_color="bg-danger" invisible="active"/>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="e.g. Jakarta HQ"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="location_type"/>
+              <field name="address_id"/>
+            </group>
+            <group>
+              <field name="company_id"/>
+              <field name="active"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_work_location_action" model="ir.actions.act_window">
+    <field name="name">Work Locations</field>
+    <field name="res_model">hr.work.location</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <!-- Working Schedules -->
+  <record id="hr_work_schedule_view_list" model="ir.ui.view">
+    <field name="name">hr.work.schedule.list</field>
+    <field name="model">hr.work.schedule</field>
+    <field name="arch" type="xml">
+      <list string="Working Schedules">
+        <field name="name"/>
+        <field name="hours_per_day"/>
+        <field name="hours_per_week"/>
+        <field name="tz"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_work_schedule_view_form" model="ir.ui.view">
+    <field name="name">hr.work.schedule.form</field>
+    <field name="model">hr.work.schedule</field>
+    <field name="arch" type="xml">
+      <form string="Working Schedule">
+        <sheet>
+          <widget name="web_ribbon" title="Archived" bg_color="bg-danger" invisible="active"/>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="e.g. Standard 40 hours/week"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="hours_per_day"/>
+              <field name="hours_per_week"/>
+            </group>
+            <group>
+              <field name="tz"/>
+              <field name="company_id"/>
+              <field name="active"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_work_schedule_action" model="ir.actions.act_window">
+    <field name="name">Working Schedules</field>
+    <field name="res_model">hr.work.schedule</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <!-- Departure Reasons -->
+  <record id="hr_departure_reason_view_list" model="ir.ui.view">
+    <field name="name">hr.departure.reason.list</field>
+    <field name="model">hr.departure.reason</field>
+    <field name="arch" type="xml">
+      <list string="Departure Reasons">
+        <field name="sequence"/>
+        <field name="name"/>
+        <field name="reason_code"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_departure_reason_view_form" model="ir.ui.view">
+    <field name="name">hr.departure.reason.form</field>
+    <field name="model">hr.departure.reason</field>
+    <field name="arch" type="xml">
+      <form string="Departure Reason">
+        <sheet>
+          <group>
+            <field name="name"/>
+            <field name="sequence"/>
+            <field name="reason_code"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_departure_reason_action" model="ir.actions.act_window">
+    <field name="name">Departure Reasons</field>
+    <field name="res_model">hr.departure.reason</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <!-- Employee Tags -->
+  <record id="hr_employee_category_view_list" model="ir.ui.view">
+    <field name="name">hr.employee.category.list</field>
+    <field name="model">hr.employee.category</field>
+    <field name="arch" type="xml">
+      <list string="Employee Tags">
+        <field name="name"/>
+        <field name="color" widget="color_picker"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_employee_category_view_form" model="ir.ui.view">
+    <field name="name">hr.employee.category.form</field>
+    <field name="model">hr.employee.category</field>
+    <field name="arch" type="xml">
+      <form string="Employee Tag">
+        <sheet>
+          <group>
+            <field name="name"/>
+            <field name="color" widget="color_picker"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_employee_category_action" model="ir.actions.act_window">
+    <field name="name">Tags</field>
+    <field name="res_model">hr.employee.category</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <!-- Employment Contract History -->
+  <record id="hr_employee_version_view_list" model="ir.ui.view">
+    <field name="name">hr.employee.version.list</field>
+    <field name="model">hr.employee.version</field>
+    <field name="arch" type="xml">
+      <list string="Contract History">
+        <field name="name"/>
+        <field name="employee_id" widget="many2one_avatar"/>
+        <field name="department_id"/>
+        <field name="job_id"/>
+        <field name="employee_type_id"/>
+        <field name="date_start"/>
+        <field name="date_end"/>
+        <field name="wage"/>
+        <field name="state" widget="badge"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_employee_version_view_form" model="ir.ui.view">
+    <field name="name">hr.employee.version.form</field>
+    <field name="model">hr.employee.version</field>
+    <field name="arch" type="xml">
+      <form string="Employment Contract">
+        <header>
+          <field name="state" widget="statusbar"/>
+        </header>
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="Contract Reference"/></h1>
+          </div>
+          <group>
+            <group string="Employee &amp; Role">
+              <field name="employee_id"/>
+              <field name="company_id"/>
+              <field name="department_id"/>
+              <field name="job_id"/>
+              <field name="employee_type_id"/>
+            </group>
+            <group string="Contract Terms">
+              <field name="date_start"/>
+              <field name="date_end"/>
+              <field name="work_schedule_id"/>
+              <field name="currency_id" invisible="1"/>
+              <field name="wage"/>
+            </group>
+          </group>
+          <group string="Notes">
+            <field name="notes"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_employee_version_action" model="ir.actions.act_window">
+    <field name="name">Contract History</field>
+    <field name="res_model">hr.employee.version</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <!-- Resume Sections & Entries -->
+  <record id="hr_resume_line_type_view_list" model="ir.ui.view">
+    <field name="name">hr.resume.line.type.list</field>
+    <field name="model">hr.resume.line.type</field>
+    <field name="arch" type="xml">
+      <list string="Resume Sections">
+        <field name="sequence"/>
+        <field name="name"/>
+        <field name="is_course"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_resume_line_type_view_form" model="ir.ui.view">
+    <field name="name">hr.resume.line.type.form</field>
+    <field name="model">hr.resume.line.type</field>
+    <field name="arch" type="xml">
+      <form string="Resume Section">
+        <sheet>
+          <group>
+            <field name="name"/>
+            <field name="sequence"/>
+            <field name="is_course"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_resume_line_type_action" model="ir.actions.act_window">
+    <field name="name">Resume Sections</field>
+    <field name="res_model">hr.resume.line.type</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <record id="hr_resume_line_view_list" model="ir.ui.view">
+    <field name="name">hr.resume.line.list</field>
+    <field name="model">hr.resume.line</field>
+    <field name="arch" type="xml">
+      <list string="Resume Entries">
+        <field name="employee_id" widget="many2one_avatar"/>
+        <field name="line_type_id"/>
+        <field name="name"/>
+        <field name="date_start"/>
+        <field name="date_end"/>
+        <field name="duration_hours"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_resume_line_view_form" model="ir.ui.view">
+    <field name="name">hr.resume.line.form</field>
+    <field name="model">hr.resume.line</field>
+    <field name="arch" type="xml">
+      <form string="Resume Entry">
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="Title or Role"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="employee_id"/>
+              <field name="line_type_id"/>
+              <field name="duration_hours"/>
+              <field name="external_url" widget="url"/>
+            </group>
+            <group>
+              <field name="date_start"/>
+              <field name="date_end"/>
+              <field name="certificate_filename" invisible="1"/>
+              <field name="certificate_file" filename="certificate_filename"/>
+            </group>
+          </group>
+          <group string="Description">
+            <field name="description"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_resume_line_action" model="ir.actions.act_window">
+    <field name="name">Resume Entries</field>
+    <field name="res_model">hr.resume.line</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <!-- Skill Types & Skills Inventory -->
+  <record id="hr_skill_type_view_list" model="ir.ui.view">
+    <field name="name">hr.skill.type.list</field>
+    <field name="model">hr.skill.type</field>
+    <field name="arch" type="xml">
+      <list string="Skill Types">
+        <field name="name"/>
+        <field name="is_certification"/>
+        <field name="color" widget="color_picker"/>
+        <field name="active"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_skill_type_view_form" model="ir.ui.view">
+    <field name="name">hr.skill.type.form</field>
+    <field name="model">hr.skill.type</field>
+    <field name="arch" type="xml">
+      <form string="Skill Type">
+        <sheet>
+          <widget name="web_ribbon" title="Archived" bg_color="bg-danger" invisible="active"/>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="e.g. Programming Languages"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="is_certification"/>
+              <field name="color" widget="color_picker"/>
+            </group>
+            <group>
+              <field name="active"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Skills">
+              <field name="skill_ids"/>
+            </page>
+            <page string="Proficiency Levels">
+              <field name="skill_level_ids"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_skill_view_list" model="ir.ui.view">
+    <field name="name">hr.skill.list</field>
+    <field name="model">hr.skill</field>
+    <field name="arch" type="xml">
+      <list string="Skills">
+        <field name="sequence"/>
+        <field name="name"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_skill_view_form" model="ir.ui.view">
+    <field name="name">hr.skill.form</field>
+    <field name="model">hr.skill</field>
+    <field name="arch" type="xml">
+      <form string="Skill">
+        <sheet>
+          <group>
+            <field name="name"/>
+            <field name="sequence"/>
+            <field name="skill_type_id"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_skill_level_view_list" model="ir.ui.view">
+    <field name="name">hr.skill.level.list</field>
+    <field name="model">hr.skill.level</field>
+    <field name="arch" type="xml">
+      <list string="Skill Levels">
+        <field name="name"/>
+        <field name="level_progress" widget="progressbar"/>
+        <field name="default_level"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_skill_level_view_form" model="ir.ui.view">
+    <field name="name">hr.skill.level.form</field>
+    <field name="model">hr.skill.level</field>
+    <field name="arch" type="xml">
+      <form string="Skill Level">
+        <sheet>
+          <group>
+            <field name="name"/>
+            <field name="level_progress"/>
+            <field name="default_level"/>
+            <field name="skill_type_id"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_skill_type_action" model="ir.actions.act_window">
+    <field name="name">Skill Types</field>
+    <field name="res_model">hr.skill.type</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <record id="hr_employee_skill_view_list" model="ir.ui.view">
+    <field name="name">hr.employee.skill.list</field>
+    <field name="model">hr.employee.skill</field>
+    <field name="arch" type="xml">
+      <list string="Skills &amp; Certifications">
+        <field name="employee_id" widget="many2one_avatar"/>
+        <field name="skill_type_id"/>
+        <field name="skill_id"/>
+        <field name="skill_level_id"/>
+        <field name="level_progress" widget="progressbar"/>
+        <field name="is_certification"/>
+        <field name="valid_from"/>
+        <field name="valid_to"/>
+      </list>
+    </field>
+  </record>
+  <record id="hr_employee_skill_view_form" model="ir.ui.view">
+    <field name="name">hr.employee.skill.form</field>
+    <field name="model">hr.employee.skill</field>
+    <field name="arch" type="xml">
+      <form string="Employee Skill">
+        <sheet>
+          <group>
+            <group>
+              <field name="employee_id"/>
+              <field name="skill_type_id"/>
+              <field name="skill_id"/>
+              <field name="skill_level_id"/>
+            </group>
+            <group>
+              <field name="level_progress" widget="progressbar"/>
+              <field name="is_certification"/>
+              <field name="valid_from"/>
+              <field name="valid_to"/>
+              <field name="certificate_filename" invisible="1"/>
+              <field name="certificate_file" filename="certificate_filename"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+  <record id="hr_employee_skill_view_graph" model="ir.ui.view">
+    <field name="name">hr.employee.skill.graph</field>
+    <field name="model">hr.employee.skill</field>
+    <field name="arch" type="xml">
+      <graph string="Skills Inventory" type="bar">
+        <field name="skill_id"/>
+        <field name="level_progress" type="measure"/>
+      </graph>
+    </field>
+  </record>
+  <record id="hr_employee_skill_view_pivot" model="ir.ui.view">
+    <field name="name">hr.employee.skill.pivot</field>
+    <field name="model">hr.employee.skill</field>
+    <field name="arch" type="xml">
+      <pivot string="Skills Matrix">
+        <field name="employee_id" type="row"/>
+        <field name="skill_type_id" type="col"/>
+        <field name="level_progress" type="measure"/>
+      </pivot>
+    </field>
+  </record>
+  <record id="hr_employee_skill_view_search" model="ir.ui.view">
+    <field name="name">hr.employee.skill.search</field>
+    <field name="model">hr.employee.skill</field>
+    <field name="arch" type="xml">
+      <search string="Search Skills">
+        <field name="employee_id"/>
+        <field name="skill_id"/>
+        <field name="skill_type_id"/>
+        <filter name="certifications_only" string="Certifications" domain="[('is_certification', '=', True)]"/>
+        <group string="Group By">
+          <filter name="group_employee" string="Employee" context="{'group_by': 'employee_id'}"/>
+          <filter name="group_skill_type" string="Skill Type" context="{'group_by': 'skill_type_id'}"/>
+          <filter name="group_skill" string="Skill" context="{'group_by': 'skill_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+  <record id="hr_employee_skill_action" model="ir.actions.act_window">
+    <field name="name">Skills &amp; Certifications</field>
+    <field name="res_model">hr.employee.skill</field>
+    <field name="view_mode">list,pivot,graph,form</field>
+  </record>
+  <record id="hr_skills_reporting_action" model="ir.actions.act_window">
+    <field name="name">Skills Inventory</field>
+    <field name="res_model">hr.employee.skill</field>
+    <field name="view_mode">pivot,graph,list,form</field>
+  </record>
+
+  <!-- End of Collaboration Wizard -->
+  <record id="hr_departure_wizard_view_form" model="ir.ui.view">
+    <field name="name">hr.departure.wizard.form</field>
+    <field name="model">hr.departure.wizard</field>
+    <field name="arch" type="xml">
+      <form string="End of Collaboration">
+        <group>
+          <group>
+            <field name="employee_id"/>
+            <field name="departure_reason_id"/>
+            <field name="departure_date"/>
+          </group>
+          <group>
+            <field name="update_contract_end"/>
+            <field name="archive_employee"/>
+          </group>
+        </group>
+        <group string="Departure Notes">
+          <field name="departure_description"/>
+        </group>
+        <footer>
+          <button name="action_register_departure" type="object" string="Confirm Departure" class="btn-primary"/>
+          <button special="cancel" string="Cancel" class="btn-secondary"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+</erp>

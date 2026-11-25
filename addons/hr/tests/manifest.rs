@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Static consistency of the manifest and the declared model.
+//! Static consistency of the manifest and the declared HR models.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 
 use std::collections::BTreeSet;
@@ -21,13 +21,13 @@ fn strings(table: &toml::Table, key: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Every listed data file exists and no view or security file is left out of the manifest.
+/// Every listed data file exists and no data, security, or view file is left out of the manifest.
 #[test]
 fn manifest_lists_exactly_the_shipped_data_files() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let listed = strings(&manifest(), "data");
     let mut shipped = BTreeSet::new();
-    for dir in ["security", "views"] {
+    for dir in ["data", "security", "views"] {
         for entry in fs::read_dir(root.join(dir)).expect("addon directory") {
             let name = entry.unwrap().file_name().into_string().unwrap();
             shipped.insert(format!("{dir}/{name}"));
@@ -48,16 +48,32 @@ fn manifest_depends_match_the_descriptor() {
     assert_eq!(from_manifest, from_descriptor);
 }
 
-/// `hr.job` links with a required name, a company link and an `active` flag.
+fn linked_registry() -> erp_sdk::Registry {
+    erp_sdk::RegistryBuilder::new([
+        &erp_addon_base::ADDON,
+        &erp_addon_web::ADDON,
+        &erp_addon_mail::ADDON,
+        &erp_addon_hr::ADDON,
+    ])
+    .build()
+    .expect("real linked registry")
+}
+
+/// `hr.job` links with required name, department, recruitment counters, and `active`.
 #[test]
 fn hr_job_declares_its_fields() {
-    let registry = erp_sdk::RegistryBuilder::new([&erp_addon_base::ADDON, &erp_addon_hr::ADDON])
-        .build()
-        .expect("real linked registry");
+    let registry = linked_registry();
     let job = registry.model("hr.job").expect("hr.job is linked");
     assert!(job.field("name").expect("name").required);
     assert_eq!(
         job.field("company_id").expect("company_id").ty.type_name(),
+        "many2one"
+    );
+    assert_eq!(
+        job.field("department_id")
+            .expect("department_id")
+            .ty
+            .type_name(),
         "many2one"
     );
     assert_eq!(
@@ -66,13 +82,35 @@ fn hr_job_declares_its_fields() {
     );
 }
 
-/// `hr.employee` has a required name and company, an optional user, an `active` flag and the
-/// work contact fields.
+/// `hr.department` declares hierarchical parent/child fields and counters.
+#[test]
+fn hr_department_declares_its_fields() {
+    let registry = linked_registry();
+    let dept = registry
+        .model("hr.department")
+        .expect("hr.department is linked");
+    assert!(dept.field("name").expect("name").required);
+    assert_eq!(
+        dept.field("parent_id").expect("parent_id").ty.type_name(),
+        "many2one"
+    );
+    assert_eq!(
+        dept.field("child_ids").expect("child_ids").ty.type_name(),
+        "one2many"
+    );
+    assert_eq!(
+        dept.field("total_employee")
+            .expect("total_employee")
+            .ty
+            .type_name(),
+        "integer"
+    );
+}
+
+/// `hr.employee` declares full identity, work, org chart, payroll, resume, skills, and image fields.
 #[test]
 fn hr_employee_declares_its_fields() {
-    let registry = erp_sdk::RegistryBuilder::new([&erp_addon_base::ADDON, &erp_addon_hr::ADDON])
-        .build()
-        .expect("real linked registry");
+    let registry = linked_registry();
     let employee = registry
         .model("hr.employee")
         .expect("hr.employee is linked");
@@ -85,4 +123,12 @@ fn hr_employee_declares_its_fields() {
     assert_eq!(field("active").ty.type_name(), "boolean");
     assert_eq!(field("work_email").ty.type_name(), "char");
     assert_eq!(field("work_phone").ty.type_name(), "char");
+    assert_eq!(field("department_id").ty.type_name(), "many2one");
+    assert_eq!(field("parent_id").ty.type_name(), "many2one");
+    assert_eq!(field("child_ids").ty.type_name(), "one2many");
+    assert_eq!(field("image_1920").ty.type_name(), "binary");
+    assert_eq!(field("image_128").ty.type_name(), "binary");
+    assert_eq!(field("resume_line_ids").ty.type_name(), "one2many");
+    assert_eq!(field("employee_skill_ids").ty.type_name(), "one2many");
+    assert_eq!(field("version_ids").ty.type_name(), "one2many");
 }

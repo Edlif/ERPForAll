@@ -1,55 +1,603 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Demo job positions and employees with invented names and example.com-style addresses. -->
-<erp>
-  <record id="job_demo_ops_manager" model="hr.job">
-    <field name="name">Manajer Operasional</field>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp noupdate="1">
+  <!-- Work Locations -->
+  <record id="hr_demo_loc_jakarta" model="hr.work.location">
+    <field name="name">Jakarta HQ — Sudirman Tower</field>
+    <field name="location_type">office</field>
     <field name="company_id" ref="base.main_company"/>
   </record>
-  <record id="job_demo_sales_exec" model="hr.job">
-    <field name="name">Staf Penjualan</field>
+  <record id="hr_demo_loc_bandung" model="hr.work.location">
+    <field name="name">Bandung Tech Hub</field>
+    <field name="location_type">office</field>
     <field name="company_id" ref="base.main_company"/>
   </record>
-  <record id="job_demo_buyer" model="hr.job">
-    <field name="name">Staf Pembelian</field>
-    <field name="company_id" ref="base.main_company"/>
-  </record>
-  <record id="job_demo_warehouse" model="hr.job">
-    <field name="name">Kepala Gudang</field>
-    <field name="company_id" ref="base.main_company"/>
-  </record>
-  <record id="job_demo_accountant" model="hr.job">
-    <field name="name">Akuntan</field>
+  <record id="hr_demo_loc_remote" model="hr.work.location">
+    <field name="name">Remote / Home Office</field>
+    <field name="location_type">home</field>
     <field name="company_id" ref="base.main_company"/>
   </record>
 
-  <record id="employee_demo_budi" model="hr.employee">
+  <!-- Employee Tags -->
+  <record id="hr_demo_tag_employee" model="hr.employee.category">
+    <field name="name">Employee</field>
+    <field name="color">4</field>
+  </record>
+  <record id="hr_demo_tag_leadership" model="hr.employee.category">
+    <field name="name">Leadership</field>
+    <field name="color">5</field>
+  </record>
+  <record id="hr_demo_tag_tech_lead" model="hr.employee.category">
+    <field name="name">Tech Lead</field>
+    <field name="color">7</field>
+  </record>
+  <record id="hr_demo_tag_remote" model="hr.employee.category">
+    <field name="name">Remote</field>
+    <field name="color">10</field>
+  </record>
+  <record id="hr_demo_tag_high_potential" model="hr.employee.category">
+    <field name="name">High Potential</field>
+    <field name="color">2</field>
+  </record>
+
+  <!-- Hierarchical Departments (7 departments across 3 levels) -->
+  <record id="hr_demo_dept_management" model="hr.department">
+    <field name="name">Management</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="color">5</field>
+    <field name="note">Executive leadership and corporate strategy.</field>
+  </record>
+  <record id="hr_demo_dept_engineering" model="hr.department">
+    <field name="name">Engineering</field>
+    <field name="parent_id" ref="hr_demo_dept_management"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="color">4</field>
+    <field name="note">Core ERP platform, backend services, and web client engineering.</field>
+  </record>
+  <record id="hr_demo_dept_backend" model="hr.department">
+    <field name="name">Core Platform &amp; Rust</field>
+    <field name="parent_id" ref="hr_demo_dept_engineering"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="color">7</field>
+    <field name="note">ORM, PostgreSQL storage engine, security, and accounting modules.</field>
+  </record>
+  <record id="hr_demo_dept_frontend" model="hr.department">
+    <field name="name">Web &amp; Experience</field>
+    <field name="parent_id" ref="hr_demo_dept_engineering"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="color">11</field>
+    <field name="note">Human UI views, accessibility, and interactive design systems.</field>
+  </record>
+  <record id="hr_demo_dept_sales" model="hr.department">
+    <field name="name">Sales &amp; Growth</field>
+    <field name="parent_id" ref="hr_demo_dept_management"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="color">2</field>
+    <field name="note">Enterprise accounts, partnerships, and customer success.</field>
+  </record>
+  <record id="hr_demo_dept_operations" model="hr.department">
+    <field name="name">Operations &amp; Finance</field>
+    <field name="parent_id" ref="hr_demo_dept_management"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="color">10</field>
+    <field name="note">Supply chain, procurement, and financial operations.</field>
+  </record>
+  <record id="hr_demo_dept_people" model="hr.department">
+    <field name="name">People &amp; Culture</field>
+    <field name="parent_id" ref="hr_demo_dept_management"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="color">9</field>
+    <field name="note">Talent acquisition, employee experience, and learning.</field>
+  </record>
+
+  <!-- Job Positions (8 roles) -->
+  <record id="hr_demo_job_ceo" model="hr.job">
+    <field name="name">Chief Executive Officer</field>
+    <field name="sequence">1</field>
+    <field name="department_id" ref="hr_demo_dept_management"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="no_of_recruitment">0</field>
+    <field name="description">&lt;p&gt;Leads overall company vision, strategy, and executive alignment.&lt;/p&gt;</field>
+  </record>
+  <record id="hr_demo_job_vp_eng" model="hr.job">
+    <field name="name">VP of Engineering</field>
+    <field name="sequence">5</field>
+    <field name="department_id" ref="hr_demo_dept_engineering"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="no_of_recruitment">0</field>
+    <field name="description">&lt;p&gt;Oversees engineering architecture, delivery excellence, and technical teams.&lt;/p&gt;</field>
+  </record>
+  <record id="hr_demo_job_rust_eng" model="hr.job">
+    <field name="name">Senior Rust Engineer</field>
+    <field name="sequence">10</field>
+    <field name="department_id" ref="hr_demo_dept_backend"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="no_of_recruitment">2</field>
+    <field name="description">&lt;p&gt;Designs and implements high-reliability Rust backend crates and PostgreSQL queries.&lt;/p&gt;</field>
+  </record>
+  <record id="hr_demo_job_fe_eng" model="hr.job">
+    <field name="name">Frontend Systems Engineer</field>
+    <field name="sequence">15</field>
+    <field name="department_id" ref="hr_demo_dept_frontend"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="no_of_recruitment">2</field>
+    <field name="description">&lt;p&gt;Builds responsive TypeScript UI components, views, and accessible workflows.&lt;/p&gt;</field>
+  </record>
+  <record id="hr_demo_job_designer" model="hr.job">
+    <field name="name">Product Designer</field>
+    <field name="sequence">20</field>
+    <field name="department_id" ref="hr_demo_dept_frontend"/>
+    <field name="employee_type_id" ref="hr_employee_type_contractor"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="no_of_recruitment">1</field>
+    <field name="description">&lt;p&gt;Shapes intuitive ERP workflows across desktop and mobile screen sizes.&lt;/p&gt;</field>
+  </record>
+  <record id="hr_demo_job_sales_mgr" model="hr.job">
+    <field name="name">Sales Director</field>
+    <field name="sequence">25</field>
+    <field name="department_id" ref="hr_demo_dept_sales"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="no_of_recruitment">1</field>
+  </record>
+  <record id="hr_demo_job_ops_mgr" model="hr.job">
+    <field name="name">Operations Manager</field>
+    <field name="sequence">30</field>
+    <field name="department_id" ref="hr_demo_dept_operations"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="no_of_recruitment">1</field>
+  </record>
+  <record id="hr_demo_job_hr_mgr" model="hr.job">
+    <field name="name">People Operations Lead</field>
+    <field name="sequence">35</field>
+    <field name="department_id" ref="hr_demo_dept_people"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="no_of_recruitment">1</field>
+  </record>
+
+  <!-- 12 Employees forming a 3-level Org Chart (10 with portrait avatars, 2 without for initials tile demo) -->
+  <!-- Level 1: CEO -->
+  <record id="hr_demo_emp_nadia" model="hr.employee">
+    <field name="name">Nadia Kusuma</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_management"/>
+    <field name="job_id" ref="hr_demo_job_ceo"/>
+    <field name="job_title">Chief Executive Officer</field>
+    <field name="work_email">nadia.kusuma@arkana.example.id</field>
+    <field name="work_phone">+62 21 555 0101</field>
+    <field name="mobile_phone">+62 812 8000 0101</field>
+    <field name="work_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="monday_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="tuesday_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="wednesday_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="thursday_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="friday_location_id" ref="hr_demo_loc_remote"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2021-01-15</field>
+    <field name="wage">48000000</field>
+    <field name="hourly_cost">300000</field>
+    <field name="barcode">041000000001</field>
+    <field name="private_email">nadia.personal@example.id</field>
+    <field name="private_city">Jakarta Selatan</field>
+    <field name="certificate">master</field>
+    <field name="study_field">Business Administration</field>
+    <field name="study_school">Institut Teknologi Bandung</field>
+    <field name="emergency_contact">Arif Kusuma</field>
+    <field name="emergency_phone">+62 811 9000 0101</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee'), ref('hr_demo_tag_leadership')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAFLElEQVR42u3cSVMdVRjG8feDWKUbN5aLbPwSLl34kTLPAxlWLsQhiXHMqO4kkBBISFAICCF+AauscuPKJheom4R7Od19+vT7Pvyr/svbh1vPjzuwoO3XK3+RcMYEABPABDABTB0A/3LlJQkHsDzw5ZckHMAAE8DkGXiDhANYHfjnyxskHMAAU2zgSxskHMD6wC9IOIDVge9dekHCAQwwAUyegddJOLt3cZ2EAxjgsH3w7jvpyQLfvbguVi3XtxNbw3DVlq6A16KXnfZ15tjjGLraxgatNrOhq21s0Goz292JtUD1rrtlHGcxuzOxFiUnuoOijFYB/xkiV7rbxgF2M3S1jQEGGN3IxoautrGhq21stydW3RYI2O2GdvvCqs8C6W4Zu5wRYIDRjWwMMMDoRjaugFe8FRzY15iGrrax3bqw4ioBYFd7Grraxnbr/IqfdIDdTAowwAAHB37uJBndbWMXqwYG/nvmxvgA3gS+ef65k3K5OpF2smok4Aa0PTIDnArc0rUvZoBTX755gTNK73mOE+BlDxXWbcOcfoiHYe3muWUP9QVci7nu5R6GBXgcWMvfD4CdAud6A3AB/NO5ZQ9JAnsYVg34vfcPVDWmanY5wIWABzyNjRtf7hx4yUOiwP0PCzDAAMcGPrvkIc1v0Q6GBVgd+MezS04SA3ayagX8h5PkgF2sCjDAAAMMMMCyxp519xfw5KefDLdfgH8487ufugB+w/XtugD2M6ky8J60WZgB7sE40a89s3NdfeCOHg9wz8bN3nLrXuVfVxa4xz+QAAa4NPCiw/wbj9B1t6R9f2bRZ56Nd31uPmcEWB749KLbfBrvrut1w3jA/RqPekoAi7yIY+kOgJ85z+F/Hb6u63q9AMBOjCPqxgYuaTz6o9c98Henn4WoR+NRPzrEbmGAxxj3cqOWKKNFAi5sLKD7CvjU01h1erO0lHuyxJorHvB45tU7n1U1ph1crkEbG3iU8UBop1quO8noxgbe1fgNqlHe4x8mo7sJ/O2pp9FLB05s+MDo4ygAD5cFWGkQgPWBF5TKBKwzCMDywCcXlMoDLDQIwAADHBr4xskFpbIAKw1SAT9RKhOwziAAAwwwwAADDDDAAHcB/M2JJ0plAVYapAJ+rFQmYJ1BAAY4OPA///43PoC99+FHH++UBXj4QID7Rx3TnrqDEk8D2ItrR8ARpSvgef/VBegaeEja+3R2/cS85xpPn67b0rjK84B2/fi8z9osXhh4i9nljCZJ2wuwT2aTpK2rm9fYFbPp0XoA9sNcAc/1W/ZZ/QBvM/c5r6GrbWx6ug6BezS2a8fnytfdjm6BB5Wf2tDVNrZrx+ZK1vV8/oE3jQsObkq07XWLGRdjroAfFajMZLGAXxl3vrwp6YYDLmBs6Gob29Vjj7qr5Exxgau6IzAZ3dDA3RkbutrGFfBsF5VfR6AuIAxdbWO7enQ2byC1Nc7KYehqGwOsDvz10dlcAZOxXCgV8MMsQdKBcQYXgAFGN7KxoattDLA88JGHbQKghHELIIDVgb868qBxTF+sxkYAA4xuZGOAAQZ4HwIzdxTjCnimQWzdE3BtKfvy8EzdGLrH6mIBDDDAAJMOMBPHMgZYH3i6VuzrALiGF8DqwF8cnk6PcZ2UTgawPPCh6fRY1gtwMhnA+sD302NZN8CpZAADDHBo4MlD99NjWSelkwEMMMDBgafSY1k3wKlkNnlwKj2W9QKcTAYwwAADTH6BPz84lR7LOimdDGB94N/SY1k3wKlk/wPS+e4PJ09S9QAAAABJRU5ErkJggg==</field>
+  </record>
+
+  <!-- Level 2: 4 Department Heads -->
+  <record id="hr_demo_emp_budi" model="hr.employee">
     <field name="name">Budi Santoso</field>
     <field name="company_id" ref="base.main_company"/>
-    <field name="work_email">budi.santoso@contoh.example</field>
-    <field name="work_phone">+62 21 555 0301</field>
+    <field name="department_id" ref="hr_demo_dept_engineering"/>
+    <field name="job_id" ref="hr_demo_job_vp_eng"/>
+    <field name="job_title">VP of Engineering</field>
+    <field name="parent_id" ref="hr_demo_emp_nadia"/>
+    <field name="coach_id" ref="hr_demo_emp_nadia"/>
+    <field name="work_email">budi.santoso@arkana.example.id</field>
+    <field name="work_phone">+62 21 555 0102</field>
+    <field name="mobile_phone">+62 812 8000 0102</field>
+    <field name="work_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2021-06-01</field>
+    <field name="wage">38000000</field>
+    <field name="hourly_cost">240000</field>
+    <field name="barcode">041000000002</field>
+    <field name="certificate">master</field>
+    <field name="study_field">Computer Science</field>
+    <field name="study_school">Universitas Indonesia</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee'), ref('hr_demo_tag_leadership'), ref('hr_demo_tag_tech_lead')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAE8ElEQVR42u3Wy3IVVRiG4f9KKKrUuZfhmIFX4UyBgAFCwKn3gJzBcD5fA8XBEAgQAiGGaBInjhyyYIdUSnFn7e7Vq///22/VO+zV3fU91bu2/XTvLxLOmABgig28QcIBLA98d4OEA1gd+PjdDRIOYH3gdRIOYIAJYHIMfGedhANYH3iNhANYHfjYnTUSDmCAKTbw7TUSLgH/ScIBDDABTAATwAQwjQw8fesP1b7YvSs/1RFszF3lpQ1XbWmDVpvZ0NU2Nmi1mRPwasQq634yjjeUQavNbNM3VwPVu+6mcZzFDF1tY0NX29iO3lz1n0PdQf6nS8Dv/OcY2Pt0hq62saGrbWzoahvb0Rvv3BYJ2OuGhq62cQJe8VlAYI8zGrraxgADjG5kY5u6seKt0MDexrSp6yuuCq27aexpzwT8u6skgB3taehqGwMMMMAAAwzwGOm6Mk7Ay04aMtbi5Z9TfVENnv7ZhgK7WNWmri07KXNfD6457+Nk1XjAFaQzaWMAH7m27KRmc/dIO/wFnKxqznUzR++FdsdHA9z28y3C3Jg2xEecgN96qOz6dVwzgPsfVhP4swAFRQH2Bdx1voGvvvWQJrCDYdWAd3/1daoxVbPjAFcCHvA0Nm583DnwkodEgfsfFmB14MNXlzwkCexhWClgb/+iAd65EMCeB7TDV5Y8FwPY8YAJ+I3nggD7HRBggAEGGGCAZY2drzdGwKe/3bO9cQE+dPm188q6/reW93e+njLwjrRFmAHuwTjTrz2z/+nEgTu6HuCejZv95I56KsRumsB1igK8GCKXwAF2CwPszTjKaHbo0mKgvOjGWQxggDEOq/sBePLSYrh61A23FcD6wK8i1pNuvKGiAtc3DrpSYOCaxnEnssmZV6GroRt5n/DAnTILLCMC3IWxxiwJeEGpQrQ6g6gB3z8xnWpMOzgOsHfgrUZy3UoK+MeZBaX+RfV/3sMvUxpkvIAz0wL+dUGpMsBCgyTgl0oVAtYZBGCAAQYYYIABBhjgToAvvlCqDLDQIACrAx+8+EKpIsBKgwAMMMAAA+wZ+LlShYB1BgFYHvjCc6XKAAsNAjDAwYHX//5neAB778tvvtuqCPD2GwoAz0dsu8GQdtQdlHm3iEPZgQvzgcqU6Ah4q0CLmaRr18CBpE2VNl+3pbFzZjtwft5nbRavDLzJ7HJGk6TtBdgncwJ+5qdSK4+qW9b4I7OXSU2P1gOwH2bTo/UD7IHZ0NU2Nj1dh8A9GtvE+Wf1625Ht8CD6k9tE+eeVs6tbiXjumubmK5/4MrGpkTbXreacTVmU9KNBVzH2JR0wwFXMDZ0tY0T8Fx31ZwpLvBH464IbOLsXEdV3ig08AfjbhQMXW1jHWCBOgHef3aueFA1rriFoattnICfFAyeQsbFRAAGGN3Ixrb/zJMiQVLeuIQLwACjG9k4Ac+2DIaOjVvpAAwwupGNbd+Z2TaxfoXaABm62sa27/Rs49i9HnBTI0NX2zgB/9YsFq8O3IQJYIDRjWwMMMDoRjYGWB741ONRY+U+gUfEsr2nHo8aK/fYqFiGrrYxwAADDDB5Bn6UH+O6Mc4ls70nH+XHsl6As8kABhhggAlg6gn4h5MP82NZJ+WTAQwwwLGBf3mYH8t6Ac4mAxhggIMDP8iPZd0A55IBDDDAABPA1BPw9yce5MeyTsonew/BSy8eTcNQaAAAAABJRU5ErkJggg==</field>
   </record>
-  <record id="employee_demo_siti" model="hr.employee">
-    <field name="name">Siti Rahayu</field>
+
+  <record id="hr_demo_emp_citra" model="hr.employee">
+    <field name="name">Citra Maharani</field>
     <field name="company_id" ref="base.main_company"/>
-    <field name="work_email">siti.rahayu@contoh.example</field>
-    <field name="work_phone">+62 21 555 0302</field>
+    <field name="department_id" ref="hr_demo_dept_sales"/>
+    <field name="job_id" ref="hr_demo_job_sales_mgr"/>
+    <field name="job_title">Sales Director</field>
+    <field name="parent_id" ref="hr_demo_emp_nadia"/>
+    <field name="work_email">citra.maharani@arkana.example.id</field>
+    <field name="work_phone">+62 21 555 0103</field>
+    <field name="mobile_phone">+62 812 8000 0103</field>
+    <field name="work_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2022-02-01</field>
+    <field name="contract_date_end">2027-01-31</field>
+    <field name="wage">32000000</field>
+    <field name="barcode">041000000003</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee'), ref('hr_demo_tag_leadership')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAFIUlEQVR42u3Yy3JUVRjF8e9RLKucOdCpQ8eOHPBSEC4hXNKdvuUGuSfMHfkKjhQVEcFLVERQRAbuojGmJDT7nLMv61tZVf9hn7Or1q/7VHfb88ktRZw9nxwo4uzv8YEiTsACVgJWAlYCVjmAn40PFHEBeF8RJ2B64NG+Ik7AAlaugf8a7SviBCxg5Rx4TxEnYHbgp6M9RZw9He4p4gQsYCVgJWBVCfjP4Z4iLgDvKuIELGC3ffju2/HxAg92yWrkeoI01xomV25p+2Ow673ktMfzPo5Jl9vYRMvNHIB3PFZY919jf0OZaLmZ7clgx1HVdac5WsyeLO14CUT3pbGT0Uy63MYmXW5jAQtYup6N7fHSNnLgutOQBzTpchsLWMDS9Wxsj/vbmPkDhpzRpMttbL/3twFzCgy4pEmX2zgAb6HlHBhrTJMut7GABSxdz8b2qL+FEw0wzqT2qLeFEw8wzKQCFrB0PRsH4E2QZv0F+NknM0IFhljVfuttgtROt4p0zKEgq1IBF2COP07AuYBzMLc4SMBRuq2BUzF3OULAuT6+SZi73x8DeHEToazAjaQT3hZhWHu4uIlQGeATYfK9bxCGDcAbCFUBzv1gQBhWwAJ2BfzWO++FWlO1u1zAhYCnPK2NW18uYAHXA/51cQMhSmCEYQVMD3x9AyHKb9EIwwbgmwiRAtcfFgX4dcZ+gUFWFTA78C/Xb4JEBgyyqoAFLGABn2ZjZN3TBbx25uPjnRbgn6/dwCkH8P9cXy0HMM6kzMBvpE3CLOAKxpF+3ZnBdfmBM71ewJWN2z1ym16Fr0sLXPEHEhzw4bUbaLkGRhsTEdiFsQvdKfC6o0B0HS1mh1fXHYUC7GcxZ8AIxr7m8gdc19jdVvbT1XV3VQR2t5VL4FrGHofyClze2OlKjoFLGvudyDdwGWPX+wTgNYKy0bpfxn68ssZRcl2OWXiAEzIzDcIGfOfTnVBr2unlAkYHPqqR61ECdgP8Ou/ZL6MC/uHKGlOz5SJjGkTA/MCrTCUC5hlEwPTAC6tMpQEmGkTA7MDfL6wylQSYaRABC1jAAhYwMvAKU4mAeQYRMDvwg4UVppIAMw1iDy6vMJUGmGgQAQtYwAIWMC7w/csrTCUBZhokAC8z9arWs8OHszsJmGcQBuAP3v/oqCTAx28o4PqoM3qj7rTIuwkYxTUTsEdpuz+/jF9TgNzA/0nDT2ffzS8j13r6eN2OxiHkAY2StjAwMrNR0lYBxmQOwBOcUq3cVDet8QtmlEmNjxYBGIfZ+GhxgBGY7d78pGI4ulmNKy5sfLqAwBWN7d6lSfny7QgL/JK5+NQmXW5jI9PFBy5sHIDHZSowXHfdYsYvmEvMbt9eGheozGS+gEMFljcmXXfABYxNutzGRqPrFzirsdHougbOZ2x3L45z5Fq3lnEOCB5ggjIBj5Inqg7GiS1MutzGJl1uYwGzA39zcZQqwSQsFYpJl9tYwPTAF0bdE0Yu4840AXjYMTFkNu6kI2B24DsXhl0SQIG6AAlYwNL1bCxgAUvXs7GA2YG/Pj9slxYvXDumADxokeauZNxYSsAClq5nYwGzA391ftA0rVyxplgCFrB0PRsLmB54bqlR2rc+cBMvAbMDfzm3FJ/GBSmeTMACFrCAlYCVgFUO4Ntz/fi0LEjxZHb7XD8+LYsCHE0mYAELWMBKwKoS8Bfn+vFpWZDiyQTMD9yLT8vCAMeSCZge+GwvPi2LAhxNZp+f7cWnZUGKJ/sHoR/AT0utxssAAAAASUVORK5CYII=</field>
   </record>
-  <record id="employee_demo_andi" model="hr.employee">
-    <field name="name">Andi Wijaya</field>
+
+  <record id="hr_demo_emp_dimas" model="hr.employee">
+    <field name="name">Dimas Pratama</field>
     <field name="company_id" ref="base.main_company"/>
-    <field name="work_email">andi.wijaya@contoh.example</field>
-    <field name="work_phone">+62 21 555 0303</field>
+    <field name="department_id" ref="hr_demo_dept_operations"/>
+    <field name="job_id" ref="hr_demo_job_ops_mgr"/>
+    <field name="job_title">Operations Manager</field>
+    <field name="parent_id" ref="hr_demo_emp_nadia"/>
+    <field name="work_email">dimas.pratama@arkana.example.id</field>
+    <field name="work_phone">+62 21 555 0104</field>
+    <field name="work_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2022-05-10</field>
+    <field name="wage">29000000</field>
+    <field name="barcode">041000000004</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee'), ref('hr_demo_tag_leadership')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAE1UlEQVR42u3WTW4UVxSG4bMQhBBS5qwkgwy8kyjBmMQBDMkCWEBsbMcYTGxw281fMOE/ECCLyDijjFNOg4UEuG9V3br3nM+v9A7rVpW+R9Vq++ntbRLOmABgApgAplrAYxIOYHngN2MSDmB14B/fjEk4gAEmgMkx8OtdEg5ggAlgApgApiGAL73eJeHs0p87JBzAABPABDABTABTe+BXOyRcAzxS7fixY+mpjmBH3FVe2i6+GmnU0/XjNGYxaLWZDV1tY4NWm9kuvhxFrLDuO+OAQxm02swN8Hagquu+Nw6zmKGrbWzoahsbutrGtvBy239ugf1PZwt/bDvPre47Y9/rGbraxoautnEDfMttoYCdbmjoahsDDDC6kY1t4cUth0UF9rekoattDLA68IUXN10VWneSqz0BBhjdyMYAywM/v+knHWA3kwIMMLqRjWMA/7U431SLavL0TxYCeMtJift6cE15HyerxgMuIJ1IGwP4/PMtJ3WbuyLt4S/gZFU7/2zLQz1Hr0I79dEehvUOnGvrIWinf8QA5wVuJd3fFeBqwJ8EyCgKsC/goXMOvOkhUeD6w6oBn/jiVFNnqm7HfQM/3fRQFuAJT2fjzsc/C+xgWIABBjg08Lmnmx6SBPYwrBSwt3/RAE8vBLDnAe3ck189FwPY8YAAAwwwwAADDDDAMY2dr3eEgJdnvvqwowL8w+Mbzsvr+nE97+98PWXgqbRZmAGuYJzo15/Z/3TiwANdD3Bl424/uW1PhdhNE7hMAAPsAfjRjSj50g0yWgO8ESg3umEWAxhgjMPq7gPPP9oIV0XdcFsBDDDGYXX/B/59I2ildWOuFBi4pHHciRrg66Eroht4n/DAgzILLCMCPISxxiw6wBmZlQZRA967/HVTZ9rJcSng7x9eV2oidFAr14OUBhEH/pz34ZcBHBU4MTHga0plAtYZBGCAAQYYYMfAe9eUygMsNAjAAAMcHHhdqUzAOoPYd3vrSmUBVhoEYIABjg38YF2pPMBCgwAMMMAAA+wZ+KpSmYB1BgEY4ODAf//7z+GJA5/97Wr0Ts58eVAW4A9vGH0cE0A9pKm6kxLvBrAX14GAI0qbpOvQwIGkTZU2XbensXPmBnjNZ30WLwz8ntnjjCZJWwXYJ7Odvb/mp1wrt9XNa7zP7GZS06P1AOyH2fRo/QB7YDZ0tY1t7v5arQZa0yFwU62RTYzWLXAtZpu790vh3OoWMi67tonp+gcubGxKtP11ixkXYzYl3VjAZYxNSTcccAFjQ1fb2GR04wIPamxzd1cHqvBGoYH3jYdRsDN3V4cotG4t4yEgdIAFCgMMlR9jQ1fb2NDVNgZYHvjOaq6AyWmcCaUBXskSJAMYZ3ABGGB0IxsbutrGNntnpWcYDFpPHUNX29hmb6/0ifVLAPcAMnS1jRvg5c6xe0HgjkaGrrYxwAADfASBmTuKsc2OlzvE1nWA20vZ6fFy2xi6Ym2xANYHvtI2Vq4K3A4LYIDRjWwMsDzw7pVWsW994DZeAAOMbmTjBngpPZZ1A5xKBrA68Le7S+mxrJPSyQCWB95ZSo9lvQAnkwEMMMAAk2fgxfRY1g1wKhnAAAMcG3i0mB7LegFOJrNvRovpsayT0skABhhggMkz8M/psawb4FSy/wDOJhuX/SsiTgAAAABJRU5ErkJggg==</field>
   </record>
-  <record id="employee_demo_rina" model="hr.employee">
-    <field name="name">Rina Kusuma</field>
+
+  <record id="hr_demo_emp_eka" model="hr.employee">
+    <field name="name">Eka Wijaya</field>
     <field name="company_id" ref="base.main_company"/>
-    <field name="work_email">rina.kusuma@contoh.example</field>
-    <field name="work_phone">+62 21 555 0304</field>
+    <field name="department_id" ref="hr_demo_dept_people"/>
+    <field name="job_id" ref="hr_demo_job_hr_mgr"/>
+    <field name="job_title">People Operations Lead</field>
+    <field name="parent_id" ref="hr_demo_emp_nadia"/>
+    <field name="work_email">eka.wijaya@arkana.example.id</field>
+    <field name="work_phone">+62 21 555 0105</field>
+    <field name="work_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2022-08-01</field>
+    <field name="wage">27500000</field>
+    <field name="barcode">041000000005</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee'), ref('hr_demo_tag_leadership')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAFGUlEQVR42u3cSW5cVRiG4X8djBAS8wwYsQLGDNgI7vt2D2wgjEjn9H1ip1lDgPRAEghdYloxoHAZY+HU9al7z73n+/96pXdY51Tpe+yyLVllf95dp8DZH3fXKXAAhwe+s06BAxhgAph0gX+/s0aBAxhg8g18e40CBzDA5Br4t9trFDiAASaASRj41ioFDuDowL/eWqXAAQwwAUwAUyngrVUKnP2ytUqBAxhgcg68ErX33nkrvagj2Ii7hpe27a2VGDV0PViMWQza2My2vbniulZ1d40972PQxmY2dGMbG7Sxme315oqjiuv2c7SYoRvb2NCNbWyvby7rJ6i7ayw/HcAAo+vZ2F7dXFZOXLef8oCGbmxjgAFG17OxvbqxrJk/YMkZDd3YxvbzjWXBnAILLmnoxjbuAS+p5RxYa0xDN7YxwNGBf7q+pFMA3X46kwIMMMAAAwzwCOlKGTsGfrn5aXUA/wP84/UlkXK5ikiLrOoJuAZtQWYZ4GuLIrXkWopZZFUT180OnFH60HsA7vrbNwtz+iUAlwceinnY4xLAP1xbVKgs8CCwhl8fCsMC3OIbAMAAdwB8dVGhXMBvv3ukV22qescHAgsMGwq4z1PbuPZxgAEuB/z91UWFQgIrDNsDXlAoKHD5YUMBq/0WDTDAHQBfWRApGLDIqgBHB355ZUGkYMAiqwIMMMAAj7Kxsu5oAR/96MP9jQrwd5fndWoD+H+uB2sDWGfSyMCH0mZhBriAcaJfc2Zx3fjALT0e4MLG9d5yhz2lrxsWuOAfSHLA316eV8s1sNqYisAujF3o7gBfmtdM2fjNupIzAgwwxm51+8Bzsgn+H8+glyS7ob24NKecC2DlAdWBpYzd6foAFjH2qLsDfHFOv+I/jAe9AP3pfACXNfar6wm4wrjIB7V4Gc2eX5xzVJfGFc/laDFnwNXGuZirn8LXXP6Aq5nvbXzSqzZt/3gMWt/Ag4z7QnsN5bpXGN0d4AuzfjsUeJB39cPeoOt2Int2YdZ76cCJ7b/Q+zgRgPeXBTjSIAADDDDAAAMMcCHgb87PRioLcKRBAAYYYIABVgaeiVQm4DiDABwd+OvzM5HKAhxpEIDDA5+biVQe4ECDAAwwwAADrAv81bmZSB3U+mv7eXUHj0QaJALwB+8f2SsL8P4LAS6PWtGhuv0Sb/MJfHbaUYkSLQH/J+1nMQvp2jawI2mLSpuu29BYnNmenp3WrMniHQP305zRQtIWAdZktpC0w+rmNZZitni0CsA6zPb0zHTZss+qA7zLXHRee3JmumA6uq0aF1zY4ukKAhc07gFPdV97O8oC/8vc9dSGbmxjC6arD9yxsUWiba7bmXFnzPb49FQHdTOZL+BeHSxvkXTdAXdgbOjGNrYwun6BWzW2MLqugdszNnRjG9uj01Nt1P06AWoDogc8mT2oGhhntrBHG5N5A6mpcVYOQze2McAAo+vZ2B5uTGYJkuxlcQEYYHQ9G9vDU5MNg6Fd42Y6AAOMrmdje3Bqokms30FNgAzd2MYAA4yuZ2N7cHKiXizeNXAtJrt/cqJeLN5x9ZgM3djGAAOMrmdjgAEG2DXwlyfGh42VCzYslqEb2xhggAEGmIIAM647Y/vixHh6LCtSOhnA4YGPj6fHsirAyWQAAwywc+Cx9FhWBjiVzD4/PpYey4qUTgYwwAD7Bj42lh7LqgAnkwEcHfjesbH0WFakdDKAAQYYYAKYSgF/9nF6LKsCnEz2N2wTiL2+kRP2AAAAAElFTkSuQmCC</field>
   </record>
-  <record id="employee_demo_dedi" model="hr.employee">
-    <field name="name">Dedi Kurniawan</field>
+
+  <!-- Level 3: Engineering Specialists -->
+  <record id="hr_demo_emp_fajar" model="hr.employee">
+    <field name="name">Fajar Nugroho</field>
     <field name="company_id" ref="base.main_company"/>
-    <field name="work_email">dedi.kurniawan@contoh.example</field>
-    <field name="work_phone">+62 21 555 0305</field>
+    <field name="department_id" ref="hr_demo_dept_backend"/>
+    <field name="job_id" ref="hr_demo_job_rust_eng"/>
+    <field name="job_title">Principal Rust Engineer</field>
+    <field name="parent_id" ref="hr_demo_emp_budi"/>
+    <field name="coach_id" ref="hr_demo_emp_budi"/>
+    <field name="work_email">fajar.nugroho@arkana.example.id</field>
+    <field name="work_phone">+62 22 555 0106</field>
+    <field name="work_location_id" ref="hr_demo_loc_bandung"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2023-01-10</field>
+    <field name="wage">26000000</field>
+    <field name="barcode">041000000006</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee'), ref('hr_demo_tag_tech_lead'), ref('hr_demo_tag_high_potential')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAE+klEQVR42u3W224VZRjG8fdCjDEmnnPodXjgBXgfnqhAlT1tkU0B2RSEK+EMbKWWQqFaKNjSegMeOGGZpgRd/WbWt3nfZ/2T/+F8MyvPL5lZduHeXyScMQHABDA5Bt4j4Wz+3h4JZ/M/75FwAANMAJNn4F0SDmCACWByDHx3l4Szubu7JFwH/JaEAxhgApgAJoCpDPAOCWdzd3ZIOIDVgWfv7JBwAANMwYG3Vfv044/SUx3BptxVXtpw1Za22cXt6GWnfY85+DiGrraxQavNbOcX/4xYZd1REYcyaLWZDV1tY0NX29jQ1TY2dLWN7fztN/7zC+x+OkNX29jQ1TY2dLWN7dztN24LBOx2Q0NX27gDfu2zgMAeZzR0tY3t3K3XDosK7G9JQ1fbGGCA0Y1s3AFvuUoC2NGehq62sZ29teUnGWA/kwIMMMCxgW9uOUlG919jH6t2wK+cNGastfszXa2oRk//z8YCu1g1AHD6ptVcU34PwAOBK0gn0gJcFrgEcy9agHN+gEszD6AN8Rm2Mzdfeajo27IQ7aHP9TBsB/zSQ3nXr+OaANx+WDtz46WHijJkF00FdjDsVACXDmCAAc4E/MlnR7oGUw07DnAl4BHPYOPBx50Db3pIFLj9sAADDHBo4NM3Nj0k+S/aw7B2+qdNz4UA9jwgwPrAf3guCLDfAQEGGGCAAQZY1tj5elMEvPjlFwebFuBT1393Xl7XD5vw/s7XUwY+lDYLM8ANjBP9Jmf2P504cKHrAW5sPOyV2/dUiN00gesUBXgjRC6BA+wWBtibcZTRIgH7MQ60mJ26thEoL8BxFrOT1zZi1Vw31lzxgNsah9uqA34RrqbAwbYKCdzKOOJQUYHrGwddKTBwTeO4E8UGrmMceh87efWFQKVo4y/TAT/XqICuwiw6wBmZlQaxE1efK/Vg4euuwbSj40qDaALv18t1P4DDAP+f9/jLAI4KnBjAAEcCXlcqE7DOIHZiYV2pPMBCgwAMMMChgX9YWFcqC7DSIADrAz9TKhOwziAAAwxwbOArz5TKAyw0CMAAAxwc+KlSmYB1BgFYHfj7K0+VygKsNAjAAAcH3t77e3wAe+/I51/tlwX44A3jA19ei9hBgzEdqjsq8W4RhzJJ10LAEaVN0rU0cCBpU6VN153Q2DmzSdJWBvbMbDOX17w1+dZNgEd5G7MDfuKnXCv31c1r/I7Zy6SmR+sB2A+z6dH6AfbAbDOXnjTMj25Z43YLm56uQ+CGxiZG6xa4FXMHvFo5t7q1jKuubWK6/oErG5sS7eS61YyrMdvxS6sVqjNZLOCuCsubkm444ArGdvziatHC6TYwLrl/B/xbuWrOFBf4nXEpApPRDQ1cztjQ1TbWARYoDDBUfowNXW3jDnglY/BkMs4mYscurmQMmyxlFLFjP67kCpicxplQDF1tY4ABRjeycQf8eMJgKGw8kQ7AAKMb2RhgdeCjFx4PjumrNdgIYH3gX4fF6NWNhzABDDDAUwjM3FGMAQYY3cjGHfBy31i5KXA/LDs6v9w3Vm4J3BPLvptf7hsrN6wvlqGrbQwwwAAHB17qFfs6AO7hZehqGwMsDzy3lB7LegFOJgNYHfjbuaX0WNZJ6WQd8C/psawb4FQygAEGGGACmACmIsCzj9JjWS/AyWQAAwxwaOBvZh+lx7JOSicDGGCAgwM/TI9l3QCnkv0DpKOWkkGdb9UAAAAASUVORK5CYII=</field>
+  </record>
+
+  <record id="hr_demo_emp_gita" model="hr.employee">
+    <field name="name">Gita Permata</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_frontend"/>
+    <field name="job_id" ref="hr_demo_job_fe_eng"/>
+    <field name="job_title">Staff Frontend Engineer</field>
+    <field name="parent_id" ref="hr_demo_emp_budi"/>
+    <field name="work_email">gita.permata@arkana.example.id</field>
+    <field name="work_phone">+62 22 555 0107</field>
+    <field name="work_location_id" ref="hr_demo_loc_bandung"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2023-03-15</field>
+    <field name="wage">24500000</field>
+    <field name="barcode">041000000007</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee'), ref('hr_demo_tag_tech_lead')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAFBElEQVR42u3XOXMUVxSG4fNTCOzMAT/DsQN+EwghdoSA1AGFJLSAEAihBZzaMtgYb3g33gMHDhy5QaCSsRlud997+5xv3qo37L5d9T0zXTP2+6X3SDhjAnngeySc/XbpHgkHMMAEMAFMAFMJ4F8v3iXhAAaYACaACWAqAfzLxbskXAO8TcIBLA98YZuEAxhgCg3884VtEg5ggCk48BYJBzDAFBt4ZouEs59mtlQ7eOCN9FRHsDF3lZc2XLWlG+DN6GWn/Tdz7HEMXW1jg1ab2Z7MbEassu5uEYcyaLWZ7cn5zUANrvvcOM5ihq62cQO8ESJXui+MA+xm6Gob24/nN/znFtj/dIautrGhq21s6GobAywPPL3hs0C6z41dzmg/TN/xWThgnzMautrGAAOMbmRjgAFGN7KxfT99x1UCwK72bIDX/SSg+8LYy6QAywOfW/eTDrCbSQEGGN3IxvbduXUnjRjrz53VEfkEdrJqAODRuoNIpzzUD/BtJ/UHrsCc/jgnqwoCl2Du8CCAk3Q7A+di7vMIgEt9fbMw9z/fBfC3Z297qChwK+mMx3oYdryA/xem3OcG4IGBS78YAAa4BvCah3IBH3jzYFNnqm63vxp4+GGlgHd5Oht3vt018Ddn1zwkCexhWIABBjg28Jk1D0n+ivYwLMD6wLecJAbsZFX7+swtJ4kBO1kVYIABBhhggGWNPeuOF/C7h97Z37gAf3X6pp9KAL/k+t9KAPuZVBn4tbRZmAEewDjRrz+zc1194ELXAzywcbdXbtu7/OvKAg/4B8kd8OPTN70VGtjbmB6BQxiH0N0FXg2UE91AiwEsD3xqNVbD64aaKx7wsMbhtgJYHfjLU6sRG0Q34lBRgesbB12pAb4Rt4q6USeKDVzHOPQ+4YGLMgssIwJcwlhjFvvi5A2lstAqDaIG/HjjclP3v7nPbgfYO/BerVz3EgNeUeolqld5j75MaZDxAk4MYIDjAH9+ckWpLMBKgwAMMMCxgU+sKJUHWGgQgPWBryuVCVhnEPvsxHWlsgArDQIwwAADDDDAAAMMcAngT49fUyoLsNIgAAMMMMAAAzwY8N9//DU6gL136K2398oCvP/A8MCPjl+L2H6DEb1Wd7fE0yIO1QAvBypRohDwPukwi5mka2ngQNL2aGrZc52nT9ftafyU2fGAJklbGdgzs0nSDgLsk9k+mVr2U66V2+rmNW7yM6np0XoA9sNserR+gD0wN8BLA+ZHt7DxYAubnq5D4AGNTYzWLfBQzPZwaqlybnXrGFde2x4eW6pZ6fn8Az81rji4KdH2161mXI3ZlHRjAdcxboAXS1dtr3DAz4zLjm/oahvbx8cWy1VzprjATeUITEY3NHA5Y0NX21gHWKAywJOL2YOqu3FuiwZ4IW8g9TbOyWEfTS5kDJ4sZRQBGGB0IxsbutrGAAOMbmRjezC50DMYitZTxx4cvdozDMoC99MxdLWNAQYY3cjGAAOMbmRju3/0ardYvHLdmBrg+W6xeHXgLkyGrrax3Z+Y7xBbDwPcXsrQ1TYGWB34w4n5trHygLXFAlgfeK5VTOzAuIUXwAADDDD5Bd6ZmEuPcZ2UTmY7R+bSY1kvwMlkAAMMcHDg2fRY1g1wKhnA6sAfHJlNj2WdlE4GMMAAA0yOgQ/PpseyXoCTyRrgK+mxrBvgVDJ7//CV9FjWSelkAAMMMMAEMAFMBYD/ARL/eXEwDtWHAAAAAElFTkSuQmCC</field>
+  </record>
+
+  <record id="hr_demo_emp_hendra" model="hr.employee">
+    <field name="name">Hendra Gunawan</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_backend"/>
+    <field name="job_id" ref="hr_demo_job_rust_eng"/>
+    <field name="job_title">Database Systems Engineer</field>
+    <field name="parent_id" ref="hr_demo_emp_fajar"/>
+    <field name="work_email">hendra.gunawan@arkana.example.id</field>
+    <field name="work_phone">+62 22 555 0108</field>
+    <field name="work_location_id" ref="hr_demo_loc_remote"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2024-01-08</field>
+    <field name="contract_date_end">2026-12-31</field>
+    <field name="wage">21000000</field>
+    <field name="barcode">041000000008</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee'), ref('hr_demo_tag_remote')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAE6ElEQVR42u3Wy3IVVRiG4f86KAdOrHLo2MtgwFU4duyBEAE1OztHAjmTq4ggCIIiIGe8BAdegEPb7E0qVYRkdfdaq///y1v1Dnt17/qequ5ti3/tkXDGBOrAb/dIOIDVgRfe3iThAAaYACaAaSjgNzdJOIABpuDAuyQcwOrA4ze7JJyNX++ScAADTAATwAQwlQHeIeFs/GqHhANYHXj+1Q4JBzDABDABPEAfnTuXni7wyx2xWrkeI621RgO8rVFP1+OkFWYxaLWZDV1tY4NWm9lGL7cjVll3UsShDFptZhu92A7U4LpT4ziLGbraxoautnEDvOU/h7rvjL1PBzDA6EY2ttHzLc85150aOx7Q5p5vuS2E7iS3GwIMMLqRjQHWB950WDjdd8bulgRYHvjZpreC6k6NnY0JMMDoRjYGWB34x2ebfhLQneRnUoABBjg28J8bftIBdjOpoattHAP48eqXTUNRTZ5+bABnAE7ftJpryu8BuCNwBelEWoDLApdgbkUbBPjphod6jj4I7emfYQfD2g9PNzxU9G1ZiPbU53oYVgq4lXR/1yjA6x4qypBdNBl4+GHPBHDpAAYY4EzAH3/yWVNnqm7HfQM/WfdQFuAJT2fjzsc/COxgWIABBhhggP0Cf/9k3UOS/6I9DNsA3/BcCGDPAwIsD/z4hudiADseEGCAAQYYYIBljZ2vd4aA9y6cP9pZAb76x3Xn5XV9v573d76eMvCptFmYAR7AONGvP7P/6cSBC10P8MDG3V65bU+F2E0TuE4AA+wB+NH1KPnSDTJaJGA/xoEWa4DXAuUGOMxiduXRWqwG1401VzzgYY3DbQUwwBiH1T0A/n0taLV1Y64UGLimcdyJYgPXMQ69T3jgoswCyzTA1zQqoKswiw5wRmalQezyb9eU2r/6RVNn2slxpUE0gQ9r5XoYwGGAP+R98mUARwVODGCAAQYYYICrAD9cVSoPsNAgAAMMcGjg7x6uKpUFWGkQgAEGGGCAHQM/WFUqD7DQIA3wilKZgHUGARhggAEG2C/w7IMVpbIAKw1is7+uKJUHWGgQfeC///3n5AD23qfnPz8sC/DRGwI8POoJnao7KfFuQYGXA5UoUQj4iHSYxUzStTRwIGlTpU3X7WnsnNlm7y/7rM/ilYGnzC5nNEnaQYB9Mtul+8t+yrVyW928xk1+JjU9Wg/AfphNj9YPsAdmQ1fbuAFeGqpCazoEPjAeZmS7dG+pfuV2dAs8Za4+taGrbWxiuv6BKxubEm1/3WrG1ZhNSTcWcB1jm7m3VLpqe4UDbio9vqGrbWwzvyyVq+ZMcYH/Ny5G0AAvFqryRqGBD4yLKBi62sY6wAKFAYbKj7Ghq21sM3cXMwZPHuN8IgCrA1+8u5grYDKWC6UBXsgSJAWMM7gADDC6kY0NXW1ju3hnoWcYlAXup2PoahsDDDC6kY3t2zsLnWP3anU2aoDH3WL06sZdmACWB/553C0Wrw3cicnQ1TYGGGB0IxsDDDDAsYFvj9vGykMCt8Syb27Pt4qJB6+VF8AAAwwwiQAzbjhjgOWBb82nx7JegJPJAAYY4ODAo/RY1g1wKpl9fWuUHss6KZ0MYIABjg380yg9lvUCnEwGMMAAA0yegefSY1k3wKlkAMsD78+lx7JegJPJ7Kv9ufRY1knpZACLA/8HSRvup+kql5gAAAAASUVORK5CYII=</field>
+  </record>
+
+  <record id="hr_demo_emp_indah" model="hr.employee">
+    <field name="name">Indah Lestari</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_frontend"/>
+    <field name="job_id" ref="hr_demo_job_designer"/>
+    <field name="job_title">Senior Product Designer</field>
+    <field name="parent_id" ref="hr_demo_emp_gita"/>
+    <field name="work_email">indah.lestari@arkana.example.id</field>
+    <field name="work_phone">+62 21 555 0109</field>
+    <field name="work_location_id" ref="hr_demo_loc_remote"/>
+    <field name="employee_type_id" ref="hr_employee_type_contractor"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2024-04-01</field>
+    <field name="contract_date_end">2026-09-30</field>
+    <field name="wage">22000000</field>
+    <field name="barcode">041000000009</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_remote'), ref('hr_demo_tag_high_potential')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAFK0lEQVR42u3cSW5cVRiG4X8liAkMGDFELIMBY7YR9327A+w4TuM0TuOEAUtgDwRCQgJJCGAcSOjEgGsXsUycur7Nufd8/+9Xeod1TpW+xy5VSZbt789WKXD2151VChzAABPABDABTF0A/3lnlQIHcHjg26sUuAJ4hQIHMMDkGviP2ysUOIABJoBJGHhnhQIHcHTg33dWKHAF8DIFDmCACWACmDIBv9xZpsDZy1vLFDiAAXbbh+++VT2AY7qGl7YXt5Zj1NL1eDFmKYCXvJec9v/MvscxdGMbG7Sxme3FzSWP9az7n7HDoQza2Mz2280lR2XXHeRoMUM3trGhG9vY0I1tDHB84EXxZHVfGUuvZ7/eWFROXHeQ8oCGbmxjgAFG17MxwACj69nYnt9YFMwpsOCShm5sY3t+fVEt38BiYxbAC1K51n1lLLQnwNGB964v6BRAd5DOpAADDDDAAAN8inSljG1ve0GkugvufrFdXmZgjVXtl+0FkVK5ikiLrOoJuAFtRmaAqwK3dM3FrAM8r1B3v7jdSZ94j8Kw6sAd6bZhrn4JwPmBazHXPS4BvLs9r1Be4GFgLX8+FIa13WvzCkkBp3oDUBgWYIBdAb/9zvtFjamaHQe4J+ABT2PjxscBBjgf8M/X5hUKCawwbAE8p1BQ4PzDhgJW+xStAXx1TqGYwALDqgAPM/YLLLIqwNGBf7o6J1IwYJFVAQYYYIBPs7Gy7ukC3vr4o6OdFuAfr8zq1AXwa67H6wJYZ9LIwCfSJmEGOINxRb/2zOK68YE7ejzAmY2bveXWPaWvGxY44xckOeBnV2bVcg2sNqYisAtjF7oHwJdnNVM2frOu5IwAA4yxW90B8Ixsgn/HM+wlyW5oP1yeUc4FsPKA6sBSxu50fQCLGHvU9Q3cp/GwFwBwBGO/ugfAWzNekvpHLV5Gs6dbM47q07jkuRwt5gy43DgVc/lT+JrLH3A5893P14sa0w6Ox6A9BJ52WgnwYbVcDxui63Ilx8BvNH6Naph3+cPC6O4DP9ma9l514IodvdD7OBGAj5YEONIg9uTSdKTSAAcaBGCAAQYYYF3gx5emI5UEONIgAMcHnopUIuA4gwAcHvjiVKTSAAcaBODowN9fnIpUEuBIgwAMMMAAAwwwwAAD3AXwdxemInVc65+9Z+UdPxJpkAJ40nuffPDeYUmAj17ofRwLgFrSibqDKt4GsIprR8AepS2ka9fAjqQtKm113ZbG4sz26MKkZm0W7xl4kOaMFpI2C7Amsz06P6lTqpXr6qY13meWmdTi0SoA6zBbPFodYAVme3h+ImM6up0aZ1zY4ukKAmc0tmC0ssC5mA3d2MYWTFcfuGdje7g50U89DNdetzfjfeZeZrdvNyd6qJ/JfAEX9bC8RdJ1B9yDsaEb29jC6PoF7tS4AB7vqJ43cg18YNyJgqEb29gebI53Uf/rBKgLCHtwbjx5UDU3Tm1h6MY2NnRjGwMMMLqeje3+ufEkQZK8JC4AA4yuZ2O7vzHWMhi6NW6nAzDA6Ho2tm82xtrE+j3UBsjQjW0MMMDoejYGODrwvY2xZrF4zzVjsntnxxrE3HmM60sVwKMNYutMwLWlDN3YxgADDLBr4K/PjtaNlTNWF8vQjW0McHjg9dFasW9+4DpeAAOMrmdj+2p9pHosK1J1MoABBhhgAphyAa+NVI9lVYArk9ndtZHqsaxI1ckABhhggAlgygT85dqZ6rGsSNXJAA4P/OmZ6rGsCnBlMoABBhhgkgX+F+lLHzS4u4VlAAAAAElFTkSuQmCC</field>
+  </record>
+
+  <record id="hr_demo_emp_joko" model="hr.employee">
+    <field name="name">Joko Susilo</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_sales"/>
+    <field name="job_id" ref="hr_demo_job_sales_mgr"/>
+    <field name="job_title">Enterprise Account Executive</field>
+    <field name="parent_id" ref="hr_demo_emp_citra"/>
+    <field name="work_email">joko.susilo@arkana.example.id</field>
+    <field name="work_phone">+62 21 555 0110</field>
+    <field name="work_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2023-07-01</field>
+    <field name="wage">19500000</field>
+    <field name="barcode">041000000010</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee')])]"/>
+    <field name="image_1920">iVBORw0KGgoAAAANSUhEUgAAAKAAAADACAIAAAAMWf8gAAAFBElEQVR42u3Wz3IUVRiG8e9SKKt04crrcOnClTfiQv6LiBFdegOyFkFBEDSTTDLJEEBCQkKQtRfgwqUtA6moSeZ09+lzvu/NU/Us+5yeen9VXWNfT1+ScMYE4sBfTV+ScADLA6//TsIBDDABTAATwAQwtQdee0HC2dW1FyQcwAATwAQwVQPeI+Hs6mSPhAMYYAKY/AJ/Odkj4QDWB35OwgEsD7z6nIQDGOCwvfPWqfQA1nSVl26AdzXq6XqYtMIsBq02sy2s7oZuUN1ZofexhZXdoBWg/RdzzJUMXW1jg1ab2dDVNm6Ad6LkRPeNcYzRDF1tY0NX29gWxjv+8wvsfjpDV9vYvhjveM657izPAzbAz9wWQveNsdMNAQYY3cjGAMsDLz9zWDjd18b+lgQYYHQjGzfA294KDuxrTENX29iuLG+7SgDY1Z6GrraxXVna9pMOsJtJAdYH3vKTELCXSQ1dbeMYwDvXLjbVopq9/dAAzgCcvmkx15TfA3BH4ALSibRBgEdbTuo2d0XaOcA+VrXPR1se6jl6Fdq5r/YwbAP81EODfi0Hop37Xg/DSgG3ku7vCnA14EMBMooC7At46AAGuCLw4lMP5QI+9fZ7TZ2puh0/EtjBsA3wpoeyAM94Oht3Pn40cP1hAQYY4NDAlxc3PSQJ7GFYKWBv/6IBnl8IYM8D2uVfNz0XA9jxgA3wE88FAfY7IMAAAwwwwADLGjtf7wQBf/vhBwc7KcCf/fKb8/K6/r+e9ztfTxl4Lm0WZoArGCf69Wf2P5048EDPA1zZuNsnt+2pELtpApcJYIA9AN9/HCVfukFGiwTsxzjQYgCrA1+6/zhW1XVjzRUPuK5xuK0A1gd+FLFKuvGGigpc3jjoSnbp3qO4ldMNO1Fs4DLGofcJDzwos8AyIsBDGGvMogOckVlpEPv03kOlVr75uKkz7ey40iCawPu1ct1PC/jnh0r9h+oo7+MfUxrkZAEnBjDAAAPsBnhDqUzAOoMADDDAsYHvbiiVB1hoELt4d0OpLMBKgwAMMMDBgR8olQlYZxCAAQY4NvCdB0rlARYaBGCAAQ4OPFUqE7DOIHbhzlSpLMBKg+gD//HnX8cHsPfeff+j/bIAH7wwPvBP04gdNDimubqzEm+LOJRJug4EHFHaJF2HBg4k3QCve67z9Om6PY1fMfsd0CRpCwN7ZjZJ2irAPplNkratbl5jV8x24fa6hzKO6wH4NbODYe387fW6ZZ/VD/CsuvM2wGsV86M7sHG1hU1P1yFwRWMTo3ULXIvZ0NU2NjFd/8CFje38rbUyFRiuv24x43+Yi8xuSrqxgMsYN8CToSu2VzjgV8bDjm/oahvbuVuT4So5U1zgpuEITEY3NPBwxoautrGd+3EyROXXEWgIiAZ4NXtQ9TDObGHoahsbutrGAAOMbmRjQ1fb2M7+sJolPLKXxaUBXukfGIMZ96UxdLWNAQYY3cjGAAOMbmTjBnjcOXYvCNzRyM7eHHeL0Usbd2ICWB34zM1xt1i8cN2YDF1tY4ABRjeycQO83DZWrgrcDsvO3FhuGyvXBG6JBTDA6EY2BhhggEMDn76x1Cr2rV4rL0NX29hOf7+UHst6AU4mAxhggAEmgKka8Cg9lnUDnEoGsDzw9VF6LOsFOJnMPrk+So9lnZROBjDAAAcHXkyPZd0Ap5IBDDDAsYG/W0yPZb0AJ5MBDDDAkYH/Bge1HMt+APYFAAAAAElFTkSuQmCC</field>
+  </record>
+
+  <!-- 2 Employees intentionally without photos to demonstrate rich initials-tile Kanban cards -->
+  <record id="hr_demo_emp_kartika" model="hr.employee">
+    <field name="name">Kartika Dewi</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_operations"/>
+    <field name="job_id" ref="hr_demo_job_ops_mgr"/>
+    <field name="job_title">Supply Chain Analyst</field>
+    <field name="parent_id" ref="hr_demo_emp_dimas"/>
+    <field name="work_email">kartika.dewi@arkana.example.id</field>
+    <field name="work_phone">+62 21 555 0111</field>
+    <field name="work_location_id" ref="hr_demo_loc_jakarta"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="contract_date_start">2024-02-01</field>
+    <field name="wage">16500000</field>
+    <field name="barcode">041000000011</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_employee'), ref('hr_demo_tag_high_potential')])]"/>
+  </record>
+
+  <record id="hr_demo_emp_lukman" model="hr.employee">
+    <field name="name">Lukman Hakim</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_people"/>
+    <field name="job_id" ref="hr_demo_job_hr_mgr"/>
+    <field name="job_title">Talent Acquisition Specialist</field>
+    <field name="parent_id" ref="hr_demo_emp_eka"/>
+    <field name="work_email">lukman.hakim@arkana.example.id</field>
+    <field name="work_phone">+62 21 555 0112</field>
+    <field name="work_location_id" ref="hr_demo_loc_remote"/>
+    <field name="employee_type_id" ref="hr_employee_type_intern"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_part_time_20"/>
+    <field name="contract_date_start">2025-09-01</field>
+    <field name="contract_date_end">2026-08-31</field>
+    <field name="wage">9000000</field>
+    <field name="barcode">041000000012</field>
+    <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_remote')])]"/>
+  </record>
+
+  <!-- Wire Department Managers -->
+  <record id="hr_demo_dept_management" model="hr.department">
+    <field name="manager_id" ref="hr_demo_emp_nadia"/>
+  </record>
+  <record id="hr_demo_dept_engineering" model="hr.department">
+    <field name="manager_id" ref="hr_demo_emp_budi"/>
+  </record>
+  <record id="hr_demo_dept_backend" model="hr.department">
+    <field name="manager_id" ref="hr_demo_emp_fajar"/>
+  </record>
+  <record id="hr_demo_dept_frontend" model="hr.department">
+    <field name="manager_id" ref="hr_demo_emp_gita"/>
+  </record>
+  <record id="hr_demo_dept_sales" model="hr.department">
+    <field name="manager_id" ref="hr_demo_emp_citra"/>
+  </record>
+  <record id="hr_demo_dept_operations" model="hr.department">
+    <field name="manager_id" ref="hr_demo_emp_dimas"/>
+  </record>
+  <record id="hr_demo_dept_people" model="hr.department">
+    <field name="manager_id" ref="hr_demo_emp_eka"/>
+  </record>
+
+  <!-- Contract History Versions -->
+  <record id="hr_demo_ver_nadia_1" model="hr.employee.version">
+    <field name="name">CTR-2021-001 — Executive Contract</field>
+    <field name="employee_id" ref="hr_demo_emp_nadia"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_management"/>
+    <field name="job_id" ref="hr_demo_job_ceo"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="date_start">2021-01-15</field>
+    <field name="wage">48000000</field>
+    <field name="state">running</field>
+  </record>
+  <record id="hr_demo_ver_budi_1" model="hr.employee.version">
+    <field name="name">CTR-2021-014 — Lead Architect</field>
+    <field name="employee_id" ref="hr_demo_emp_budi"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_backend"/>
+    <field name="job_id" ref="hr_demo_job_rust_eng"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="date_start">2021-06-01</field>
+    <field name="date_end">2023-12-31</field>
+    <field name="wage">30000000</field>
+    <field name="state">expired</field>
+  </record>
+  <record id="hr_demo_ver_budi_2" model="hr.employee.version">
+    <field name="name">CTR-2024-002 — VP of Engineering</field>
+    <field name="employee_id" ref="hr_demo_emp_budi"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="department_id" ref="hr_demo_dept_engineering"/>
+    <field name="job_id" ref="hr_demo_job_vp_eng"/>
+    <field name="employee_type_id" ref="hr_employee_type_employee"/>
+    <field name="work_schedule_id" ref="hr_work_schedule_standard_40"/>
+    <field name="date_start">2024-01-01</field>
+    <field name="wage">38000000</field>
+    <field name="state">running</field>
+  </record>
+
+  <!-- Resume Timeline Entries -->
+  <record id="hr_demo_resume_nadia_1" model="hr.resume.line">
+    <field name="employee_id" ref="hr_demo_emp_nadia"/>
+    <field name="line_type_id" ref="hr_resume_type_experience"/>
+    <field name="name">Chief Executive Officer — Arkana ERP</field>
+    <field name="date_start">2021-01-15</field>
+    <field name="description">Founded and scaled ERPForAll engineering and enterprise operations across Southeast Asia.</field>
+  </record>
+  <record id="hr_demo_resume_nadia_2" model="hr.resume.line">
+    <field name="employee_id" ref="hr_demo_emp_nadia"/>
+    <field name="line_type_id" ref="hr_resume_type_education"/>
+    <field name="name">MBA — School of Business and Management, ITB</field>
+    <field name="date_start">2014-08-01</field>
+    <field name="date_end">2016-07-31</field>
+    <field name="description">Focus on Enterprise Operations and Digital Transformation.</field>
+  </record>
+  <record id="hr_demo_resume_budi_1" model="hr.resume.line">
+    <field name="employee_id" ref="hr_demo_emp_budi"/>
+    <field name="line_type_id" ref="hr_resume_type_experience"/>
+    <field name="name">VP of Engineering — Arkana ERP</field>
+    <field name="date_start">2024-01-01</field>
+    <field name="description">Leads Rust platform engineering, web client architecture, and reliability initiatives.</field>
+  </record>
+  <record id="hr_demo_resume_budi_2" model="hr.resume.line">
+    <field name="employee_id" ref="hr_demo_emp_budi"/>
+    <field name="line_type_id" ref="hr_resume_type_experience"/>
+    <field name="name">Principal Systems Architect — Nusantara Cloud</field>
+    <field name="date_start">2018-03-01</field>
+    <field name="date_end">2021-05-31</field>
+    <field name="description">Architected multi-tenant distributed PostgreSQL services.</field>
+  </record>
+  <record id="hr_demo_resume_budi_3" model="hr.resume.line">
+    <field name="employee_id" ref="hr_demo_emp_budi"/>
+    <field name="line_type_id" ref="hr_resume_type_course"/>
+    <field name="name">High-Performance Async Rust &amp; Database Internals</field>
+    <field name="date_start">2024-05-01</field>
+    <field name="date_end">2024-06-15</field>
+    <field name="duration_hours">36.0</field>
+  </record>
+  <record id="hr_demo_resume_fajar_1" model="hr.resume.line">
+    <field name="employee_id" ref="hr_demo_emp_fajar"/>
+    <field name="line_type_id" ref="hr_resume_type_experience"/>
+    <field name="name">Principal Rust Engineer — Arkana ERP</field>
+    <field name="date_start">2023-01-10</field>
+    <field name="description">Core ORM, security policy engine, and accounting journal invariants.</field>
+  </record>
+  <record id="hr_demo_resume_gita_1" model="hr.resume.line">
+    <field name="employee_id" ref="hr_demo_emp_gita"/>
+    <field name="line_type_id" ref="hr_resume_type_experience"/>
+    <field name="name">Staff Frontend Engineer — Arkana ERP</field>
+    <field name="date_start">2023-03-15</field>
+    <field name="description">Designed responsive multi-view client architecture and design tokens.</field>
+  </record>
+
+  <!-- Employee Skills & Certifications -->
+  <record id="hr_demo_skill_nadia_en" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_nadia"/>
+    <field name="skill_type_id" ref="hr_skill_type_lang"/>
+    <field name="skill_id" ref="hr_skill_lang_en"/>
+    <field name="skill_level_id" ref="hr_skill_level_lang_c1"/>
+  </record>
+  <record id="hr_demo_skill_nadia_id" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_nadia"/>
+    <field name="skill_type_id" ref="hr_skill_type_lang"/>
+    <field name="skill_id" ref="hr_skill_lang_id"/>
+    <field name="skill_level_id" ref="hr_skill_level_lang_c2"/>
+  </record>
+  <record id="hr_demo_skill_nadia_pmp" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_nadia"/>
+    <field name="skill_type_id" ref="hr_skill_type_cert"/>
+    <field name="skill_id" ref="hr_skill_cert_pmp"/>
+    <field name="skill_level_id" ref="hr_skill_level_cert_active"/>
+    <field name="valid_from">2024-01-01</field>
+    <field name="valid_to">2027-12-31</field>
+  </record>
+  <record id="hr_demo_skill_budi_rust" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_budi"/>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="skill_id" ref="hr_skill_dev_rust"/>
+    <field name="skill_level_id" ref="hr_skill_level_dev_principal"/>
+  </record>
+  <record id="hr_demo_skill_budi_pg" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_budi"/>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="skill_id" ref="hr_skill_dev_pg"/>
+    <field name="skill_level_id" ref="hr_skill_level_dev_senior"/>
+  </record>
+  <record id="hr_demo_skill_budi_aws" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_budi"/>
+    <field name="skill_type_id" ref="hr_skill_type_cert"/>
+    <field name="skill_id" ref="hr_skill_cert_aws"/>
+    <field name="skill_level_id" ref="hr_skill_level_cert_active"/>
+    <field name="valid_from">2024-06-01</field>
+    <field name="valid_to">2027-06-01</field>
+  </record>
+  <record id="hr_demo_skill_fajar_rust" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_fajar"/>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="skill_id" ref="hr_skill_dev_rust"/>
+    <field name="skill_level_id" ref="hr_skill_level_dev_principal"/>
+  </record>
+  <record id="hr_demo_skill_gita_ts" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_gita"/>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="skill_id" ref="hr_skill_dev_ts"/>
+    <field name="skill_level_id" ref="hr_skill_level_dev_principal"/>
+  </record>
+  <record id="hr_demo_skill_indah_ux" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_indah"/>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="skill_id" ref="hr_skill_dev_ux"/>
+    <field name="skill_level_id" ref="hr_skill_level_dev_senior"/>
+  </record>
+  <record id="hr_demo_skill_dimas_iso" model="hr.employee.skill">
+    <field name="employee_id" ref="hr_demo_emp_dimas"/>
+    <field name="skill_type_id" ref="hr_skill_type_cert"/>
+    <field name="skill_id" ref="hr_skill_cert_iso"/>
+    <field name="skill_level_id" ref="hr_skill_level_cert_active"/>
+    <field name="valid_from">2025-01-15</field>
+    <field name="valid_to">2028-01-15</field>
   </record>
 </erp>

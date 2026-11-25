@@ -1,15 +1,21 @@
 name = "Employees"
-summary = "Employees and job positions"
+summary = "Centralize employee directory, org chart, departments, contracts, resume and skills"
 category = "Human Resources/Employees"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
 version = "1.0.0"
-depends = ["base"]
-icon = "lucide:briefcase"
+depends = ["base", "web", "mail"]
+icon = "lucide:users"
 data = [
-    "views/hr_job_views.xml",
-    "views/hr_employee_views.xml",
+    "security/hr_security.xml",
     "security/ir.access.csv",
+    "data/hr_data.xml",
+    "views/hr_config_views.xml",
+    "views/hr_job_views.xml",
+    "views/hr_department_views.xml",
+    "views/hr_employee_views.xml",
+    "views/hr_reports.xml",
+    "views/hr_menus.xml",
 ]
 demo = [
     "demo/hr_demo.xml",

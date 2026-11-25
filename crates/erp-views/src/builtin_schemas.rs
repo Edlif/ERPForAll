@@ -289,6 +289,7 @@ static RIBBON_NODE: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("text", &LABEL),
     SchemaProperty::optional("tooltip", &LABEL),
     SchemaProperty::required("background", &SHORT),
+    SchemaProperty::optional("invisible", &VALUE_EXPR),
 ]);
 static STAT_BUTTON_NODE: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("name", &SHORT),
@@ -619,9 +620,67 @@ static KANBAN_ROOT: SchemaNode = SchemaNode::Object(&[
     SchemaProperty::required("root", &INT),
     SchemaProperty::required("nodes", &KANBAN_NODES),
 ]);
+// ---- hierarchy -------------------------------------------------------------
+static HIERARCHY_NODE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("children", &CHILDREN),
+    SchemaProperty::required("parent_field", &FIELD_REF),
+    SchemaProperty::optional("child_field", &FIELD_REF),
+    SchemaProperty::optional("avatar_field", &FIELD_REF),
+    SchemaProperty::optional("color_field", &FIELD_REF),
+    SchemaProperty::optional("count_field", &FIELD_REF),
+    SchemaProperty::required("draggable", &BOOL),
+    SchemaProperty::optional("label", &SHORT),
+]);
+static HIERARCHY_UNION: SchemaNode = SchemaNode::TaggedUnion {
+    discriminator: "kind",
+    variants: &[
+        SchemaVariant::new("hierarchy", &HIERARCHY_NODE),
+        SchemaVariant::new("field", &FIELD_NODE),
+    ],
+};
+static HIERARCHY_NODES: SchemaNode = SchemaNode::Array {
+    item: &HIERARCHY_UNION,
+    max_items: MAX_NODES,
+};
+static HIERARCHY_ROOT: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("root", &INT),
+    SchemaProperty::required("nodes", &HIERARCHY_NODES),
+]);
+
+// ---- activity --------------------------------------------------------------
+static ACTIVITY_NODE: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("children", &CHILDREN),
+    SchemaProperty::optional("avatar_field", &FIELD_REF),
+]);
+static ACTIVITY_UNION: SchemaNode = SchemaNode::TaggedUnion {
+    discriminator: "kind",
+    variants: &[
+        SchemaVariant::new("activity", &ACTIVITY_NODE),
+        SchemaVariant::new("field", &FIELD_NODE),
+    ],
+};
+static ACTIVITY_NODES: SchemaNode = SchemaNode::Array {
+    item: &ACTIVITY_UNION,
+    max_items: MAX_NODES,
+};
+static ACTIVITY_ROOT: SchemaNode = SchemaNode::Object(&[
+    SchemaProperty::required("root", &INT),
+    SchemaProperty::required("nodes", &ACTIVITY_NODES),
+]);
+
 /// The closed description schema of the builtin `kanban` view type.
 pub fn kanban_schema() -> ViewResult<ViewSchema> {
     ViewSchema::new(REVISION, &KANBAN_ROOT)
+}
+
+/// The closed description schema of the builtin `hierarchy` view type.
+pub fn hierarchy_schema() -> ViewResult<ViewSchema> {
+    ViewSchema::new(REVISION, &HIERARCHY_ROOT)
+}
+
+/// The closed description schema of the builtin `activity` view type.
+pub fn activity_schema() -> ViewResult<ViewSchema> {
+    ViewSchema::new(REVISION, &ACTIVITY_ROOT)
 }
 
 /// The closed description schema of the builtin `list` view type.
@@ -660,6 +719,8 @@ pub(crate) fn builtin_root(kind: crate::wire::ViewType) -> Option<&'static Schem
         crate::wire::ViewType::Kanban => Some(&KANBAN_ROOT),
         crate::wire::ViewType::Calendar => Some(&CALENDAR_ROOT),
         crate::wire::ViewType::Graph => Some(&GRAPH_ROOT),
-        _ => None,
+        crate::wire::ViewType::Hierarchy => Some(&HIERARCHY_ROOT),
+        crate::wire::ViewType::Activity => Some(&ACTIVITY_ROOT),
+        crate::wire::ViewType::Gantt => None,
     }
 }

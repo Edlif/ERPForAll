@@ -156,6 +156,33 @@ export function renderFormLayout(
       const topLevel = parent === host || parent.classList.contains("form-sheet-layout");
       (topLevel ? presentation?.titleHost ?? parent : parent).append(title);
       if (presentation?.profile) { renderProfileTitle(node, title, presentation.profile.initial, render); return; }
+      const imageChild = node.children.find(child => child.kind === "field" && !child.field.invisible && (child.widget === "image" || child.widget === "image_url"));
+      const restChildren = imageChild ? node.children.filter(child => child !== imageChild) : node.children;
+      const hasContactRows = imageChild !== undefined && restChildren.some(child => child.kind === "field" && !child.field.invisible);
+      if (imageChild && hasContactRows) {
+        title.classList.add("form-title-hero");
+        const mediaCol = el("div", undefined, "form-title-hero-media");
+        const infoCol = el("div", undefined, "form-title-hero-info");
+        title.append(mediaCol, infoCol);
+        render(imageChild, mediaCol, 2);
+        for (const child of restChildren) {
+          const rowIcon = child.kind !== "field" || child.field.invisible ? undefined
+            : child.field.name === "job_title" ? "briefcase"
+            : child.widget === "email" ? "mail"
+            : child.widget === "phone" ? (child.field.name.includes("mobile") ? "smartphone" : "phone")
+            : child.widget === "many2many_tags" ? "tags"
+            : undefined;
+          if (!rowIcon) { render(child, infoCol, 2); continue; }
+          const row = el("div", undefined, "form-title-row");
+          row.append(icon(rowIcon));
+          infoCol.append(row);
+          render(child, row, 2);
+          const input = row.querySelector<HTMLInputElement>("input:not([placeholder])");
+          const caption = row.querySelector(".field-label > span")?.textContent?.replace(/\s*\*$/, "").trim();
+          if (input && caption) input.placeholder = caption;
+        }
+        return;
+      }
       node.children.forEach(child => render(child, title, 2)); return;
     }
     if (node.kind === "heading") {

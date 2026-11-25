@@ -182,6 +182,18 @@ static FILTER_SELECTION_WIDGET: erp_sdk::views::WidgetDecl =
 static PERCENTAGE_WIDGET: erp_sdk::views::WidgetDecl =
     erp_sdk::views::WidgetDecl::new("percentage", &["integer", "float"]);
 
+/// Native admission for the progressbar field adapter (0–100 numeric value shown as a bar).
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::FIELD_WIDGETS)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+static PROGRESSBAR_WIDGET: erp_sdk::views::WidgetDecl =
+    erp_sdk::views::WidgetDecl::new("progressbar", &["integer", "float"]);
+
+/// Native admission for the many2one_avatar field adapter (compact avatar chip next to relation).
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::FIELD_WIDGETS)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+static MANY2ONE_AVATAR_WIDGET: erp_sdk::views::WidgetDecl =
+    erp_sdk::views::WidgetDecl::new("many2one_avatar", &["many2one"]);
+
 /// Native admission for the priority field adapter.
 #[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::FIELD_WIDGETS)]
 #[linkme(crate = erp_sdk::__private::linkme)]
@@ -309,6 +321,14 @@ pub static CALENDAR_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::cale
 #[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::VIEW_TYPES)]
 #[linkme(crate = erp_sdk::__private::linkme)]
 pub static GRAPH_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::graph_view_type;
+/// `hierarchy` view type (H18).
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::VIEW_TYPES)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+pub static HIERARCHY_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::hierarchy_view_type;
+/// `activity` view type (H18).
+#[erp_sdk::__private::linkme::distributed_slice(erp_sdk::views::VIEW_TYPES)]
+#[linkme(crate = erp_sdk::__private::linkme)]
+pub static ACTIVITY_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::activity_view_type;
 
 /// The native H18 declarations owned by this exact web addon descriptor.
 ///
@@ -321,7 +341,7 @@ pub static GRAPH_VIEW_TYPE: erp_sdk::views::ViewTypeDeclFn = view_types::graph_v
 /// assert!(std::ptr::eq(contributions[0].owner(), &erp_addon_web::ADDON));
 /// ```
 pub fn view_type_contributions() -> [erp_sdk::views::ViewTypeContribution; 1] {
-    static DECLARATIONS: [erp_sdk::views::ViewTypeDeclFn; 7] = [
+    static DECLARATIONS: [erp_sdk::views::ViewTypeDeclFn; 9] = [
         view_types::list_view_type,
         view_types::form_view_type,
         view_types::search_view_type,
@@ -329,6 +349,8 @@ pub fn view_type_contributions() -> [erp_sdk::views::ViewTypeContribution; 1] {
         view_types::kanban_view_type,
         view_types::calendar_view_type,
         view_types::graph_view_type,
+        view_types::hierarchy_view_type,
+        view_types::activity_view_type,
     ];
     [erp_sdk::views::ViewTypeContribution::new(
         &ADDON,

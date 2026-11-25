@@ -79,7 +79,7 @@ fn system_for_pool(pool: erp_testkit::deadpool_postgres::Pool) -> ModuleSystem {
 /// rows and memberships, as a serving node does (the module system's own Orm acts as the superuser
 /// only).
 async fn cloned_installed() -> (TestDb, Orm) {
-    let db = TemplateDb::clone_or_init("erp-suite-hr:hr:v1", |pool| async move {
+    let db = TemplateDb::clone_or_init("erp-suite-hr:hr:v2", |pool| async move {
         let system = system_for_pool(pool);
         let init = Box::pin(system.initialize(InitOptions::new().with_skip_auto_install(true)))
             .await

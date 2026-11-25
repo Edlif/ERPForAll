@@ -238,12 +238,12 @@ build_binaries() {
 # ---- 4. web client ------------------------------------------------------------------------------
 build_web() {
   step "4/8 Building the web client"
-  dry "scripts/web-toolchain.sh install; pnpm --dir web install --frozen-lockfile; node web/scripts/build-human-ui.mjs --addons web,reporting,stock_account" && return 0
+  dry "scripts/web-toolchain.sh install; pnpm --dir web install --frozen-lockfile; node web/scripts/build-human-ui.mjs --addons web,reporting,stock_account,hr" && return 0
   ( cd "$ROOT"
     scripts/web-toolchain.sh install
     eval "$(scripts/web-toolchain.sh env)"
     pnpm --dir web install --frozen-lockfile
-    ERP_UI_COMPILER="$ROOT/target/release/erp-ui-compile" node web/scripts/build-human-ui.mjs --addons web,reporting,stock_account )
+    ERP_UI_COMPILER="$ROOT/target/release/erp-ui-compile" node web/scripts/build-human-ui.mjs --addons web,reporting,stock_account,hr )
   [ -f "$ROOT/web/dist/human-ui/manifest.json" ] || die "the web client build left no web/dist/human-ui/manifest.json"
 }
 

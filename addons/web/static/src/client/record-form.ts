@@ -413,7 +413,7 @@ export class RecordForm {
         }
       }
     }, this.pages, (node,parent)=>{const control=this.env.button(node,parent);if(control)this.stops.push(()=>disposeViewButton(control));return control;}, this.env.footer ? (node, parent) => {const control=this.env.footer!(node, this.env.footerHost ?? parent);if(control)this.stops.push(()=>disposeViewButton(control));} : undefined, { ...(this.env.profileTitle ? { profile: { initial: (typeof state.values["name"] === "string" ? [...state.values["name"].trim()][0]?.toUpperCase() : undefined) ?? "U" } } : {}), headerHost: this.env.headerHost, smartHost: this.env.smartHost, headerActionsHost: this.env.headerActionsHost, notebookTabsHost: this.env.notebookTabsHost, asideHost: this.env.asideHost, chatterHost: this.env.chatterHost, titleHost: this.env.titleHost, displayWidget:(node,parent)=>{
-      if(node.kind==="ribbon"){parent.append(renderRibbon({text:node.text,background:node.background,...(node.tooltip!==undefined?{tooltip:node.tooltip}:{})}));return;}
+      if(node.kind==="ribbon"){if(node.hidden)return;parent.append(renderRibbon({text:node.text,background:node.background,...(node.tooltip!==undefined?{tooltip:node.tooltip}:{})}));return;}
       const messages=this.env.messages;
       if(!messages)throw new ClientError("unsupported","Notification permission guidance requires the form message owner.");
       const handle=notificationPermissionWidget({open:()=>{messages.dialogs.alert({title:"Browser notification permission",message:"Notifications are blocked for this site. Review the site's notification permission in your browser settings."});},report:this.env.report});

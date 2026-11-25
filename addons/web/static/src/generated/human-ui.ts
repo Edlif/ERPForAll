@@ -209,7 +209,7 @@ action_kind: MenuActionKind | null,
 module: string | null, };
 export type MenuActionKind = "window" | "client";
 export type ActionTarget = "current" | "main" | "new";
-export type ViewType = "list" | "form" | "search" | "kanban" | "calendar" | "pivot" | "graph" | "gantt" | "activity";
+export type ViewType = "list" | "form" | "search" | "kanban" | "calendar" | "pivot" | "graph" | "gantt" | "activity" | "hierarchy";
 export type WindowAction = {
 /**
  *Wire member `wire_major`.
@@ -1133,7 +1133,11 @@ tooltip?: string,
 /**
  * Semantic background.
  */
-background: RibbonBackground, } | { "kind": "notification_alert", } | { "kind": "group",
+background: RibbonBackground,
+/**
+ * Per-record visibility: the ribbon is hidden while this expression evaluates to true.
+ */
+invisible?: WireDocument, } | { "kind": "notification_alert", } | { "kind": "group",
 /**
  * Optional caption (empty when absent).
  */
@@ -1311,7 +1315,47 @@ invisible: boolean, filters: boolean, } | { "kind": "graph",
 /**
  * Child arena indexes (only `graph_field`).
  */
-children: Array<number>, mode: GraphMode, stacked: boolean, cumulated: boolean, order?: GraphOrder, disable_linking: boolean, } | { "kind": "graph_field",
+children: Array<number>, mode: GraphMode, stacked: boolean, cumulated: boolean, order?: GraphOrder, disable_linking: boolean, } | { "kind": "hierarchy",
+/**
+ * Child arena indexes (card `field` nodes).
+ */
+children: Array<number>,
+/**
+ * Self-referential parent `many2one` field.
+ */
+parent_field: FieldRef,
+/**
+ * Optional inverse `one2many` children field.
+ */
+child_field?: FieldRef,
+/**
+ * Optional avatar `binary`/`image` field.
+ */
+avatar_field?: FieldRef,
+/**
+ * Optional palette color `integer` field.
+ */
+color_field?: FieldRef,
+/**
+ * Optional numeric count badge `integer` field.
+ */
+count_field?: FieldRef,
+/**
+ * Whether cards may be dragged onto another node to reassign `parent_field`.
+ */
+draggable: boolean,
+/**
+ * Optional plural noun for child count pills (e.g. `"people"`).
+ */
+label?: string, } | { "kind": "activity",
+/**
+ * Child arena indexes (record summary `field` nodes).
+ */
+children: Array<number>,
+/**
+ * Optional avatar `binary`/`image` field.
+ */
+avatar_field?: FieldRef, } | { "kind": "graph_field",
 /**
  * Accessible field handle.
  */

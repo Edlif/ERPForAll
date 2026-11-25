@@ -98,6 +98,8 @@ fn children(node: &wire::ViewNode) -> Result<&[u32]> {
         | KanbanSection { children, .. }
         | Calendar { children, .. }
         | Graph { children, .. }
+        | Hierarchy { children, .. }
+        | Activity { children, .. }
         | Sheet { children }
         | Aside { children }
         | Title { children }
@@ -144,6 +146,8 @@ fn children_mut(node: &mut wire::ViewNode) -> Result<Option<&mut Vec<u32>>> {
         | KanbanSection { children, .. }
         | Calendar { children, .. }
         | Graph { children, .. }
+        | Hierarchy { children, .. }
+        | Activity { children, .. }
         | Sheet { children }
         | Aside { children }
         | Title { children }
@@ -386,6 +390,27 @@ fn validate_builtin_field_models(model: &str, node: &wire::ViewNode) -> Result<(
         wire::ViewNode::GraphField { field, .. } => {
             require_builtin_root_field(model, "graph_field", field)
         }
+        wire::ViewNode::Hierarchy {
+            parent_field,
+            child_field,
+            avatar_field,
+            color_field,
+            count_field,
+            ..
+        } => [
+            Some(parent_field),
+            child_field.as_ref(),
+            avatar_field.as_ref(),
+            color_field.as_ref(),
+            count_field.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .try_for_each(|field| require_builtin_root_field(model, "hierarchy", field)),
+        wire::ViewNode::Activity {
+            avatar_field: Some(field),
+            ..
+        } => require_builtin_root_field(model, "activity", field),
         wire::ViewNode::Dashboard { items, .. } => {
             for item in items {
                 if let wire::DashboardItem::Kpi {

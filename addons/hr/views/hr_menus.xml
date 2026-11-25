@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <!-- App Root -->
+  <menuitem id="hr_menu_root" name="Employees" sequence="80" web_icon="lucide:users"/>
+
+  <!-- Top-level App Navigation (Odoo 20 Employees parity) -->
+  <menuitem id="hr_employee_menu" name="Management" parent="hr_menu_root" action="hr_employee_action" sequence="10" groups="hr.group_hr_user"/>
+  <menuitem id="hr_directory_menu" name="Directory" parent="hr_menu_root" action="hr_employee_directory_action" sequence="20" groups="base.group_user"/>
+  <menuitem id="hr_department_menu" name="Departments" parent="hr_menu_root" action="hr_department_action" sequence="30" groups="base.group_user"/>
+
+  <!-- Learning -->
+  <menuitem id="hr_learning_menu" name="Learning" parent="hr_menu_root" sequence="40" groups="hr.group_hr_user"/>
+  <menuitem id="hr_resume_line_menu" name="Resume Entries" parent="hr_learning_menu" action="hr_resume_line_action" sequence="10"/>
+  <menuitem id="hr_employee_skill_menu" name="Skills &amp; Certifications" parent="hr_learning_menu" action="hr_employee_skill_action" sequence="20"/>
+
+  <!-- Reporting -->
+  <menuitem id="hr_reporting_menu" name="Reporting" parent="hr_menu_root" sequence="50" groups="hr.group_hr_user"/>
+  <menuitem id="hr_reporting_headcount_menu" name="Headcount Analysis" parent="hr_reporting_menu" action="hr_employee_reporting_action" sequence="10"/>
+  <menuitem id="hr_reporting_contracts_menu" name="Contract History" parent="hr_reporting_menu" action="hr_employee_version_action" sequence="20"/>
+  <menuitem id="hr_reporting_skills_menu" name="Skills Inventory" parent="hr_reporting_menu" action="hr_skills_reporting_action" sequence="30"/>
+
+  <!-- Configuration -->
+  <menuitem id="hr_configuration_menu" name="Configuration" parent="hr_menu_root" sequence="90" groups="hr.group_hr_manager"/>
+
+  <menuitem id="hr_config_employee_menu" name="Employee" parent="hr_configuration_menu" sequence="10"/>
+  <menuitem id="hr_employee_type_menu" name="Employee Types" parent="hr_config_employee_menu" action="hr_employee_type_action" sequence="10"/>
+  <menuitem id="hr_work_location_menu" name="Work Locations" parent="hr_config_employee_menu" action="hr_work_location_action" sequence="20"/>
+  <menuitem id="hr_departure_reason_menu" name="Departure Reasons" parent="hr_config_employee_menu" action="hr_departure_reason_action" sequence="30"/>
+  <menuitem id="hr_employee_category_menu" name="Tags" parent="hr_config_employee_menu" action="hr_employee_category_action" sequence="40"/>
+
+  <menuitem id="hr_config_time_menu" name="Time Management" parent="hr_configuration_menu" sequence="20"/>
+  <menuitem id="hr_work_schedule_menu" name="Working Schedules" parent="hr_config_time_menu" action="hr_work_schedule_action" sequence="10"/>
+
+  <menuitem id="hr_config_recruitment_menu" name="Recruitment" parent="hr_configuration_menu" sequence="30"/>
+  <menuitem id="hr_job_menu" name="Job Positions" parent="hr_config_recruitment_menu" action="hr_job_action" sequence="10"/>
+
+  <menuitem id="hr_config_skills_menu" name="Skills &amp; Resume" parent="hr_configuration_menu" sequence="40"/>
+  <menuitem id="hr_skill_type_menu" name="Skill Types" parent="hr_config_skills_menu" action="hr_skill_type_action" sequence="10"/>
+  <menuitem id="hr_resume_line_type_menu" name="Resume Sections" parent="hr_config_skills_menu" action="hr_resume_line_type_action" sequence="20"/>
+</erp>

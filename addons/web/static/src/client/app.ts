@@ -2,7 +2,6 @@
 import { setClientLanguage, t } from "./translate.js";
 import { clearProtectedTabState } from "./session-boundary.js";
 import { PanelCompatibilityError, PanelRecoverySafety, attemptPanelRecovery } from "./panel-recovery.js";
-import { unavailablePanelMessage } from "./panel-metadata.js";
 import { loginReturnUrl } from "./login-return.js";
 import { initializeAttachmentPolicy } from "./attachment-policy.js";
 import { BIN_SIZE_CONTEXT, forgetBinaryContent } from "./binary-content.js";
@@ -33,6 +32,11 @@ import { mountCalendar } from "./calendar-view.js";
 import { GRAPH_MAX_GROUPINGS, GRAPH_PARAMS, GraphModel, graphGrouping, graphParams, graphParamsState, readGraphView, type GraphParams } from "./graph.js";
 import { mountGraph, type GraphTarget } from "./graph-view.js";
 import { focusKanbanCard, kanbanLayout, kanbanRoot, renderKanbanCards } from "./kanban.js";
+import { hierarchyRoot, renderHierarchyTree } from "./hierarchy.js";
+import { renderActivityMatrix, type ActivityItemRow, type ActivityTypeRow } from "./activity-view.js";
+import { createSearchPanelSidebar, type SearchPanelSidebar } from "./search-panel.js";
+import { displayValue } from "./fields.js";
+import type { SectionsPanel } from "./panel-metadata.js";
 import type { GroupByCatalogue, GroupableField } from "./search/types.js";
 import { createContext, decodeAst, evalAst, parseBoundedJson, type ValidatedAst } from "../../../../../web/packages/expr/src/index.js";
 import { expressionValue, jsonValue } from "./field-relations.js";
@@ -120,13 +124,13 @@ function retagCrumb(current: HTMLElement, tag: "h1" | "span"): void {
   current.replaceWith(replacement);
 }
 
-type SwitchableView = "list" | "form" | "pivot" | "calendar" | "graph" | "kanban";
-const SWITCHABLE_VIEWS: readonly string[] = ["list", "form", "pivot", "calendar", "graph", "kanban"];
+type SwitchableView = "list" | "form" | "pivot" | "calendar" | "graph" | "kanban" | "hierarchy" | "activity";
+const SWITCHABLE_VIEWS: readonly string[] = ["list", "form", "pivot", "calendar", "graph", "kanban", "hierarchy", "activity"];
 const switchable = (view: string): view is SwitchableView => SWITCHABLE_VIEWS.includes(view);
-/** The route of a view switch. The pivot, the calendar and the graph keep their own state (`pivot_*`, `calendar_*`, `graph_*`), and their search models refuse a list's `search_groupby` (so does the kanban's), so that one is not carried over. */
+/** The route of a view switch. The pivot, the calendar and the graph keep their own state (`pivot_*`, `calendar_*`, `graph_*`), and their search models refuse a list's `search_groupby` (so do kanban, hierarchy and activity), so that one is not carried over. */
 function switchedRoute(route: Route, view: SwitchableView): Route {
   const next: Route = { ...route, id: view === "form" ? route.id : undefined, view_type: view };
-  if (view === "pivot" || view === "calendar" || view === "graph" || view === "kanban") delete next.search_groupby;
+  if (view === "pivot" || view === "calendar" || view === "graph" || view === "kanban" || view === "hierarchy" || view === "activity") delete next.search_groupby;
   if (view !== "pivot") for (const key of PIVOT_PARAMS) delete next[key];
   if (view !== "calendar") for (const key of CALENDAR_PARAMS) delete next[key];
   if (view !== "graph") for (const key of GRAPH_PARAMS) delete next[key];
@@ -135,8 +139,8 @@ function switchedRoute(route: Route, view: SwitchableView): Route {
 
 /** Labels remain available to assistive technology and tooltips. */
 function decorateViewButton(target: HTMLButtonElement, kind: SwitchableView): void {
-  const label = el("span", kind === "list" ? "List" : kind === "pivot" ? "Pivot" : kind === "calendar" ? "Calendar" : kind === "graph" ? "Graph" : kind === "kanban" ? "Kanban" : "Form", "view-button-label");
-  target.replaceChildren(icon(kind === "list" ? "list" : kind === "pivot" ? "layout-grid" : kind === "calendar" ? "calendar-days" : kind === "graph" ? "chart-column" : kind === "kanban" ? "kanban" : "panels-top-left"), label);
+  const label = el("span", kind === "list" ? "List" : kind === "pivot" ? "Pivot" : kind === "calendar" ? "Calendar" : kind === "graph" ? "Graph" : kind === "kanban" ? "Kanban" : kind === "hierarchy" ? "Hierarchy" : kind === "activity" ? "Activity" : "Form", "view-button-label");
+  target.replaceChildren(icon(kind === "list" ? "list" : kind === "pivot" ? "layout-grid" : kind === "calendar" ? "calendar-days" : kind === "graph" ? "chart-column" : kind === "kanban" ? "kanban" : kind === "hierarchy" ? "network" : kind === "activity" ? "clock" : "panels-top-left"), label);
   target.title = `${label.textContent} view`;
 }
 
@@ -2341,7 +2345,8 @@ export class HumanApp {
         if (route.model && route.model !== model) throw new ClientError("validation", "URL model does not match the action.");
         const views = actionViews(action);
         const description = describeViews(await this.viewDescriptions(model, views, {}, context, entry ? undefined : actionId), model, this.registry);
-        const defaultViewType = !route.id && views.some(v => v[1] === "list") ? "list" : String(views[0]?.[1]);
+        const firstView = String(views[0]?.[1]);
+        const defaultViewType = !route.id && firstView === "form" && views.some(v => v[1] === "list") ? "list" : firstView;
         const viewType = route.view_type ?? defaultViewType;
         const view = description.views.get(viewType);
         if (!view) throw new ClientError("unsupported", "The requested view is unavailable.");
@@ -2429,6 +2434,20 @@ export class HumanApp {
         } else if (view.type === "graph") {
           const graph = await this.graphView(staging, panel, actionTitle, description, view, route, generation, views as [number | null, string][], {baseDomain: entry?.result.domain ?? actionDomain, context, searchDefaults});
           nextDispose = graph.dispose;
+          stagedDisposers.push(nextDispose);
+        } else if (view.type === "hierarchy") {
+          const hasForm = views.some(view => view[1] === "form");
+          const canCreate = hasForm && view.canCreate !== false && !isFalsy(context["create"]);
+          if (canCreate) controls.append(actionButton("New", () => this.run(() => this.navigate({ ...route, id: undefined, view_type: "form" })), "primary"));
+          const hierarchy = await this.hierarchyView(staging, panel, actionTitle, description, view, route, generation, views as [number | null, string][], {baseDomain: entry?.result.domain ?? actionDomain, context, hasForm, searchDefaults});
+          nextDispose = hierarchy.dispose;
+          stagedDisposers.push(nextDispose);
+        } else if (view.type === "activity") {
+          const hasForm = views.some(view => view[1] === "form");
+          const canCreate = hasForm && view.canCreate !== false && !isFalsy(context["create"]);
+          if (canCreate) controls.append(actionButton("New", () => this.run(() => this.navigate({ ...route, id: undefined, view_type: "form" })), "primary"));
+          const activity = await this.activityView(staging, panel, actionTitle, description, view, route, generation, views as [number | null, string][], {baseDomain: entry?.result.domain ?? actionDomain, context, hasForm, searchDefaults});
+          nextDispose = activity.dispose;
           stagedDisposers.push(nextDispose);
         } else {
           await attachSubviews(description, view, async (relation, refs) =>
@@ -2661,9 +2680,20 @@ export class HumanApp {
         throw error;
       }
     };
+    const pivotSections = await this.sectionsPanelFor(description, view, context, "pivot");
+    let pivotSidebar: SearchPanelSidebar | undefined;
+    const pivotDomain = (): unknown[] => [...searchModel.getDomain(), ...(pivotSidebar?.getDomain() ?? [])];
     const model = new PivotModel(config, ({ groupingSets, aggregates, domain }) => this.rpc.call(description.model, "formatted_read_grouping_sets", {
       domain, grouping_sets: groupingSets, aggregates, context
-    }), () => searchModel.getDomain(), limits, initial, accept);
+    }), pivotDomain, limits, initial, accept);
+    if (pivotSections) {
+      pivotSidebar = createSearchPanelSidebar({
+        model: description.model, panel: pivotSections, rpc: this.rpc, context,
+        onChange: () => this.run(async () => { void pivotSidebar?.refresh(searchModel.getDomain()); await model.load(); pivot.render(); }),
+        report: error => this.reportError(error),
+      });
+      void pivotSidebar.refresh(searchModel.getDomain());
+    }
     await model.load();
     const writeAddress = (): void => {
       if (generation !== this.generation || this.expired) return; // the user left this pivot: the address is the next page's
@@ -2704,6 +2734,7 @@ export class HumanApp {
       // The address is written before the read, as the list does: an answer that comes late never touches it.
       // A changed Group By sets the rows and reads the table (with the search); anything else reads it again and keeps the open headers.
       const wanted = searchModel.getGroupBy();
+      void pivotSidebar?.refresh(searchModel.getDomain());
       try {
         if (wanted.join(",") !== appliedGroupBy) {
           groupingRows = true;
@@ -2739,8 +2770,8 @@ export class HumanApp {
     const toolsArea = panel.querySelector("[data-control-tools]");
     if (toolsArea) toolsArea.replaceChildren(switcher);
     else (panel.querySelector(".control-panel-heading") || panel).append(el("div", undefined, "control-panel-tools"), switcher);
-    staging.append(pivot.element);
-    return { dispose: () => { pivot.dispose(); searchBar.dispose(); } };
+    this.wrapWithSearchPanel(staging, pivot.element, pivotSidebar);
+    return { dispose: () => { pivot.dispose(); pivotSidebar?.dispose(); searchBar.dispose(); } };
   }
 
   /** The calendar view: the search bar's domain, the events of the visible range, the grids and the side panel, and the scale and day in the address. */
@@ -2898,9 +2929,20 @@ export class HumanApp {
       if (!field) throw new ClientError("unsupported", "Text search is not available for this model.");
       searchModel.addFieldFacet(field.name, route.search);
     }
+    const graphSections = await this.sectionsPanelFor(description, view, context, "graph");
+    let graphSidebar: SearchPanelSidebar | undefined;
+    const graphDomain = (): unknown[] => [...searchModel.getDomain(), ...(graphSidebar?.getDomain() ?? [])];
     const model = new GraphModel(config, ({ groupingSets, aggregates, domain }) => this.rpc.call(description.model, "formatted_read_grouping_sets", {
       domain, grouping_sets: groupingSets, aggregates, context
-    }), () => searchModel.getDomain(), maxGroups, initial);
+    }), graphDomain, maxGroups, initial);
+    if (graphSections) {
+      graphSidebar = createSearchPanelSidebar({
+        model: description.model, panel: graphSections, rpc: this.rpc, context,
+        onChange: () => this.run(async () => { void graphSidebar?.refresh(searchModel.getDomain()); await model.load(); graph.render(); }),
+        report: error => this.reportError(error),
+      });
+      void graphSidebar.refresh(searchModel.getDomain());
+    }
     await model.load();
     // Only what differs from the arch is kept, so a reload (or a link) draws the same chart.
     const writeAddress = (): void => {
@@ -2941,6 +2983,7 @@ export class HumanApp {
       for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) { if (proposed[key] === undefined) delete route[key]; else route[key] = proposed[key]; }
       if (url !== this.currentUrl) { history.replaceState({ erpIndex: this.historyIndex }, "", url); this.currentUrl = url; }
       const wanted = searchModel.getGroupBy();
+      void graphSidebar?.refresh(searchModel.getDomain());
       try {
         if (wanted.join(",") !== appliedGroupBy) {
           try { await model.setGroupBy(wanted.length ? wanted.map(spec => graphGrouping(spec, config.groupable)) : null); }
@@ -2974,8 +3017,8 @@ export class HumanApp {
     const toolsArea = panel.querySelector("[data-control-tools]");
     if (toolsArea) toolsArea.replaceChildren(switcher);
     else (panel.querySelector(".control-panel-heading") || panel).append(el("div", undefined, "control-panel-tools"), switcher);
-    staging.append(graph.element);
-    return { dispose: () => { graph.dispose(); searchBar.dispose(); } };
+    this.wrapWithSearchPanel(staging, graph.element, graphSidebar);
+    return { dispose: () => { graph.dispose(); graphSidebar?.dispose(); searchBar.dispose(); } };
   }
 
   /**
@@ -3018,6 +3061,10 @@ export class HumanApp {
       searchModel.addFieldFacet(field.name, route.search);
     }
 
+    const sectionsPanel = await this.sectionsPanelFor(description, view, context, "kanban");
+    let sidebar: SearchPanelSidebar | undefined;
+    const combinedDomain = (): unknown[] => [...searchModel.getDomain(), ...(sidebar?.getDomain() ?? [])];
+
     const results = el("div", undefined, "kanban-view");
     if (root.defaultGroupBy) results.append(el("p", `Grouped columns are not available yet, so the cards are not grouped by ${root.defaultGroupBy.label}.`, "kanban-notice muted"));
     const body = el("div", undefined, "kanban-results");
@@ -3035,7 +3082,7 @@ export class HumanApp {
 
     const fetchRows = async (from: number): Promise<{ records: Record<string, unknown>[]; length: number }> => {
       forgetBinaryContent(this.rpc);
-      const answer = object(await this.rpc.call(description.model, "web_search_read", { domain: searchModel.getDomain(), specification: specification(view.fields), offset: from, limit: pageSize, context: { ...context, ...BIN_SIZE_CONTEXT } }));
+      const answer = object(await this.rpc.call(description.model, "web_search_read", { domain: combinedDomain(), specification: specification(view.fields), offset: from, limit: pageSize, context: { ...context, ...BIN_SIZE_CONTEXT } }));
       forgetBinaryContent(this.rpc);
       return { records: array(answer["records"], "records").map(row => object(row)), length: integer(answer["length"], "record count") };
     };
@@ -3046,6 +3093,7 @@ export class HumanApp {
     const load = async (): Promise<void> => {
       const mine = ++request, current = (): boolean => mine === request && generation === this.generation && !this.expired;
       body.setAttribute("aria-busy", "true");
+      void sidebar?.refresh(searchModel.getDomain());
       let page: { records: Record<string, unknown>[]; length: number };
       try { page = await fetchRows(offset); }
       catch (error) {
@@ -3088,6 +3136,13 @@ export class HumanApp {
       } });
       body.replaceChildren(cards.node);
     };
+    if (sectionsPanel) {
+      sidebar = createSearchPanelSidebar({
+        model: description.model, panel: sectionsPanel, rpc: this.rpc, context,
+        onChange: () => this.run(async () => { offset = 0; await load(); }),
+        report: error => this.reportError(error),
+      });
+    }
     await load();
 
     const searchBar = createSearchBar(searchModel, () => this.run(async () => {
@@ -3123,9 +3178,9 @@ export class HumanApp {
       tools.append(pager, switcher);
       (panel.querySelector(".control-panel-heading") || panel).append(tools);
     }
-    staging.append(results);
+    this.wrapWithSearchPanel(staging, results, sidebar);
     return {
-      dispose: () => { request++; cards?.dispose(); searchBar.dispose(); },
+      dispose: () => { request++; cards?.dispose(); sidebar?.dispose(); searchBar.dispose(); },
       // After the page is in the document and scrolled to its top: the way back from a card restores its scroll and focus.
       restore: () => {
         if (!resume || !cards) return;
@@ -3136,7 +3191,331 @@ export class HumanApp {
   }
 
 
+  /** Resolves a `SectionsPanel` from the already-loaded view bundle without extra RPCs when possible. */
+  private async sectionsPanelFor(description: Description, view: View, context: Record<string, unknown>, viewType: string): Promise<SectionsPanel | undefined> {
+    const candidate = view.searchPanel ?? description.views.get("list")?.searchPanel ?? description.views.get("search")?.searchPanel;
+    if (candidate?.kind === "sections") {
+      return candidate.viewTypes.includes(viewType) ? candidate : undefined;
+    }
+    if (view.type === "list" || description.views.has("list") || description.views.has("search")) {
+      return undefined;
+    }
+    return this.searchViewPanel(description.model, context, viewType);
+  }
+
   /** The nodes of `model`'s default search view (shared through the metadata cache); none when the model has no search view. */
+  private async searchViewPanel(model: string, context: Record<string, unknown>, viewType: string): Promise<SectionsPanel | undefined> {
+    const searchView = await this.viewDescriptions(model, [[null, "search"]], {}, context).catch((error: unknown) => {
+      if (error instanceof ClientError && error.kind === "validation" && error.message.startsWith("No default view of type 'search'")) return undefined;
+      throw error;
+    });
+    if (!searchView || typeof searchView !== "object" || Array.isArray(searchView) || !("views" in searchView)) return undefined;
+    const search = describeViews(searchView, model, this.registry).views.get("search");
+    if (search?.searchPanel?.kind === "sections" && search.searchPanel.viewTypes.includes(viewType)) {
+      return search.searchPanel;
+    }
+    return undefined;
+  }
+
+  private wrapWithSearchPanel(staging: HTMLElement, content: HTMLElement, sidebar: SearchPanelSidebar | undefined): void {
+    if (!sidebar) {
+      staging.append(content);
+      return;
+    }
+    const shell = el("div", undefined, "search-panel-layout");
+    const main = el("div", undefined, "search-panel-main");
+    main.append(content);
+    shell.append(sidebar.element, main);
+    staging.append(shell);
+  }
+
+  private async hierarchyView(staging: HTMLElement, panel: HTMLElement, actionTitle: string, description: Description, view: View, route: Route, generation: number, availableViews: [number | null, string][], scope: { baseDomain: unknown[]; context: Record<string, unknown>; hasForm: boolean; searchDefaults?: ReadonlyMap<string, unknown> }): Promise<{ dispose: () => void }> {
+    const { context, baseDomain, hasForm } = scope;
+    if (route.id !== undefined) throw new ClientError("validation", "The hierarchy view shows many records; the address cannot name one record.");
+    const root = hierarchyRoot(view);
+    panel.classList.add("control-panel-list");
+    const breadcrumbs = panel.querySelector<HTMLElement>("[data-control-breadcrumbs]") || panel.querySelector<HTMLElement>("h1");
+    if (breadcrumbs) {
+      this.breadcrumbs.clear();
+      this.breadcrumbs.push({
+        id: `action-${route.action}-hierarchy`, title: actionTitle, isFormView: false,
+        get route() { return { ...route }; }, get url() { return routeUrl(route); },
+      });
+      const title = el("h1", actionTitle, "breadcrumb-current");
+      title.setAttribute("aria-current", "page");
+      breadcrumbs.replaceChildren(title);
+    }
+    const searchModel = new SearchModel({
+      model: description.model, fields: description.fields, viewFields: view.fields,
+      nameSearch: async (relation, name) => array(await this.rpc.call(relation, "web_name_search", { name, specification: { display_name: {} }, limit: 8, context }), "relation search").map(row => {
+        const found = object(row);
+        return { id: integer(found["id"], "relation id"), display_name: text(found["display_name"], "relation name") };
+      }),
+      userId: this.userId, companyId: this.companyId, initialDomain: baseDomain,
+    });
+    await this.prepareSearch(searchModel, description.model, context, route, () => this.restoreDashboardFilters(searchModel, description, route, generation, baseDomain, context), scope.searchDefaults ?? new Map(), generation);
+
+    const sectionsPanel = await this.sectionsPanelFor(description, view, context, "hierarchy");
+    let sidebar: SearchPanelSidebar | undefined;
+    const combinedDomain = (): unknown[] => [...searchModel.getDomain(), ...(sidebar?.getDomain() ?? [])];
+
+    const container = el("div", undefined, "hierarchy-view");
+    const body = el("div", undefined, "hierarchy-results");
+    container.append(body);
+    let tree: { node: HTMLElement; dispose: () => void } | undefined;
+    let request = 0;
+
+    const open = hasForm ? (id: number): void => this.run(async () => {
+      await this.navigate({ ...route, id: String(id), view_type: "form" });
+    }) : undefined;
+
+    const load = async (): Promise<void> => {
+      const mine = ++request, current = (): boolean => mine === request && generation === this.generation && !this.expired;
+      body.setAttribute("aria-busy", "true");
+      void sidebar?.refresh(searchModel.getDomain());
+      let records: Record<string, unknown>[];
+      try {
+        const answer = object(await this.rpc.call(description.model, "web_search_read", {
+          domain: combinedDomain(),
+          specification: specification(view.fields),
+          offset: 0,
+          limit: 200,
+          context,
+        }));
+        records = array(answer["records"], "records").map(row => object(row));
+      } catch (error) {
+        if (!current()) return;
+        body.removeAttribute("aria-busy");
+        tree?.dispose(); tree = undefined;
+        const message = el("p", "Unable to load this hierarchy. Adjust the search or reload the page.", "list-load-error");
+        message.setAttribute("role", "alert"); body.replaceChildren(message);
+        throw error;
+      }
+      if (!current()) return;
+      body.removeAttribute("aria-busy");
+      tree?.dispose();
+      if (!records.length) {
+        tree = undefined;
+        const empty = noContentHelp();
+        empty.replaceChildren(el("h2", t("No records yet")), el("p", t("Create a record to build the organization chart.")));
+        body.replaceChildren(empty);
+        return;
+      }
+      const focusId = typeof context["hierarchy_res_id"] === "number" ? context["hierarchy_res_id"] : undefined;
+      const locale = this.editorLocale?.lang.replaceAll("_", "-") ?? "en-US";
+      tree = renderHierarchyTree({
+        view,
+        records,
+        ...(focusId !== undefined ? { focusId } : {}),
+        ...(open ? { open } : {}),
+        ...(root.draggable ? {
+          onReassign: async (childId, newParentId) => {
+            await this.run(async () => {
+              await this.rpc.call(description.model, "write", {
+                ids: [childId],
+                vals: { [root.parentField.name]: newParentId },
+                context,
+              }, { write: true });
+              await load();
+            });
+          },
+        } : {}),
+        formatField: (field, rec) => displayValue(field, rec[field.name], locale),
+      });
+      body.replaceChildren(tree.node);
+    };
+
+    if (sectionsPanel) {
+      sidebar = createSearchPanelSidebar({
+        model: description.model, panel: sectionsPanel, rpc: this.rpc, context,
+        onChange: () => this.run(() => load()),
+        report: error => this.reportError(error),
+      });
+    }
+    await load();
+
+    const searchBar = createSearchBar(searchModel, () => this.run(async () => {
+      const parameters = new URLSearchParams();
+      searchModel.serializeToUrlParams(parameters);
+      const proposed = { ...route };
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) {
+        const value = parameters.get(key);
+        if (value === null) delete proposed[key]; else proposed[key] = value;
+      }
+      const url = routeUrl(proposed);
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) { if (proposed[key] === undefined) delete route[key]; else route[key] = proposed[key]; }
+      if (url !== this.currentUrl) { history.replaceState({ erpIndex: this.historyIndex }, "", url); this.currentUrl = url; }
+      await load();
+    }));
+    const searchArea = panel.querySelector("[data-control-search]") || panel;
+    if (searchArea !== panel) searchArea.replaceChildren(searchBar.element); else panel.append(searchBar.element);
+
+    const switcher = el("div", undefined, "view-switcher");
+    for (const [, vType] of availableViews) {
+      if (!switchable(vType) || availableViews.length < 2) continue;
+      const vBtn = button(vType, () => this.run(async () => { await this.navigate(switchedRoute(route, vType)); }), `view-btn ${vType === "hierarchy" ? "active" : ""}`);
+      vBtn.setAttribute("aria-label", `${vType} view`);
+      if (vType === "hierarchy") vBtn.setAttribute("aria-current", "page");
+      decorateViewButton(vBtn, vType);
+      switcher.append(vBtn);
+    }
+    const toolsArea = panel.querySelector("[data-control-tools]");
+    if (toolsArea) toolsArea.replaceChildren(switcher);
+    else (panel.querySelector(".control-panel-heading") || panel).append(el("div", undefined, "control-panel-tools"), switcher);
+
+    this.wrapWithSearchPanel(staging, container, sidebar);
+    return { dispose: () => { request++; tree?.dispose(); sidebar?.dispose(); searchBar.dispose(); } };
+  }
+
+  private async activityView(staging: HTMLElement, panel: HTMLElement, actionTitle: string, description: Description, view: View, route: Route, generation: number, availableViews: [number | null, string][], scope: { baseDomain: unknown[]; context: Record<string, unknown>; hasForm: boolean; searchDefaults?: ReadonlyMap<string, unknown> }): Promise<{ dispose: () => void }> {
+    const { context, baseDomain, hasForm } = scope;
+    if (route.id !== undefined) throw new ClientError("validation", "The activity view shows many records; the address cannot name one record.");
+    panel.classList.add("control-panel-list");
+    const breadcrumbs = panel.querySelector<HTMLElement>("[data-control-breadcrumbs]") || panel.querySelector<HTMLElement>("h1");
+    if (breadcrumbs) {
+      this.breadcrumbs.clear();
+      this.breadcrumbs.push({
+        id: `action-${route.action}-activity`, title: actionTitle, isFormView: false,
+        get route() { return { ...route }; }, get url() { return routeUrl(route); },
+      });
+      const title = el("h1", actionTitle, "breadcrumb-current");
+      title.setAttribute("aria-current", "page");
+      breadcrumbs.replaceChildren(title);
+    }
+    const searchModel = new SearchModel({
+      model: description.model, fields: description.fields, viewFields: view.fields,
+      nameSearch: async (relation, name) => array(await this.rpc.call(relation, "web_name_search", { name, specification: { display_name: {} }, limit: 8, context }), "relation search").map(row => {
+        const found = object(row);
+        return { id: integer(found["id"], "relation id"), display_name: text(found["display_name"], "relation name") };
+      }),
+      userId: this.userId, companyId: this.companyId, initialDomain: baseDomain,
+    });
+    await this.prepareSearch(searchModel, description.model, context, route, () => this.restoreDashboardFilters(searchModel, description, route, generation, baseDomain, context), scope.searchDefaults ?? new Map(), generation);
+
+    const container = el("div", undefined, "activity-view");
+    const body = el("div", undefined, "activity-results");
+    container.append(body);
+    let matrix: { node: HTMLElement; dispose: () => void } | undefined;
+    let request = 0;
+
+    const open = hasForm ? (id: number): void => this.run(async () => {
+      await this.navigate({ ...route, id: String(id), view_type: "form" });
+    }) : undefined;
+
+    const sectionsPanel = await this.sectionsPanelFor(description, view, context, "activity");
+    let sidebar: SearchPanelSidebar | undefined;
+    const effectiveDomain = (): unknown[] => [...searchModel.getDomain(), ...(sidebar?.getDomain() ?? [])];
+
+    const load = async (): Promise<void> => {
+      const mine = ++request, current = (): boolean => mine === request && generation === this.generation && !this.expired;
+      body.setAttribute("aria-busy", "true");
+      void sidebar?.refresh(searchModel.getDomain());
+      let records: Record<string, unknown>[];
+      let types: ActivityTypeRow[] = [];
+      let activities: ActivityItemRow[] = [];
+      try {
+        const [recResp, typeResp] = await Promise.all([
+          this.rpc.call(description.model, "web_search_read", { domain: effectiveDomain(), specification: specification(view.fields), offset: 0, limit: 80, context }),
+          this.rpc.call("mail.activity.type", "web_search_read", {
+            domain: ["|", ["res_model", "=", false], ["res_model", "=", description.model]],
+            specification: { name: {}, sequence: {} },
+            offset: 0, limit: 30, order: "sequence asc, id asc", context,
+          }),
+        ]);
+        records = array(object(recResp)["records"], "records").map(row => object(row));
+        types = array(object(typeResp)["records"], "activity types").map(row => {
+          const item = object(row);
+          return { id: integer(item["id"], "type id"), name: typeof item["name"] === "string" ? item["name"] : `#${String(item["id"])}` };
+        });
+        const recIds = records.map(r => r["id"]).filter((id): id is number => typeof id === "number");
+        if (recIds.length > 0) {
+          const actResp = await this.rpc.call("mail.activity", "web_search_read", {
+            domain: [["res_model", "=", description.model], ["res_id", "in", recIds]],
+            specification: { res_id: {}, activity_type_id: { fields: { display_name: {} } }, summary: {}, date_deadline: {}, state: {}, user_id: { fields: { display_name: {} } } },
+            offset: 0, limit: 500, context,
+          });
+          activities = array(object(actResp)["records"], "activities").flatMap(row => {
+            const item = object(row);
+            const id = item["id"], resId = item["res_id"];
+            const rawType = item["activity_type_id"];
+            const typeId = typeof rawType === "number" ? rawType : (rawType && typeof rawType === "object" && typeof (rawType as Record<string, unknown>)["id"] === "number" ? (rawType as Record<string, unknown>)["id"] as number : null);
+            if (typeof id !== "number" || typeof resId !== "number" || typeId === null) return [];
+            const rawState = item["state"];
+            const state: "overdue" | "today" | "planned" = rawState === "overdue" || rawState === "today" ? rawState : "planned";
+            const rawUser = item["user_id"];
+            const userName = rawUser && typeof rawUser === "object" && typeof (rawUser as Record<string, unknown>)["display_name"] === "string" ? (rawUser as Record<string, unknown>)["display_name"] as string : "";
+            return [{
+              id, res_id: resId, activity_type_id: typeId,
+              summary: typeof item["summary"] === "string" ? item["summary"] : "",
+              date_deadline: typeof item["date_deadline"] === "string" ? item["date_deadline"] : "",
+              state, user_name: userName,
+            }];
+          });
+        }
+      } catch (error) {
+        if (!current()) return;
+        body.removeAttribute("aria-busy");
+        matrix?.dispose(); matrix = undefined;
+        const message = el("p", "Unable to load activities. Adjust the search or reload the page.", "list-load-error");
+        message.setAttribute("role", "alert"); body.replaceChildren(message);
+        throw error;
+      }
+      if (!current()) return;
+      body.removeAttribute("aria-busy");
+      matrix?.dispose();
+      const locale = this.editorLocale?.lang.replaceAll("_", "-") ?? "en-US";
+      matrix = renderActivityMatrix({
+        model: description.model, view, records, types, activities,
+        rpc: this.rpc, context, userId: this.userId,
+        ...(open ? { open } : {}),
+        formatField: (field, rec) => displayValue(field, rec[field.name], locale),
+        onChanged: () => load(),
+        report: error => this.reportError(error),
+      });
+      body.replaceChildren(matrix.node);
+    };
+
+    if (sectionsPanel) {
+      sidebar = createSearchPanelSidebar({
+        model: description.model, panel: sectionsPanel, rpc: this.rpc, context,
+        onChange: () => this.run(() => load()),
+        report: error => this.reportError(error),
+      });
+    }
+    await load();
+    const searchBar = createSearchBar(searchModel, () => this.run(async () => {
+      const parameters = new URLSearchParams();
+      searchModel.serializeToUrlParams(parameters);
+      const proposed = { ...route };
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) {
+        const value = parameters.get(key);
+        if (value === null) delete proposed[key]; else proposed[key] = value;
+      }
+      const url = routeUrl(proposed);
+      for (const key of ["search", "search_facets", "search_filters", "search_groupby"] as const) { if (proposed[key] === undefined) delete route[key]; else route[key] = proposed[key]; }
+      if (url !== this.currentUrl) { history.replaceState({ erpIndex: this.historyIndex }, "", url); this.currentUrl = url; }
+      await load();
+    }));
+    const searchArea = panel.querySelector("[data-control-search]") || panel;
+    if (searchArea !== panel) searchArea.replaceChildren(searchBar.element); else panel.append(searchBar.element);
+
+    const switcher = el("div", undefined, "view-switcher");
+    for (const [, vType] of availableViews) {
+      if (!switchable(vType) || availableViews.length < 2) continue;
+      const vBtn = button(vType, () => this.run(async () => { await this.navigate(switchedRoute(route, vType)); }), `view-btn ${vType === "activity" ? "active" : ""}`);
+      vBtn.setAttribute("aria-label", `${vType} view`);
+      if (vType === "activity") vBtn.setAttribute("aria-current", "page");
+      decorateViewButton(vBtn, vType);
+      switcher.append(vBtn);
+    }
+    const toolsArea = panel.querySelector("[data-control-tools]");
+    if (toolsArea) toolsArea.replaceChildren(switcher);
+    else (panel.querySelector(".control-panel-heading") || panel).append(el("div", undefined, "control-panel-tools"), switcher);
+
+    this.wrapWithSearchPanel(staging, container, sidebar);
+    return { dispose: () => { request++; matrix?.dispose(); sidebar?.dispose(); searchBar.dispose(); } };
+  }
+
   private async searchViewNodes(model: string, context: Record<string, unknown>): Promise<Node[]> {
     const searchView = await this.viewDescriptions(model, [[null, "search"]], {}, context).catch((error: unknown) => {
       // A model with no search view has no declared items; the server answers it with this sentence (select_view).
@@ -3404,7 +3783,7 @@ export class HumanApp {
     results.id = `list-results-${generation}`;
     const categoriesArea = panel.querySelector("[data-control-categories]") || panel;
     const category = view.searchPanel?.kind === "selection" ? view.searchPanel : undefined;
-    const panelMessage = view.searchPanel?.kind === "sections" ? unavailablePanelMessage : view.searchPanel?.kind === "unsupported" ? view.searchPanel.message : category?.notice;
+    const panelMessage = view.searchPanel?.kind === "unsupported" ? view.searchPanel.message : category?.notice;
     if (panelMessage) {
       const message = el("p", panelMessage, "list-search-panel-message");
       message.setAttribute("role", "status"); categoriesArea.append(message);
@@ -3594,7 +3973,16 @@ export class HumanApp {
       results.setAttribute("aria-label", `${category!.label} filtered records`);
       tabs.element.querySelectorAll("[role=tab]").forEach(tab => tab.setAttribute("aria-controls", results.id));
     }
-    staging.append(results);
+    const listSections = tabs ? undefined : await this.sectionsPanelFor(description, view, context, "list");
+    let listSidebar: SearchPanelSidebar | undefined;
+    if (listSections) {
+      listSidebar = createSearchPanelSidebar({
+        model: description.model, panel: listSections, rpc: this.rpc, context,
+        onChange: () => this.run(async () => { offset = 0; resetGroups(); await load(); }),
+        report: error => this.reportError(error),
+      });
+    }
+    this.wrapWithSearchPanel(staging, results, listSidebar);
     if (officeBlue) {
       const allowedPageSizes = [...new Set([20, 40, 50, 80, pageSize])].sort((a, b) => a - b);
       const pageSizeControl = createChoiceDropdown({ label: "Rows per page", value: String(pageSize),
@@ -3609,7 +3997,8 @@ export class HumanApp {
 
     }
 
-    const fetchRows = async (from: number, base = searchModel.getDomain()): Promise<Record<string, unknown>> => {
+    const listDomain = (): unknown[] => [...searchModel.getDomain(), ...(listSidebar?.getDomain() ?? [])];
+    const fetchRows = async (from: number, base = listDomain()): Promise<Record<string, unknown>> => {
       forgetBinaryContent(this.rpc);
       const answer = object(await this.rpc.call(description.model, "web_search_read", {
         domain: tabs ? tabs.rowDomain(base) : base,
@@ -3659,7 +4048,8 @@ export class HumanApp {
       message.setAttribute("role", "alert"); results.replaceChildren(message);
     };
     const load = async (refreshDashboard = false): Promise<void> => {
-      const mine = ++request, base = searchModel.getDomain();
+      const mine = ++request, searchDomain = searchModel.getDomain(), base = [...searchDomain, ...(listSidebar?.getDomain() ?? [])];
+      void listSidebar?.refresh(searchDomain);
       void dashboard?.refresh(tabs ? tabs.rowDomain(base) : base, refreshDashboard);
       // A header failure is reported like any client error and never stops the rows from loading; a superseded one is not.
       headerRefresh?.abort();
@@ -4043,9 +4433,9 @@ export class HumanApp {
         headerSlot.append(header.element);
       }
       await load();
-    } catch (error) { disposeHeaders(); disposeActionMenu(); disposeQuickFilters(); disposePageSize(); searchBar.dispose(); dashboard?.dispose(); throw error; }
+    } catch (error) { disposeHeaders(); listSidebar?.dispose(); disposeActionMenu(); disposeQuickFilters(); disposePageSize(); searchBar.dispose(); dashboard?.dispose(); throw error; }
     return {
-      dispose: () => { choices.dispose(); for (const stop of fieldStops.splice(0)) stop(); disposeHeaders(); groupedModel?.dispose(); disposeActionMenu(); disposeQuickFilters(); disposePageSize(); searchBar.dispose(); dashboard?.dispose(); },
+      dispose: () => { choices.dispose(); for (const stop of fieldStops.splice(0)) stop(); disposeHeaders(); listSidebar?.dispose(); groupedModel?.dispose(); disposeActionMenu(); disposeQuickFilters(); disposePageSize(); searchBar.dispose(); dashboard?.dispose(); },
       settle: () => { settleColumns?.(); }
     };
   }

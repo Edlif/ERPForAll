@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp noupdate="1">
+  <!-- Default Employee Types -->
+  <record id="hr_employee_type_employee" model="hr.employee.type">
+    <field name="name">Employee</field>
+    <field name="code">employee</field>
+    <field name="sequence">10</field>
+  </record>
+  <record id="hr_employee_type_contractor" model="hr.employee.type">
+    <field name="name">Contractor</field>
+    <field name="code">contractor</field>
+    <field name="sequence">20</field>
+  </record>
+  <record id="hr_employee_type_intern" model="hr.employee.type">
+    <field name="name">Intern</field>
+    <field name="code">intern</field>
+    <field name="sequence">30</field>
+  </record>
+  <record id="hr_employee_type_freelancer" model="hr.employee.type">
+    <field name="name">Freelancer</field>
+    <field name="code">freelancer</field>
+    <field name="sequence">40</field>
+  </record>
+
+  <!-- Default Departure Reasons -->
+  <record id="hr_departure_reason_resigned" model="hr.departure.reason">
+    <field name="name">Resigned</field>
+    <field name="sequence">10</field>
+    <field name="reason_code">resigned</field>
+  </record>
+  <record id="hr_departure_reason_fired" model="hr.departure.reason">
+    <field name="name">Fired</field>
+    <field name="sequence">20</field>
+    <field name="reason_code">fired</field>
+  </record>
+  <record id="hr_departure_reason_retired" model="hr.departure.reason">
+    <field name="name">Retired</field>
+    <field name="sequence">30</field>
+    <field name="reason_code">retired</field>
+  </record>
+  <record id="hr_departure_reason_end_contract" model="hr.departure.reason">
+    <field name="name">End of Contract</field>
+    <field name="sequence">40</field>
+    <field name="reason_code">other</field>
+  </record>
+
+  <!-- Default Working Schedules -->
+  <record id="hr_work_schedule_standard_40" model="hr.work.schedule">
+    <field name="name">Standard 40 hours/week</field>
+    <field name="hours_per_day">8.0</field>
+    <field name="hours_per_week">40.0</field>
+    <field name="tz">Asia/Jakarta</field>
+  </record>
+  <record id="hr_work_schedule_part_time_20" model="hr.work.schedule">
+    <field name="name">Part-Time 20 hours/week</field>
+    <field name="hours_per_day">4.0</field>
+    <field name="hours_per_week">20.0</field>
+    <field name="tz">Asia/Jakarta</field>
+  </record>
+
+  <!-- Default Resume Sections -->
+  <record id="hr_resume_type_experience" model="hr.resume.line.type">
+    <field name="name">Experience</field>
+    <field name="sequence">10</field>
+    <field name="is_course" eval="False"/>
+  </record>
+  <record id="hr_resume_type_education" model="hr.resume.line.type">
+    <field name="name">Education</field>
+    <field name="sequence">20</field>
+    <field name="is_course" eval="False"/>
+  </record>
+  <record id="hr_resume_type_course" model="hr.resume.line.type">
+    <field name="name">Courses</field>
+    <field name="sequence">30</field>
+    <field name="is_course" eval="True"/>
+  </record>
+
+  <!-- Skill Types, Skills & Levels -->
+  <record id="hr_skill_type_lang" model="hr.skill.type">
+    <field name="name">Languages</field>
+    <field name="color">4</field>
+  </record>
+  <record id="hr_skill_lang_en" model="hr.skill">
+    <field name="name">English</field>
+    <field name="skill_type_id" ref="hr_skill_type_lang"/>
+    <field name="sequence">10</field>
+  </record>
+  <record id="hr_skill_lang_id" model="hr.skill">
+    <field name="name">Indonesian</field>
+    <field name="skill_type_id" ref="hr_skill_type_lang"/>
+    <field name="sequence">20</field>
+  </record>
+  <record id="hr_skill_lang_ja" model="hr.skill">
+    <field name="name">Japanese</field>
+    <field name="skill_type_id" ref="hr_skill_type_lang"/>
+    <field name="sequence">30</field>
+  </record>
+  <record id="hr_skill_level_lang_a2" model="hr.skill.level">
+    <field name="name">A2 Basic</field>
+    <field name="skill_type_id" ref="hr_skill_type_lang"/>
+    <field name="level_progress">40</field>
+  </record>
+  <record id="hr_skill_level_lang_b2" model="hr.skill.level">
+    <field name="name">B2 Intermediate</field>
+    <field name="skill_type_id" ref="hr_skill_type_lang"/>
+    <field name="level_progress">65</field>
+    <field name="default_level" eval="True"/>
+  </record>
+  <record id="hr_skill_level_lang_c1" model="hr.skill.level">
+    <field name="name">C1 Advanced</field>
+    <field name="skill_type_id" ref="hr_skill_type_lang"/>
+    <field name="level_progress">85</field>
+  </record>
+  <record id="hr_skill_level_lang_c2" model="hr.skill.level">
+    <field name="name">C2 Native</field>
+    <field name="skill_type_id" ref="hr_skill_type_lang"/>
+    <field name="level_progress">100</field>
+  </record>
+
+  <record id="hr_skill_type_dev" model="hr.skill.type">
+    <field name="name">Engineering &amp; Product</field>
+    <field name="color">7</field>
+  </record>
+  <record id="hr_skill_dev_rust" model="hr.skill">
+    <field name="name">Rust</field>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="sequence">10</field>
+  </record>
+  <record id="hr_skill_dev_ts" model="hr.skill">
+    <field name="name">TypeScript</field>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="sequence">20</field>
+  </record>
+  <record id="hr_skill_dev_pg" model="hr.skill">
+    <field name="name">PostgreSQL</field>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="sequence">30</field>
+  </record>
+  <record id="hr_skill_dev_arch" model="hr.skill">
+    <field name="name">System Architecture</field>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="sequence">40</field>
+  </record>
+  <record id="hr_skill_dev_ux" model="hr.skill">
+    <field name="name">Product Design</field>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="sequence">50</field>
+  </record>
+  <record id="hr_skill_level_dev_junior" model="hr.skill.level">
+    <field name="name">Junior</field>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="level_progress">30</field>
+  </record>
+  <record id="hr_skill_level_dev_mid" model="hr.skill.level">
+    <field name="name">Mid-Level</field>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="level_progress">60</field>
+    <field name="default_level" eval="True"/>
+  </record>
+  <record id="hr_skill_level_dev_senior" model="hr.skill.level">
+    <field name="name">Senior</field>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="level_progress">85</field>
+  </record>
+  <record id="hr_skill_level_dev_principal" model="hr.skill.level">
+    <field name="name">Principal</field>
+    <field name="skill_type_id" ref="hr_skill_type_dev"/>
+    <field name="level_progress">100</field>
+  </record>
+
+  <record id="hr_skill_type_cert" model="hr.skill.type">
+    <field name="name">Certifications</field>
+    <field name="is_certification" eval="True"/>
+    <field name="color">10</field>
+  </record>
+  <record id="hr_skill_cert_aws" model="hr.skill">
+    <field name="name">AWS Solutions Architect</field>
+    <field name="skill_type_id" ref="hr_skill_type_cert"/>
+    <field name="sequence">10</field>
+  </record>
+  <record id="hr_skill_cert_pmp" model="hr.skill">
+    <field name="name">PMP Certified</field>
+    <field name="skill_type_id" ref="hr_skill_type_cert"/>
+    <field name="sequence">20</field>
+  </record>
+  <record id="hr_skill_cert_iso" model="hr.skill">
+    <field name="name">ISO 27001 Lead Auditor</field>
+    <field name="skill_type_id" ref="hr_skill_type_cert"/>
+    <field name="sequence">30</field>
+  </record>
+  <record id="hr_skill_level_cert_active" model="hr.skill.level">
+    <field name="name">Certified</field>
+    <field name="skill_type_id" ref="hr_skill_type_cert"/>
+    <field name="level_progress">100</field>
+    <field name="default_level" eval="True"/>
+  </record>
+</erp>

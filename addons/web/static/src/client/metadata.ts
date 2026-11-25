@@ -85,15 +85,34 @@ export type Node = { kind: "field"; field: Field; label: string; widget: string 
   | { kind: "heading"; level: 1 | 2; children: Node[] }
   | { kind: "root" | "sheet" | "header" | "footer" | "aside" | "button_box"; children: Node[] }
   | ButtonNode | CancelNode
-  | {kind: "ribbon"; text: string; tooltip?: string; background: MessageLevel}
-  | {kind: "notification_alert"}
+  | { kind: "ribbon"; text: string; tooltip?: string; background: MessageLevel; invisible?: ValidatedAst | null; hidden?: boolean }
+  | { kind: "notification_alert" }
   | ChatterNode
   | { kind: "notebook"; children: Node[] }
   | PageNode
   | { kind: "separator"; label: string }
   | SearchFieldNode | SearchFilterNode | SearchSeparatorNode | SearchGroupNode
   | PivotNode | PivotFieldNode | CalendarNode | CalendarFieldNode | GraphNode | GraphFieldNode | { kind: "dashboard"; config: DashboardConfig }
-  | KanbanNode | KanbanCardNode | KanbanSectionNode | KanbanProgressbarNode;
+  | KanbanNode | KanbanCardNode | KanbanSectionNode | KanbanProgressbarNode
+  | HierarchyNode | ActivityNode;
+/** Hierarchy (org chart / tree) root. */
+export interface HierarchyNode {
+  kind: "hierarchy";
+  children: Node[];
+  parentField: Field;
+  childField: Field | null;
+  avatarField: Field | null;
+  colorField: Field | null;
+  countField: Field | null;
+  draggable: boolean;
+  label: string | null;
+}
+/** Activity matrix root. */
+export interface ActivityNode {
+  kind: "activity";
+  children: Node[];
+  avatarField: Field | null;
+}
 /** Kanban root: the arch flags; its children are one `kanban_card` and at most one `kanban_progressbar`. */
 export interface KanbanNode { kind: "kanban"; children: Node[]; quickCreate: boolean; recordsDraggable: boolean; groupsDraggable: boolean; archivable: boolean; canOpen: boolean; /** The field the board opens grouped by, when the caller may read it. */ defaultGroupBy: Field | null }
 /** The card: field nodes and the `main`, `aside` and `footer` regions. */
@@ -137,7 +156,7 @@ export type ListSearchPanel = { kind: "selection"; field: Field; label: string; 
 export interface View {
   id?: number;
   dashboard?: DashboardConfig;
-  type: "list" | "form" | "search" | "pivot" | "calendar" | "graph" | "kanban";
+  type: "list" | "form" | "search" | "pivot" | "calendar" | "graph" | "kanban" | "hierarchy" | "activity";
   mode: "record" | "service";
   nodes: Node[];
   fields: Field[];
@@ -290,7 +309,7 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
     else unsupported("Unknown view identity kind.");
     const sectionRenderer=(type==="list"&&renderer==="web.list_sections_v1")||(type==="search"&&renderer==="web.search_sections_v1");
     if ((type==="list"||type==="search") && renderer.startsWith(`web.${type}_sections_`) && !sectionRenderer) throw new PanelCompatibilityError();
-    if ((type !== "list" && type !== "form" && type !== "search" && type !== "pivot" && type !== "calendar" && type !== "graph" && type !== "kanban") || (!sectionRenderer&&renderer !== `web.${type}`) || v["schema_major"] !== 1) unsupported(`Unsupported view renderer: ${renderer}.`);
+    if ((type !== "list" && type !== "form" && type !== "search" && type !== "pivot" && type !== "calendar" && type !== "graph" && type !== "kanban" && type !== "hierarchy" && type !== "activity") || (!sectionRenderer&&renderer !== `web.${type}`) || v["schema_major"] !== 1) unsupported(`Unsupported view renderer: ${renderer}.`);
     if (views.has(type)) throw new ClientError("server", "Duplicate view type.");
     const arena = array(v["nodes"], "view nodes"), root = integer(v["root"], "view root");
     if (!arena.length || arena.length > 4096) throw new ClientError("server", "View node limit exceeded.");
@@ -326,7 +345,7 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
       else if (kind === "button" || kind === "stat_button") closed(node, ["kind", "name", "button_type", "label", "variant", "confirm", "modifiers", ...(Object.hasOwn(node,"details")?["details"]:[]), ...(kind === "stat_button" ? ["children"] : [])], "view node");
       else if (kind === "cancel_button") closed(node, ["kind", "label", "variant", "modifiers",...(Object.hasOwn(node,"details")?["details"]:[])], "view node");
       else if(kind === "action_button") closed(node,["kind","target","label","variant","confirm","modifiers",...(Object.hasOwn(node,"details")?["details"]:[])],"view node");
-      else if(kind === "ribbon") closed(node,["kind","text","background",...(Object.hasOwn(node,"tooltip")?["tooltip"]:[])],"view node");
+      else if(kind === "ribbon") closed(node,["kind","text","background",...["tooltip","invisible"].filter(key=>Object.hasOwn(node,key))],"view node");
       else if(kind === "notification_alert") closed(node,["kind"],"view node");
       else if(kind === "chatter") closed(node,["kind","reload_on_post","reload_on_attachment","reload_on_activity","reload_on_follower","open_attachments","has_activities"],"view node");
       else if (kind === "sheet" || kind === "header" || kind === "footer" || kind === "aside" || kind === "title" || kind === "notebook" || kind === "button_box") closed(node, ["kind", "children"], "view node");
@@ -345,13 +364,17 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
       else if (kind === "kanban_card") closed(node, ["kind", "children"], "view node");
       else if (kind === "kanban_section") closed(node, ["kind", "region", "children"], "view node");
       else if (kind === "kanban_progressbar") closed(node, ["kind", "field", "colors", ...["sum_field", "help"].filter(key => Object.hasOwn(node, key))], "view node");
+      else if (kind === "hierarchy") closed(node, ["kind", "children", "parent_field", "draggable", ...["child_field", "avatar_field", "color_field", "count_field", "label"].filter(key => Object.hasOwn(node, key))], "view node");
+      else if (kind === "activity") closed(node, ["kind", "children", ...(Object.hasOwn(node, "avatar_field") ? ["avatar_field"] : [])], "view node");
       else if (kind === "search_field") closed(node, ["kind", "field", "label", ...(Object.hasOwn(node, "filter_domain") ? ["filter_domain"] : []), ...(Object.hasOwn(node, "operator") ? ["operator"] : [])], "view node");
       else if (kind === "search_filter") closed(node, ["kind", "name", "label", ...(Object.hasOwn(node, "domain") ? ["domain"] : []), ...(Object.hasOwn(node, "context") ? ["context"] : [])], "view node");
       else if (kind === "search_separator") closed(node, ["kind"], "view node");
       else if (kind === "search_group") closed(node, ["kind", "label", ...(Object.hasOwn(node, "expand") ? ["expand"] : []), "children"], "view node");
       else unsupported(`Unsupported view node: ${String(kind)}.`);
       const kanbanKind = kind === "kanban" || kind === "kanban_card" || kind === "kanban_section" || kind === "kanban_progressbar";
-      if (depth > 1 && (kind === "form" || kind === "list" || kind === "search" || kind === "pivot" || kind === "calendar" || kind === "graph" || kind === "kanban")
+      if (depth > 1 && (kind === "form" || kind === "list" || kind === "search" || kind === "pivot" || kind === "calendar" || kind === "graph" || kind === "kanban" || kind === "hierarchy" || kind === "activity")
+        || type === "hierarchy" && kind !== "hierarchy" && kind !== "field" || type !== "hierarchy" && kind === "hierarchy"
+        || type === "activity" && kind !== "activity" && kind !== "field" || type !== "activity" && kind === "activity"
         || type === "calendar" && kind !== "calendar" && kind !== "calendar_field" || type !== "calendar" && (kind === "calendar" || kind === "calendar_field") || kind === "calendar_field" && parentKind !== "calendar"
         || type === "graph" && kind !== "graph" && kind !== "graph_field" || type !== "graph" && (kind === "graph" || kind === "graph_field") || kind === "graph_field" && parentKind !== "graph" || type === "pivot" && kind !== "pivot" && kind !== "pivot_field"
         || type === "kanban" && !kanbanKind && kind !== "field" || type !== "kanban" && kanbanKind
@@ -473,7 +496,14 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
       if(kind === "ribbon") {
         const background=node["background"];
         if(typeof background!=="string" || !["info","success","warning","danger"].includes(background)) throw new ClientError("server","Invalid ribbon background.");
-        return {kind,text:boundedButtonText(node["text"],"ribbon text"),background:background as MessageLevel,...(Object.hasOwn(node,"tooltip")?{tooltip:boundedButtonText(node["tooltip"],"ribbon tooltip")}:{})};
+        const invisible = Object.hasOwn(node, "invisible") ? decodeAst(parseBoundedJson(JSON.stringify(node["invisible"]))) : null;
+        if (invisible) {
+          for (const item of invisible.nodes) if (item.kind === "name") {
+            const dependency = fields.get(item.name);
+            if (dependency) selected.push({ ...dependency, readonly: true, invisible: true, forceSave: false });
+          }
+        }
+        return {kind,text:boundedButtonText(node["text"],"ribbon text"),background:background as MessageLevel,...(Object.hasOwn(node,"tooltip")?{tooltip:boundedButtonText(node["tooltip"],"ribbon tooltip")}:{}),...(invisible ? { invisible } : {})};
       }
       if(kind === "notification_alert") return {kind};
       if(kind === "chatter") return {kind,reloadOnPost:boolean(node["reload_on_post"],"chatter reload_on_post"),reloadOnAttachment:boolean(node["reload_on_attachment"],"chatter reload_on_attachment"),reloadOnActivity:boolean(node["reload_on_activity"],"chatter reload_on_activity"),reloadOnFollower:boolean(node["reload_on_follower"],"chatter reload_on_follower"),openAttachments:boolean(node["open_attachments"],"chatter open_attachments"),hasActivities:boolean(node["has_activities"],"chatter has_activities")};
@@ -634,6 +664,25 @@ export function describeViews(raw: unknown, model: string, registryVersion: stri
         if (mode !== "bar" && mode !== "line" && mode !== "pie") unsupported("Unsupported graph mode.");
         if (order !== null && order !== "asc" && order !== "desc") unsupported("Unsupported graph order.");
         return { kind, children, mode: mode as GraphNode["mode"], stacked: boolean(node["stacked"], "graph stacked"), cumulated: boolean(node["cumulated"], "graph cumulated"), order: order as GraphNode["order"], disableLinking: boolean(node["disable_linking"], "graph disable_linking") };
+      }
+      if (kind === "hierarchy") {
+        const optional = (key: string): Field | null => Object.hasOwn(node, key) ? rootField(node[key]) : null;
+        const parentField = rootField(node["parent_field"]);
+        const childField = optional("child_field"), avatarField = optional("avatar_field"), colorField = optional("color_field"), countField = optional("count_field");
+        for (const extra of [parentField, avatarField, colorField, countField]) {
+          if (extra && !selected.some(item => item.name === extra.name)) {
+            selected.push({ ...extra, readonly: true, required: false, invisible: true, forceSave: false });
+          }
+        }
+        const label = Object.hasOwn(node, "label") ? text(node["label"], "hierarchy label") : null;
+        return { kind, children, parentField, childField, avatarField, colorField, countField, draggable: boolean(node["draggable"], "hierarchy draggable"), label };
+      }
+      if (kind === "activity") {
+        const avatarField = Object.hasOwn(node, "avatar_field") ? rootField(node["avatar_field"]) : null;
+        if (avatarField && !selected.some(item => item.name === avatarField.name)) {
+          selected.push({ ...avatarField, readonly: true, required: false, invisible: true, forceSave: false });
+        }
+        return { kind, children, avatarField };
       }
       if (kind === "title") return { kind, children };
       if (kind === "group") {

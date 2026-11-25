@@ -63,7 +63,8 @@ fn owner_registrations_for_reserved_bare_keys_are_accepted() {
         .map(|key| complete("web", key).finish().unwrap())
         .collect();
     let others = [
-        complete("mail", "activity").finish().unwrap(),
+        complete("web", "activity").finish().unwrap(),
+        complete("web", "hierarchy").finish().unwrap(),
         complete("web_gantt", "gantt").finish().unwrap(),
         complete("web_gantt", "web_gantt.gantt").finish().unwrap(),
     ];

@@ -1,6 +1,6 @@
 [package]
 name = "erp-addon-hr"
-description = "ERPForAll addon hr: employees and job positions"
+description = "ERPForAll addon hr: employees, departments, job positions, org chart, resume and skills"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,9 +10,11 @@ publish.workspace = true
 
 [dependencies]
 erp-sdk = { workspace = true }
+erp-addon-base = { workspace = true }
+erp-addon-web = { workspace = true }
+erp-addon-mail = { workspace = true }
 
 [dev-dependencies]
-erp-addon-base = { workspace = true }
 toml = { workspace = true }
 
 [lints]

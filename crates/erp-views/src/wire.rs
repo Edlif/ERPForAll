@@ -166,7 +166,8 @@ choice!(ViewType {
     Pivot,
     Graph,
     Gantt,
-    Activity
+    Activity,
+    Hierarchy
 });
 impl ViewType {
     /// Wire name of the view type.
@@ -181,6 +182,7 @@ impl ViewType {
             Self::Graph => "graph",
             Self::Gantt => "gantt",
             Self::Activity => "activity",
+            Self::Hierarchy => "hierarchy",
         }
     }
 
@@ -196,6 +198,7 @@ impl ViewType {
             "graph" => Some(Self::Graph),
             "gantt" => Some(Self::Gantt),
             "activity" => Some(Self::Activity),
+            "hierarchy" => Some(Self::Hierarchy),
             _ => None,
         }
     }
@@ -950,6 +953,10 @@ pub enum ViewNode {
         tooltip: Option<String>,
         /// Semantic background.
         background: RibbonBackground,
+        /// Per-record visibility: the ribbon is hidden while this expression evaluates to true.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        invisible: Option<WireDocument>,
     },
     /// Browser-owned notification permission feedback, with no server permission state.
     NotificationAlert {},
@@ -1155,6 +1162,44 @@ pub enum ViewNode {
         #[cfg_attr(feature = "schema-gen", ts(optional))]
         order: Option<GraphOrder>,
         disable_linking: bool,
+    },
+    /// Hierarchy (org chart / tree) root.
+    Hierarchy {
+        /// Child arena indexes (card `field` nodes).
+        children: Vec<u32>,
+        /// Self-referential parent `many2one` field.
+        parent_field: FieldRef,
+        /// Optional inverse `one2many` children field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        child_field: Option<FieldRef>,
+        /// Optional avatar `binary`/`image` field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        avatar_field: Option<FieldRef>,
+        /// Optional palette color `integer` field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        color_field: Option<FieldRef>,
+        /// Optional numeric count badge `integer` field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        count_field: Option<FieldRef>,
+        /// Whether cards may be dragged onto another node to reassign `parent_field`.
+        draggable: bool,
+        /// Optional plural noun for child count pills (e.g. `"people"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        label: Option<String>,
+    },
+    /// Activity matrix root.
+    Activity {
+        /// Child arena indexes (record summary `field` nodes).
+        children: Vec<u32>,
+        /// Optional avatar `binary`/`image` field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "schema-gen", ts(optional))]
+        avatar_field: Option<FieldRef>,
     },
     /// One `<field>` of a graph: a grouping (first: the axis, second: the series) or a measure.
     GraphField {
@@ -1932,13 +1977,14 @@ pub fn field_option_kind(widget: &str, key: &str) -> Option<FieldOptionKind> {
         widget,
         "char" | "text" | "password" | "email" | "phone" | "url"
     );
-    let numeric = matches!(widget, "integer" | "float" | "monetary");
+    let numeric = matches!(widget, "integer" | "float" | "monetary" | "progressbar");
     let percentage = widget == "percentage";
     let date = matches!(widget, "date" | "datetime" | "daterange");
     let image = matches!(widget, "image" | "image_url");
     let relation = matches!(
         widget,
         "many2one"
+            | "many2one_avatar"
             | "one2many"
             | "many2many"
             | "many2many_tags"

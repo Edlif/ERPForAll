@@ -14,8 +14,8 @@
 mod apply;
 mod builtin_schemas;
 pub use builtin_schemas::{
-    calendar_schema, form_schema, graph_schema, kanban_schema, list_schema, pivot_schema,
-    search_schema,
+    activity_schema, calendar_schema, form_schema, graph_schema, hierarchy_schema, kanban_schema,
+    list_schema, pivot_schema, search_schema,
 };
 mod checked_input;
 pub use checked_input::{CheckedContent, CheckedNode, CheckedViewInput};

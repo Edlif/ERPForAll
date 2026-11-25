@@ -7,7 +7,7 @@ export interface Route {
   menu?: string;
   model?: string;
   id?: string;
-  view_type?: "list" | "form" | "pivot" | "calendar" | "graph" | "kanban";
+  view_type?: "list" | "form" | "pivot" | "calendar" | "graph" | "kanban" | "hierarchy" | "activity";
   active_id?: string;
   cids?: string[];
   search?: string;
@@ -132,7 +132,7 @@ function validate(route: Route): void {
       case "model":
         if (value.length > 128 || !/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$/.test(value)) return fail(key);
         break;
-      case "view_type": if (value !== "list" && value !== "form" && value !== "pivot" && value !== "calendar" && value !== "graph" && value !== "kanban") return fail(key); break;
+      case "view_type": if (value !== "list" && value !== "form" && value !== "pivot" && value !== "calendar" && value !== "graph" && value !== "kanban" && value !== "hierarchy" && value !== "activity") return fail(key); break;
       case "calendar_scale": if (value !== "day" && value !== "week" && value !== "month" && value !== "year") return fail(key); break;
       case "calendar_date": if (!calendarDate(value)) return fail(key); break;
       case "graph_mode": if (value !== "bar" && value !== "line" && value !== "pie") return fail(key); break;

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="hr_department_view_search" model="ir.ui.view">
+    <field name="name">hr.department.search</field>
+    <field name="model">hr.department</field>
+    <field name="arch" type="xml">
+      <search string="Search Departments">
+        <field name="name"/>
+        <field name="complete_name"/>
+        <field name="manager_id"/>
+        <group string="Group By">
+          <filter name="group_parent" string="Parent Department" context="{'group_by': 'parent_id'}"/>
+          <filter name="group_company" string="Company" context="{'group_by': 'company_id'}"/>
+        </group>
+        <searchpanel view_types="kanban,list,hierarchy">
+          <field name="company_id" icon="building" enable_counters="1" expand="1"/>
+        </searchpanel>
+      </search>
+    </field>
+  </record>
+
+  <record id="hr_department_view_kanban" model="ir.ui.view">
+    <field name="name">hr.department.kanban</field>
+    <field name="model">hr.department</field>
+    <field name="arch" type="xml">
+      <kanban string="Departments">
+        <templates>
+          <t t-name="card">
+            <main>
+              <field name="color" invisible="1"/>
+              <field name="name"/>
+              <field name="manager_id" widget="many2one_avatar"/>
+              <field name="parent_id"/>
+            </main>
+            <footer>
+              <field name="total_employee"/>
+              <field name="company_id"/>
+            </footer>
+          </t>
+        </templates>
+      </kanban>
+    </field>
+  </record>
+
+  <record id="hr_department_view_list" model="ir.ui.view">
+    <field name="name">hr.department.list</field>
+    <field name="model">hr.department</field>
+    <field name="arch" type="xml">
+      <list string="Departments">
+        <field name="complete_name"/>
+        <field name="manager_id" widget="many2one_avatar"/>
+        <field name="total_employee"/>
+        <field name="parent_id"/>
+        <field name="company_id"/>
+        <field name="color" widget="color_picker"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="hr_department_view_hierarchy" model="ir.ui.view">
+    <field name="name">hr.department.hierarchy</field>
+    <field name="model">hr.department</field>
+    <field name="arch" type="xml">
+      <hierarchy parent_field="parent_id" child_field="child_ids" color_field="color" count_field="total_employee" draggable="1" label="sub-departments">
+        <field name="name"/>
+        <field name="manager_id"/>
+      </hierarchy>
+    </field>
+  </record>
+
+  <record id="hr_department_view_form" model="ir.ui.view">
+    <field name="name">hr.department.form</field>
+    <field name="model">hr.department</field>
+    <field name="arch" type="xml">
+      <form string="Department">
+        <sheet>
+          <div class="oe_button_box" name="button_box">
+            <button name="action_open_employees" type="object" class="oe_stat_button" icon="lucide:users">
+              <field name="total_employee" widget="statinfo" string="Employees"/>
+            </button>
+            <button name="action_open_child_departments" type="object" class="oe_stat_button" icon="lucide:network">
+              <field name="child_count" widget="statinfo" string="Sub-departments"/>
+            </button>
+          </div>
+          <widget name="web_ribbon" title="Archived" bg_color="bg-danger" invisible="active"/>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="Department Name"/></h1>
+          </div>
+          <group>
+            <group string="Organization">
+              <field name="manager_id" widget="many2one_avatar"/>
+              <field name="parent_id"/>
+              <field name="company_id"/>
+              <field name="color" widget="color_picker"/>
+              <field name="active"/>
+              <field name="note"/>
+            </group>
+            <group string="Structure">
+              <field name="child_ids" widget="hr.department_chart"/>
+            </group>
+          </group>
+        </sheet>
+        <chatter/>
+      </form>
+    </field>
+  </record>
+
+  <record id="hr_department_action" model="ir.actions.act_window">
+    <field name="name">Departments</field>
+    <field name="res_model">hr.department</field>
+    <field name="view_mode">kanban,list,hierarchy,form</field>
+  </record>
+</erp>

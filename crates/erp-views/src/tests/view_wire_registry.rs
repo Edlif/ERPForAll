@@ -63,7 +63,8 @@ fn test_view_type_registry_validation() {
         decl("web", "search", "search").unwrap(),
         decl("web_gantt", "web_gantt.gantt", "gantt").unwrap(),
         decl("web_gantt", "gantt", "gantt").unwrap(),
-        decl("mail", "activity", "activity").unwrap(),
+        decl("web", "activity", "activity").unwrap(),
+        decl("web", "hierarchy", "hierarchy").unwrap(),
     ];
     let refs: Vec<&ViewTypeDecl> = valid.iter().collect();
     assert!(validate_view_types(&refs).is_ok());

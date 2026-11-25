@@ -104,7 +104,7 @@ fn employee(name: &str, company: i64, user: Option<i64>) -> RawVals {
 
 /// Employees: active by default, a company is required, and one user is linked to at most one
 /// employee per company (any number of employees have no user).
-async fn employees(orm: &erp_orm::Orm, client: &tokio_postgres::Client) {
+async fn employees(orm: &erp_orm::Orm, client: &tokio_postgres::Client) -> i64 {
     let company = base_xid(client, "main_company").await;
     let admin_group = base_xid(client, "group_system").await;
     let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
@@ -226,6 +226,7 @@ async fn employees(orm: &erp_orm::Orm, client: &tokio_postgres::Client) {
         .unwrap()
         .get(0);
     assert_eq!(count, 4, "the refused employees were not stored");
+    user
 }
 
 async fn install() {
@@ -242,28 +243,68 @@ async fn install() {
     assert!(outcome.post_commit.is_clean());
 
     let client = db.client().await.unwrap();
-    assert_eq!(
-        names(&client, "ir.ui.view").await,
-        [
-            "hr_employee_view_form",
-            "hr_employee_view_list",
-            "hr_job_view_form",
-            "hr_job_view_list"
-        ]
-    );
-    assert_eq!(
-        names(&client, "ir.actions.act_window").await,
-        ["hr_employee_action", "hr_job_action"]
-    );
-    assert_eq!(
-        names(&client, "ir.ui.menu").await,
-        ["hr_employee_menu", "hr_job_menu", "hr_menu_root"]
-    );
+    let views = names(&client, "ir.ui.view").await;
+    for expected in [
+        "hr_employee_view_form",
+        "hr_employee_view_list",
+        "hr_employee_view_kanban",
+        "hr_employee_view_hierarchy",
+        "hr_employee_view_activity",
+        "hr_employee_view_graph",
+        "hr_employee_view_pivot",
+        "hr_employee_view_search",
+        "hr_department_view_form",
+        "hr_department_view_list",
+        "hr_department_view_kanban",
+        "hr_department_view_hierarchy",
+        "hr_job_view_form",
+        "hr_job_view_list",
+        "hr_departure_wizard_view_form",
+    ] {
+        assert!(
+            views.iter().any(|v| v == expected),
+            "missing view {expected} in {views:?}"
+        );
+    }
+    let actions = names(&client, "ir.actions.act_window").await;
+    for expected in [
+        "hr_employee_action",
+        "hr_employee_directory_action",
+        "hr_department_action",
+        "hr_job_action",
+        "hr_employee_version_action",
+        "hr_employee_skill_action",
+    ] {
+        assert!(
+            actions.iter().any(|a| a == expected),
+            "missing action {expected} in {actions:?}"
+        );
+    }
+    let menus = names(&client, "ir.ui.menu").await;
+    for expected in [
+        "hr_menu_root",
+        "hr_employee_menu",
+        "hr_directory_menu",
+        "hr_department_menu",
+        "hr_learning_menu",
+        "hr_reporting_menu",
+        "hr_configuration_menu",
+        "hr_job_menu",
+    ] {
+        assert!(
+            menus.iter().any(|m| m == expected),
+            "missing menu {expected} in {menus:?}"
+        );
+    }
 
-    for model in ["hr.job", "hr.employee"] {
+    for model in ["hr.job", "hr.employee", "hr.department"] {
         assert_eq!(
             access(&client, model).await,
-            ["base.group_system/crud", "base.group_user/r"],
+            [
+                "base.group_user/r",
+                "hr.group_hr_manager/crud",
+                "hr.group_hr_user/cru",
+            ],
             "{model}"
         );
     }
@@ -289,7 +330,95 @@ async fn install() {
     assert!(job, "a new job position is active by default");
     drop(tx);
 
-    employees(&outcome.orm, &client).await;
+    let admin_uid = employees(&outcome.orm, &client).await;
+
+    // Verify every HR model's declared views lower cleanly through H18 (`get_views`) with a real policy snapshot.
+    let loaded = Box::pin(system.load()).await.unwrap();
+    let registry = std::sync::Arc::clone(loaded.orm.registry());
+    let policy_source = erp_security::source::PolicySource::build(
+        std::sync::Arc::clone(&registry),
+        db.pool().clone(),
+    )
+    .await
+    .unwrap();
+    let policy_orm = erp_orm::Orm::builder(std::sync::Arc::clone(&registry), db.pool().clone())
+        .generation_attachment(erp_orm::GenerationAttachment::new(
+            std::sync::Arc::clone(&registry),
+            loaded
+                .orm
+                .env(SUPERUSER_ID, Context::new())
+                .generation_attachment::<erp_views::PublishedViewTypes>()
+                .unwrap(),
+        ))
+        .require_core_tables(erp_security::auth::core_tables())
+        .require_core_tables(erp_addon_base::partner_hierarchy::core_tables())
+        .resolver(erp_security::resolver::Resolver::for_registry(&registry).unwrap())
+        .policy(std::sync::Arc::new(policy_source) as std::sync::Arc<dyn erp_orm::PolicyProvider>)
+        .impls(erp_modules::base_models::IMPLS.iter().copied())
+        .constraints(erp_modules::base_models::CONSTRAINTS.iter().copied())
+        .build()
+        .unwrap();
+    let mut tx = policy_orm
+        .begin(erp_sdk::UserId::new(admin_uid).unwrap())
+        .await
+        .unwrap();
+    for (model, kinds) in [
+        (
+            "hr.employee",
+            &[
+                "kanban",
+                "list",
+                "hierarchy",
+                "activity",
+                "graph",
+                "pivot",
+                "form",
+                "search",
+            ][..],
+        ),
+        (
+            "hr.department",
+            &["kanban", "list", "hierarchy", "form", "search"][..],
+        ),
+        ("hr.job", &["list", "kanban", "form", "search"][..]),
+        ("hr.employee.type", &["list", "form"][..]),
+        ("hr.work.location", &["list", "form"][..]),
+        ("hr.work.schedule", &["list", "form"][..]),
+        ("hr.departure.reason", &["list", "form"][..]),
+        ("hr.employee.category", &["list", "form"][..]),
+        ("hr.employee.version", &["list", "form"][..]),
+        ("hr.resume.line.type", &["list", "form"][..]),
+        ("hr.resume.line", &["list", "form"][..]),
+        ("hr.skill.type", &["list", "form"][..]),
+        ("hr.skill", &["list", "form"][..]),
+        ("hr.skill.level", &["list", "form"][..]),
+        (
+            "hr.employee.skill",
+            &["list", "pivot", "graph", "form", "search"][..],
+        ),
+        ("hr.departure.wizard", &["form"][..]),
+    ] {
+        let requests = kinds
+            .iter()
+            .map(|kind| {
+                erp_fields::Value::list([erp_fields::Value::False, erp_fields::Value::str(*kind)])
+            })
+            .collect();
+        let lowered = erp_addon_web::metadata_test_support::test_get_views(
+            &tx.env(),
+            &mut tx,
+            model,
+            requests,
+            32 * 1024 * 1024,
+        )
+        .await;
+        assert!(
+            lowered.is_ok(),
+            "failed to lower {model} views {kinds:?}: {:?}",
+            lowered.err()
+        );
+    }
+    tx.rollback().await.unwrap();
 }
 
 #[test]
@@ -303,6 +432,59 @@ fn hr_installs_its_model_views_menus_and_access() {
                 .build()
                 .unwrap()
                 .block_on(install());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn hr_demo_loads_cleanly() {
+    std::thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let db = TestDb::create().await.unwrap();
+                    let system = system(&db);
+                    let init = Box::pin(
+                        system.initialize(
+                            InitOptions::new()
+                                .with_skip_auto_install(true)
+                                .with_demo(true),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let env = init.orm.env(SUPERUSER_ID, Context::new());
+                    let outcome = Box::pin(
+                        system.button_immediate_install(&env, &[ModuleName::new("hr").unwrap()]),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(
+                        outcome.data_notices.is_empty(),
+                        "unexpected demo notices: {:?}",
+                        outcome.data_notices
+                    );
+                    let client = db.client().await.unwrap();
+                    let emp_count: i64 = client
+                        .query_one("SELECT count(*) FROM hr_employee", &[])
+                        .await
+                        .unwrap()
+                        .get(0);
+                    let dept_count: i64 = client
+                        .query_one("SELECT count(*) FROM hr_department", &[])
+                        .await
+                        .unwrap()
+                        .get(0);
+                    assert_eq!(emp_count, 12, "expected 12 demo employees");
+                    assert_eq!(dept_count, 7, "expected 7 demo departments");
+                });
         })
         .unwrap()
         .join()

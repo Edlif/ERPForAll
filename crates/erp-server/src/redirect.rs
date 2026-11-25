@@ -9,7 +9,16 @@ const SHELL_URI_BYTES: usize = 2048;
 /// (`addons/web/static/src/client/route.ts`; `tests/redirect.rs` compares the two). An address with another
 /// value is refused, so a view type added to the client without its entry here fails on reload.
 // shortcut: a fixed list, upgrade to the published view types of the registry when an addon can add a page view.
-pub const SHELL_VIEW_TYPES: &[&str] = &["list", "form", "pivot", "calendar", "graph", "kanban"];
+pub const SHELL_VIEW_TYPES: &[&str] = &[
+    "list",
+    "form",
+    "pivot",
+    "calendar",
+    "graph",
+    "kanban",
+    "hierarchy",
+    "activity",
+];
 
 /// Startup-bound canonical origin and registered view capabilities.
 #[derive(Debug)]

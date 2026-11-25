@@ -1,6 +1,7 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 // The kanban view's cards: the card layout read from the
 // description, the ungrouped card grid and its keyboard. The application owns every read; this file only draws records.
+import { icon, type IconName } from "./icons.js";
 import { ClientError } from "./transport.js";
 import type { Field, Node, View } from "./metadata.js";
 
@@ -53,40 +54,99 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string, te
   return node;
 };
 
+/** Deterministic muted color palette index (1..11) for initials tiles when no portrait image exists. */
+function tileTone(seed: string): number {
+  let hash = 0;
+  for (const ch of seed) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0;
+  return (hash % 11) + 1;
+}
+
+/** Semantic icon beside common card line fields so employee/directory cards read cleanly at a glance. */
+function cardLineIcon(field: Field): IconName | undefined {
+  if (field.widget === "email" || field.name.includes("email")) return "mail";
+  if (field.widget === "phone" || field.name.includes("phone")) return "phone";
+  if (field.name === "job_title" || field.name === "job_id") return "briefcase";
+  if (field.name.includes("contract") || field.kind === "date") return "calendar";
+  if (field.name === "company_id") return "building";
+  if (field.name === "department_id") return "users";
+  return undefined;
+}
+
+function isEmptyCardValue(value: unknown): boolean {
+  if (value === false || value === null || value === undefined || value === "") return true;
+  if (Array.isArray(value) && value.length === 0) return true;
+  return false;
+}
+
 /** The card grid: one focusable article per record, roving focus by the arrow keys, Enter opens. */
 export function renderKanbanCards(options: KanbanCardsOptions): KanbanRendered {
   const { layout, records, renderField, open } = options;
   const stops: (() => void)[] = [];
-  const grid = el("div", "kanban-grid");
+  const hasMediaAside = layout.aside !== undefined && (layout.aside.widget === "image" || layout.aside.kind === "binary");
+  const grid = el("div", `kanban-grid${hasMediaAside ? " kanban-grid-profile" : ""}`);
   grid.setAttribute("role", "list");
   grid.setAttribute("aria-label", "Records");
-  const field = (target: HTMLElement, item: Field, record: Record<string, unknown>, className: string): void => {
+  const field = (target: HTMLElement, item: Field, record: Record<string, unknown>, className: string, withIcon = false): void => {
     const shown = renderField(item, record);
     stops.push(shown.dispose);
     const slot = el("div", className);
     slot.dataset["field"] = item.name;
+    if (withIcon) {
+      const glyph = cardLineIcon(item);
+      if (glyph) {
+        slot.classList.add("kanban-card-line-icon");
+        slot.append(icon(glyph));
+      }
+    }
     slot.append(shown.node);
     target.append(slot);
   };
   const cards: HTMLElement[] = records.map((record, index) => {
     const id = record["id"];
     if (typeof id !== "number") throw new ClientError("server", "A kanban record has no id.");
-    const card = el("article", `kanban-card${open ? " kanban-card-open" : ""}`);
+    const rawColor = record["color"];
+    const colorClass = typeof rawColor === "number" && rawColor > 0 ? ` kanban-card-accent-${Math.abs(Math.trunc(rawColor)) % 12}` : "";
+    const card = el("article", `kanban-card${open ? " kanban-card-open" : ""}${hasMediaAside ? " kanban-card-has-media" : ""}${colorClass}`);
     card.setAttribute("role", "listitem");
     card.dataset["id"] = String(id);
     card.tabIndex = index === 0 ? 0 : -1;
     if (layout.aside) {
-      const tile = el("div", "kanban-card-tile", initials(record[layout.aside.name]));
-      tile.setAttribute("aria-hidden", "true");
-      card.append(tile);
+      if (hasMediaAside) {
+        const media = el("div", "kanban-card-media");
+        const rawImage = record[layout.aside.name];
+        if (typeof rawImage === "string" && rawImage.length > 0) {
+          const shown = renderField(layout.aside, record);
+          stops.push(shown.dispose);
+          media.append(shown.node);
+        } else {
+          const seedVal = layout.title ? record[layout.title.name] : record["name"];
+          const seedStr = typeof seedVal === "string" ? seedVal : `Record ${id}`;
+          const letter = initials(seedVal) || "?";
+          const fallback = el("div", `kanban-card-media-initials kanban-tone-${tileTone(seedStr)}`, letter);
+          fallback.setAttribute("aria-hidden", "true");
+          media.append(fallback);
+        }
+        card.append(media);
+      } else {
+        const tile = el("div", "kanban-card-tile", initials(record[layout.aside.name]));
+        tile.setAttribute("aria-hidden", "true");
+        card.append(tile);
+      }
     }
     const body = el("div", "kanban-card-body");
     if (layout.title) field(body, layout.title, record, "kanban-card-title");
-    for (const line of layout.lines) field(body, line, record, "kanban-card-line");
+    for (const line of layout.lines) {
+      if (line.name === "color" && line.kind === "integer") continue;
+      if (hasMediaAside && isEmptyCardValue(record[line.name])) continue;
+      field(body, line, record, "kanban-card-line", hasMediaAside);
+    }
     if (layout.footer.length) {
       const footer = el("div", "kanban-card-footer");
-      for (const item of layout.footer) field(footer, item, record, "kanban-card-meta");
-      body.append(footer);
+      for (const item of layout.footer) {
+        if (hasMediaAside && isEmptyCardValue(record[item.name])) continue;
+        field(footer, item, record, `kanban-card-meta${item.name === "activity_state" ? " kanban-card-meta-end" : ""}`);
+      }
+      if (footer.childElementCount > 0) body.append(footer);
     }
     card.append(body);
     const title = layout.title ? body.querySelector(".kanban-card-title")?.textContent?.trim() : "";
