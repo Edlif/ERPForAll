@@ -51,6 +51,9 @@
           <button name="action_confirm" type="object" string="Confirm" class="oe_highlight" invisible="state != 'draft'"/>
           <button name="action_assign" type="object" string="Check Availability" class="oe_highlight" invisible="state not in ('confirmed', 'waiting', 'assigned')"/>
           <button name="action_validate_transfer" type="object" string="Validate" class="oe_highlight" invisible="state not in ('draft', 'confirmed', 'waiting', 'assigned')"/>
+          <button name="action_return" type="object" string="Return" invisible="state != 'done' or not show_return"/>
+          <button name="action_exchange" type="object" string="Exchange" invisible="state != 'done' or not return_id"/>
+          <button name="action_scrap" type="object" string="Scrap" invisible="state in ('draft', 'cancel')"/>
           <button name="do_unreserve" type="object" string="Unreserve" invisible="state not in ('assigned', 'confirmed', 'waiting')"/>
           <button name="action_cancel" type="object" string="Cancel" invisible="state not in ('assigned', 'confirmed', 'draft', 'waiting')"/>
           <field name="state" widget="statusbar" statusbar_visible="draft,confirmed,assigned,done"/>
@@ -63,7 +66,11 @@
             <button name="action_view_backorders" type="object" class="oe_stat_button" icon="lucide:git-branch" invisible="backorder_count == 0">
               <field name="backorder_count" widget="statinfo" string="Backorders"/>
             </button>
+            <button name="action_view_scraps" type="object" class="oe_stat_button" icon="lucide:archive" invisible="scrap_count == 0">
+              <field name="scrap_count" widget="statinfo" string="Scraps"/>
+            </button>
           </div>
+          <field name="show_return" invisible="1"/>
           <widget name="web_ribbon" title="Done" bg_color="bg-success" invisible="state != 'done'"/>
           <widget name="web_ribbon" title="Cancelled" bg_color="bg-danger" invisible="state != 'cancel'"/>
           <div class="oe_title"><h1><field name="name" readonly="state in ('done', 'cancel')"/></h1></div>

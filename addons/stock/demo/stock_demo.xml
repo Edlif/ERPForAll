@@ -1,7 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
-<!-- Demo inventory storage categories, package types, and lots. -->
-<erp noupdate="1">
+<!-- Demo inventory storable products, storage categories, package types, and lots. -->
+<erp>
+  <record id="product.product_demo_meja" model="product.template">
+    <field name="is_storable" eval="True"/>
+  </record>
+  <record id="product.product_demo_kursi" model="product.template">
+    <field name="is_storable" eval="True"/>
+  </record>
+  <record id="product.product_demo_rak" model="product.template">
+    <field name="is_storable" eval="True"/>
+  </record>
+  <record id="product.product_demo_kopi" model="product.template">
+    <field name="is_storable" eval="True"/>
+  </record>
+  <record id="product.product_demo_laptop" model="product.template">
+    <field name="is_storable" eval="True"/>
+  </record>
+  <record id="product.product_demo_mouse" model="product.template">
+    <field name="is_storable" eval="True"/>
+  </record>
+
   <record id="storage_category_demo_standard" model="stock.storage.category">
     <field name="name">Rak Standar</field>
     <field name="company_id" ref="base.main_company"/>

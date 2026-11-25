@@ -206,6 +206,24 @@ pub struct StockQuant {
     /// Counted quantity of an inventory count (row state, never written by transitions).
     #[field(float, digits = "Product Unit", string = "Counted")]
     pub inventory_quantity: Decimal,
+    /// Whether `inventory_quantity` has been explicitly entered for the current count.
+    #[field(boolean, default = false, string = "Counted Set")]
+    pub inventory_quantity_set: bool,
+    /// Signed difference between `inventory_quantity` and `quantity` while a count is set.
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_inventory_diff_quantity",
+        readonly = true,
+        string = "Difference"
+    )]
+    pub inventory_diff_quantity: Decimal,
+    /// Next scheduled physical count date (derived from location cycle frequency or annual count date).
+    #[field(date, string = "Scheduled Date")]
+    pub inventory_date: Option<Date>,
+    /// Optional note explaining an inventory count adjustment.
+    #[field(char, string = "Adjustment Note")]
+    pub inventory_note: Option<Arc<str>>,
     /// User assigned to count this balance.
     #[field(many2one, comodel = "res.users", string = "Assigned To")]
     pub user_id: Option<RecId>,

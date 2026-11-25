@@ -5,14 +5,16 @@
     <field name="name">stock.quant.list</field>
     <field name="model">stock.quant</field>
     <field name="arch" type="xml">
-      <list create="false" edit="false" delete="false">
+      <list create="false" delete="false">
         <field name="product_id"/>
         <field name="location_id"/>
         <field name="lot_id" groups="stock.group_production_lot"/>
         <field name="package_id" groups="stock.group_tracking_lot"/>
         <field name="owner_id" groups="stock.group_tracking_owner"/>
-        <field name="quantity"/>
-        <field name="reserved_quantity"/>
+        <field name="quantity" string="On Hand"/>
+        <field name="reserved_quantity" string="Reserved"/>
+        <field name="available_quantity" string="Available"/>
+        <field name="uom_id"/>
         <field name="company_id"/>
       </list>
     </field>
@@ -21,26 +23,59 @@
     <field name="name">stock.quant.form</field>
     <field name="model">stock.quant</field>
     <field name="arch" type="xml">
-      <form string="Stock" create="false" edit="false" delete="false">
+      <form string="Stock" create="false" delete="false">
+        <header>
+          <button name="action_apply_inventory" type="object" string="Apply Count" class="oe_highlight" groups="stock.group_stock_manager"/>
+          <button name="action_set_inventory_quantity" type="object" string="Set Count" groups="stock.group_stock_user"/>
+          <button name="action_clear_inventory_quantity" type="object" string="Clear Count" groups="stock.group_stock_user"/>
+          <button name="action_request_count" type="object" string="Request a Count" groups="stock.group_stock_manager"/>
+        </header>
         <sheet>
           <group>
-            <group>
-              <field name="product_id"/>
-              <field name="location_id"/>
-              <field name="lot_id" groups="stock.group_production_lot"/>
-              <field name="package_id" groups="stock.group_tracking_lot"/>
-              <field name="owner_id" groups="stock.group_tracking_owner"/>
-              <field name="company_id"/>
+            <group string="Stock Position">
+              <field name="product_id" readonly="1"/>
+              <field name="location_id" readonly="1"/>
+              <field name="lot_id" readonly="1" groups="stock.group_production_lot"/>
+              <field name="package_id" readonly="1" groups="stock.group_tracking_lot"/>
+              <field name="owner_id" readonly="1" groups="stock.group_tracking_owner"/>
+              <field name="company_id" readonly="1"/>
             </group>
-            <group>
-              <field name="quantity" string="Quantity On Hand"/>
-              <field name="available_quantity"/>
-              <field name="reserved_quantity" string="Quantity Reserved"/>
-              <field name="uom_id"/>
+            <group string="Quantities &amp; Physical Count">
+              <field name="quantity" string="Quantity On Hand" readonly="1"/>
+              <field name="available_quantity" readonly="1"/>
+              <field name="reserved_quantity" string="Quantity Reserved" readonly="1"/>
+              <field name="uom_id" readonly="1"/>
+              <field name="inventory_quantity" string="Counted Quantity"/>
+              <field name="inventory_quantity_set"/>
+              <field name="inventory_diff_quantity" readonly="1"/>
+              <field name="inventory_date"/>
+              <field name="user_id"/>
+              <field name="inventory_note"/>
             </group>
           </group>
         </sheet>
       </form>
+    </field>
+  </record>
+  <record id="view_stock_quant_inventory_list" model="ir.ui.view">
+    <field name="name">stock.quant.inventory.list</field>
+    <field name="model">stock.quant</field>
+    <field name="priority">50</field>
+    <field name="arch" type="xml">
+      <list string="Physical Inventory" create="false" delete="false">
+        <field name="location_id"/>
+        <field name="product_id"/>
+        <field name="lot_id" groups="stock.group_production_lot"/>
+        <field name="package_id" groups="stock.group_tracking_lot"/>
+        <field name="owner_id" groups="stock.group_tracking_owner"/>
+        <field name="quantity" string="On Hand"/>
+        <field name="inventory_quantity" string="Counted"/>
+        <field name="inventory_diff_quantity" string="Difference"/>
+        <field name="inventory_date"/>
+        <field name="user_id"/>
+        <field name="uom_id"/>
+        <field name="company_id"/>
+      </list>
     </field>
   </record>
   <record id="view_stock_quant_search" model="ir.ui.view">
@@ -53,9 +88,13 @@
         <field name="lot_id"/>
         <field name="package_id"/>
         <field name="owner_id"/>
+        <filter name="internal_loc" string="Internal Locations" domain="[('location_id.usage', '=', 'internal')]"/>
+        <filter name="counted" string="Counted" domain="[('inventory_quantity_set', '=', True)]"/>
+        <filter name="to_count" string="Scheduled Counts" domain="[('inventory_date', '!=', False)]"/>
         <group>
           <filter name="groupby_product" string="Product" context="{'group_by': 'product_id'}"/>
           <filter name="groupby_location" string="Location" context="{'group_by': 'location_id'}"/>
+          <filter name="groupby_lot" string="Lot/Serial Number" context="{'group_by': 'lot_id'}"/>
         </group>
       </search>
     </field>
@@ -66,5 +105,55 @@
     <field name="view_mode">list,form</field>
     <field name="view_id" ref="view_stock_quant_list"/>
     <field name="search_view_id" ref="view_stock_quant_search"/>
+    <field name="domain">[('location_id.usage', '=', 'internal')]</field>
   </record>
+  <record id="action_stock_physical_inventory" model="ir.actions.act_window">
+    <field name="name">Physical Inventory</field>
+    <field name="res_model">stock.quant</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_stock_quant_inventory_list"/>
+    <field name="search_view_id" ref="view_stock_quant_search"/>
+    <field name="domain">[('location_id.usage', '=', 'internal')]</field>
+  </record>
+
+  <record id="view_stock_inventory_adjustment_new_form" model="ir.ui.view">
+    <field name="name">stock.inventory.adjustment.new.form</field>
+    <field name="model">stock.inventory.adjustment.new</field>
+    <field name="arch" type="xml">
+      <form string="Record Stock Count">
+        <header>
+          <button name="action_apply" type="object" string="Apply Count" class="oe_highlight"/>
+        </header>
+        <sheet>
+          <group>
+            <group>
+              <field name="product_id"/>
+              <field name="location_id"/>
+              <field name="counted_quantity"/>
+              <field name="note" placeholder="e.g. Initial stock or cycle count"/>
+            </group>
+            <group>
+              <field name="lot_id" groups="stock.group_production_lot"/>
+              <field name="package_id" groups="stock.group_tracking_lot"/>
+              <field name="owner_id" groups="stock.group_tracking_owner"/>
+              <field name="company_id"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_stock_inventory_adjustment_new" model="ir.actions.act_window">
+    <field name="name">Record Stock Count</field>
+    <field name="res_model">stock.inventory.adjustment.new</field>
+    <field name="view_mode">form</field>
+    <field name="view_id" ref="view_stock_inventory_adjustment_new_form"/>
+    <field name="target">current</field>
+  </record>
+
+  <menuitem id="menu_stock_physical_inventory" name="Physical Inventory" parent="menu_stock_operations" action="action_stock_physical_inventory" sequence="60"/>
+  <menuitem id="menu_stock_new_inventory_count" name="Record Stock Count" parent="menu_stock_operations" action="action_stock_inventory_adjustment_new" groups="stock.group_stock_manager" sequence="65"/>
+  <record id="menu_stock_physical_inventory" model="ir.ui.menu"><field name="web_icon">lucide:clipboard-check</field></record>
+  <record id="menu_stock_new_inventory_count" model="ir.ui.menu"><field name="web_icon">lucide:plus</field></record>
 </erp>

@@ -52,3 +52,6 @@ access_stock_reference_employee,Inventory: stock.reference (employee),stock.mode
 access_stock_picking_batch_user,Inventory: stock.picking.batch (user),stock.model_stock_picking_batch,stock.group_stock_user,crud,
 access_stock_picking_batch_result_user,Inventory: stock.picking.batch.result (user),stock.model_stock_picking_batch_result,stock.group_stock_user,r,
 access_stock_picking_to_batch_user,Inventory: stock.picking.to.batch (user),stock.model_stock_picking_to_batch,stock.group_stock_user,crud,"[('create_uid', '=', user.id)]"
+access_stock_scrap_user,Inventory: stock.scrap (user),stock.model_stock_scrap,stock.group_stock_user,cru,
+access_stock_scrap_manager,Inventory: stock.scrap (manager),stock.model_stock_scrap,stock.group_stock_manager,crud,
+access_stock_inventory_adjustment_new_manager,Inventory: stock.inventory.adjustment.new (manager),stock.model_stock_inventory_adjustment_new,stock.group_stock_manager,crud,"[('create_uid', '=', user.id)]"

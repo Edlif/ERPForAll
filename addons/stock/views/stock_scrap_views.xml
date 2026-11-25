@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_stock_scrap_list" model="ir.ui.view">
+    <field name="name">stock.scrap.list</field>
+    <field name="model">stock.scrap</field>
+    <field name="arch" type="xml">
+      <list string="Scrap Orders">
+        <dashboard>
+          <count name="draft" string="Draft" filter="filter_draft" color="warning"/>
+          <count name="done" string="Done" filter="filter_done" color="success"/>
+        </dashboard>
+        <field name="name"/>
+        <field name="date_done"/>
+        <field name="product_id"/>
+        <field name="lot_id" groups="stock.group_production_lot"/>
+        <field name="scrap_qty"/>
+        <field name="product_uom_id"/>
+        <field name="location_id"/>
+        <field name="scrap_location_id"/>
+        <field name="origin"/>
+        <field name="company_id"/>
+        <field name="state" widget="badge" options="{'tone_warning': ['draft'], 'tone_success': ['done']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_stock_scrap_form" model="ir.ui.view">
+    <field name="name">stock.scrap.form</field>
+    <field name="model">stock.scrap</field>
+    <field name="arch" type="xml">
+      <form string="Scrap">
+        <header>
+          <button name="action_validate" type="object" string="Validate" class="oe_highlight" invisible="state != 'draft'"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,done"/>
+        </header>
+        <sheet>
+          <widget name="web_ribbon" title="Done" bg_color="bg-success" invisible="state != 'done'"/>
+          <div class="oe_title">
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="product_id" readonly="state == 'done'"/>
+              <field name="scrap_qty" readonly="state == 'done'"/>
+              <field name="product_uom_id" readonly="state == 'done'"/>
+              <field name="lot_id" groups="stock.group_production_lot" readonly="state == 'done'"/>
+              <field name="package_id" groups="stock.group_tracking_lot" readonly="state == 'done'"/>
+              <field name="owner_id" groups="stock.group_tracking_owner" readonly="state == 'done'"/>
+              <field name="should_replenish" readonly="state == 'done'"/>
+            </group>
+            <group>
+              <field name="location_id" readonly="state == 'done'"/>
+              <field name="scrap_location_id" readonly="state == 'done'"/>
+              <field name="origin" readonly="state == 'done'"/>
+              <field name="picking_id" readonly="state == 'done'"/>
+              <field name="date_done" readonly="1" invisible="state != 'done'"/>
+              <field name="company_id" readonly="state == 'done'"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_stock_scrap_search" model="ir.ui.view">
+    <field name="name">stock.scrap.search</field>
+    <field name="model">stock.scrap</field>
+    <field name="arch" type="xml">
+      <search string="Scrap Orders">
+        <field name="name"/>
+        <field name="product_id"/>
+        <field name="origin"/>
+        <field name="location_id"/>
+        <field name="scrap_location_id"/>
+        <filter name="filter_draft" string="Draft" domain="[('state', '=', 'draft')]"/>
+        <filter name="filter_done" string="Done" domain="[('state', '=', 'done')]"/>
+        <group>
+          <filter name="group_product" string="Product" context="{'group_by': 'product_id'}"/>
+          <filter name="group_location" string="Source Location" context="{'group_by': 'location_id'}"/>
+          <filter name="group_state" string="Status" context="{'group_by': 'state'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_stock_scrap" model="ir.actions.act_window">
+    <field name="name">Scrap</field>
+    <field name="res_model">stock.scrap</field>
+    <field name="view_mode">list,form</field>
+    <field name="search_view_id" ref="view_stock_scrap_search"/>
+  </record>
+
+  <menuitem id="menu_stock_scrap" name="Scrap" parent="menu_stock_operations" action="action_stock_scrap" sequence="70"/>
+  <record id="menu_stock_scrap" model="ir.ui.menu"><field name="web_icon">lucide:archive</field></record>
+</erp>

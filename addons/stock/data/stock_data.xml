@@ -34,6 +34,21 @@ Default stock topology records that need no behaviour. The default warehouse
       <field name="name">Customers</field>
       <field name="usage">customer</field>
     </record>
+    <!-- Virtual inventory adjustment and scrap locations shared across companies. -->
+    <record id="stock_location_virtual" model="stock.location">
+      <field name="name">Virtual Locations</field>
+      <field name="usage">view</field>
+    </record>
+    <record id="stock_location_inventory" model="stock.location">
+      <field name="name">Inventory adjustment</field>
+      <field name="location_id" ref="stock_location_virtual"/>
+      <field name="usage">inventory</field>
+    </record>
+    <record id="stock_location_scrap" model="stock.location">
+      <field name="name">Scrap</field>
+      <field name="location_id" ref="stock_location_virtual"/>
+      <field name="usage">inventory</field>
+    </record>
     <!-- Transit between companies; archived until inter-company moves are used. -->
     <record id="stock_location_inter_company" model="stock.location">
       <field name="name">Inter-company transit</field>

@@ -3243,3 +3243,105 @@ async fn lot_and_serial_validation_creates_lots_and_enforces_tracking() {
     assert_eq!(qty, dec("5"));
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn scrap_validate_moves_exact_stock_to_scrap_location() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    f.stock(&mut tx, f.p, "10").await;
+    tx.commit().await.unwrap();
+
+    let mut tx = f.h.begin().await.unwrap();
+    let env = f.env(&tx);
+    let scraps = env.records("stock.scrap").unwrap();
+    let created = scraps
+        .create(
+            &mut tx,
+            vec![
+                RawVals::new()
+                    .set_cell("product_id", Cell::Id(f.p))
+                    .set_cell("scrap_qty", Cell::Decimal(dec("2.5")))
+                    .set_cell("location_id", Cell::Id(f.l))
+                    .set_cell("company_id", Cell::Id(f.company)),
+            ],
+        )
+        .await
+        .unwrap();
+    created
+        .call::<(), ()>(&mut tx, "action_validate", ())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        created.cell(&mut tx, "state").await.unwrap(),
+        Cell::Str("done".into())
+    );
+    let on_hand: Decimal = tx
+        .query(
+            "SELECT quantity FROM stock_quant WHERE product_id = $1 AND location_id = $2",
+            &[&f.p, &f.l],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(on_hand, dec("7.5"));
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn physical_inventory_apply_adjusts_quant_and_schedules_annual_count_date() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    f.stock(&mut tx, f.p, "10").await;
+    tx.commit().await.unwrap();
+
+    let mut tx = f.h.begin().await.unwrap();
+    let env = f.env(&tx);
+    let quant_id: i64 = tx
+        .query(
+            "SELECT id::int8 FROM stock_quant WHERE product_id = $1 AND location_id = $2",
+            &[&f.p, &f.l],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    let quants = env
+        .records("stock.quant")
+        .unwrap()
+        .browse([quant_id])
+        .unwrap();
+    quants
+        .write(
+            &mut tx,
+            RawVals::new()
+                .set_cell("inventory_quantity", Cell::Decimal(dec("14.25")))
+                .set_cell("inventory_quantity_set", Cell::Bool(true))
+                .set_cell("inventory_note", text("Cycle count check")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        quants
+            .cell(&mut tx, "inventory_diff_quantity")
+            .await
+            .unwrap(),
+        Cell::Decimal(dec("4.25"))
+    );
+    quants
+        .call::<(), ()>(&mut tx, "action_apply_inventory", ())
+        .await
+        .unwrap();
+
+    let row = tx
+        .query(
+            "SELECT quantity, inventory_quantity_set, inventory_date IS NOT NULL \
+             FROM stock_quant WHERE id = $1",
+            &[&quant_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row[0].get::<_, Decimal>(0), dec("14.25"));
+    assert!(!row[0].get::<_, bool>(1));
+    assert!(row[0].get::<_, bool>(2));
+    tx.rollback().await.unwrap();
+}

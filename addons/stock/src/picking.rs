@@ -135,6 +135,9 @@ pub struct StockPicking {
         string = "Backorder Count"
     )]
     pub backorder_count: i32,
+    /// Readable scrap orders linked to this transfer.
+    #[field(integer, compute = "_compute_scrap_count", string = "Scrap Count")]
+    pub scrap_count: i32,
     /// Shipping policy; computed from the type.
     #[field(
         selection,

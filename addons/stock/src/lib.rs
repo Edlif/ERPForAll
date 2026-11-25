@@ -37,6 +37,7 @@ erp_sdk::addon!(
 mod barcode;
 pub mod batch;
 pub mod error;
+pub mod inventory_count;
 mod link_defaults;
 pub mod location;
 pub mod lot;
@@ -60,6 +61,7 @@ mod res_users;
 pub mod route;
 mod route_behavior;
 mod route_onchange;
+pub mod scrap;
 mod settings;
 mod settings_panel;
 pub mod stock_move;
@@ -72,6 +74,7 @@ mod warnings;
 
 pub use batch::{StockPickingBatch, StockPickingBatchResult, StockPickingToBatch};
 pub use error::StockError;
+pub use inventory_count::StockInventoryAdjustmentNew;
 pub use location::{ProductRemoval, StockLocation, StockLocationPolicy};
 pub use lot::{StockLot, StockLotNameScope};
 pub use orderpoint::StockWarehouseOrderpoint;
@@ -82,6 +85,7 @@ pub use quant::{StockQuant, StockSerialPosition};
 pub use reference::StockReference;
 pub use route::{StockRoute, StockRule, StockTopologyVersion};
 pub use route_behavior::set_generated_identity;
+pub use scrap::StockScrap;
 pub use stock_move::StockMove;
 pub use stock_move_line::{
     LOGICAL_ID_SEQUENCE, StockMoveLine, StockMoveLineCorrection, StockMoveLineSerial,
