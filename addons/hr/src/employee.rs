@@ -222,7 +222,7 @@ pub struct HrEmployee {
     )]
     pub sunday_location_id: Option<RecId>,
     /// Internal work note.
-    #[field(text, string = "Note")]
+    #[field(text, groups = "hr.group_hr_user", string = "Note")]
     pub additional_note: Option<Arc<str>>,
 
     // ── Payroll & Contract Summary ──────────────────────────────────────────
@@ -237,15 +237,26 @@ pub struct HrEmployee {
     )]
     pub employee_type_id: Option<RecId>,
     /// Current contract start date.
-    #[field(date, tracking = true, string = "Contract Start Date")]
+    #[field(
+        date,
+        tracking = true,
+        groups = "hr.group_hr_user",
+        string = "Contract Start Date"
+    )]
     pub contract_date_start: Option<Date>,
     /// Current contract end date.
-    #[field(date, tracking = true, string = "Contract End Date")]
+    #[field(
+        date,
+        tracking = true,
+        groups = "hr.group_hr_user",
+        string = "Contract End Date"
+    )]
     pub contract_date_end: Option<Date>,
     /// Formatted contract date span shown on Kanban cards (e.g. "Jan 1, 2025 - Dec 31, 2027").
     #[field(
         char,
         compute = "_compute_contract_period_label",
+        groups = "hr.group_hr_user",
         string = "Contract Period"
     )]
     pub contract_period_label: Option<Arc<str>>,
