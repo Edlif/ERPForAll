@@ -164,7 +164,7 @@ export function renderBreadcrumbs(
       menu.append(itemBtn);
     }
     dropdownWrap.append(toggle, menu);
-    const collapsedDivider = el("span", "/", "form-breadcrumb-divider");
+    const collapsedDivider = el("span", "›", "form-breadcrumb-divider");
     collapsedDivider.setAttribute("aria-hidden", "true");
     trailLine.append(dropdownWrap, collapsedDivider);
   }

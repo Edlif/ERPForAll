@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { configureClientTemplates, registerServiceController } from "../src/client/registry.js";
 import { ClientError } from "../src/client/transport.js";
-import { HumanApp } from "../src/client/app.js";
+import { HumanApp, defaultViewType } from "../src/client/app.js";
 import { BreadcrumbTrail, renderBreadcrumbs } from "../src/client/navigation.js";
 
 function actionMetadata(path: string, action: unknown, views: unknown): unknown {
@@ -292,10 +292,10 @@ test("collapsed breadcrumbs dropdown keyboard roving focus and Escape dismissal"
   document.body.append(container);
 
   const trail = new BreadcrumbTrail(10);
-  trail.push({ id: "1", title: "Orders", route: {} as any, url: "/orders" });
-  trail.push({ id: "2", title: "SO001", route: {} as any, url: "/orders/1" });
-  trail.push({ id: "3", title: "Deliveries", route: {} as any, url: "/orders/1/delivery" });
-  trail.push({ id: "4", title: "WH/OUT/001", route: {} as any, url: "/delivery/1" });
+  trail.push({ id: "1", title: "Orders", route: {}, url: "/orders" });
+  trail.push({ id: "2", title: "SO001", route: {}, url: "/orders/1" });
+  trail.push({ id: "3", title: "Deliveries", route: {}, url: "/orders/1/delivery" });
+  trail.push({ id: "4", title: "WH/OUT/001", route: {}, url: "/delivery/1" });
 
   renderBreadcrumbs(container, trail, { onNavigate: async () => {} });
 
@@ -331,8 +331,10 @@ test("popstate where only the hash differs from current URL is ignored", async (
   app = new HumanApp(root, bootstrap);
   await app.start();
 
-  const reportSpy = vi.spyOn(app as any, "reportError");
-  const navigateSpy = vi.spyOn(app as any, "navigate");
+  // The two private methods the shell routes a popstate through, seen through a typed view of the instance.
+  const shell = app as unknown as { reportError(error: unknown): void; navigate(...args: unknown[]): Promise<void> };
+  const reportSpy = vi.spyOn(shell, "reportError");
+  const navigateSpy = vi.spyOn(shell, "navigate");
 
   history.pushState({ erpIndex: 0 }, "", "/erp#some-section");
   window.dispatchEvent(new PopStateEvent("popstate", { state: { erpIndex: 0 } }));
@@ -402,8 +404,8 @@ test("service teardown follows committed and superseded navigation, preserving a
 test("a form breadcrumb draws no menu path, in any theme", () => {
   const container = document.createElement("div");
   const trail = new BreadcrumbTrail(10);
-  trail.push({ id: "1", title: "Orders", route: {} as any, url: "/orders" });
-  trail.push({ id: "2", title: "SO001", route: {} as any, url: "/orders/1" });
+  trail.push({ id: "1", title: "Orders", route: {}, url: "/orders" });
+  trail.push({ id: "2", title: "SO001", route: {}, url: "/orders/1" });
   renderBreadcrumbs(container, trail, { isSmall: false, onNavigate: async () => {}, ancestorLabels: ["Sales", "Orders"] } as never);
   expect(container.querySelector(".breadcrumb-ancestor-label, .list-menu-path")).toBeNull();
   expect(container.querySelector(".form-breadcrumb-path")?.textContent).not.toContain("Sales");
@@ -508,14 +510,14 @@ test("collapsed breadcrumb trail groups ellipsis and previous link separate from
   document.body.append(container);
   try {
     const trail = new BreadcrumbTrail(10);
-    trail.push({ id: "1", title: "Quotations", route: {} as any, url: "/orders" });
-    trail.push({ id: "2", title: "S00001", route: {} as any, url: "/orders/1", isFormView: true });
-    trail.push({ id: "3", title: "PT Sinar Abadi Elektronik", route: {} as any, url: "/partners/54", isFormView: true });
+    trail.push({ id: "1", title: "Quotations", route: {}, url: "/orders" });
+    trail.push({ id: "2", title: "S00001", route: {}, url: "/orders/1", isFormView: true });
+    trail.push({ id: "3", title: "PT Sinar Abadi Elektronik", route: {}, url: "/partners/54", isFormView: true });
     renderBreadcrumbs(container, trail, { isSmall: false, onNavigate: async () => {} });
     const trailRow = container.querySelector<HTMLElement>(".form-breadcrumb-path > .form-breadcrumb-trail");
     expect(trailRow).not.toBeNull();
     expect(trailRow!.querySelector(".breadcrumb-collapsed-dropdown")).not.toBeNull();
-    expect(trailRow!.querySelector(".form-breadcrumb-divider")?.textContent).toBe("/");
+    expect(trailRow!.querySelector(".form-breadcrumb-divider")?.textContent).toBe("›");
     expect(trailRow!.querySelector(".breadcrumb-previous .breadcrumb-back")?.textContent).toBe("S00001");
     const current = container.querySelector<HTMLElement>(".form-breadcrumb-path > .form-breadcrumb-record");
     expect(current?.textContent).toBe("PT Sinar Abadi Elektronik");
@@ -523,4 +525,13 @@ test("collapsed breadcrumb trail groups ellipsis and previous link separate from
   } finally {
     container.remove();
   }
+});
+
+test("an action opens on a first hierarchy or activity view, otherwise on its list", () => {
+  expect(defaultViewType([[1, "kanban"], [2, "list"]], undefined)).toBe("list");
+  expect(defaultViewType([[1, "hierarchy"], [2, "list"]], undefined)).toBe("hierarchy");
+  expect(defaultViewType([[1, "list"], [2, "hierarchy"]], undefined)).toBe("list");
+  expect(defaultViewType([[1, "activity"], [2, "list"]], undefined)).toBe("activity");
+  expect(defaultViewType([[1, "form"], [2, "list"]], undefined)).toBe("list");
+  expect(defaultViewType([[1, "form"], [2, "list"]], "7")).toBe("form");
 });
