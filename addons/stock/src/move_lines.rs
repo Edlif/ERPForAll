@@ -384,13 +384,29 @@ pub(crate) async fn create_lines(
         if matches!(row.state.as_str(), "done" | "cancel") {
             return Err(StockError::LineMoveClosed.into());
         }
+        let resolved_dest = if !vals.contains("location_dest_id") {
+            let qty_hint = match vals.get("quantity") {
+                Some(Cell::Decimal(d)) => *d,
+                _ => Decimal::ZERO,
+            };
+            crate::putaway::resolve_putaway_location(
+                tx,
+                row.company_id,
+                row.product_id,
+                row.location_dest_id,
+                qty_hint,
+            )
+            .await?
+        } else {
+            row.location_dest_id
+        };
         let defaults = [
             ("move_id", move_id.map(Cell::Id)),
             ("picking_id", row.picking_id.map(Cell::Id)),
             ("company_id", Some(Cell::Id(row.company_id))),
             ("product_id", Some(Cell::Id(row.product_id))),
             ("location_id", Some(Cell::Id(row.location_id))),
-            ("location_dest_id", Some(Cell::Id(row.location_dest_id))),
+            ("location_dest_id", Some(Cell::Id(resolved_dest))),
             ("uom_id", Some(Cell::Id(row.uom_id))),
             ("picked", Some(Cell::Bool(row.picked))),
         ];

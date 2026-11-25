@@ -574,6 +574,17 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
         }
     }
 
+    // Propagate transfer consignment owner to lines that have no explicit owner set.
+    if !done_lines.is_empty() {
+        tx.execute(
+            "UPDATE stock_move_line l SET owner_id = p.owner_id \
+             FROM stock_picking p \
+             WHERE l.id = ANY($1) AND l.picking_id = p.id \
+               AND l.owner_id IS NULL AND p.owner_id IS NOT NULL",
+            &[&done_lines],
+        )
+        .await?;
+    }
     resolve_and_check_lots(records, tx, &done_lines).await?;
     crate::returns::guard_completion(records, tx, &origins, &done_lines).await?;
 

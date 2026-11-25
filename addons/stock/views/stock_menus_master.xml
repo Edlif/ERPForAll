@@ -4,6 +4,7 @@
   <menuitem id="menu_stock_products" name="Products" parent="menu_stock_root" sequence="30" groups="stock.group_stock_user,stock.group_stock_manager"/>
   <menuitem id="menu_stock_product_templates" name="Products" parent="menu_stock_products" action="product.product_template_action" sequence="10"/>
   <menuitem id="menu_stock_lot" name="Lots/Serial Numbers" parent="menu_stock_products" action="action_stock_lot" groups="stock.group_production_lot" sequence="20"/>
+  <menuitem id="menu_stock_package" name="Packages" parent="menu_stock_products" action="action_stock_package" groups="stock.group_tracking_lot" sequence="30"/>
 
   <menuitem id="menu_stock_reporting" name="Reporting" parent="menu_stock_root" sequence="50" groups="stock.group_stock_user"/>
   <menuitem id="menu_stock_quant" name="Stock" parent="menu_stock_reporting" action="action_stock_quant" groups="stock.group_stock_manager" sequence="10"/>
@@ -23,6 +24,7 @@
   <record id="menu_stock_products" model="ir.ui.menu"><field name="web_icon">lucide:package</field></record>
   <record id="menu_stock_product_templates" model="ir.ui.menu"><field name="web_icon">lucide:package</field></record>
   <record id="menu_stock_lot" model="ir.ui.menu"><field name="web_icon">lucide:scan-barcode</field></record>
+  <record id="menu_stock_package" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
   <record id="menu_stock_reporting" model="ir.ui.menu"><field name="web_icon">lucide:chart-column</field></record>
   <record id="menu_stock_quant" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
   <record id="menu_stock_move_line_history" model="ir.ui.menu"><field name="web_icon">lucide:list</field></record>

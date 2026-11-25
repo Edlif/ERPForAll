@@ -30,6 +30,7 @@ pub const LINKED: &[&str] = &[
     "valuation",
     "stock_mail",
     "purchase_stock",
+    "stock_landed_costs",
     "sales_team",
     "sale",
     "sale_stock",
@@ -48,6 +49,5 @@ pub const DECLARED_ONLY: &str = "declared, no behaviour yet (manifest and depend
 pub const NOT_LINKED: &[(&str, &str)] = &[
     ("delivery", DECLARED_ONLY),
     ("stock_delivery", DECLARED_ONLY),
-    ("stock_landed_costs", DECLARED_ONLY),
     ("stock_sms", DECLARED_ONLY),
 ];

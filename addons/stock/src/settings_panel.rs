@@ -146,6 +146,12 @@ const MODULES: &[(&str, &str, &str, &str)] = &[
         "Warehouse",
         "stock_dropshipping",
     ),
+    (
+        "stock.module_stock_landed_costs",
+        "Landed costs",
+        "Valuation",
+        "stock_landed_costs",
+    ),
 ];
 fn items() -> Result<Vec<PanelItemDecl>> {
     let mut items = Vec::new();

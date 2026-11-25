@@ -3,6 +3,13 @@ summary = "Landed cost documents and valuation adjustments"
 category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.0.0"
-depends = ["stock_account", "purchase_stock"]
-data = []
+version = "1.1.0"
+depends = ["base", "stock", "stock_account", "purchase_stock"]
+data = [
+    "security/ir.access.csv",
+    "data/stock_landed_costs_data.xml",
+    "views/stock_landed_costs_views.xml",
+]
+demo = [
+    "demo/stock_landed_costs_demo.xml",
+]

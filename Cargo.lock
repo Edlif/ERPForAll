@@ -1835,7 +1835,10 @@ dependencies = [
 name = "erp-addon-stock_landed_costs"
 version = "0.1.0"
 dependencies = [
+ "erp-addon-account",
+ "erp-addon-product",
  "erp-addon-purchase_stock",
+ "erp-addon-stock",
  "erp-addon-stock_account",
  "erp-sdk",
 ]
@@ -2072,6 +2075,7 @@ dependencies = [
  "erp-addon-stock-mail",
  "erp-addon-stock_account",
  "erp-addon-stock_dropshipping",
+ "erp-addon-stock_landed_costs",
  "erp-addon-theme-office-blue",
  "erp-addon-uom",
  "erp-addon-valuation",

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="sequence_stock_landed_cost" model="ir.sequence">
+      <field name="name">Landed Costs</field>
+      <field name="code">stock.landed.cost</field>
+      <field name="prefix">LC/</field>
+      <field name="padding">5</field>
+    </record>
+  </data>
+</erp>

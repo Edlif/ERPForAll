@@ -55,6 +55,10 @@
             <group name="traceability" string="Traceability">
               <field name="tracking" groups="stock.group_production_lot"/>
             </group>
+            <group name="logistics" string="Logistics">
+              <field name="weight"/>
+              <field name="volume"/>
+            </group>
           </group>
         </page>
       </xpath>

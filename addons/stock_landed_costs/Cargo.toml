@@ -10,6 +10,9 @@ publish.workspace = true
 
 [dependencies]
 erp-sdk = { workspace = true }
+erp-addon-product = { workspace = true }
+erp-addon-stock = { workspace = true }
+erp-addon-account = { workspace = true }
 erp-addon-stock_account = { workspace = true }
 erp-addon-purchase_stock = { workspace = true }
 

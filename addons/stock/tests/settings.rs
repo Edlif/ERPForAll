@@ -302,6 +302,11 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
             "Direct supplier delivery",
             "stock_dropshipping",
         ),
+        (
+            "stock.module_stock_landed_costs",
+            "Landed costs",
+            "stock_landed_costs",
+        ),
     ] {
         let item = items.iter().find(|i| i.key() == key).expect(key);
         match item.kind() {

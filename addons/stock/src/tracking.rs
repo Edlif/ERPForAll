@@ -36,6 +36,12 @@ pub struct StockProductTracking {
         string = "Tracking"
     )]
     pub tracking: Option<Arc<str>>,
+    /// Unit weight in kilograms, used by putaway weight limits, landed costs and shipping.
+    #[field(float, digits = "Stock Weight", default = 0, string = "Weight (kg)")]
+    pub weight: Decimal,
+    /// Unit volume in cubic meters, used by landed cost allocation and transport dispatch.
+    #[field(float, digits = 0, default = 0, string = "Volume (m³)")]
+    pub volume: Decimal,
 }
 
 #[methods(ProductTemplate, addon = "stock")]

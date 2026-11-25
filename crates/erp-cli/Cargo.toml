@@ -43,6 +43,7 @@ erp-addon-sale_stock.workspace = true
 erp-addon-reporting.workspace = true
 erp-addon-account-reporting.workspace = true
 erp-addon-stock_account.workspace = true
+erp-addon-stock_landed_costs.workspace = true
 erp-addon-valuation.workspace = true
 # human resources: job positions (spike)
 erp-addon-hr.workspace = true
