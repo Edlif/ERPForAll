@@ -3,7 +3,9 @@
 // answer by name, and the pure operations on the loaded line list (fold, unfold, load more).
 export type CellKind = "monetary" | "decimal" | "integer" | "percent" | "date" | "text" | "empty";
 export type LineKind = "section" | "group" | "detail" | "total" | "more";
-export interface Cell { readonly drillable?: boolean; readonly kind: CellKind; readonly value: string | null; readonly scale: number; readonly zero: boolean }
+/** `tone` marks a cell the reader must notice (an overdue date); `currency` is the id whose symbol a monetary cell shows. */
+export interface Cell { readonly drillable?: boolean; readonly tone?: "danger"; readonly kind: CellKind; readonly value: string | null; readonly scale: number; readonly currency: number | null; readonly zero: boolean }
+export interface Currency { readonly symbol: string; readonly position: "before" | "after" }
 export interface Line {
   readonly id: string; readonly parent: string | null; readonly name: string; readonly level: number; readonly kind: LineKind;
   readonly unfoldable: boolean; unfolded: boolean; readonly cells: readonly Cell[]; readonly caret: readonly string[];
@@ -81,7 +83,11 @@ function cell(raw: unknown): Cell {
   const c = obj(raw, "a cell"), kind = str(c["kind"], "a cell kind");
   if (!KINDS.includes(kind)) throw new Error(`The server sent a cell of unknown kind '${kind}'.`);
   const value = orNull(c["value"], v => str(v, "a cell value"));
-  return { ...(c["drillable"] === undefined ? {} : { drillable: bool(c["drillable"], "whether a cell has source records") }), kind: kind as CellKind, value, scale: num(c["scale"], "a cell scale"), zero: bool(c["zero"], "a cell") };
+  if (c["tone"] !== undefined && c["tone"] !== "danger") throw new Error(`The server sent a cell of unknown tone '${String(c["tone"])}'.`);
+  return {
+    ...(c["drillable"] === undefined ? {} : { drillable: bool(c["drillable"], "whether a cell has source records") }), ...(c["tone"] === undefined ? {} : { tone: "danger" as const }),
+    kind: kind as CellKind, value, scale: num(c["scale"], "a cell scale"), currency: orNull(c["currency"], v => num(v, "a cell currency")), zero: bool(c["zero"], "a cell")
+  };
 }
 export function line(raw: unknown): Line {
   const l = obj(raw, "a line"), kind = str(l["kind"], "a line kind");
@@ -200,17 +206,44 @@ const separators = (lang: string): { group: string; decimal: string } => {
   return { group: parts.find(p => p.type === "group")?.value ?? ",", decimal: parts.find(p => p.type === "decimal")?.value ?? "." };
 };
 /** A decimal string shown in the user's locale without passing through a binary float (design §6: exact numbers). */
-export function formatCell(c: Cell, lang: string): string {
+export function formatCell(c: Cell, lang: string, currencies?: ReadonlyMap<number, Currency>): string {
   if (c.value === null || c.kind === "empty") return "";
+  if (c.kind === "date") return formatDate(c.value, lang, { year: "numeric", month: "2-digit", day: "2-digit" });
   if (c.kind !== "monetary" && c.kind !== "decimal" && c.kind !== "integer" && c.kind !== "percent") return c.value;
   const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(c.value);
   if (!match) return c.value;
   const { group, decimal } = separators(lang);
   const whole = match[2]!.replace(/\B(?=(\d{3})+(?!\d))/g, group);
-  return `${match[1]}${whole}${match[3] ? decimal + match[3] : ""}${c.kind === "percent" ? " %" : ""}`;
+  const number = `${match[1]}${whole}${match[3] ? decimal + match[3] : ""}${c.kind === "percent" ? " %" : ""}`;
+  // A currency whose symbol has not arrived (or may not be read) shows the bare amount, never a guessed symbol.
+  const currency = c.kind === "monetary" && c.currency !== null ? currencies?.get(c.currency) : undefined;
+  if (!currency) return number;
+  return currency.position === "before" ? `${currency.symbol}\u00a0${number}` : `${number}\u00a0${currency.symbol}`;
 }
-export function formatDate(iso: string, lang: string): string {
+/** The currencies of `lines` that `known` does not hold yet. */
+export function missingCurrencies(lines: readonly Line[], known: ReadonlyMap<number, Currency>): number[] {
+  const ids = new Set<number>();
+  for (const line of lines) for (const c of line.cells) if (c.currency !== null && !known.has(c.currency)) ids.add(c.currency);
+  return [...ids];
+}
+/** The answer of a currency read (`symbol`, `position`), refused by name when malformed. */
+export function decodeCurrencies(raw: unknown): Map<number, Currency> {
+  const out = new Map<number, Currency>();
+  for (const item of arr(raw, "the currencies")) {
+    const row = obj(item, "a currency"), position = row["position"];
+    if (position !== "before" && position !== "after") throw new Error("The server sent a currency with an unknown symbol position.");
+    out.set(num(row["id"], "a currency id"), { symbol: str(row["symbol"], "a currency symbol"), position });
+  }
+  return out;
+}
+export function formatDate(iso: string, lang: string, style: Intl.DateTimeFormatOptions = { dateStyle: "medium" }): string {
   const date = new Date(`${iso}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return iso;
-  try { return new Intl.DateTimeFormat(lang.replace("_", "-"), { dateStyle: "medium", timeZone: "UTC" }).format(date); } catch { return iso; }
+  try { return new Intl.DateTimeFormat(lang.replace("_", "-"), { ...style, timeZone: "UTC" }).format(date); } catch { return iso; }
+}
+/** The server's UTC computation time (`YYYY-MM-DD HH:MM:SS`) in the user's language and time zone; an unreadable value is shown as sent. */
+export function formatStamp(utc: string, lang: string, tz: string): string {
+  const date = new Date(`${utc.replace(" ", "T")}Z`);
+  if (Number.isNaN(date.getTime())) return utc;
+  try { return new Intl.DateTimeFormat(lang.replace("_", "-"), { dateStyle: "medium", timeStyle: "short", timeZone: tz }).format(date); } catch { return utc; }
 }

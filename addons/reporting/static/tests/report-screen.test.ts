@@ -39,7 +39,52 @@ test("the first opening asks for options, then lines, and shows the table", asyn
   expect(names(r)).toEqual(["Contacts"]);
   expect(rows(r)[0]?.querySelector(".report-cell")?.textContent).toBe("9");
   expect(r.env.host.querySelector("table")?.getAttribute("role")).toBe("treegrid");
-  expect(r.env.host.querySelector(".report-status")?.textContent).toContain("Computed 2026-11-19 10:00:00");
+  expect(r.env.host.querySelector(".report-status")?.textContent).toContain("Computed Nov 19, 2026");
+  expect(r.env.host.querySelector(".report-note")?.getAttribute("title")).toBe("2026-11-19 10:00:00 UTC");
+  expect(r.env.host.querySelector(".report-name-head")?.textContent).toBe("Contacts by Country");
+});
+
+test("a click on a line's name unfolds it and a second one folds it", async () => {
+  const r = mount(standard());
+  await settle();
+  click(rows(r)[0]?.querySelector(".report-label"));
+  await settle();
+  expect(names(r)).toEqual(["Contacts", "Belgium", "France"]);
+  click(rows(r)[0]?.querySelector(".report-name"));
+  await settle();
+  expect(names(r)).toEqual(["Contacts"]);
+  expect(r.calls.filter(c => c.method === "erp_report_expand")).toHaveLength(1);
+});
+
+test("amounts show their currency once it is read, dates the user's format, and tone and sign are marked", async () => {
+  const columns = [["Due date", "due", "date"], ["Debit", "debit", "monetary"], ["Balance", "balance", "monetary"]].map(([name, label, kind]) => ({ group: 0, name, label, kind, sortable: false }));
+  const money = (value: string, currency: number): Record<string, unknown> => ({ ...cell(value, "monetary", 2), currency });
+  const item = wireLine(root, "INV/0001", { cells: [{ ...cell("2026-11-05", "date"), tone: "danger" }, money("1250.00", 3), money("-40.50", 4)] });
+  const asked: unknown[] = [];
+  const r = mount(standard({
+    erp_report_lines: () => linesAnswer([item], wireOptions({ columns })),
+    "res.currency.web_read": args => { asked.push(args); return [{ id: 3, symbol: "$", position: "before" }, { id: 4, symbol: "kr", position: "after" }]; }
+  }));
+  await settle();
+  const cells = [...rows(r)[0]!.querySelectorAll<HTMLElement>(".report-cell")];
+  expect(cells.map(c => c.textContent)).toEqual(["11/05/2026", "$\u00a01,250.00", "-40.50\u00a0kr"]);
+  expect(cells.map(c => c.classList.contains("report-tone-danger"))).toEqual([true, false, false]);
+  expect(cells.map(c => c.classList.contains("report-negative"))).toEqual([false, false, true]);
+  expect([...r.env.host.querySelectorAll(".report-col")].map(th => th.className)).toEqual(["report-col report-col-date", "report-col report-col-monetary", "report-col report-col-monetary"]);
+  expect(asked).toEqual([{ ids: [3, 4], specification: { symbol: {}, position: {} } }]);
+});
+
+test("a refused currency read leaves the bare amounts and says so once", async () => {
+  const columns = [{ group: 0, name: "Debit", label: "debit", kind: "monetary", sortable: false }];
+  const r = mount(standard({
+    erp_report_lines: () => linesAnswer([wireLine(root, "INV/0001", { cells: [{ ...cell("1250.00", "monetary", 2), currency: 3 }] })], wireOptions({ columns })),
+    "res.currency.web_read": () => { throw new Error("No access to currencies."); }
+  }));
+  await settle();
+  click(r.env.host.querySelector("[data-action=refresh]"));
+  await settle();
+  expect(rows(r)[0]?.querySelector(".report-cell")?.textContent).toBe("1,250.00");
+  expect(r.notice.mock.calls).toEqual([["Currency symbols are not shown: No access to currencies."]]);
 });
 
 /// (partial: one period row above the column row when comparison gives several column groups, the main period sorts)
