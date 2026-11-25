@@ -142,6 +142,7 @@ try {
   assert.ok((await page.locator("tr.report-line", { hasText: "Northfield Trading" }).locator("td").last().getAttribute("class")).includes("report-negative"), "a negative balance is marked");
   for (const [width, scheme] of [[1440, "light"], [1440, "dark"], [820, "light"]]) {
     await page.setViewportSize({ width, height: 900 }); await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, scheme);
+    await page.waitForTimeout(300); // colour transitions of the theme switch end before the capture
     const shot = `report-ledger-${width}-${scheme}.png`;
     await page.screenshot({ path: path.join(output, shot), fullPage: true }); screenshots.push(shot);
   }
