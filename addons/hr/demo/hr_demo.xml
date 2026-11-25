@@ -444,7 +444,6 @@
   <record id="hr_demo_ver_nadia_1" model="hr.employee.version">
     <field name="name">CTR-2021-001 — Executive Contract</field>
     <field name="employee_id" ref="hr_demo_emp_nadia"/>
-    <field name="company_id" ref="base.main_company"/>
     <field name="department_id" ref="hr_demo_dept_management"/>
     <field name="job_id" ref="hr_demo_job_ceo"/>
     <field name="employee_type_id" ref="hr_employee_type_employee"/>
@@ -456,7 +455,6 @@
   <record id="hr_demo_ver_budi_1" model="hr.employee.version">
     <field name="name">CTR-2021-014 — Lead Architect</field>
     <field name="employee_id" ref="hr_demo_emp_budi"/>
-    <field name="company_id" ref="base.main_company"/>
     <field name="department_id" ref="hr_demo_dept_backend"/>
     <field name="job_id" ref="hr_demo_job_rust_eng"/>
     <field name="employee_type_id" ref="hr_employee_type_employee"/>
@@ -469,7 +467,6 @@
   <record id="hr_demo_ver_budi_2" model="hr.employee.version">
     <field name="name">CTR-2024-002 — VP of Engineering</field>
     <field name="employee_id" ref="hr_demo_emp_budi"/>
-    <field name="company_id" ref="base.main_company"/>
     <field name="department_id" ref="hr_demo_dept_engineering"/>
     <field name="job_id" ref="hr_demo_job_vp_eng"/>
     <field name="employee_type_id" ref="hr_employee_type_employee"/>

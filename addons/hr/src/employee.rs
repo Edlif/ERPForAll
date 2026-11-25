@@ -726,14 +726,7 @@ impl HrEmployee {
             Cell::Str(s) => format!("{s} — Contract History"),
             _ => "Contract History".to_string(),
         };
-        let company_id = match this.as_records().cell(tx, "company_id").await? {
-            Cell::Id(cid) => Some(cid),
-            _ => None,
-        };
-        let mut ctx = ValueMap::from([("default_employee_id".into(), Value::Int(id))]);
-        if let Some(cid) = company_id {
-            ctx.insert("default_company_id".into(), Value::Int(cid));
-        }
+        let ctx = ValueMap::from([("default_employee_id".into(), Value::Int(id))]);
         Ok(Value::Map(Arc::new(ValueMap::from([
             ("type".into(), Value::str("ir.actions.act_window")),
             ("name".into(), Value::str(name)),
