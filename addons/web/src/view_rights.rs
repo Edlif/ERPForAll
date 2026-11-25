@@ -226,6 +226,30 @@ mod tests {
     }
 
     #[test]
+    fn a_hierarchy_is_draggable_only_with_write_rights() {
+        let hierarchy = || {
+            view(serde_json::json!({
+                "kind": "hierarchy", "children": [],
+                "parent_field": {"model": "hr.employee", "name": "parent_id"},
+                "draggable": true
+            }))
+        };
+        let mut denied = hierarchy();
+        restrict_root(
+            &mut denied,
+            ModelRights {
+                write: false,
+                ..ALL
+            },
+        )
+        .unwrap();
+        assert_eq!(root(&denied)["draggable"], false);
+        let mut granted = hierarchy();
+        restrict_root(&mut granted, ALL).unwrap();
+        assert_eq!(root(&granted)["draggable"], true);
+    }
+
+    #[test]
     fn a_service_form_is_left_as_it_is() {
         let mut service = view(serde_json::json!({
             "kind": "form", "record_mode": "service", "children": []
