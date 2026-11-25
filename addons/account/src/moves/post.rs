@@ -64,12 +64,33 @@ impl AccountMove {
         post_moves(tx, this.as_records()).await
     }
 
-    /// Returns cancelled entries to draft. A posted entry is refused: the company posting policy
-    /// is reversal-only.
+    /// Returns cancelled entries (or, when allowed by company policy, unlocked un-reconciled
+    /// posted entries) to draft.
     #[method]
     #[rpc(effect = write)]
     pub async fn button_draft(this: &RecordSet<AccountMove>, tx: &mut Transaction) -> Result<()> {
         reset_moves(tx, this.as_records()).await
+    }
+
+    /// Create and open a reversed draft entry or credit note for this posted entry.
+    #[method]
+    #[rpc(effect = write)]
+    pub async fn action_reverse(
+        this: &RecordSet<AccountMove>,
+        tx: &mut Transaction,
+    ) -> Result<Value> {
+        let rev_id = reverse_move(tx, this.as_records()).await?;
+        let mut action = erp_sdk::ValueMap::new();
+        action.insert("type".into(), Value::str("ir.actions.act_window"));
+        action.insert("name".into(), Value::str("Reversal"));
+        action.insert("res_model".into(), Value::str("account.move"));
+        action.insert("res_id".into(), Value::Int(rev_id));
+        action.insert(
+            "views".into(),
+            Value::list([Value::list([Value::False, Value::str("form")])]),
+        );
+        action.insert("target".into(), Value::str("current"));
+        Ok(Value::Map(action.into()))
     }
 
     /// Whether Reset to Draft is refused ([`reset_moves`]): every entry but a cancelled one, and
@@ -311,9 +332,32 @@ pub async fn reset_moves(tx: &mut Transaction, moves: &Records) -> Result<()> {
             .map(|(id, _, _)| *id)
             .collect();
         if !posted.is_empty() {
-            return Err(posted_refusal(tx, &posted, "reset to draft").await?);
+            let disallowed: i64 = tx
+                .query(
+                    "SELECT count(*)::int8 FROM account_move m \
+                     JOIN res_company c ON c.id = m.company_id \
+                     WHERE m.id = ANY($1::int8[]) AND COALESCE(c.allow_posted_reset, false) IS FALSE",
+                    &[&posted],
+                )
+                .await?[0]
+                .try_get(0)
+                .map_err(db)?;
+            if disallowed > 0 {
+                return Err(posted_refusal(tx, &posted, "reset to draft").await?);
+            }
+            let closed = read_closed(tx, &posted).await?;
+            refuse_locked(tx, &closed, "reset to draft", LockScope::Tax, None).await?;
+            refuse_consequences(tx, &posted, "reset to draft").await?;
+            tx.execute(
+                "UPDATE account_move SET name = NULL WHERE id = ANY($1::int8[])",
+                &[&posted],
+            )
+            .await?;
         }
-        if states.iter().any(|(_, state, _)| state != "cancel") {
+        if states
+            .iter()
+            .any(|(_, state, _)| state != "cancel" && state != "posted")
+        {
             return Err(Error::user(
                 "Only a posted or cancelled entry can go back to draft; the selection holds a draft.",
             ));
@@ -637,8 +681,8 @@ async fn closed_refusal(
         .remove(&first.id)
         .unwrap_or_default();
     reasons.push(
-        "a posted entry is corrected by a reversal (which is not available yet), a cancelled one \
-         by resetting it to draft first"
+        "a posted entry is corrected by Reverse Entry (or Reset to Draft when enabled in company settings), \
+         a cancelled one by resetting it to draft first"
             .to_owned(),
     );
     Err(Error::user(format!(
@@ -851,8 +895,158 @@ fn sorted_ids(moves: &Records) -> Vec<i64> {
 }
 
 /// The posting-policy part of the refusal of Reset to Draft and Cancel on a posted entry.
-const REVERSAL_ONLY: &str = "this company's posting policy only allows a reversal, which is not \
-     available yet (a policy that allows resetting a posted entry is not available yet either)";
+const REVERSAL_ONLY: &str = "this company's posting policy requires a reversal (use Reverse Entry, \
+     or enable 'Allow Resetting Posted Entries' in Company Accounting settings)";
+
+/// Create a reversed draft journal entry (or credit note) for a posted `account.move`.
+/// Negates every line's `balance` and `amount_currency` and applies `is_storno` when enabled
+/// on the company. Returns the created reversal entry id.
+pub async fn reverse_move(tx: &mut Transaction, moves: &Records) -> Result<i64> {
+    authorize(tx, moves, "reverse").await?;
+    let source_id = moves.ensure_one()?.int()?;
+    let env = moves.env().clone();
+    tx.savepoint(async move |tx| {
+        tx.flush().await?;
+        let header_rows = tx
+            .query(
+                "SELECT m.state::text, m.name::text, m.move_type::text, m.journal_id::int8, \
+                        m.company_id::int8, m.currency_id::int8, m.partner_id::int8, m.date, \
+                        COALESCE(c.account_storno, false) \
+                 FROM account_move m \
+                 JOIN res_company c ON c.id = m.company_id \
+                 WHERE m.id = $1",
+                &[&source_id],
+            )
+            .await?;
+        let Some(hrow) = header_rows.first() else {
+            return Err(Error::missing("Journal entry not found."));
+        };
+        let state: String = hrow.try_get(0).map_err(db)?;
+        if state != "posted" {
+            return Err(Error::user("Only posted journal entries can be reversed."));
+        }
+        let orig_name: Option<String> = hrow.try_get(1).map_err(db)?;
+        let orig_type: String = hrow.try_get(2).map_err(db)?;
+        let journal_id: i64 = hrow.try_get(3).map_err(db)?;
+        let company_id: i64 = hrow.try_get(4).map_err(db)?;
+        let currency_id: i64 = hrow.try_get(5).map_err(db)?;
+        let partner_id: Option<i64> = hrow.try_get(6).map_err(db)?;
+        let orig_date: Date = hrow.try_get(7).map_err(db)?;
+        let storno: bool = hrow.try_get(8).map_err(db)?;
+
+        let rev_type = match orig_type.as_str() {
+            "out_invoice" => "out_refund",
+            "out_refund" => "out_invoice",
+            "in_invoice" => "in_refund",
+            "in_refund" => "in_invoice",
+            _ => "entry",
+        };
+        let ref_label = format!("Reversal of {}", orig_name.as_deref().unwrap_or("Entry"));
+        let today = erp_addon_base::company_calendar::business_date(tx, company_id)
+            .await
+            .unwrap_or(orig_date);
+
+        let mut mvals = RawVals::new();
+        mvals.insert("move_type".into(), Cell::Str(rev_type.into()));
+        mvals.insert("journal_id".into(), Cell::Id(journal_id));
+        mvals.insert("company_id".into(), Cell::Id(company_id));
+        mvals.insert("currency_id".into(), Cell::Id(currency_id));
+        mvals.insert("date".into(), Cell::Date(today));
+        if matches!(
+            rev_type,
+            "out_refund" | "in_refund" | "out_invoice" | "in_invoice"
+        ) {
+            mvals.insert("invoice_date".into(), Cell::Date(today));
+        }
+        if let Some(pid) = partner_id {
+            mvals.insert("partner_id".into(), Cell::Id(pid));
+        }
+        mvals.insert("ref".into(), Cell::Str(ref_label.into()));
+
+        let unchecked_moves = super::unchecked(&env.records("account.move")?);
+        let created = unchecked_moves.create(tx, vec![mvals]).await?;
+        let rev_id = created
+            .ids()
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::invariant("Created reversal entry returned no id."))?;
+
+        let line_rows = tx
+            .query(
+                "SELECT account_id::int8, partner_id::int8, name, display_type::text, \
+                        currency_id::int8, COALESCE(balance, 0), COALESCE(amount_currency, 0), \
+                        product_id::int8, product_uom_id::int8, COALESCE(quantity, 0), \
+                        COALESCE(price_unit, 0), COALESCE(discount, 0) \
+                 FROM account_move_line \
+                 WHERE move_id = $1 ORDER BY sequence, id",
+                &[&source_id],
+            )
+            .await?;
+
+        let unchecked_lines = super::unchecked(&env.records("account.move.line")?);
+        let mut new_lines = Vec::new();
+        for lrow in line_rows {
+            let display_type: String = lrow.try_get(3).map_err(db)?;
+            if rev_type != "entry" && display_type != "product" {
+                continue;
+            }
+            let account_id: Option<i64> = lrow.try_get(0).map_err(db)?;
+            let l_partner: Option<i64> = lrow.try_get(1).map_err(db)?;
+            let name: Option<String> = lrow.try_get(2).map_err(db)?;
+            let l_cur: i64 = lrow.try_get(4).map_err(db)?;
+            let balance: Decimal = lrow.try_get(5).map_err(db)?;
+            let amt_cur: Decimal = lrow.try_get(6).map_err(db)?;
+            let product_id: Option<i64> = lrow.try_get(7).map_err(db)?;
+            let uom_id: Option<i64> = lrow.try_get(8).map_err(db)?;
+            let qty: Decimal = lrow.try_get(9).map_err(db)?;
+            let price_unit: Decimal = lrow.try_get(10).map_err(db)?;
+            let discount: Decimal = lrow.try_get(11).map_err(db)?;
+
+            let mut lvals = RawVals::new();
+            lvals.insert("move_id".into(), Cell::Id(rev_id));
+            if let Some(aid) = account_id {
+                lvals.insert("account_id".into(), Cell::Id(aid));
+            }
+            if let Some(pid) = l_partner {
+                lvals.insert("partner_id".into(), Cell::Id(pid));
+            }
+            if let Some(lbl) = name {
+                lvals.insert("name".into(), Cell::Str(lbl.into()));
+            }
+            lvals.insert("display_type".into(), Cell::Str(display_type.into()));
+            lvals.insert("currency_id".into(), Cell::Id(l_cur));
+            if rev_type == "entry" {
+                lvals.insert("balance".into(), Cell::Decimal(-balance));
+                lvals.insert("amount_currency".into(), Cell::Decimal(-amt_cur));
+                if storno {
+                    lvals.insert("is_storno".into(), Cell::Bool(true));
+                }
+            } else {
+                if let Some(pid) = product_id {
+                    lvals.insert("product_id".into(), Cell::Id(pid));
+                }
+                if let Some(uid) = uom_id {
+                    lvals.insert("product_uom_id".into(), Cell::Id(uid));
+                }
+                lvals.insert("quantity".into(), Cell::Decimal(qty));
+                lvals.insert("price_unit".into(), Cell::Decimal(price_unit));
+                lvals.insert("discount".into(), Cell::Decimal(discount));
+            }
+            new_lines.push(lvals);
+        }
+        if !new_lines.is_empty() {
+            unchecked_lines.create(tx, new_lines).await?;
+        }
+        if rev_type != "entry" {
+            crate::invoice::sync_lines(tx, &env, &[rev_id]).await?;
+        } else {
+            super::refresh_entry_totals(tx, &[rev_id]).await?;
+            super::check_balanced(tx, &[rev_id]).await?;
+        }
+        Ok(rev_id)
+    })
+    .await
+}
 
 async fn authorize(tx: &mut Transaction, moves: &Records, what: &str) -> Result<()> {
     let env = moves.env().clone();

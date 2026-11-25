@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_account_incoterms_list" model="ir.ui.view">
+    <field name="name">account.incoterms.list</field>
+    <field name="model">account.incoterms</field>
+    <field name="arch" type="xml">
+      <list string="Incoterms">
+        <field name="code"/>
+        <field name="name"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_account_incoterms_form" model="ir.ui.view">
+    <field name="name">account.incoterms.form</field>
+    <field name="model">account.incoterms</field>
+    <field name="arch" type="xml">
+      <form string="Incoterm">
+        <sheet>
+          <group>
+            <field name="code"/>
+            <field name="name"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_account_incoterms_search" model="ir.ui.view">
+    <field name="name">account.incoterms.search</field>
+    <field name="model">account.incoterms</field>
+    <field name="arch" type="xml">
+      <search string="Incoterms">
+        <field name="code"/>
+        <field name="name"/>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_account_incoterms" model="ir.actions.act_window">
+    <field name="name">Incoterms</field>
+    <field name="res_model">account.incoterms</field>
+    <field name="view_mode">list,form</field>
+    <field name="target">current</field>
+    <field name="search_view_id" ref="view_account_incoterms_search"/>
+  </record>
+
+  <record id="view_account_cash_rounding_list" model="ir.ui.view">
+    <field name="name">account.cash.rounding.list</field>
+    <field name="model">account.cash.rounding</field>
+    <field name="arch" type="xml">
+      <list string="Cash Roundings">
+        <field name="name"/>
+        <field name="rounding"/>
+        <field name="strategy"/>
+        <field name="rounding_method"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_account_cash_rounding_form" model="ir.ui.view">
+    <field name="name">account.cash.rounding.form</field>
+    <field name="model">account.cash.rounding</field>
+    <field name="arch" type="xml">
+      <form string="Cash Rounding">
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="e.g. Round to 0.05"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="rounding"/>
+              <field name="strategy"/>
+              <field name="rounding_method"/>
+            </group>
+            <group>
+              <field name="profit_account_id" invisible="strategy != 'add_invoice_line'"/>
+              <field name="loss_account_id" invisible="strategy != 'add_invoice_line'"/>
+              <field name="company_id"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_account_cash_rounding_search" model="ir.ui.view">
+    <field name="name">account.cash.rounding.search</field>
+    <field name="model">account.cash.rounding</field>
+    <field name="arch" type="xml">
+      <search string="Cash Roundings">
+        <field name="name"/>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_account_cash_rounding" model="ir.actions.act_window">
+    <field name="name">Cash Roundings</field>
+    <field name="res_model">account.cash.rounding</field>
+    <field name="view_mode">list,form</field>
+    <field name="target">current</field>
+    <field name="search_view_id" ref="view_account_cash_rounding_search"/>
+  </record>
+
+  <menuitem id="menu_account_cash_rounding" name="Cash Roundings" parent="menu_finance_configuration" action="action_account_cash_rounding" groups="account.group_account_manager" sequence="75"/>
+  <record id="menu_account_cash_rounding" model="ir.ui.menu"><field name="web_icon">lucide:calculator</field></record>
+  <menuitem id="menu_account_incoterms" name="Incoterms" parent="menu_finance_configuration" action="action_account_incoterms" groups="account.group_account_readonly" sequence="78"/>
+  <record id="menu_account_incoterms" model="ir.ui.menu"><field name="web_icon">lucide:globe</field></record>
+</erp>

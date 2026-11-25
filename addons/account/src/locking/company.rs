@@ -12,7 +12,6 @@ use erp_sdk::{
     audit::{AccountLockDateChanged, AuthEvent},
 };
 
-const ACTIVATION: &str = "Hard lock activation is not available yet: the maintenance drain, entry checks and activation audit must be verified first.";
 /// A company-date patch. Unmentioned fields stay unchanged; `None` explicitly clears a soft date.
 #[derive(Debug, Clone, Default)]
 pub struct LockPatch {
@@ -81,7 +80,35 @@ async fn prepare(tx: &mut Transaction, company: i64, patch: &LockPatch) -> Resul
                     "hard_lock_date cannot be removed or decreased.",
                 ));
             }
-            return Err(Error::user(ACTIVATION));
+            if let Some(date) = new {
+                if !valid_date(date) {
+                    return Err(Error::validation(
+                        "hard_lock_date is outside PostgreSQL's date range.",
+                    ));
+                }
+                if date > today {
+                    return Err(Error::validation(
+                        "hard_lock_date cannot be set in the future.",
+                    ));
+                }
+                let draft_count: i64 = tx
+                    .query(
+                        "SELECT count(*)::int8 FROM account_move \
+                         WHERE company_id = $1 AND state = 'draft' AND date <= $2",
+                        &[&company, &date],
+                    )
+                    .await?[0]
+                    .try_get(0)
+                    .map_err(db)?;
+                if draft_count > 0 {
+                    return Err(Error::user(format!(
+                        "Cannot activate hard lock on {date}: {draft_count} draft journal \
+                         entry(ies) exist on or before that date. Post or cancel them first."
+                    )));
+                }
+            }
+            changes.push(Change { field, old, new });
+            continue;
         }
         if let Some(date) = new {
             if !valid_date(date) {

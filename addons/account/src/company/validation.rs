@@ -21,17 +21,29 @@ const ACCOUNT_FIELDS: [&str; 11] = [
     "expense_accrual_account_id",
     "revenue_accrual_account_id",
 ];
-const JOURNAL_FIELDS: [&str; 2] = [
+const JOURNAL_FIELDS: [&str; 3] = [
     "currency_exchange_journal_id",
     "automatic_entry_default_journal_id",
+    "tax_cash_basis_journal_id",
 ];
-const OPTIONS: [&str; 4] = [
+const OPTIONS: [&str; 16] = [
     "tax_calculation_rounding_method",
     "anglo_saxon_accounting",
     "expects_chart_of_accounts",
     "chart_template",
+    "chart_template_selection",
+    "account_storno",
+    "allow_posted_reset",
+    "tax_exigibility",
+    "account_cash_rounding_enabled",
+    "account_use_credit_limit",
+    "account_default_credit_limit",
+    "display_invoice_amount_total_words",
+    "qr_code",
+    "quick_edit_mode",
+    "autopost_bills",
+    "invoice_terms",
 ];
-const CHART_UNAVAILABLE: &str = "Chart activation is not available yet.";
 
 fn touches_configuration(vals: &RawVals) -> bool {
     PREFIXES
@@ -59,10 +71,10 @@ fn validate_scalars(vals: &RawVals) -> Result<()> {
             }
         }
     }
-    if let Some(cell) = vals.get("chart_template")
-        && !empty(cell)
+    if let Some(Cell::Str(template)) = vals.get("chart_template")
+        && !template.is_empty()
     {
-        return Err(Error::user(CHART_UNAVAILABLE));
+        crate::company::chart_activation::chart_template_accounts(template)?;
     }
     Ok(())
 }
@@ -119,13 +131,6 @@ pub(crate) async fn prepare_write(
     }
     authorize_company(records, tx).await?;
     validate_scalars(vals)?;
-    if vals.contains("chart_template") {
-        for company in records.iter() {
-            if !empty(&company.cell(tx, "chart_template").await?) {
-                return Err(Error::user(CHART_UNAVAILABLE));
-            }
-        }
-    }
     targets_readable(records, tx, vals).await?;
     Ok(true)
 }

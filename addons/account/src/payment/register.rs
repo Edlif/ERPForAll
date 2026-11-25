@@ -170,7 +170,6 @@ struct Document {
     payment_state: String,
     company: i64,
     currency: i64,
-    company_currency: i64,
     partner: Option<i64>,
     residual: Decimal,
     account: Option<i64>,
@@ -246,7 +245,6 @@ async fn documents(tx: &mut Transaction, moves: &Records) -> Result<Vec<Document
                 payment_state: row.try_get(4).map_err(db)?,
                 company: row.try_get(5).map_err(db)?,
                 currency: row.try_get(6).map_err(db)?,
-                company_currency: row.try_get(7).map_err(db)?,
                 partner: row.try_get(8).map_err(db)?,
                 residual: row.try_get(9).map_err(db)?,
                 account: row.try_get(10).map_err(db)?,
@@ -295,13 +293,6 @@ fn admit(docs: &[Document]) -> Result<()> {
                 doc.name
             )));
         }
-        if doc.currency != doc.company_currency {
-            return Err(Error::user(format!(
-                "{} is in another currency than its company's; paying documents in other \
-                 currencies is not available yet.",
-                doc.name
-            )));
-        }
         if doc.account.is_none() {
             return Err(Error::user(format!(
                 "{} has its amount due on several receivable or payable accounts; such documents \
@@ -309,6 +300,11 @@ fn admit(docs: &[Document]) -> Result<()> {
                 doc.name
             )));
         }
+    }
+    if docs.iter().any(|d| d.currency != first.currency) {
+        return Err(Error::user(
+            "The documents use different currencies; register payments one currency at a time.",
+        ));
     }
     if docs.iter().any(|d| d.company != first.company) {
         return Err(Error::user(

@@ -25,7 +25,9 @@ mod lines;
 pub(crate) mod plan;
 mod removal;
 
-pub use apply::{reconcile_lines, unreconcile_partials};
+pub use apply::{
+    compute_fx_difference, reconcile_lines, settled_currency_amount, unreconcile_partials,
+};
 
 use erp_sdk::prelude::*;
 

@@ -340,7 +340,7 @@ pub async fn reconcile_lines(tx: &mut Transaction, lines: &Records) -> Result<()
         if pairs.is_empty() {
             return Ok(());
         }
-        let endpoints = insert_matches(tx, &pairs).await?;
+        let endpoints = insert_matches(tx, &pairs, &items).await?;
         let graph = closure(tx, &endpoints).await?;
         settle(tx, &graph, true).await?;
         let moves: Vec<i64> = sorted(
@@ -467,14 +467,40 @@ async fn admit<'a>(
             names.into_values().collect::<Vec<_>>().join(", ")
         )));
     }
-    if let Some(item) = chosen.iter().find(|i| i.currency != i.company_currency) {
-        return Err(Error::user(format!(
-            "The item of {} is in another currency than the company's; matching items in other \
-             currencies is not available yet.",
-            item.entry()
-        )));
-    }
     Ok(chosen)
+}
+
+/// Pure exact-decimal computation of the currency amount settled on one side of a partial match.
+/// When the line is in company currency, returns `matched_company`. When in foreign currency,
+/// settles the full remaining currency residual if `matched_company >= remaining_company.abs()`,
+/// otherwise allocates proportionally rounded to `scale` decimal places.
+pub fn settled_currency_amount(
+    matched_company: Decimal,
+    remaining_company: Decimal,
+    remaining_currency: Decimal,
+    same_as_company_currency: bool,
+    scale: u32,
+) -> Decimal {
+    if same_as_company_currency {
+        return matched_company;
+    }
+    let rem_co_abs = remaining_company.abs();
+    let rem_cur_abs = remaining_currency.abs();
+    if rem_co_abs.is_zero() || rem_cur_abs.is_zero() {
+        return Decimal::ZERO;
+    }
+    if matched_company >= rem_co_abs {
+        rem_cur_abs
+    } else {
+        ((rem_cur_abs * matched_company) / rem_co_abs).round_dp(scale)
+    }
+}
+
+/// Pure exact-decimal foreign-exchange gain/loss between a debit and credit settling the same
+/// foreign currency amount (`debit_company - credit_company`; positive = FX loss on receivable,
+/// negative = FX gain).
+pub fn compute_fx_difference(debit_company: Decimal, credit_company: Decimal) -> Decimal {
+    debit_company - credit_company
 }
 
 /// The display names of `ids` in `model`, read with the caller's rights.
@@ -500,22 +526,58 @@ async fn display_names(
 /// Inserts the matches of `pairs` and lowers the residuals of their items by the matched amounts
 /// in one grouped update; an item's first match creates its open-item row from
 /// its amounts. Returns the matched items, sorted.
-async fn insert_matches(tx: &mut Transaction, pairs: &[Pair]) -> Result<Vec<i64>> {
+async fn insert_matches(
+    tx: &mut Transaction,
+    pairs: &[Pair],
+    items: &BTreeMap<i64, Item>,
+) -> Result<Vec<i64>> {
     let debits: Vec<i64> = pairs.iter().map(|p| p.debit).collect();
     let credits: Vec<i64> = pairs.iter().map(|p| p.credit).collect();
     let amounts: Vec<Decimal> = pairs.iter().map(|p| p.amount).collect();
+    let mut rem_co: BTreeMap<i64, Decimal> = items
+        .iter()
+        .map(|(&id, item)| (id, item.residual().abs()))
+        .collect();
+    let mut rem_cur: BTreeMap<i64, Decimal> = items
+        .iter()
+        .map(|(&id, item)| (id, item.residual_currency().abs()))
+        .collect();
+    let mut debit_curs = Vec::with_capacity(pairs.len());
+    let mut credit_curs = Vec::with_capacity(pairs.len());
+    for p in pairs {
+        let d_same = items
+            .get(&p.debit)
+            .is_none_or(|i| i.currency == i.company_currency);
+        let c_same = items
+            .get(&p.credit)
+            .is_none_or(|i| i.currency == i.company_currency);
+        let d_rco = rem_co.get(&p.debit).copied().unwrap_or(p.amount);
+        let d_rcur = rem_cur.get(&p.debit).copied().unwrap_or(p.amount);
+        let d_amt_cur = settled_currency_amount(p.amount, d_rco, d_rcur, d_same, 2);
+        rem_co.insert(p.debit, (d_rco - p.amount).max(Decimal::ZERO));
+        rem_cur.insert(p.debit, (d_rcur - d_amt_cur).max(Decimal::ZERO));
+        debit_curs.push(d_amt_cur);
+
+        let c_rco = rem_co.get(&p.credit).copied().unwrap_or(p.amount);
+        let c_rcur = rem_cur.get(&p.credit).copied().unwrap_or(p.amount);
+        let c_amt_cur = settled_currency_amount(p.amount, c_rco, c_rcur, c_same, 2);
+        rem_co.insert(p.credit, (c_rco - p.amount).max(Decimal::ZERO));
+        rem_cur.insert(p.credit, (c_rcur - c_amt_cur).max(Decimal::ZERO));
+        credit_curs.push(c_amt_cur);
+    }
     let endpoints = sorted(debits.iter().chain(&credits).copied().collect());
     let uid = tx.env().uid();
     tx.execute(
         "INSERT INTO account_partial_reconcile (debit_move_id, credit_move_id, company_id, \
          debit_currency_id, credit_currency_id, amount, debit_amount_currency, \
          credit_amount_currency, max_date, create_uid, create_date, write_uid, write_date) \
-         SELECT v.d, v.c, dl.company_id, dl.currency_id, cl.currency_id, v.a, v.a, v.a, \
-                GREATEST(dl.date, cl.date), $4, now() AT TIME ZONE 'UTC', $4, now() AT TIME ZONE 'UTC' \
-         FROM unnest($1::int8[], $2::int8[], $3::numeric[]) WITH ORDINALITY AS v(d, c, a, n) \
+         SELECT v.d, v.c, dl.company_id, dl.currency_id, cl.currency_id, v.a, v.da, v.ca, \
+                GREATEST(dl.date, cl.date), $6, now() AT TIME ZONE 'UTC', $6, now() AT TIME ZONE 'UTC' \
+         FROM unnest($1::int8[], $2::int8[], $3::numeric[], $4::numeric[], $5::numeric[]) \
+              WITH ORDINALITY AS v(d, c, a, da, ca, n) \
          JOIN account_move_line dl ON dl.id = v.d JOIN account_move_line cl ON cl.id = v.c \
          ORDER BY v.n",
-        &[&debits, &credits, &amounts, &uid],
+        &[&debits, &credits, &amounts, &debit_curs, &credit_curs, &uid],
     )
     .await?;
     // a concurrent first match of the same item is a unique conflict or a serialization failure
@@ -536,15 +598,17 @@ async fn insert_matches(tx: &mut Transaction, pairs: &[Pair]) -> Result<Vec<i64>
         .query(
             "UPDATE account_open_item o SET \
              amount_residual = o.amount_residual - d.delta, \
-             amount_residual_currency = o.amount_residual_currency - d.delta, \
-             write_uid = $4, write_date = now() AT TIME ZONE 'UTC' \
-             FROM (SELECT line_id, SUM(delta) AS delta FROM ( \
-                     SELECT x.line_id, x.delta FROM unnest($1::int8[], $3::numeric[]) AS x(line_id, delta) \
+             amount_residual_currency = o.amount_residual_currency - d.delta_cur, \
+             write_uid = $6, write_date = now() AT TIME ZONE 'UTC' \
+             FROM (SELECT line_id, SUM(delta) AS delta, SUM(delta_cur) AS delta_cur FROM ( \
+                     SELECT x.line_id, x.delta, x.delta_cur \
+                     FROM unnest($1::int8[], $3::numeric[], $4::numeric[]) AS x(line_id, delta, delta_cur) \
                      UNION ALL \
-                     SELECT y.line_id, -y.delta FROM unnest($2::int8[], $3::numeric[]) AS y(line_id, delta) \
+                     SELECT y.line_id, -y.delta, -y.delta_cur \
+                     FROM unnest($2::int8[], $3::numeric[], $5::numeric[]) AS y(line_id, delta, delta_cur) \
                    ) s GROUP BY line_id) d \
              WHERE o.line_id = d.line_id RETURNING o.line_id::int8",
-            &[&debits, &credits, &amounts, &uid],
+            &[&debits, &credits, &amounts, &debit_curs, &credit_curs, &uid],
         )
         .await?;
     if rows.len() != endpoints.len() {
@@ -960,3 +1024,33 @@ async fn invalidate(tx: &mut Transaction) -> Result<()> {
 #[cfg(test)]
 #[path = "tests/apply.rs"]
 mod tests;
+
+#[cfg(test)]
+mod fx_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn dec(s: &str) -> Decimal {
+        Decimal::from_str(s).expect("decimal literal")
+    }
+
+    #[test]
+    fn foreign_currency_settlement_and_fx_difference_are_exact() {
+        assert_eq!(
+            settled_currency_amount(dec("50.00"), dec("100.00"), dec("100.00"), true, 2),
+            dec("50.00")
+        );
+        assert_eq!(
+            settled_currency_amount(dec("55.00"), dec("110.00"), dec("100.00"), false, 2),
+            dec("50.00")
+        );
+        assert_eq!(
+            settled_currency_amount(dec("110.00"), dec("110.00"), dec("100.00"), false, 2),
+            dec("100.00")
+        );
+        assert_eq!(
+            compute_fx_difference(dec("110.00"), dec("120.00")),
+            dec("-10.00")
+        );
+    }
+}

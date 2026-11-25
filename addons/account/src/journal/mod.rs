@@ -206,12 +206,13 @@ pub struct AccountJournal {
             ("year_range", "Every fiscal year"),
             ("year_range_month", "Every month of the fiscal year"),
         ],
+        default = "year",
         string = "Numbers Restart"
     )]
     pub sequence_reset: Option<Arc<str>>,
     /// Digits of the counter of the entry numbers (1 to 64); set from the type at create when
     /// not given, and kept when the type changes later.
-    #[field(integer, string = "Number Digits")]
+    #[field(integer, default = 4, string = "Number Digits")]
     pub sequence_padding: i32,
     /// The ledger the journal posts to; empty is the statutory ledger. A ledger in use cannot be
     /// deleted: ledgers have no company, so a deletion would move journals of companies the user
@@ -326,11 +327,36 @@ impl AccountJournal {
                 continue; // the required check names the missing type
             };
             let (reset, padding) = numbering_defaults(&journal_type);
-            if !vals.contains("sequence_reset") {
+            let reset_empty = match vals.get("sequence_reset") {
+                None | Some(Cell::Null | Cell::Bool(false)) => true,
+                Some(Cell::Str(s)) => s.trim().is_empty(),
+                _ => false,
+            };
+            if reset_empty {
                 vals.insert("sequence_reset".into(), Cell::Str(reset.into()));
             }
-            if !vals.contains("sequence_padding") {
+            let padding_empty = matches!(
+                vals.get("sequence_padding"),
+                None | Some(Cell::Null | Cell::Int(0))
+            );
+            if padding_empty {
                 vals.insert("sequence_padding".into(), Cell::Int(padding));
+            }
+            if is_liquidity(&journal_type)
+                && matches!(
+                    vals.get("default_account_id"),
+                    None | Some(Cell::Null | Cell::Bool(false))
+                )
+            {
+                let acc_id = auto_create_liquidity_account(
+                    tx,
+                    this.env(),
+                    company,
+                    &journal_type,
+                    vals.get("name"),
+                )
+                .await?;
+                vals.insert("default_account_id".into(), Cell::Id(acc_id));
             }
             if matches!(vals.get("code"), Some(Cell::Str(code)) if !code.is_empty()) {
                 continue;
@@ -890,4 +916,88 @@ async fn readable(tx: &mut Transaction, env: &Env, model: &str, id: i64) -> Resu
         .filtered_access(tx, Operation::Read)
         .await?
         .is_empty())
+}
+
+/// Auto-create a dedicated liquidity account (`asset_cash` or `liability_credit_card`) when a
+/// new bank, cash or credit card journal is created without an explicit `default_account_id`.
+async fn auto_create_liquidity_account(
+    tx: &mut Transaction,
+    env: &Env,
+    company_id: i64,
+    journal_type: &str,
+    name_cell: Option<&Cell>,
+) -> Result<i64> {
+    fn db_err(e: impl std::error::Error + Send + Sync + 'static) -> Error {
+        Error::db("Company prefix could not be read for journal account creation.").with_source(e)
+    }
+    let rows = tx
+        .query(
+            "SELECT bank_account_code_prefix, cash_account_code_prefix FROM res_company WHERE id = $1",
+            &[&company_id],
+        )
+        .await?;
+    let (bank_prefix, cash_prefix): (Option<String>, Option<String>) = if let Some(r) = rows.first()
+    {
+        (r.try_get(0).map_err(db_err)?, r.try_get(1).map_err(db_err)?)
+    } else {
+        (None, None)
+    };
+
+    let (prefix, acc_type) = match journal_type {
+        "cash" => (
+            cash_prefix
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("101"),
+            "asset_cash",
+        ),
+        "credit" => ("211", "liability_credit_card"),
+        _ => (
+            bank_prefix
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("102"),
+            "asset_cash",
+        ),
+    };
+    let mut chosen_code = None;
+    for seq in 1..=999u32 {
+        let candidate = format!("{prefix}{seq:03}");
+        let exists: i64 = tx
+            .query(
+                "SELECT count(*)::int8 FROM account_account_code \
+                 WHERE company_id = $1 AND code = $2",
+                &[&company_id, &candidate],
+            )
+            .await?[0]
+            .try_get(0)
+            .map_err(db_err)?;
+        if exists == 0 {
+            chosen_code = Some(candidate);
+            break;
+        }
+    }
+    let code = chosen_code.ok_or_else(|| {
+        Error::user(format!(
+            "No free account code available under prefix '{prefix}' for this journal."
+        ))
+    })?;
+    let label = match name_cell {
+        Some(Cell::Str(s)) if !s.trim().is_empty() => s.to_string(),
+        _ => format!("{journal_type} Account {code}"),
+    };
+    let mut vals = RawVals::new();
+    vals.insert("code".into(), Cell::Str(code.into()));
+    vals.insert("name".into(), Cell::Str(label.into()));
+    vals.insert("account_type".into(), Cell::Str(acc_type.into()));
+    let created = env
+        .with_company(company_id)?
+        .records("account.account")?
+        .create(tx, vec![vals])
+        .await?;
+    created
+        .ids()
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::invariant("Auto-created journal account returned no id."))
 }

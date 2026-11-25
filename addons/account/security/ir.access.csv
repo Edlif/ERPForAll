@@ -43,3 +43,7 @@ access_account_payment_term_manager,account.payment.term.manager,model_account_p
 access_account_payment_term_line_user,account.payment.term.line.user,model_account_payment_term_line,base.group_user,r,
 access_account_payment_term_line_manager,account.payment.term.line.manager,model_account_payment_term_line,account.group_account_manager,crud,
 access_account_payment_register_user,account.payment.register.user,model_account_payment_register,account.group_account_user,crud,"[('create_uid', '=', user.id)]"
+access_account_incoterms_user,account.incoterms.user,model_account_incoterms,base.group_user,r,
+access_account_incoterms_manager,account.incoterms.manager,model_account_incoterms,account.group_account_manager,crud,
+access_account_cash_rounding_user,account.cash.rounding.user,model_account_cash_rounding,account.group_account_readonly,r,
+access_account_cash_rounding_manager,account.cash.rounding.manager,model_account_cash_rounding,account.group_account_manager,crud,

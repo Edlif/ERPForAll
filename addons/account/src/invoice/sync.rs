@@ -418,11 +418,6 @@ async fn load_taxes(
             Some(kind) => AmountType::parse(kind)?,
             None => return Err(Error::invariant(format!("tax {tax_id} has no amount type"))),
         };
-        if flag(cell("has_negative_factor", i)?, "has_negative_factor")? {
-            return Err(Error::user(format!(
-                "Tax {label} has a negative distribution (reverse charge), which is not available yet."
-            )));
-        }
         let def = TaxDef {
             id: tax_id,
             sequence: int(cell("sequence", i)?, "sequence")?,

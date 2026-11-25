@@ -519,9 +519,26 @@ fn refuse_line_inputs(vals: &RawVals) -> Result<()> {
              Unreconcile instead."
         )));
     }
-    if matches!(vals.get("is_storno"), Some(Cell::Bool(true))) {
-        return Err(Error::validation(
-            "Storno journal items need the company's storno setting, which is not available yet.",
+    Ok(())
+}
+
+async fn check_storno_enabled(tx: &mut Transaction, move_ids: &[i64]) -> Result<()> {
+    if move_ids.is_empty() {
+        return Ok(());
+    }
+    let blocked: i64 = tx
+        .query(
+            "SELECT count(*)::int8 FROM account_move m \
+             JOIN res_company c ON c.id = m.company_id \
+             WHERE m.id = ANY($1::int8[]) AND COALESCE(c.account_storno, false) IS FALSE",
+            &[&move_ids],
+        )
+        .await?[0]
+        .try_get(0)
+        .map_err(|e| Error::db(format!("storno setting read: {e}")))?;
+    if blocked > 0 {
+        return Err(Error::user(
+            "Storno journal items require enabling 'Storno Accounting' in Company Accounting settings.",
         ));
     }
     Ok(())
@@ -732,14 +749,21 @@ impl AccountMoveLine {
             ],
         )?;
         let mut move_ids = Vec::with_capacity(vals_list.len());
+        let mut storno_moves = Vec::new();
         for vals in &vals_list {
             refuse_line_inputs(vals)?;
             if let Some(id) = id_cell(vals.get("move_id"), "move_id")? {
                 move_ids.push(id);
+                if matches!(vals.get("is_storno"), Some(Cell::Bool(true))) {
+                    storno_moves.push(id);
+                }
             }
         }
         move_ids.sort_unstable();
         move_ids.dedup();
+        storno_moves.sort_unstable();
+        storno_moves.dedup();
+        check_storno_enabled(tx, &storno_moves).await?;
         // adding an item changes its entry: the caller needs write access on it
         super::post::hold_draft_entries(
             tx,
@@ -834,6 +858,9 @@ impl AccountMoveLine {
         }
         move_ids.sort_unstable();
         move_ids.dedup();
+        if matches!(vals.get("is_storno"), Some(Cell::Bool(true))) {
+            check_storno_enabled(tx, &move_ids).await?;
+        }
         let closed = super::post::closed_fields(&vals, &super::post::POSTED_LINE_WRITABLE);
         if !closed.is_empty() {
             let what = format!("change {} on the items of", closed.join(", "));

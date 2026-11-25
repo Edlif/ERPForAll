@@ -16,7 +16,6 @@ fn doc(id: i64, kind: &str, residual: &str, partner: i64) -> Document {
         payment_state: "not_paid".to_owned(),
         company: 1,
         currency: 7,
-        company_currency: 7,
         partner: Some(partner),
         residual: d(residual),
         account: Some(50),
