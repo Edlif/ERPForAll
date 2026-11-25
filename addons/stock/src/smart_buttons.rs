@@ -85,7 +85,10 @@ fn per_source(sources: &Records, found: &BTreeMap<i64, i64>) -> Result<Vec<i32>>
         .rec_ids()
         .iter()
         .map(|id| {
-            let n = row_of(id).and_then(|id| found.get(&id)).copied().unwrap_or(0);
+            let n = row_of(id)
+                .and_then(|id| found.get(&id))
+                .copied()
+                .unwrap_or(0);
             i32::try_from(n).map_err(|_| Error::programming("record count does not fit an i32"))
         })
         .collect()
@@ -256,7 +259,9 @@ impl ProductTemplateStockButtons {
         let mut on_hand: BTreeMap<i64, Decimal> = BTreeMap::new();
         for (keys, value) in &sums {
             let GroupValue::Decimal(quantity) = value else {
-                return Err(Error::internal("The on-hand quantity sum is not a decimal."));
+                return Err(Error::internal(
+                    "The on-hand quantity sum is not a decimal.",
+                ));
             };
             if let Some(Some(template)) = keys.first() {
                 *on_hand.entry(*template).or_insert(Decimal::ZERO) += *quantity;

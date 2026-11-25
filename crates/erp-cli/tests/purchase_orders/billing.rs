@@ -736,7 +736,10 @@ fn installing_purchase_over_products_takes_the_stored_bill_control_or_the_defaul
                 .env()
                 .records("product.template")
                 .unwrap()
-                .create(&mut tx, vec![RawVals::new().set_cell("name", text("Washer"))])
+                .create(
+                    &mut tx,
+                    vec![RawVals::new().set_cell("name", text("Washer"))],
+                )
                 .await
                 .unwrap()
                 .ids()[0];

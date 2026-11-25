@@ -6,9 +6,9 @@
 //! single relation field of the order names, so it filters the linked order ids by read access.
 //! Both actions open a domain, never an id list.
 
+use erp_addon_account::smart_buttons::{domain_window, grouped_counts, leaf, the_one};
 use erp_addon_base::ResPartner;
 use erp_addon_product::ProductTemplate;
-use erp_addon_account::smart_buttons::{domain_window, grouped_counts, leaf, the_one};
 use erp_sdk::prelude::*;
 
 use crate::bill_buttons::{counts, readable_links};
@@ -45,8 +45,7 @@ impl PartnerPurchaseOrders {
     ) -> Result<()> {
         let records = this.as_records();
         let confirmed = Domain::field("state")?.eq(CONFIRMED);
-        let found =
-            grouped_counts(tx, records, "purchase.order", "partner_id", confirmed).await?;
+        let found = grouped_counts(tx, records, "purchase.order", "partner_id", confirmed).await?;
         for (index, count) in found.into_iter().enumerate() {
             out.set(index, PartnerPurchaseOrders::PURCHASE_ORDER_COUNT, count)?;
         }

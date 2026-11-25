@@ -3511,7 +3511,11 @@ fn the_vendor_and_product_buttons_count_readable_confirmed_orders() {
             }
         }
         let env = tx.env().with_company(company).unwrap();
-        let vendor = env.records("res.partner").unwrap().browse([k.vendor]).unwrap();
+        let vendor = env
+            .records("res.partner")
+            .unwrap()
+            .browse([k.vendor])
+            .unwrap();
         assert_eq!(
             vendor.cell(&mut tx, "purchase_order_count").await.unwrap(),
             Cell::Int(2)
@@ -3558,7 +3562,11 @@ fn the_vendor_and_product_buttons_count_readable_confirmed_orders() {
 
         let mut tx = orm.begin(clerk).await.unwrap();
         let env = tx.env().with_company(company).unwrap();
-        let vendor = env.records("res.partner").unwrap().browse([k.vendor]).unwrap();
+        let vendor = env
+            .records("res.partner")
+            .unwrap()
+            .browse([k.vendor])
+            .unwrap();
         assert_eq!(
             vendor.cell(&mut tx, "purchase_order_count").await.unwrap(),
             Cell::Int(0)

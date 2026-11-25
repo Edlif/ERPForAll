@@ -231,7 +231,10 @@ pub async fn grouped_counts(
         .iter()
         .map(|id| {
             // a source with no group has no readable document
-            let n = row_of(id).and_then(|id| found.get(&id)).copied().unwrap_or(0);
+            let n = row_of(id)
+                .and_then(|id| found.get(&id))
+                .copied()
+                .unwrap_or(0);
             i32::try_from(n).map_err(|_| Error::programming("document count does not fit an i32"))
         })
         .collect()
@@ -244,7 +247,12 @@ pub fn leaf(field: &str, op: &str, value: Value) -> Value {
 
 /// A current-window list and form of `model` over `domain` (a client domain list); `views`
 /// empty means the model's defaults.
-pub fn domain_window(name: &str, model: &str, views: Vec<(i64, &str)>, domain: Vec<Value>) -> Value {
+pub fn domain_window(
+    name: &str,
+    model: &str,
+    views: Vec<(i64, &str)>,
+    domain: Vec<Value>,
+) -> Value {
     let context = ValueMap::from([("create".to_owned(), Value::Bool(false))]);
     let views = if views.is_empty() {
         vec![

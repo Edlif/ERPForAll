@@ -3043,7 +3043,10 @@ async fn the_count_buttons_count_readable_links_and_open_them_by_domain() {
         .unwrap()
         .browse([out, back])
         .unwrap()
-        .write(&mut tx, RawVals::new().set_cell("partner_id", Cell::Id(partner)))
+        .write(
+            &mut tx,
+            RawVals::new().set_cell("partner_id", Cell::Id(partner)),
+        )
         .await
         .unwrap();
     let shelf = location(&mut tx, "L2", "internal").await;
@@ -3069,7 +3072,11 @@ async fn the_count_buttons_count_readable_links_and_open_them_by_domain() {
         .unwrap()[0]
         .get(0);
 
-    let partners = env.records("res.partner").unwrap().browse([partner]).unwrap();
+    let partners = env
+        .records("res.partner")
+        .unwrap()
+        .browse([partner])
+        .unwrap();
     assert_eq!(
         partners.cell(&mut tx, "picking_count").await.unwrap(),
         Cell::Int(2)
@@ -3091,8 +3098,15 @@ async fn the_count_buttons_count_readable_links_and_open_them_by_domain() {
         locations.cells(&mut tx, "picking_count").await.unwrap(),
         vec![Cell::Int(3), Cell::Int(1), Cell::Int(1)]
     );
-    let at_l = env.records("stock.location").unwrap().browse([f.l]).unwrap();
-    let action: Value = at_l.call(&mut tx, "action_view_pickings", ()).await.unwrap();
+    let at_l = env
+        .records("stock.location")
+        .unwrap()
+        .browse([f.l])
+        .unwrap();
+    let action: Value = at_l
+        .call(&mut tx, "action_view_pickings", ())
+        .await
+        .unwrap();
     assert_eq!(
         action_domain(&action),
         Value::list([
@@ -3144,7 +3158,11 @@ async fn the_count_buttons_count_readable_links_and_open_them_by_domain() {
     // without read on transfers the clerk counts none of them
     let mut tx = f.h.begin_as(7).await.unwrap();
     let env = f.env(&tx);
-    let partners = env.records("res.partner").unwrap().browse([partner]).unwrap();
+    let partners = env
+        .records("res.partner")
+        .unwrap()
+        .browse([partner])
+        .unwrap();
     assert_eq!(
         partners.cell(&mut tx, "picking_count").await.unwrap(),
         Cell::Int(0)
