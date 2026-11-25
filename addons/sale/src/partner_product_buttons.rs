@@ -9,7 +9,7 @@ use erp_addon_base::ResPartner;
 use erp_addon_product::ProductTemplate;
 use erp_sdk::prelude::*;
 
-use erp_addon_account::smart_buttons::{domain_window, grouped_counts, leaf, the_one};
+use erp_addon_account::smart_buttons::{domain_action, grouped_counts, leaf, the_one};
 
 use crate::invoice_buttons::{counts, readable_links};
 
@@ -60,7 +60,9 @@ impl PartnerSalesOrders {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(domain_window(
+        domain_action(
+            tx,
+            this.as_records(),
             "Sales Orders",
             "sale.order",
             Vec::new(),
@@ -69,7 +71,8 @@ impl PartnerSalesOrders {
                 leaf("partner_id", "=", Value::Int(id)),
                 leaf("state", "=", Value::str(CONFIRMED)),
             ],
-        ))
+        )
+        .await
     }
 }
 
@@ -109,7 +112,9 @@ impl ProductTemplateSales {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(domain_window(
+        domain_action(
+            tx,
+            this.as_records(),
             "Sales Orders",
             "sale.order",
             Vec::new(),
@@ -118,6 +123,7 @@ impl ProductTemplateSales {
                 leaf("order_line.product_id.product_tmpl_id", "=", Value::Int(id)),
                 leaf("state", "=", Value::str(CONFIRMED)),
             ],
-        ))
+        )
+        .await
     }
 }

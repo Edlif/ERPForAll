@@ -7,8 +7,8 @@
 //! - `res.partner`: Transfers (`picking_count` / `action_view_pickings`)
 //!
 //! Counts and sums are one grouped read per button whose search predicate carries the caller's
-//! read access, so hidden records are never counted. The actions open a domain on the relation
-//! field, never a list of ids.
+//! read access, so hidden records are never counted. An action opens the one readable record in
+//! its form, or more by a domain on the relation field, never a list of ids.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -144,24 +144,52 @@ async fn the_one(this: &Records, tx: &mut Transaction) -> Result<i64> {
         .ok_or_else(|| Error::validation("Save the record before opening its linked documents."))
 }
 
-/// A current-window list and form of `model` over `domain` (a client domain list).
-fn window(name: &str, model: &str, domain: Vec<Value>) -> Value {
-    let context = ValueMap::from([("create".to_owned(), Value::Bool(false))]);
-    Value::Map(Arc::new(ValueMap::from([
-        ("type".to_owned(), Value::str("ir.actions.act_window")),
-        ("name".to_owned(), Value::str(name)),
-        ("res_model".to_owned(), Value::str(model)),
-        ("target".to_owned(), Value::str("current")),
+/// A current-window action over the `model` records matching `domain` (a client domain list):
+/// exactly one the caller may read opens straight in its form; none or more open the list by the
+/// domain, never by an id list.
+async fn window(
+    tx: &mut Transaction,
+    sources: &Records,
+    name: &str,
+    model: &str,
+    domain: Vec<Value>,
+) -> Result<Value> {
+    let filter = erp_sdk::web::domain_from_value(&Value::list(domain.clone()))?;
+    let found = sources
+        .env()
+        .records(model)?
+        .search_with(tx, &filter, &erp_sdk::SearchOptions::new().limit(2))
+        .await;
+    let ids = match found {
+        Ok(found) => found.ids(),
+        // a caller refused read on the model gets the list, which says so
+        Err(error) if error.kind() == ErrorKind::Access => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    let (views, target) = if let [id] = ids.as_slice() {
         (
-            "views".to_owned(),
+            Value::list([Value::list([Value::False, Value::str("form")])]),
+            ("res_id".to_owned(), Value::Int(*id)),
+        )
+    } else {
+        (
             Value::list([
                 Value::list([Value::False, Value::str("list")]),
                 Value::list([Value::False, Value::str("form")]),
             ]),
-        ),
-        ("domain".to_owned(), Value::list(domain)),
+            ("domain".to_owned(), Value::list(domain)),
+        )
+    };
+    let context = ValueMap::from([("create".to_owned(), Value::Bool(false))]);
+    Ok(Value::Map(Arc::new(ValueMap::from([
+        ("type".to_owned(), Value::str("ir.actions.act_window")),
+        ("name".to_owned(), Value::str(name)),
+        ("res_model".to_owned(), Value::str(model)),
+        ("target".to_owned(), Value::str("current")),
+        ("views".to_owned(), views),
+        target,
         ("context".to_owned(), Value::Map(Arc::new(context))),
-    ])))
+    ]))))
 }
 
 /// `stock.picking` smart buttons for returns and backorders.
@@ -189,11 +217,14 @@ impl StockPicking {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Backorders",
             "stock.picking",
             vec![leaf("backorder_id", "=", Value::Int(id))],
-        ))
+        )
+        .await
     }
 
     /// Open the return transfers created from this transfer.
@@ -204,11 +235,14 @@ impl StockPicking {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Returns",
             "stock.picking",
             vec![leaf("return_id", "=", Value::Int(id))],
-        ))
+        )
+        .await
     }
 }
 
@@ -297,7 +331,9 @@ impl ProductTemplateStockButtons {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Stock On Hand",
             "stock.quant",
             vec![
@@ -305,7 +341,8 @@ impl ProductTemplateStockButtons {
                 leaf(TEMPLATE, "=", Value::Int(id)),
                 leaf(INTERNAL.0, "=", Value::str(INTERNAL.1)),
             ],
-        ))
+        )
+        .await
     }
 
     /// Open stock move history for this product.
@@ -316,11 +353,14 @@ impl ProductTemplateStockButtons {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Stock Moves",
             "stock.move",
             vec![leaf(TEMPLATE, "=", Value::Int(id))],
-        ))
+        )
+        .await
     }
 
     /// Open reordering rules for this product.
@@ -331,11 +371,14 @@ impl ProductTemplateStockButtons {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Reordering Rules",
             "stock.warehouse.orderpoint",
             vec![leaf(TEMPLATE, "=", Value::Int(id))],
-        ))
+        )
+        .await
     }
 }
 
@@ -372,11 +415,14 @@ impl StockWarehouse {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Operation Types",
             "stock.picking.type",
             vec![leaf("warehouse_id", "=", Value::Int(id))],
-        ))
+        )
+        .await
     }
 
     #[method]
@@ -386,11 +432,14 @@ impl StockWarehouse {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Transfers",
             "stock.picking",
             vec![leaf(PICKING_WAREHOUSE, "=", Value::Int(id))],
-        ))
+        )
+        .await
     }
 }
 
@@ -449,11 +498,14 @@ impl StockLocation {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Current Stock",
             "stock.quant",
             vec![leaf("location_id", "=", Value::Int(id))],
-        ))
+        )
+        .await
     }
 
     #[method]
@@ -463,7 +515,9 @@ impl StockLocation {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Transfers",
             "stock.picking",
             vec![
@@ -471,7 +525,8 @@ impl StockLocation {
                 leaf("location_id", "=", Value::Int(id)),
                 leaf("location_dest_id", "=", Value::Int(id)),
             ],
-        ))
+        )
+        .await
     }
 }
 
@@ -506,10 +561,13 @@ impl PartnerStockPickings {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
-        Ok(window(
+        window(
+            tx,
+            this.as_records(),
             "Transfers",
             "stock.picking",
             vec![leaf("partner_id", "=", Value::Int(id))],
-        ))
+        )
+        .await
     }
 }

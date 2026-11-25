@@ -276,6 +276,39 @@ pub fn domain_window(
     ])))
 }
 
+/// The action of a count button over `model` records matching `domain` (a client domain list):
+/// exactly one the caller may read opens straight in its form, as the other count buttons do;
+/// none or more open the list by the domain, never by an id list.
+///
+/// # Errors
+///
+/// A domain the ORM refuses; read failures that are not refusals.
+pub async fn domain_action(
+    tx: &mut Transaction,
+    sources: &Records,
+    name: &str,
+    model: &str,
+    views: Vec<(i64, &str)>,
+    domain: Vec<Value>,
+) -> Result<Value> {
+    let filter = erp_sdk::web::domain_from_value(&Value::list(domain.clone()))?;
+    let found = sources
+        .env()
+        .records(model)?
+        .search_with(tx, &filter, &erp_sdk::SearchOptions::new().limit(2))
+        .await;
+    let ids = match found {
+        Ok(found) => found.ids(),
+        // a caller refused read on the model gets the list, which says so
+        Err(error) if error.kind() == ErrorKind::Access => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    if let [id] = ids.as_slice() {
+        return Ok(window(name, model, views, vec![*id]));
+    }
+    Ok(domain_window(name, model, views, domain))
+}
+
 /// The id of the one stored record a button acts on, after the caller's read check.
 ///
 /// # Errors
@@ -443,7 +476,9 @@ impl PartnerInvoices {
     ) -> Result<Value> {
         let id = the_one(this.as_records(), tx).await?;
         let views = named_views(tx, "view_invoice_list", "view_invoice_form").await?;
-        Ok(domain_window(
+        domain_action(
+            tx,
+            this.as_records(),
             "Invoices & Bills",
             "account.move",
             views,
@@ -456,6 +491,7 @@ impl PartnerInvoices {
                     Value::list(INVOICE_TYPES.into_iter().map(Value::str)),
                 ),
             ],
-        ))
+        )
+        .await
     }
 }
