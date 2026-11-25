@@ -7,10 +7,19 @@ use std::collections::BTreeSet;
 use erp_addon_base::ImageMixin;
 use erp_addon_mail::{MailActivityMixin, MailThread};
 use erp_sdk::prelude::*;
-use erp_sdk::{Operation, ValueMap};
+use erp_sdk::{Operation, SearchOptions, ValueMap};
 
-const MAX_MANAGER_HOPS: usize = 64;
-const MAX_ORG_CHART_SUBORDINATES: usize = 100;
+use crate::{HIERARCHY_DEPTH_KEY, ORG_CHART_ROWS_KEY, count_parameter};
+
+fn too_deep(depth: usize) -> Error {
+    Error::validation(format!(
+        "The manager chain is deeper than {HIERARCHY_DEPTH_KEY} ({depth}) levels."
+    ))
+}
+
+fn recursive_managers() -> Error {
+    Error::validation("You cannot create a recursive manager hierarchy.")
+}
 
 /// `hr.employee`: a person employed by one company, with full HR profile, org chart,
 /// contract/payroll summary, resume & skills, personal data (protected by `hr.group_hr_user`),
@@ -591,21 +600,25 @@ impl HrEmployee {
         this: &RecordSet<HrEmployee>,
         tx: &mut Transaction,
     ) -> Result<()> {
+        let depth = count_parameter(tx, HIERARCHY_DEPTH_KEY).await?;
         let employees = this.env().records("hr.employee")?;
         for id in this.as_records().rec_ids() {
             let start = id.get();
             let mut seen = BTreeSet::from([start]);
             let mut cursor = start;
-            for _ in 0..MAX_MANAGER_HOPS {
+            let mut hops = 0;
+            loop {
                 let row = employees.browse([cursor])?;
                 let next = match row.cell(tx, "parent_id").await? {
                     Cell::Id(pid) => pid,
                     _ => break,
                 };
                 if !seen.insert(next) {
-                    return Err(Error::validation(
-                        "You cannot create a recursive manager hierarchy.",
-                    ));
+                    return Err(recursive_managers());
+                }
+                hops += 1;
+                if hops > depth {
+                    return Err(too_deep(depth));
                 }
                 cursor = next;
             }
@@ -913,11 +926,15 @@ impl HrEmployee {
         ]))))
     }
 
-    /// Returns `{ self, managers, subordinates }` for the inline `hr.org_chart` widget.
+    /// Returns `{ self, managers, subordinates, subordinates_total, subordinates_truncated }` for
+    /// the inline `hr.org_chart` widget. At most `hr.max_org_chart_rows` subordinates are listed;
+    /// a manager chain longer than `hr.max_hierarchy_depth` or a cycle is an error.
     #[method]
     #[rpc(effect = read)]
     async fn get_org_chart(this: &RecordSet<HrEmployee>, tx: &mut Transaction) -> Result<Value> {
         let current_id = this.as_records().ensure_one()?.int()?;
+        let depth = count_parameter(tx, HIERARCHY_DEPTH_KEY).await?;
+        let rows = count_parameter(tx, ORG_CHART_ROWS_KEY).await?;
         let employees = this.env().records("hr.employee")?;
         let depts = this.env().records("hr.department")?;
 
@@ -925,10 +942,12 @@ impl HrEmployee {
             read_employee_node(&employees, &depts, current_id, tx).await?;
         let mut managers = Vec::new();
         let mut seen = BTreeSet::from([current_id]);
-        for _ in 0..MAX_MANAGER_HOPS {
-            let Some(mid) = manager_cursor else { break };
+        while let Some(mid) = manager_cursor {
             if !seen.insert(mid) {
-                break;
+                return Err(recursive_managers());
+            }
+            if managers.len() == depth {
+                return Err(too_deep(depth));
             }
             let (val, next_parent) = read_employee_node(&employees, &depts, mid, tx).await?;
             managers.push(val);
@@ -937,22 +956,28 @@ impl HrEmployee {
         managers.reverse();
 
         let sub_domain = Domain::condition("parent_id", Operator::Eq, current_id)?;
-        let sub_recs = employees.search(tx, &sub_domain).await?;
-        let mut subordinates = Vec::with_capacity(sub_recs.len().min(MAX_ORG_CHART_SUBORDINATES));
-        for sid in sub_recs
-            .ids()
-            .iter()
-            .copied()
-            .take(MAX_ORG_CHART_SUBORDINATES)
-        {
+        let total = employees.search_count(tx, &sub_domain, None).await?;
+        let limit = u64::try_from(rows)
+            .map_err(|_| Error::programming(format!("{ORG_CHART_ROWS_KEY} {rows} exceeds u64")))?;
+        let sub_recs = employees
+            .search_with(tx, &sub_domain, &SearchOptions::new().limit(limit))
+            .await?;
+        let mut subordinates = Vec::with_capacity(sub_recs.len());
+        for sid in sub_recs.ids().iter().copied() {
             let (val, _) = read_employee_node(&employees, &depts, sid, tx).await?;
             subordinates.push(val);
         }
+        let shown = u64::try_from(subordinates.len())
+            .map_err(|_| Error::programming("subordinate rows exceed u64"))?;
+        let total_val = i64::try_from(total)
+            .map_err(|_| Error::programming(format!("subordinate count {total} exceeds i64")))?;
 
         Ok(Value::Map(Arc::new(ValueMap::from([
             ("self".into(), self_val),
             ("managers".into(), Value::list(managers)),
             ("subordinates".into(), Value::list(subordinates)),
+            ("subordinates_total".into(), Value::Int(total_val)),
+            ("subordinates_truncated".into(), Value::Bool(total > shown)),
         ]))))
     }
 }
