@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="report_invoice_analysis" model="reporting.report">
+      <field name="name">Invoice Analysis</field>
+      <field name="multi_company" eval="False"/>
+    </record>
+    <record id="inv_an_col_untaxed" model="reporting.report.column">
+      <field name="report_id" ref="report_invoice_analysis"/>
+      <field name="sequence">10</field>
+      <field name="name">Untaxed</field>
+      <field name="label">untaxed</field>
+      <field name="kind">monetary</field>
+      <field name="sortable" eval="True"/>
+    </record>
+    <record id="inv_an_col_tax" model="reporting.report.column">
+      <field name="report_id" ref="report_invoice_analysis"/>
+      <field name="sequence">20</field>
+      <field name="name">Tax</field>
+      <field name="label">tax</field>
+      <field name="kind">monetary</field>
+    </record>
+    <record id="inv_an_col_total" model="reporting.report.column">
+      <field name="report_id" ref="report_invoice_analysis"/>
+      <field name="sequence">30</field>
+      <field name="name">Total</field>
+      <field name="label">total</field>
+      <field name="kind">monetary</field>
+      <field name="sortable" eval="True"/>
+    </record>
+    <record id="inv_an_col_due" model="reporting.report.column">
+      <field name="report_id" ref="report_invoice_analysis"/>
+      <field name="sequence">40</field>
+      <field name="name">Amount Due</field>
+      <field name="label">due</field>
+      <field name="kind">monetary</field>
+    </record>
+    <record id="inv_an_out_inv" model="reporting.report.line">
+      <field name="report_id" ref="report_invoice_analysis"/>
+      <field name="sequence">10</field>
+      <field name="name">Customer Invoices</field>
+      <field name="code">OUT_INV</field>
+      <field name="groupby">partner_id,journal_id</field>
+    </record>
+    <record id="inv_an_out_inv_u" model="reporting.report.expression"><field name="line_id" ref="inv_an_out_inv"/><field name="label">untaxed</field><field name="model">account.move</field><field name="field">amount_untaxed</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","out_invoice"]]</field></record>
+    <record id="inv_an_out_inv_t" model="reporting.report.expression"><field name="line_id" ref="inv_an_out_inv"/><field name="label">tax</field><field name="model">account.move</field><field name="field">amount_tax</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","out_invoice"]]</field></record>
+    <record id="inv_an_out_inv_tot" model="reporting.report.expression"><field name="line_id" ref="inv_an_out_inv"/><field name="label">total</field><field name="model">account.move</field><field name="field">amount_total</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","out_invoice"]]</field></record>
+    <record id="inv_an_out_inv_due" model="reporting.report.expression"><field name="line_id" ref="inv_an_out_inv"/><field name="label">due</field><field name="model">account.move</field><field name="field">amount_residual</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","out_invoice"]]</field></record>
+
+    <record id="inv_an_out_ref" model="reporting.report.line">
+      <field name="report_id" ref="report_invoice_analysis"/>
+      <field name="sequence">20</field>
+      <field name="name">Customer Credit Notes</field>
+      <field name="code">OUT_REF</field>
+      <field name="groupby">partner_id,journal_id</field>
+    </record>
+    <record id="inv_an_out_ref_u" model="reporting.report.expression"><field name="line_id" ref="inv_an_out_ref"/><field name="label">untaxed</field><field name="model">account.move</field><field name="field">amount_untaxed</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","out_refund"]]</field></record>
+    <record id="inv_an_out_ref_t" model="reporting.report.expression"><field name="line_id" ref="inv_an_out_ref"/><field name="label">tax</field><field name="model">account.move</field><field name="field">amount_tax</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","out_refund"]]</field></record>
+    <record id="inv_an_out_ref_tot" model="reporting.report.expression"><field name="line_id" ref="inv_an_out_ref"/><field name="label">total</field><field name="model">account.move</field><field name="field">amount_total</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","out_refund"]]</field></record>
+    <record id="inv_an_out_ref_due" model="reporting.report.expression"><field name="line_id" ref="inv_an_out_ref"/><field name="label">due</field><field name="model">account.move</field><field name="field">amount_residual</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","out_refund"]]</field></record>
+
+    <record id="inv_an_in_inv" model="reporting.report.line">
+      <field name="report_id" ref="report_invoice_analysis"/>
+      <field name="sequence">30</field>
+      <field name="name">Vendor Bills</field>
+      <field name="code">IN_INV</field>
+      <field name="groupby">partner_id,journal_id</field>
+    </record>
+    <record id="inv_an_in_inv_u" model="reporting.report.expression"><field name="line_id" ref="inv_an_in_inv"/><field name="label">untaxed</field><field name="model">account.move</field><field name="field">amount_untaxed</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","in_invoice"]]</field></record>
+    <record id="inv_an_in_inv_t" model="reporting.report.expression"><field name="line_id" ref="inv_an_in_inv"/><field name="label">tax</field><field name="model">account.move</field><field name="field">amount_tax</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","in_invoice"]]</field></record>
+    <record id="inv_an_in_inv_tot" model="reporting.report.expression"><field name="line_id" ref="inv_an_in_inv"/><field name="label">total</field><field name="model">account.move</field><field name="field">amount_total</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","in_invoice"]]</field></record>
+    <record id="inv_an_in_inv_due" model="reporting.report.expression"><field name="line_id" ref="inv_an_in_inv"/><field name="label">due</field><field name="model">account.move</field><field name="field">amount_residual</field><field name="date_field">date</field><field name="domain">[["state","=","posted"],["move_type","=","in_invoice"]]</field></record>
+  </data>
+  <record id="action_invoice_analysis" model="ir.actions.client">
+    <field name="name">Invoice Analysis</field>
+    <field name="tag">reporting.report</field>
+    <field name="params" eval="{'report': ref('report_invoice_analysis')}"/>
+  </record>
+  <menuitem id="menu_invoice_analysis" name="Invoice Analysis" parent="menu_account_reporting" action="action_invoice_analysis" groups="account.group_account_readonly" sequence="55"/>
+  <record id="menu_invoice_analysis" model="ir.ui.menu"><field name="web_icon">lucide:trending-up</field></record>
+</erp>

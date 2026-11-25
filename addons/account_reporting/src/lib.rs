@@ -3,8 +3,9 @@
 erp_sdk::addon!(
     name = "account_reporting",
     exact_only = true,
-    depends = ["account", "reporting"]
+    depends = ["account", "analytic", "reporting"]
 );
+mod aged_partner;
 mod balance_sheet;
 mod general_ledger;
 mod migrations;

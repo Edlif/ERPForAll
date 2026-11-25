@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="report_analytic_report" model="reporting.report">
+      <field name="name">Analytic Report</field>
+      <field name="multi_company" eval="False"/>
+    </record>
+    <record id="analytic_rep_col_qty" model="reporting.report.column">
+      <field name="report_id" ref="report_analytic_report"/>
+      <field name="sequence">10</field>
+      <field name="name">Quantity</field>
+      <field name="label">qty</field>
+      <field name="kind">decimal</field>
+    </record>
+    <record id="analytic_rep_col_amount" model="reporting.report.column">
+      <field name="report_id" ref="report_analytic_report"/>
+      <field name="sequence">20</field>
+      <field name="name">Amount</field>
+      <field name="label">amount</field>
+      <field name="kind">monetary</field>
+      <field name="sortable" eval="True"/>
+    </record>
+    <record id="analytic_rep_revenues" model="reporting.report.line">
+      <field name="report_id" ref="report_analytic_report"/>
+      <field name="sequence">10</field>
+      <field name="name">Analytic Revenues</field>
+      <field name="code">REV</field>
+      <field name="groupby">plan_id,account_id</field>
+    </record>
+    <record id="analytic_rep_rev_qty" model="reporting.report.expression"><field name="line_id" ref="analytic_rep_revenues"/><field name="label">qty</field><field name="model">account.analytic.line</field><field name="field">unit_amount</field><field name="date_field">date</field><field name="domain">[["amount",">",0]]</field></record>
+    <record id="analytic_rep_rev_amt" model="reporting.report.expression"><field name="line_id" ref="analytic_rep_revenues"/><field name="label">amount</field><field name="model">account.analytic.line</field><field name="field">amount</field><field name="date_field">date</field><field name="domain">[["amount",">",0]]</field></record>
+    <record id="analytic_rep_costs" model="reporting.report.line">
+      <field name="report_id" ref="report_analytic_report"/>
+      <field name="sequence">20</field>
+      <field name="name">Analytic Costs</field>
+      <field name="code">COST</field>
+      <field name="groupby">plan_id,account_id</field>
+    </record>
+    <record id="analytic_rep_cost_qty" model="reporting.report.expression"><field name="line_id" ref="analytic_rep_costs"/><field name="label">qty</field><field name="model">account.analytic.line</field><field name="field">unit_amount</field><field name="date_field">date</field><field name="domain">[["amount","&lt;",0]]</field></record>
+    <record id="analytic_rep_cost_amt" model="reporting.report.expression"><field name="line_id" ref="analytic_rep_costs"/><field name="label">amount</field><field name="model">account.analytic.line</field><field name="field">amount</field><field name="date_field">date</field><field name="domain">[["amount","&lt;",0]]</field></record>
+    <record id="analytic_rep_net" model="reporting.report.line">
+      <field name="report_id" ref="report_analytic_report"/>
+      <field name="sequence">30</field>
+      <field name="name">Net Analytic Balance</field>
+      <field name="code">NET</field>
+    </record>
+    <record id="analytic_rep_net_amt" model="reporting.report.expression">
+      <field name="line_id" ref="analytic_rep_net"/>
+      <field name="label">amount</field>
+      <field name="engine">formula</field>
+      <field name="formula">REV.amount + COST.amount</field>
+    </record>
+  </data>
+  <record id="action_analytic_report" model="ir.actions.client">
+    <field name="name">Analytic Report</field>
+    <field name="tag">reporting.report</field>
+    <field name="params" eval="{'report': ref('report_analytic_report')}"/>
+  </record>
+  <menuitem id="menu_analytic_report" name="Analytic Report" parent="menu_account_reporting" action="action_analytic_report" groups="account.group_account_readonly" sequence="60"/>
+  <record id="menu_analytic_report" model="ir.ui.menu"><field name="web_icon">lucide:git-branch</field></record>
+</erp>
