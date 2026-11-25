@@ -128,6 +128,42 @@ try {
   const page = await browser.newPage({ acceptDownloads: true }); activePage = page;
   page.on("pageerror", error => errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
+  // A provider with historical open items can offer its checkbox without other Options controls.
+  showPartnerLedger = true;
+  await page.setViewportSize({ width: 820, height: 900 });
+  await page.goto(origin + "/erp/action-30?menu=10");
+  await page.locator("tr.report-line", { hasText: "Northfield Trading" }).waitFor();
+  assert.deepEqual(await rowNames(page), ledgerLines.map(line => line.name));
+  // The symbol arrives after the table: wait for it, then check the cells a reader relies on.
+  await page.locator("tr.report-line td", { hasText: "$" }).first().waitFor();
+  const item = page.locator("tr.report-line", { hasText: "INV/2026/00007" }).locator("td");
+  assert.deepEqual(await item.allTextContents(), ["INV", "121000", "11/17/2026", "11/17/2026", "", "$\u00a022,137.50", "", "$\u00a023,137.50"]);
+  assert.ok((await item.nth(3).getAttribute("class")).includes("report-tone-danger"), "an overdue date carries its tone");
+  assert.ok((await page.locator("tr.report-line", { hasText: "Northfield Trading" }).locator("td").last().getAttribute("class")).includes("report-negative"), "a negative balance is marked");
+  for (const [width, scheme] of [[1440, "light"], [1440, "dark"], [820, "light"]]) {
+    await page.setViewportSize({ width, height: 900 }); await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, scheme);
+    await page.waitForTimeout(300); // colour transitions of the theme switch end before the capture
+    const shot = `report-ledger-${width}-${scheme}.png`;
+    await page.screenshot({ path: path.join(output, shot), fullPage: true }); screenshots.push(shot);
+  }
+  for (const enabled of [true, false]) {
+    await page.getByRole("button", { name: "Options", exact: true }).click();
+    const box = page.getByRole("checkbox", { name: "Unreconciled at period end", exact: true });
+    assert.equal(await box.isChecked(), !enabled);
+    if (!enabled) {
+      const shot = "report-open-items-820.png";
+      await page.screenshot({ path: path.join(output, shot), fullPage: true });
+      screenshots.push(shot);
+    }
+    const [response] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/erp_report_lines")),
+      box.setChecked(enabled),
+    ]);
+    assert.equal(response.request().postDataJSON().options.provider.unreconciled, enabled);
+    await page.locator('.report-scroll[data-dim="false"]').waitFor();
+  }
+  checks.push({ width: 820, historical_open_items_selection: "PASS" });
+  showPartnerLedger = false; await page.evaluate(() => { document.documentElement.dataset.theme = "light"; });
   for (const width of [1440, 820, 390]) {
     await page.setViewportSize({ width, height: 900 });
     calls.length = 0;
@@ -212,40 +248,6 @@ try {
     if (width === 1440) { await auditPage(page); await page.screenshot({ path: path.join(output, "report-audit-1440.png"), fullPage: true }); screenshots.push("report-audit-1440.png"); }
     checks.push({ width, open_from_menu: "PASS", unfold_load_more_fold: "PASS", keyboard: "PASS", sort_preset_search: "PASS", export: "PASS", no_page_overflow: "PASS", axe_serious: width === 1440 ? "PASS" : "not run at this width" });
   }
-  // A provider with historical open items can offer its checkbox without other Options controls.
-  showPartnerLedger = true;
-  await page.setViewportSize({ width: 820, height: 900 });
-  await page.goto(origin + "/erp/action-30?menu=10");
-  await page.locator("tr.report-line", { hasText: "Northfield Trading" }).waitFor();
-  assert.deepEqual(await rowNames(page), ledgerLines.map(line => line.name));
-  // The symbol arrives after the table: wait for it, then check the cells a reader relies on.
-  await page.locator("tr.report-line td", { hasText: "$" }).first().waitFor();
-  const item = page.locator("tr.report-line", { hasText: "INV/2026/00007" }).locator("td");
-  assert.deepEqual(await item.allTextContents(), ["INV", "121000", "11/17/2026", "11/17/2026", "", "$\u00a022,137.50", "", "$\u00a023,137.50"]);
-  assert.ok((await item.nth(3).getAttribute("class")).includes("report-tone-danger"), "an overdue date carries its tone");
-  assert.ok((await page.locator("tr.report-line", { hasText: "Northfield Trading" }).locator("td").last().getAttribute("class")).includes("report-negative"), "a negative balance is marked");
-  for (const [width, scheme] of [[1440, "light"], [1440, "dark"], [820, "light"]]) {
-    await page.setViewportSize({ width, height: 900 }); await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, scheme);
-    const shot = `report-ledger-${width}-${scheme}.png`;
-    await page.screenshot({ path: path.join(output, shot), fullPage: true }); screenshots.push(shot);
-  }
-  for (const enabled of [true, false]) {
-    await page.getByRole("button", { name: "Options", exact: true }).click();
-    const box = page.getByRole("checkbox", { name: "Unreconciled at period end", exact: true });
-    assert.equal(await box.isChecked(), !enabled);
-    if (!enabled) {
-      const shot = "report-open-items-820.png";
-      await page.screenshot({ path: path.join(output, shot), fullPage: true });
-      screenshots.push(shot);
-    }
-    const [response] = await Promise.all([
-      page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/erp_report_lines")),
-      box.setChecked(enabled),
-    ]);
-    assert.equal(response.request().postDataJSON().options.provider.unreconciled, enabled);
-    await page.locator('.report-scroll[data-dim="false"]').waitFor();
-  }
-  checks.push({ width: 820, historical_open_items_selection: "PASS" });
   if (serverError) throw serverError;
   assert.deepEqual(unknown, []);
   assert.deepEqual(errors, []); result.status = "PASS";

@@ -389,15 +389,6 @@
   border-block-end-color: var(--selected-line);
 }
 
-:root[data-office-theme="office-blue"] .report-table .report-line-total > :is(th, td) {
-  border-block-start-color: var(--selected-line);
-  background: var(--surface-subtle);
-}
-
-:root[data-office-theme="office-blue"] .report-table .report-line-total:hover > :is(th, td) {
-  background: var(--hover);
-}
-
 :root[data-office-theme="office-blue"] .report-table .report-name-inner {
   min-width: 0;
 }

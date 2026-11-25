@@ -3917,7 +3917,6 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
     padding-block-end: 6px;
   }
   :root:not([data-office-theme]) .report-table .report-line-section > .report-name {
-    border-inline-start: 3px solid var(--selected-line);
     color: var(--selected-text);
   }
 }

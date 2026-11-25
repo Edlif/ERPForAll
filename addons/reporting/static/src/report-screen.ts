@@ -263,7 +263,8 @@ export class ReportScreen implements ClientActionHandle {
       }
       head.append(row);
     }
-    const names = make("tr"); names.dataset["names"] = "true"; names.append(make("th", "report-name-head", s.name));
+    const names = make("tr"); names.dataset["names"] = "true"; // The page title already names the report: the head of the name column carries it for assistive technology only.
+    const corner = make("th", "report-name-head"); corner.scope = "col"; corner.append(make("span", "visually-hidden", s.name)); names.append(corner);
     const main = data.mainGroup(s.options), ordered = s.options["order"];
     const order = typeof ordered === "object" && ordered !== null ? ordered as { column?: unknown; direction?: unknown } : null;
     for (const col of cols) {

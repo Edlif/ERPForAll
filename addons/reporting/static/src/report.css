@@ -38,8 +38,6 @@
 .report-table thead tr:only-child th, .report-table thead tr[data-names]:first-child th { top: 0; }
 .report-table .report-period { text-align: center; border-inline-start: 1px solid var(--line); }
 .report-table .report-col { text-align: end; }
-.report-table :is(.report-col-date, .report-cell-date) { text-align: center; }
-.report-table :is(.report-col-text, .report-cell-text) { text-align: start; }
 /* A line's name reads as data, not as a table head: the global `th` rule is for column heads. */
 .report-table tbody th { font-size: inherit; color: inherit; }
 .report-name, .report-name-head, .report-corner { position: sticky; inset-inline-start: 0; z-index: 1; min-width: 240px; }
@@ -47,7 +45,7 @@
 .report-table .report-name { padding-inline-start: calc(12px + var(--level, 0) * 20px); font-weight: inherit; }
 .report-name-inner { display: flex; align-items: center; gap: 4px; }
 .report-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.report-toggle, .report-caret { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; background: transparent; border: 0; border-radius: var(--radius-control); color: var(--muted); }
+.report-toggle, .report-caret { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; min-height: 0; padding: 0; background: transparent; border: 0; border-radius: var(--radius-control); color: var(--muted); }
 .report-toggle:hover:not(:disabled), .report-caret:hover { background: var(--hover); color: var(--text); }
 .report-toggle:focus-visible, .report-caret:focus-visible, .report-sort:focus-visible, .report-more:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
 .report-toggle[hidden] { display: inline-flex; visibility: hidden; }
@@ -68,6 +66,9 @@
 .report-line[aria-expanded] > .report-name { cursor: pointer; }
 .report-line[aria-busy="true"] { opacity: .65; }
 .report-table .report-cell { text-align: end; font-variant-numeric: tabular-nums; }
+/* After the two end-aligned rules above (same specificity): a date column centres, a text column starts at its edge. */
+.report-table :is(.report-col-date, .report-cell-date) { text-align: center; }
+.report-table :is(.report-col-text, .report-cell-text) { text-align: start; }
 .report-cell[data-drill="true"] { cursor: pointer; }
 .report-cell[data-drill="true"]:hover { color: var(--accent); text-decoration: underline; }
 .report-zero { color: var(--muted); }
