@@ -49,6 +49,49 @@ fn parameters() -> erp_sdk::Result<Vec<erp_sdk::settings::ParameterDecl>> {
 }
 erp_sdk::system_parameters!(parameters);
 
+/// The time zone a new employee or working schedule starts with: the creating user's, else the
+/// current company's. `None` when neither is set.
+pub(crate) async fn default_tz(
+    tx: &mut erp_sdk::Transaction,
+    env: &erp_sdk::Env,
+) -> erp_sdk::Result<Option<std::sync::Arc<str>>> {
+    use erp_sdk::Cell;
+    let user = env.records("res.users")?.browse([env.uid()])?;
+    if let Cell::Str(tz) = user.cell(tx, "tz").await?
+        && !tz.is_empty()
+    {
+        return Ok(Some(tz));
+    }
+    let Some(company) = env.company_id()? else {
+        return Ok(None);
+    };
+    match env
+        .records("res.company")?
+        .browse([company])?
+        .cell(tx, "tz")
+        .await?
+    {
+        Cell::Str(tz) if !tz.is_empty() => Ok(Some(tz)),
+        _ => Ok(None),
+    }
+}
+
+/// `default_get` with `tz` from [`default_tz`] when the caller asked for it and gave none.
+pub(crate) async fn with_default_tz(
+    tx: &mut erp_sdk::Transaction,
+    env: &erp_sdk::Env,
+    wants_tz: bool,
+    mut values: erp_sdk::ValueMap,
+) -> erp_sdk::Result<erp_sdk::ValueMap> {
+    if wants_tz
+        && !values.contains_key("tz")
+        && let Some(tz) = default_tz(tx, env).await?
+    {
+        values.insert("tz".to_owned(), erp_sdk::Value::Str(tz));
+    }
+    Ok(values)
+}
+
 /// A declared HR parameter as a count (its floor is 1, so it is always positive).
 pub(crate) async fn count_parameter(
     tx: &mut erp_sdk::Transaction,

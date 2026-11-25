@@ -202,9 +202,25 @@ pub struct HrWorkSchedule {
     /// Total hours per week.
     #[field(float, default = 40.0, string = "Hours per Week")]
     pub hours_per_week: f64,
-    /// Timezone identifier.
-    #[field(char, default = "Asia/Jakarta", string = "Timezone")]
+    /// Timezone identifier; defaults to the creating user's, else the company's.
+    #[field(char, string = "Timezone")]
     pub tz: Option<Arc<str>>,
+}
+
+#[methods(HrWorkSchedule, addon = "hr")]
+impl HrWorkSchedule {
+    /// `tz` defaults to the creating user's time zone, else the current company's.
+    #[method(override)]
+    async fn default_get(
+        this: &RecordSet<HrWorkSchedule>,
+        tx: &mut Transaction,
+        names: Vec<String>,
+        sup: Super,
+    ) -> Result<ValueMap> {
+        let wants_tz = names.iter().any(|name| name == "tz");
+        let values = sup.call(tx, this.as_records(), (names,)).await?;
+        crate::with_default_tz(tx, this.env(), wants_tz, values).await
+    }
 }
 
 /// `hr.departure.reason`: reason recorded when ending collaboration with an employee.

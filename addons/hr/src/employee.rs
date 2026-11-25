@@ -527,7 +527,8 @@ pub struct HrEmployee {
         string = "Related User"
     )]
     pub user_id: Option<RecId>,
-    #[field(char, default = "Asia/Jakarta", string = "Timezone")]
+    /// Defaults to the creating user's time zone, else the company's.
+    #[field(char, string = "Timezone")]
     pub tz: Option<Arc<str>>,
     #[field(
         many2one,
@@ -552,6 +553,19 @@ pub struct HrEmployee {
 
 #[methods(HrEmployee, addon = "hr")]
 impl HrEmployee {
+    /// `tz` defaults to the creating user's time zone, else the current company's.
+    #[method(override)]
+    async fn default_get(
+        this: &RecordSet<HrEmployee>,
+        tx: &mut Transaction,
+        names: Vec<String>,
+        sup: Super,
+    ) -> Result<ValueMap> {
+        let wants_tz = names.iter().any(|name| name == "tz");
+        let values = sup.call(tx, this.as_records(), (names,)).await?;
+        crate::with_default_tz(tx, this.env(), wants_tz, values).await
+    }
+
     #[compute(depends = ["department_id", "department_id.color"])]
     async fn _compute_department_color(
         this: &RecordSet<HrEmployee>,
