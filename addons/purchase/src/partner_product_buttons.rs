@@ -1,28 +1,32 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Smart buttons that connect vendors (`res.partner`) and products (`product.template`)
-//! directly to their readable purchase orders.
+//! directly to their readable confirmed purchase orders (`state = 'purchase'`), the same rule as
+//! the sales buttons: RFQs and cancelled orders do not count. The vendor count is one grouped
+//! read under the caller's read access; the product count follows the order lines, which no
+//! single relation field of the order names, so it filters the linked order ids by read access.
+//! Both actions open a domain, never an id list.
 
 use erp_addon_base::ResPartner;
 use erp_addon_product::ProductTemplate;
-use erp_sdk::Operation;
+use erp_addon_account::smart_buttons::{domain_window, grouped_counts, leaf, the_one};
 use erp_sdk::prelude::*;
 
-use crate::bill_buttons::{counts, flat, readable_links, window};
+use crate::bill_buttons::{counts, readable_links};
 
-/// Partner id, purchase order id.
-const PARTNER_PURCHASES: &str =
-    "SELECT partner_id::int8, id::int8 FROM purchase_order WHERE partner_id = ANY($1)";
+/// The state of the orders the buttons count: confirmed purchase orders.
+const CONFIRMED: &str = "purchase";
 
-/// Product template id, purchase order id.
+/// Product template id, confirmed purchase order id.
 const PRODUCT_PURCHASES: &str = "SELECT DISTINCT p.product_tmpl_id::int8, l.order_id::int8 \
     FROM purchase_order_line l \
     JOIN product_product p ON p.id = l.product_id \
-    WHERE p.product_tmpl_id = ANY($1)";
+    JOIN purchase_order o ON o.id = l.order_id \
+    WHERE p.product_tmpl_id = ANY($1) AND o.state = 'purchase'";
 
 /// `res.partner` with its readable purchase order count.
 #[extend(ResPartner, addon = "purchase")]
 pub struct PartnerPurchaseOrders {
-    /// Readable RFQs and purchase orders placed with this vendor.
+    /// Readable confirmed purchase orders placed with this vendor.
     #[field(
         integer,
         compute = "_compute_purchase_order_count",
@@ -40,29 +44,32 @@ impl PartnerPurchaseOrders {
         out: &mut Assign<'_, ResPartner>,
     ) -> Result<()> {
         let records = this.as_records();
-        let found = readable_links(tx, records, PARTNER_PURCHASES, "purchase.order").await?;
-        for (index, count) in counts(records, &found)?.into_iter().enumerate() {
+        let confirmed = Domain::field("state")?.eq(CONFIRMED);
+        let found =
+            grouped_counts(tx, records, "purchase.order", "partner_id", confirmed).await?;
+        for (index, count) in found.into_iter().enumerate() {
             out.set(index, PartnerPurchaseOrders::PURCHASE_ORDER_COUNT, count)?;
         }
         Ok(())
     }
 
-    /// Open the readable purchase orders for this vendor.
+    /// Open the confirmed purchase orders of this vendor.
     #[method]
     #[rpc(effect = read)]
     async fn action_view_purchase_orders(
         this: &RecordSet<ResPartner>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, PARTNER_PURCHASES, "purchase.order").await?;
-        Ok(window(
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(domain_window(
             "Purchase Orders",
             "purchase.order",
             Vec::new(),
-            flat(found),
+            vec![
+                Value::str("&"),
+                leaf("partner_id", "=", Value::Int(id)),
+                leaf("state", "=", Value::str(CONFIRMED)),
+            ],
         ))
     }
 }
@@ -70,7 +77,7 @@ impl PartnerPurchaseOrders {
 /// `product.template` with the count of purchase orders sourcing its variants.
 #[extend(ProductTemplate, addon = "purchase")]
 pub struct ProductTemplatePurchases {
-    /// Readable purchase orders containing this product.
+    /// Readable confirmed purchase orders containing this product.
     #[field(
         integer,
         compute = "_compute_purchase_order_count",
@@ -95,22 +102,23 @@ impl ProductTemplatePurchases {
         Ok(())
     }
 
-    /// Open the readable purchase orders sourcing this product.
+    /// Open the confirmed purchase orders sourcing this product.
     #[method]
     #[rpc(effect = read)]
     async fn action_view_purchases(
         this: &RecordSet<ProductTemplate>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, PRODUCT_PURCHASES, "purchase.order").await?;
-        Ok(window(
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(domain_window(
             "Purchase Orders",
             "purchase.order",
             Vec::new(),
-            flat(found),
+            vec![
+                Value::str("&"),
+                leaf("order_line.product_id.product_tmpl_id", "=", Value::Int(id)),
+                leaf("state", "=", Value::str(CONFIRMED)),
+            ],
         ))
     }
 }
