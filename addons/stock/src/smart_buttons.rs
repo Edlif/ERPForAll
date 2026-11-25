@@ -5,140 +5,145 @@
 //! - `stock.warehouse`: Operation Types (`picking_type_count` / `action_view_picking_types`), Transfers (`picking_count` / `action_view_pickings`)
 //! - `stock.location`: Current Stock (`quant_count` / `action_view_quants`), Transfers (`picking_count` / `action_view_pickings`)
 //! - `res.partner`: Transfers (`picking_count` / `action_view_pickings`)
+//!
+//! Counts and sums are one grouped read per button whose search predicate carries the caller's
+//! read access, so hidden records are never counted. The actions open a domain on the relation
+//! field, never a list of ids.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use erp_addon_base::ResPartner;
 use erp_addon_product::ProductTemplate;
 use erp_sdk::prelude::*;
-use erp_sdk::{Operation, ValueMap};
+use erp_sdk::{ErrorKind, Operation, ValueMap};
 
 use crate::location::StockLocation;
 use crate::picking::StockPicking;
 use crate::warehouse::StockWarehouse;
 
-const PICKING_RETURNS: &str =
-    "SELECT return_id::int8, id::int8 FROM stock_picking WHERE return_id = ANY($1)";
-const PICKING_BACKORDERS: &str =
-    "SELECT backorder_id::int8, id::int8 FROM stock_picking WHERE backorder_id = ANY($1)";
-
-const PRODUCT_INTERNAL_QUANTS: &str = "SELECT p.product_tmpl_id::int8, q.id::int8 \
-    FROM stock_quant q \
-    JOIN product_product p ON p.id = q.product_id \
-    JOIN stock_location l ON l.id = q.location_id \
-    WHERE p.product_tmpl_id = ANY($1) AND l.usage = 'internal'";
-
-const PRODUCT_MOVES: &str = "SELECT p.product_tmpl_id::int8, m.id::int8 \
-    FROM stock_move m \
-    JOIN product_product p ON p.id = m.product_id \
-    WHERE p.product_tmpl_id = ANY($1)";
-
-const PRODUCT_ORDERPOINTS: &str = "SELECT p.product_tmpl_id::int8, op.id::int8 \
-    FROM stock_warehouse_orderpoint op \
-    JOIN product_product p ON p.id = op.product_id \
-    WHERE p.product_tmpl_id = ANY($1)";
-
-const WAREHOUSE_PICKING_TYPES: &str =
-    "SELECT warehouse_id::int8, id::int8 FROM stock_picking_type WHERE warehouse_id = ANY($1)";
-
-const WAREHOUSE_PICKINGS: &str = "SELECT pt.warehouse_id::int8, sp.id::int8 \
-    FROM stock_picking sp \
-    JOIN stock_picking_type pt ON pt.id = sp.picking_type_id \
-    WHERE pt.warehouse_id = ANY($1)";
-
-const LOCATION_QUANTS: &str =
-    "SELECT location_id::int8, id::int8 FROM stock_quant WHERE location_id = ANY($1)";
-
-const LOCATION_PICKINGS: &str = "SELECT loc_id::int8, id::int8 FROM ( \
-    SELECT location_id AS loc_id, id FROM stock_picking WHERE location_id = ANY($1) \
-    UNION \
-    SELECT location_dest_id AS loc_id, id FROM stock_picking WHERE location_dest_id = ANY($1) \
-    ) t";
-
-const PARTNER_PICKINGS: &str =
-    "SELECT partner_id::int8, id::int8 FROM stock_picking WHERE partner_id = ANY($1)";
-
-fn decode(error: impl std::error::Error + Send + Sync + 'static) -> Error {
-    Error::db("Reading linked inventory records failed.").with_source(error)
-}
+/// The quants that count as on hand: those in internal locations.
+const INTERNAL: (&str, &str) = ("location_id.usage", "internal");
 
 fn row_of(id: &RecId) -> Option<i64> {
     id.as_real().or(id.origin()).map(|id| id.get())
 }
 
-async fn readable_links(
+fn source_ids(sources: &Records) -> Vec<i64> {
+    sources.rec_ids().iter().filter_map(row_of).collect()
+}
+
+/// The groups of the `model` records matching `domain` by `groupby`, with `aggregate`: the
+/// group keys as ids, then the aggregate. A caller refused read on `model` sees none of its
+/// records, as `Records::filtered_access` treats a model-level refusal.
+async fn grouped(
     tx: &mut Transaction,
     sources: &Records,
-    sql: &str,
-    target: &str,
-) -> Result<BTreeMap<i64, Vec<i64>>> {
-    let ids: Vec<i64> = sources.rec_ids().iter().filter_map(row_of).collect();
-    if ids.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let mut links = Vec::new();
-    for row in tx.query(sql, &[&ids]).await? {
-        let source: i64 = row.try_get(0).map_err(decode)?;
-        let linked: i64 = row.try_get(1).map_err(decode)?;
-        links.push((source, linked));
-    }
-    let readable: BTreeSet<i64> = sources
+    model: &str,
+    domain: Domain,
+    groupby: &[&str],
+    aggregate: &str,
+) -> Result<Vec<(Vec<Option<i64>>, GroupValue)>> {
+    let read = sources
         .env()
-        .records(target)?
-        .browse(links.iter().map(|(_, linked)| *linked))?
-        .filtered_access(tx, Operation::Read)
-        .await?
-        .ids()
-        .into_iter()
-        .collect();
-    let mut out: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
-    for (source, linked) in links {
-        if readable.contains(&linked) {
-            out.entry(source).or_default().push(linked);
-        }
-    }
-    for linked in out.values_mut() {
-        linked.sort_unstable();
-        linked.dedup();
+        .records(model)?
+        ._read_group(
+            tx,
+            ReadGroup::new(domain)
+                .groupby(groupby.iter().copied())
+                .aggregates([aggregate]),
+        )
+        .await;
+    let groups = match read {
+        Ok(groups) => groups,
+        Err(error) if error.kind() == ErrorKind::Access => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut out = Vec::new();
+    for mut row in groups.rows() {
+        let value = row
+            .pop()
+            .ok_or_else(|| Error::internal("A smart button group has no aggregate."))?;
+        let keys = row
+            .iter()
+            .map(|key| key.record_id().map(|id| id.get()))
+            .collect();
+        out.push((keys, value));
     }
     Ok(out)
 }
 
-fn counts(sources: &Records, found: &BTreeMap<i64, Vec<i64>>) -> Result<Vec<i32>> {
+fn count_of(value: &GroupValue) -> Result<i64> {
+    match value {
+        GroupValue::Int(count) => Ok(*count),
+        _ => Err(Error::internal("A smart button count is not an integer.")),
+    }
+}
+
+fn per_source(sources: &Records, found: &BTreeMap<i64, i64>) -> Result<Vec<i32>> {
     sources
         .rec_ids()
         .iter()
         .map(|id| {
-            let n = row_of(id).and_then(|id| found.get(&id)).map_or(0, Vec::len);
+            let n = row_of(id).and_then(|id| found.get(&id)).copied().unwrap_or(0);
             i32::try_from(n).map_err(|_| Error::programming("record count does not fit an i32"))
         })
         .collect()
 }
 
-fn flat(found: BTreeMap<i64, Vec<i64>>) -> Vec<i64> {
-    let mut all: Vec<i64> = found.into_values().flatten().collect();
-    all.sort_unstable();
-    all.dedup();
-    all
+/// Per source record, in record order, how many readable `model` records have the source in
+/// `link` (a many2one or a path ending in one) and match `extra`.
+async fn counts(
+    tx: &mut Transaction,
+    sources: &Records,
+    model: &str,
+    link: &str,
+    extra: &[(&str, &str)],
+) -> Result<Vec<i32>> {
+    let rows = grouped(
+        tx,
+        sources,
+        model,
+        linked(link, source_ids(sources), extra)?,
+        &[link],
+        "__count",
+    )
+    .await?;
+    let mut found = BTreeMap::new();
+    for (keys, value) in &rows {
+        if let Some(Some(source)) = keys.first() {
+            *found.entry(*source).or_insert(0) += count_of(value)?;
+        }
+    }
+    per_source(sources, &found)
 }
 
-fn window(name: &str, model: &str, ids: Vec<i64>) -> Value {
-    let context = ValueMap::from([("create".to_owned(), Value::Bool(false))]);
-    if let [id] = ids.as_slice() {
-        return Value::Map(Arc::new(ValueMap::from([
-            ("type".to_owned(), Value::str("ir.actions.act_window")),
-            ("name".to_owned(), Value::str(name)),
-            ("res_model".to_owned(), Value::str(model)),
-            ("target".to_owned(), Value::str("current")),
-            ("res_id".to_owned(), Value::Int(*id)),
-            (
-                "views".to_owned(),
-                Value::list([Value::list([Value::False, Value::str("form")])]),
-            ),
-            ("context".to_owned(), Value::Map(Arc::new(context))),
-        ])));
+/// `link in ids` and every `extra` condition.
+fn linked(link: &str, ids: Vec<i64>, extra: &[(&str, &str)]) -> Result<Domain> {
+    let mut parts = vec![Domain::field(link)?.in_(ids)];
+    for (field, value) in extra {
+        parts.push(Domain::field(field)?.eq(*value));
     }
+    Ok(Domain::and(parts))
+}
+
+fn leaf(field: &str, op: &str, value: Value) -> Value {
+    Value::list([Value::str(field), Value::str(op), value])
+}
+
+/// The one record of a button's action, after the caller's read check.
+async fn the_one(this: &Records, tx: &mut Transaction) -> Result<i64> {
+    this.check_access(tx, Operation::Read).await?;
+    this.ensure_one()?;
+    this.rec_ids()
+        .first()
+        .and_then(row_of)
+        .ok_or_else(|| Error::validation("Save the record before opening its linked documents."))
+}
+
+/// A current-window list and form of `model` over `domain` (a client domain list).
+fn window(name: &str, model: &str, domain: Vec<Value>) -> Value {
+    let context = ValueMap::from([("create".to_owned(), Value::Bool(false))]);
     Value::Map(Arc::new(ValueMap::from([
         ("type".to_owned(), Value::str("ir.actions.act_window")),
         ("name".to_owned(), Value::str(name)),
@@ -151,14 +156,7 @@ fn window(name: &str, model: &str, ids: Vec<i64>) -> Value {
                 Value::list([Value::False, Value::str("form")]),
             ]),
         ),
-        (
-            "domain".to_owned(),
-            Value::list([Value::list([
-                Value::str("id"),
-                Value::str("in"),
-                Value::list(ids.into_iter().map(Value::Int)),
-            ])]),
-        ),
+        ("domain".to_owned(), Value::list(domain)),
         ("context".to_owned(), Value::Map(Arc::new(context))),
     ])))
 }
@@ -173,39 +171,41 @@ impl StockPicking {
         out: &mut Assign<'_, StockPicking>,
     ) -> Result<()> {
         let records = this.as_records();
-        let found = readable_links(tx, records, PICKING_BACKORDERS, "stock.picking").await?;
-        for (index, count) in counts(records, &found)?.into_iter().enumerate() {
+        let found = counts(tx, records, "stock.picking", "backorder_id", &[]).await?;
+        for (index, count) in found.into_iter().enumerate() {
             out.set(index, StockPicking::BACKORDER_COUNT, count)?;
         }
         Ok(())
     }
 
-    /// Open readable backorder transfers split from this transfer.
+    /// Open the backorder transfers split from this transfer.
     #[method]
     #[rpc(effect = read)]
     async fn action_view_backorders(
         this: &RecordSet<StockPicking>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, PICKING_BACKORDERS, "stock.picking").await?;
-        Ok(window("Backorders", "stock.picking", flat(found)))
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(window(
+            "Backorders",
+            "stock.picking",
+            vec![leaf("backorder_id", "=", Value::Int(id))],
+        ))
     }
 
-    /// Open readable return transfers created from this transfer.
+    /// Open the return transfers created from this transfer.
     #[method]
     #[rpc(effect = read)]
     async fn action_view_returns(
         this: &RecordSet<StockPicking>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, PICKING_RETURNS, "stock.picking").await?;
-        Ok(window("Returns", "stock.picking", flat(found)))
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(window(
+            "Returns",
+            "stock.picking",
+            vec![leaf("return_id", "=", Value::Int(id))],
+        ))
     }
 }
 
@@ -213,8 +213,13 @@ impl StockPicking {
 #[extend(ProductTemplate, addon = "stock")]
 pub struct ProductTemplateStockButtons {
     /// On-hand quantity summed across readable internal stock quants of this product's variants.
-    #[field(float, compute = "_compute_stock_counters", string = "On Hand")]
-    pub qty_on_hand: f64,
+    #[field(
+        float,
+        digits = "Product Unit",
+        compute = "_compute_stock_counters",
+        string = "On Hand"
+    )]
+    pub qty_on_hand: Decimal,
     /// Readable stock moves touching this product's variants.
     #[field(integer, compute = "_compute_stock_counters", string = "Stock Moves")]
     pub stock_move_count: i32,
@@ -227,6 +232,9 @@ pub struct ProductTemplateStockButtons {
     pub reordering_rule_count: i32,
 }
 
+/// The path from a variant-level record to its product template.
+const TEMPLATE: &str = "product_id.product_tmpl_id";
+
 #[methods(ProductTemplate, addon = "stock")]
 impl ProductTemplateStockButtons {
     #[compute(depends = ["company_id", "is_storable"], depends_context = ["uid", "allowed_company_ids"])]
@@ -236,44 +244,32 @@ impl ProductTemplateStockButtons {
         out: &mut Assign<'_, ProductTemplate>,
     ) -> Result<()> {
         let records = this.as_records();
-        let quants = readable_links(tx, records, PRODUCT_INTERNAL_QUANTS, "stock.quant").await?;
-        let moves = readable_links(tx, records, PRODUCT_MOVES, "stock.move").await?;
-        let rules = readable_links(
+        let sums = grouped(
             tx,
             records,
-            PRODUCT_ORDERPOINTS,
-            "stock.warehouse.orderpoint",
+            "stock.quant",
+            linked(TEMPLATE, source_ids(records), &[INTERNAL])?,
+            &[TEMPLATE],
+            "quantity:sum",
         )
         .await?;
-
-        let all_quant_ids = flat(quants.clone());
-        let mut qty_by_quant: BTreeMap<i64, f64> = BTreeMap::new();
-        if !all_quant_ids.is_empty() {
-            for row in tx
-                .query(
-                    "SELECT id::int8, quantity::float8 FROM stock_quant WHERE id = ANY($1)",
-                    &[&all_quant_ids],
-                )
-                .await?
-            {
-                let qid: i64 = row.try_get(0).map_err(decode)?;
-                let qty: f64 = row.try_get(1).map_err(decode)?;
-                qty_by_quant.insert(qid, qty);
+        let mut on_hand: BTreeMap<i64, Decimal> = BTreeMap::new();
+        for (keys, value) in &sums {
+            let GroupValue::Decimal(quantity) = value else {
+                return Err(Error::internal("The on-hand quantity sum is not a decimal."));
+            };
+            if let Some(Some(template)) = keys.first() {
+                *on_hand.entry(*template).or_insert(Decimal::ZERO) += *quantity;
             }
         }
-
-        let move_counts = counts(records, &moves)?;
-        let rule_counts = counts(records, &rules)?;
+        let move_counts = counts(tx, records, "stock.move", TEMPLATE, &[]).await?;
+        let rule_counts = counts(tx, records, "stock.warehouse.orderpoint", TEMPLATE, &[]).await?;
         for (index, rec_id) in records.rec_ids().iter().enumerate() {
-            let on_hand: f64 = row_of(rec_id)
-                .and_then(|id| quants.get(&id))
-                .map_or(0.0, |qids| {
-                    qids.iter()
-                        .filter_map(|qid| qty_by_quant.get(qid))
-                        .copied()
-                        .sum()
-                });
-            out.set(index, ProductTemplateStockButtons::QTY_ON_HAND, on_hand)?;
+            let quantity = row_of(rec_id)
+                .and_then(|id| on_hand.get(&id))
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            out.set(index, ProductTemplateStockButtons::QTY_ON_HAND, quantity)?;
             out.set(
                 index,
                 ProductTemplateStockButtons::STOCK_MOVE_COUNT,
@@ -295,11 +291,16 @@ impl ProductTemplateStockButtons {
         this: &RecordSet<ProductTemplate>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, PRODUCT_INTERNAL_QUANTS, "stock.quant").await?;
-        Ok(window("Stock On Hand", "stock.quant", flat(found)))
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(window(
+            "Stock On Hand",
+            "stock.quant",
+            vec![
+                Value::str("&"),
+                leaf(TEMPLATE, "=", Value::Int(id)),
+                leaf(INTERNAL.0, "=", Value::str(INTERNAL.1)),
+            ],
+        ))
     }
 
     /// Open stock move history for this product.
@@ -309,11 +310,12 @@ impl ProductTemplateStockButtons {
         this: &RecordSet<ProductTemplate>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, PRODUCT_MOVES, "stock.move").await?;
-        Ok(window("Stock Moves", "stock.move", flat(found)))
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(window(
+            "Stock Moves",
+            "stock.move",
+            vec![leaf(TEMPLATE, "=", Value::Int(id))],
+        ))
     }
 
     /// Open reordering rules for this product.
@@ -323,23 +325,17 @@ impl ProductTemplateStockButtons {
         this: &RecordSet<ProductTemplate>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(
-            tx,
-            records,
-            PRODUCT_ORDERPOINTS,
-            "stock.warehouse.orderpoint",
-        )
-        .await?;
+        let id = the_one(this.as_records(), tx).await?;
         Ok(window(
             "Reordering Rules",
             "stock.warehouse.orderpoint",
-            flat(found),
+            vec![leaf(TEMPLATE, "=", Value::Int(id))],
         ))
     }
 }
+
+/// The path from a transfer to its warehouse.
+const PICKING_WAREHOUSE: &str = "picking_type_id.warehouse_id";
 
 /// `stock.warehouse` smart buttons: Operation Types and Transfers.
 #[methods(StockWarehouse, addon = "stock")]
@@ -351,11 +347,8 @@ impl StockWarehouse {
         out: &mut Assign<'_, StockWarehouse>,
     ) -> Result<()> {
         let records = this.as_records();
-        let types =
-            readable_links(tx, records, WAREHOUSE_PICKING_TYPES, "stock.picking.type").await?;
-        let pickings = readable_links(tx, records, WAREHOUSE_PICKINGS, "stock.picking").await?;
-        let type_counts = counts(records, &types)?;
-        let picking_counts = counts(records, &pickings)?;
+        let type_counts = counts(tx, records, "stock.picking.type", "warehouse_id", &[]).await?;
+        let picking_counts = counts(tx, records, "stock.picking", PICKING_WAREHOUSE, &[]).await?;
         for index in 0..records.len() {
             out.set(
                 index,
@@ -373,12 +366,12 @@ impl StockWarehouse {
         this: &RecordSet<StockWarehouse>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found =
-            readable_links(tx, records, WAREHOUSE_PICKING_TYPES, "stock.picking.type").await?;
-        Ok(window("Operation Types", "stock.picking.type", flat(found)))
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(window(
+            "Operation Types",
+            "stock.picking.type",
+            vec![leaf("warehouse_id", "=", Value::Int(id))],
+        ))
     }
 
     #[method]
@@ -387,11 +380,12 @@ impl StockWarehouse {
         this: &RecordSet<StockWarehouse>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, WAREHOUSE_PICKINGS, "stock.picking").await?;
-        Ok(window("Transfers", "stock.picking", flat(found)))
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(window(
+            "Transfers",
+            "stock.picking",
+            vec![leaf(PICKING_WAREHOUSE, "=", Value::Int(id))],
+        ))
     }
 }
 
@@ -405,10 +399,37 @@ impl StockLocation {
         out: &mut Assign<'_, StockLocation>,
     ) -> Result<()> {
         let records = this.as_records();
-        let quants = readable_links(tx, records, LOCATION_QUANTS, "stock.quant").await?;
-        let pickings = readable_links(tx, records, LOCATION_PICKINGS, "stock.picking").await?;
-        let quant_counts = counts(records, &quants)?;
-        let picking_counts = counts(records, &pickings)?;
+        let quant_counts = counts(tx, records, "stock.quant", "location_id", &[]).await?;
+        // A transfer counts once for each of its two ends that is one of these locations, and
+        // once only when both ends are the same location.
+        let ids = source_ids(records);
+        let pairs = grouped(
+            tx,
+            records,
+            "stock.picking",
+            Domain::or([
+                Domain::field("location_id")?.in_(ids.clone()),
+                Domain::field("location_dest_id")?.in_(ids.clone()),
+            ]),
+            &["location_id", "location_dest_id"],
+            "__count",
+        )
+        .await?;
+        let mut found: BTreeMap<i64, i64> = BTreeMap::new();
+        for (keys, value) in &pairs {
+            let count = count_of(value)?;
+            let (from, to) = match keys.as_slice() {
+                [from, to] => (*from, *to),
+                _ => return Err(Error::internal("A transfer group has no location pair.")),
+            };
+            if let Some(from) = from.filter(|id| ids.contains(id)) {
+                *found.entry(from).or_insert(0) += count;
+            }
+            if let Some(to) = to.filter(|id| ids.contains(id) && Some(*id) != from) {
+                *found.entry(to).or_insert(0) += count;
+            }
+        }
+        let picking_counts = per_source(records, &found)?;
         for index in 0..records.len() {
             out.set(index, StockLocation::QUANT_COUNT, quant_counts[index])?;
             out.set(index, StockLocation::PICKING_COUNT, picking_counts[index])?;
@@ -422,11 +443,12 @@ impl StockLocation {
         this: &RecordSet<StockLocation>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, LOCATION_QUANTS, "stock.quant").await?;
-        Ok(window("Current Stock", "stock.quant", flat(found)))
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(window(
+            "Current Stock",
+            "stock.quant",
+            vec![leaf("location_id", "=", Value::Int(id))],
+        ))
     }
 
     #[method]
@@ -435,11 +457,16 @@ impl StockLocation {
         this: &RecordSet<StockLocation>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, LOCATION_PICKINGS, "stock.picking").await?;
-        Ok(window("Transfers", "stock.picking", flat(found)))
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(window(
+            "Transfers",
+            "stock.picking",
+            vec![
+                Value::str("|"),
+                leaf("location_id", "=", Value::Int(id)),
+                leaf("location_dest_id", "=", Value::Int(id)),
+            ],
+        ))
     }
 }
 
@@ -460,8 +487,8 @@ impl PartnerStockPickings {
         out: &mut Assign<'_, ResPartner>,
     ) -> Result<()> {
         let records = this.as_records();
-        let found = readable_links(tx, records, PARTNER_PICKINGS, "stock.picking").await?;
-        for (index, count) in counts(records, &found)?.into_iter().enumerate() {
+        let found = counts(tx, records, "stock.picking", "partner_id", &[]).await?;
+        for (index, count) in found.into_iter().enumerate() {
             out.set(index, PartnerStockPickings::PICKING_COUNT, count)?;
         }
         Ok(())
@@ -473,10 +500,11 @@ impl PartnerStockPickings {
         this: &RecordSet<ResPartner>,
         tx: &mut Transaction,
     ) -> Result<Value> {
-        let records = this.as_records();
-        records.check_access(tx, Operation::Read).await?;
-        records.ensure_one()?;
-        let found = readable_links(tx, records, PARTNER_PICKINGS, "stock.picking").await?;
-        Ok(window("Transfers", "stock.picking", flat(found)))
+        let id = the_one(this.as_records(), tx).await?;
+        Ok(window(
+            "Transfers",
+            "stock.picking",
+            vec![leaf("partner_id", "=", Value::Int(id))],
+        ))
     }
 }
