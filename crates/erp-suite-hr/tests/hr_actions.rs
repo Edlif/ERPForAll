@@ -684,6 +684,7 @@ fn officer_fields_and_default_time_zone() {
             "contract_date_start",
             "contract_date_end",
             "contract_period_label",
+            "employee_type_id",
         ] {
             let error = rec.read(&mut tx, &[field]).await.unwrap_err();
             assert_eq!(error.kind(), ErrorKind::Access, "{field}: {error}");
