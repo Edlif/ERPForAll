@@ -166,10 +166,10 @@ export function renderFormLayout(
         title.append(mediaCol, infoCol);
         render(imageChild, mediaCol, 2);
         for (const child of restChildren) {
+          // From the widget only: a field's name says nothing the core client may rely on.
           const rowIcon = child.kind !== "field" || child.field.invisible ? undefined
-            : child.field.name === "job_title" ? "briefcase"
             : child.widget === "email" ? "mail"
-            : child.widget === "phone" ? (child.field.name.includes("mobile") ? "smartphone" : "phone")
+            : child.widget === "phone" ? "phone"
             : child.widget === "many2many_tags" ? "tags"
             : undefined;
           if (!rowIcon) { render(child, infoCol, 2); continue; }

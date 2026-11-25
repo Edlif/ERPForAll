@@ -32,7 +32,7 @@ import { mountCalendar } from "./calendar-view.js";
 import { GRAPH_MAX_GROUPINGS, GRAPH_PARAMS, GraphModel, graphGrouping, graphParams, graphParamsState, readGraphView, type GraphParams } from "./graph.js";
 import { mountGraph, type GraphTarget } from "./graph-view.js";
 import { focusKanbanCard, kanbanLayout, kanbanRoot, renderKanbanCards } from "./kanban.js";
-import { hierarchyRoot, renderHierarchyTree } from "./hierarchy.js";
+import { hierarchyRoot, renderHierarchyTree, type HierarchyState } from "./hierarchy.js";
 import { renderActivityMatrix, type ActivityItemRow, type ActivityTypeRow } from "./activity-view.js";
 import { createSearchPanelSidebar, type SearchPanelSidebar } from "./search-panel.js";
 import { displayValue } from "./fields.js";
@@ -166,6 +166,21 @@ function actionViews(action: Record<string, unknown>): unknown[][] {
     const view = object(value);
     return [view["id"], view["type"]];
   });
+}
+
+/** The view an action opens with when the address names none: its first view, except that an action whose first view
+ *  is not a hierarchy or activity view opens on its list when it has one (a record id opens the first view). */
+export function defaultViewType(views: readonly unknown[][], recordId: string | undefined): string {
+  const first = String(views[0]?.[1]);
+  if (first === "hierarchy" || first === "activity") return first;
+  return !recordId && views.some(view => view[1] === "list") ? "list" : first;
+}
+
+/** Said above a view that read fewer rows than the server holds. */
+function limitNotice(text: string): HTMLElement {
+  const notice = el("p", text, "view-limit-notice muted");
+  notice.setAttribute("role", "status");
+  return notice;
 }
 
 export function isFalsy(value: unknown): boolean {
@@ -2345,9 +2360,7 @@ export class HumanApp {
         if (route.model && route.model !== model) throw new ClientError("validation", "URL model does not match the action.");
         const views = actionViews(action);
         const description = describeViews(await this.viewDescriptions(model, views, {}, context, entry ? undefined : actionId), model, this.registry);
-        const firstView = String(views[0]?.[1]);
-        const defaultViewType = !route.id && firstView === "form" && views.some(v => v[1] === "list") ? "list" : firstView;
-        const viewType = route.view_type ?? defaultViewType;
+        const viewType = route.view_type ?? defaultViewType(views, route.id);
         const view = description.views.get(viewType);
         if (!view) throw new ClientError("unsupported", "The requested view is unavailable.");
 
@@ -3264,6 +3277,8 @@ export class HumanApp {
     container.append(body);
     let tree: { node: HTMLElement; dispose: () => void } | undefined;
     let request = 0;
+    // What the user unfolded survives the reload after a reassignment.
+    const treeState: HierarchyState = {};
 
     const open = hasForm ? (id: number): void => this.run(async () => {
       await this.navigate({ ...route, id: String(id), view_type: "form" });
@@ -3274,6 +3289,7 @@ export class HumanApp {
       body.setAttribute("aria-busy", "true");
       void sidebar?.refresh(searchModel.getDomain());
       let records: Record<string, unknown>[];
+      let total: number;
       try {
         const answer = object(await this.rpc.call(description.model, "web_search_read", {
           domain: combinedDomain(),
@@ -3283,9 +3299,11 @@ export class HumanApp {
           context,
         }));
         records = array(answer["records"], "records").map(row => object(row));
+        total = integer(answer["length"], "record count");
       } catch (error) {
         if (!current()) return;
         body.removeAttribute("aria-busy");
+        if (body.isConnected) this.listContext = undefined;
         tree?.dispose(); tree = undefined;
         const message = el("p", "Unable to load this hierarchy. Adjust the search or reload the page.", "list-load-error");
         message.setAttribute("role", "alert"); body.replaceChildren(message);
@@ -3294,6 +3312,8 @@ export class HumanApp {
       if (!current()) return;
       body.removeAttribute("aria-busy");
       tree?.dispose();
+      // A record opened from the chart steps through the loaded records with the form pager.
+      this.listContext = { ids: records.map(row => integer(row["id"], "record id")), total: records.length, offset: 0, limit: records.length };
       if (!records.length) {
         tree = undefined;
         const empty = noContentHelp();
@@ -3321,8 +3341,11 @@ export class HumanApp {
           },
         } : {}),
         formatField: (field, rec) => displayValue(field, rec[field.name], locale),
+        state: treeState,
+        dialogs: this.messages.dialogs,
       });
-      body.replaceChildren(tree.node);
+      // A record whose parent was not read shows as a top-level card; say so instead of showing a wrong chart silently.
+      body.replaceChildren(...(total > records.length ? [limitNotice(t("Showing {shown} of {total} records: a record whose parent is not among them shows at the top level. Narrow the search to see the rest.", { shown: records.length, total }))] : []), tree.node);
     };
 
     if (sectionsPanel) {
@@ -3413,6 +3436,7 @@ export class HumanApp {
       let records: Record<string, unknown>[];
       let types: ActivityTypeRow[] = [];
       let activities: ActivityItemRow[] = [];
+      const cut: string[] = [];
       try {
         const [recResp, typeResp] = await Promise.all([
           this.rpc.call(description.model, "web_search_read", { domain: effectiveDomain(), specification: specification(view.fields), offset: 0, limit: 80, context }),
@@ -3423,10 +3447,14 @@ export class HumanApp {
           }),
         ]);
         records = array(object(recResp)["records"], "records").map(row => object(row));
+        const recordTotal = integer(object(recResp)["length"], "record count");
+        if (recordTotal > records.length) cut.push(t("Showing {shown} of {total} records. Narrow the search to see the rest.", { shown: records.length, total: recordTotal }));
+        const typeTotal = integer(object(typeResp)["length"], "activity type count");
         types = array(object(typeResp)["records"], "activity types").map(row => {
           const item = object(row);
           return { id: integer(item["id"], "type id"), name: typeof item["name"] === "string" ? item["name"] : `#${String(item["id"])}` };
         });
+        if (typeTotal > types.length) cut.push(t("Showing {shown} of {total} activity types.", { shown: types.length, total: typeTotal }));
         const recIds = records.map(r => r["id"]).filter((id): id is number => typeof id === "number");
         if (recIds.length > 0) {
           const actResp = await this.rpc.call("mail.activity", "web_search_read", {
@@ -3434,7 +3462,10 @@ export class HumanApp {
             specification: { res_id: {}, activity_type_id: { fields: { display_name: {} } }, summary: {}, date_deadline: {}, state: {}, user_id: { fields: { display_name: {} } } },
             offset: 0, limit: 500, context,
           });
-          activities = array(object(actResp)["records"], "activities").flatMap(row => {
+          const activityRows = array(object(actResp)["records"], "activities");
+          const activityTotal = integer(object(actResp)["length"], "activity count");
+          if (activityTotal > activityRows.length) cut.push(t("Showing {shown} of {total} activities of these records.", { shown: activityRows.length, total: activityTotal }));
+          activities = activityRows.flatMap(row => {
             const item = object(row);
             const id = item["id"], resId = item["res_id"];
             const rawType = item["activity_type_id"];
@@ -3455,6 +3486,7 @@ export class HumanApp {
       } catch (error) {
         if (!current()) return;
         body.removeAttribute("aria-busy");
+        if (body.isConnected) this.listContext = undefined;
         matrix?.dispose(); matrix = undefined;
         const message = el("p", "Unable to load activities. Adjust the search or reload the page.", "list-load-error");
         message.setAttribute("role", "alert"); body.replaceChildren(message);
@@ -3463,6 +3495,7 @@ export class HumanApp {
       if (!current()) return;
       body.removeAttribute("aria-busy");
       matrix?.dispose();
+      this.listContext = { ids: records.map(row => integer(row["id"], "record id")), total: records.length, offset: 0, limit: records.length };
       const locale = this.editorLocale?.lang.replaceAll("_", "-") ?? "en-US";
       matrix = renderActivityMatrix({
         model: description.model, view, records, types, activities,
@@ -3471,8 +3504,9 @@ export class HumanApp {
         formatField: (field, rec) => displayValue(field, rec[field.name], locale),
         onChanged: () => load(),
         report: error => this.reportError(error),
+        dialogs: this.messages.dialogs,
       });
-      body.replaceChildren(matrix.node);
+      body.replaceChildren(...cut.map(limitNotice), matrix.node);
     };
 
     if (sectionsPanel) {
@@ -4996,7 +5030,7 @@ export class HumanApp {
       const originInTrail = !!origin && this.breadcrumbs.items.some(item => item.id === crumbId(origin.origin, origin.origin.id ?? "new"));
       const previous = origin && !backIsOrigin && !originInTrail ? breadcrumbs.querySelector(".breadcrumb-previous") : null;
       if (origin && previous) {
-        const divider = el("span", "/", "form-breadcrumb-divider"); divider.setAttribute("aria-hidden", "true");
+        const divider = el("span", "›", "form-breadcrumb-divider"); divider.setAttribute("aria-hidden", "true");
         previous.prepend(this.originCrumb(origin), divider);
       }
       if (recordMenu) breadcrumbs.append(recordMenu);

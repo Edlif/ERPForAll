@@ -7,6 +7,8 @@ import { imageDataUrl } from "./image-field.js";
 import { initials } from "./kanban.js";
 import { ClientError, type RpcClient } from "./transport.js";
 import type { ActivityNode, Field, Node, View } from "./metadata.js";
+import type { DialogHandle, DialogService } from "./dialog-service.js";
+import { t } from "./translate.js";
 
 export interface ActivityTypeRow {
   id: number;
@@ -41,6 +43,8 @@ export interface ActivityMatrixOptions {
   formatField: (field: Field, record: Record<string, unknown>) => string;
   onChanged: () => Promise<void>;
   report: (error: unknown) => void;
+  /** The page's dialog service: schedule and detail dialogs trap focus, close on Escape and return focus. */
+  dialogs: DialogService;
 }
 
 export function activityRoot(view: View): ActivityNode {
@@ -57,8 +61,8 @@ export function activitySummaryFields(root: ActivityNode): Field[] {
   );
 }
 
-function todayIso(): string {
-  const now = new Date();
+/** Today's date as `YYYY-MM-DD` in the browser's own time zone (not UTC, which is a different day near midnight). */
+export function localDateIso(now = new Date()): string {
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, "0");
   const d = String(now.getDate()).padStart(2, "0");
@@ -66,7 +70,7 @@ function todayIso(): string {
 }
 
 export function renderActivityMatrix(options: ActivityMatrixOptions): ActivityMatrixRendered {
-  const { model, view, records, types, activities, rpc, context, userId, open, formatField, onChanged, report } = options;
+  const { model, view, records, types, activities, rpc, context, userId, open, formatField, onChanged, report, dialogs } = options;
   const root = activityRoot(view);
   const fields = activitySummaryFields(root);
   const titleField = fields[0];
@@ -76,7 +80,7 @@ export function renderActivityMatrix(options: ActivityMatrixOptions): ActivityMa
   // Group activities by `${res_id}:${activity_type_id}` and compute per-type column counts.
   const byCell = new Map<string, ActivityItemRow[]>();
   const colCounts = new Map<number, { overdue: number; today: number; planned: number }>();
-  for (const t of types) colCounts.set(t.id, { overdue: 0, today: 0, planned: 0 });
+  for (const type of types) colCounts.set(type.id, { overdue: 0, today: 0, planned: 0 });
   for (const act of activities) {
     const key = `${act.res_id}:${act.activity_type_id}`;
     const bucket = byCell.get(key) ?? [];
@@ -86,10 +90,18 @@ export function renderActivityMatrix(options: ActivityMatrixOptions): ActivityMa
     if (counts) counts[act.state]++;
   }
 
-  let activePopover: HTMLElement | undefined;
-  const closePopover = (): void => {
-    activePopover?.remove();
-    activePopover = undefined;
+  // The dialog service owns focus (trap, Escape, return to the opener); this keeps only the open handle.
+  let activeDialog: DialogHandle | undefined;
+  const closeDialog = (): void => { activeDialog?.close(); };
+  const openDialog = (title: string, body: HTMLElement, footer: HTMLElement): DialogHandle => {
+    closeDialog();
+    const handle = dialogs.open({ title, body, footer, size: "sm", onClose: () => { if (activeDialog === handle) activeDialog = undefined; } });
+    activeDialog = handle;
+    return handle;
+  };
+  // A write succeeded, then the reload runs; a failed reload is reported like the write's own failure.
+  const afterWrite = (write: Promise<unknown>, failed: () => void): void => {
+    void write.then(() => { closeDialog(); return onChanged(); }, (error: unknown) => { failed(); report(error); }).catch(report);
   };
 
   const titleOf = (rec: Record<string, unknown>): string => {
@@ -101,92 +113,71 @@ export function renderActivityMatrix(options: ActivityMatrixOptions): ActivityMa
     return typeof name === "string" && name ? name : `#${String(rec["id"])}`;
   };
 
-  const openScheduleModal = (recId: number, recTitle: string, defaultTypeId?: number): void => {
-    closePopover();
-    const backdrop = el("div", undefined, "activity-modal-backdrop");
-    const dialog = el("div", undefined, "activity-modal");
-    dialog.setAttribute("role", "dialog");
-    dialog.setAttribute("aria-modal", "true");
-    dialog.setAttribute("aria-label", `Schedule activity for ${recTitle}`);
-
-    const heading = el("h3", `Schedule Activity — ${recTitle}`, "activity-modal-title");
+  /** Schedules an activity; without `recId` (the header command) the form asks for the record. */
+  const openScheduleModal = (recId: number | undefined, defaultTypeId?: number): void => {
     const form = el("form", undefined, "activity-modal-form");
+    const fieldRow = (label: string, control: HTMLElement): HTMLElement => {
+      const row = el("label", undefined, "activity-modal-field");
+      row.append(el("span", label), control);
+      return row;
+    };
+
+    const recordSelect = el("select");
+    recordSelect.name = "res_id";
+    for (const rec of records) {
+      if (typeof rec["id"] === "number") recordSelect.append(new Option(titleOf(rec), String(rec["id"])));
+    }
+    if (recId === undefined) form.append(fieldRow(t("Record"), recordSelect));
 
     const typeSelect = el("select");
     typeSelect.name = "activity_type_id";
-    for (const t of types) {
-      const opt = new Option(t.name, String(t.id));
-      if (t.id === defaultTypeId) opt.selected = true;
+    for (const type of types) {
+      const opt = new Option(type.name, String(type.id));
+      if (type.id === defaultTypeId) opt.selected = true;
       typeSelect.append(opt);
     }
-    const typeLabel = el("label", undefined, "activity-modal-field");
-    typeLabel.append(el("span", "Activity Type"), typeSelect);
-
     const summaryInput = el("input");
     summaryInput.type = "text";
     summaryInput.name = "summary";
-    summaryInput.placeholder = "e.g. Onboarding check-in, Contract review…";
-    const summaryLabel = el("label", undefined, "activity-modal-field");
-    summaryLabel.append(el("span", "Summary"), summaryInput);
-
+    summaryInput.autofocus = true;
     const dateInput = el("input");
     dateInput.type = "date";
     dateInput.name = "date_deadline";
-    dateInput.value = todayIso();
+    dateInput.value = localDateIso();
     dateInput.required = true;
-    const dateLabel = el("label", undefined, "activity-modal-field");
-    dateLabel.append(el("span", "Due Date"), dateInput);
+    form.append(fieldRow(t("Activity type"), typeSelect), fieldRow(t("Summary"), summaryInput), fieldRow(t("Due date"), dateInput));
 
-    const actions = el("div", undefined, "activity-modal-actions");
-    const submitBtn = button("Schedule", () => {}, "primary");
-    submitBtn.type = "submit";
-    const cancelBtn = button("Cancel", () => backdrop.remove(), "secondary");
-    actions.append(submitBtn, cancelBtn);
+    const footer = el("div", undefined, "actions");
+    const cancelBtn = button(t("Cancel"), () => closeDialog());
+    const submitBtn = button(t("Schedule"), () => form.requestSubmit(), "primary");
+    submitBtn.dataset["defaultAction"] = "";
+    footer.append(cancelBtn, submitBtn);
 
-    form.append(typeLabel, summaryLabel, dateLabel, actions);
     form.addEventListener("submit", event => {
       event.preventDefault();
+      const target = recId ?? Number(recordSelect.value);
       const typeId = Number(typeSelect.value);
-      if (!Number.isSafeInteger(typeId) || typeId <= 0) return;
+      if (!Number.isSafeInteger(target) || target <= 0) { report(new ClientError("validation", t("Choose the record to schedule the activity for."))); return; }
+      if (!Number.isSafeInteger(typeId) || typeId <= 0) { report(new ClientError("validation", t("Choose an activity type."))); return; }
       submitBtn.disabled = true;
-      void rpc.call("mail.activity", "create", {
+      afterWrite(rpc.call("mail.activity", "create", {
         vals_list: [{
           res_model: model,
-          res_id: recId,
+          res_id: target,
           activity_type_id: typeId,
           summary: summaryInput.value.trim() || null,
-          date_deadline: dateInput.value || todayIso(),
+          date_deadline: dateInput.value || localDateIso(),
           user_id: userId,
         }],
         context,
-      }, { write: true }).then(async () => {
-        backdrop.remove();
-        await onChanged();
-      }, error => {
-        submitBtn.disabled = false;
-        report(error);
-      });
+      }, { write: true }), () => { submitBtn.disabled = false; });
     });
 
-    backdrop.addEventListener("click", event => {
-      if (event.target === backdrop) backdrop.remove();
-    });
-    dialog.append(heading, form);
-    backdrop.append(dialog);
-    document.body.append(backdrop);
-    activePopover = backdrop;
-    summaryInput.focus();
+    const recTitle = recId === undefined ? undefined : titleOf(records.find(rec => rec["id"] === recId) ?? { id: recId });
+    openDialog(recTitle === undefined ? t("Schedule activity") : t("Schedule activity for {record}", { record: recTitle }), form, footer);
   };
 
   const openCellDetail = (recId: number, recTitle: string, typeRow: ActivityTypeRow, items: readonly ActivityItemRow[]): void => {
-    closePopover();
-    const backdrop = el("div", undefined, "activity-modal-backdrop");
-    const dialog = el("div", undefined, "activity-modal");
-    dialog.setAttribute("role", "dialog");
-    dialog.setAttribute("aria-modal", "true");
-    dialog.setAttribute("aria-label", `${typeRow.name} for ${recTitle}`);
-
-    dialog.append(el("h3", `${typeRow.name} — ${recTitle}`, "activity-modal-title"));
     const list = el("div", undefined, "activity-detail-list");
     for (const item of items) {
       const row = el("div", undefined, `activity-detail-row is-${item.state}`);
@@ -195,36 +186,23 @@ export function renderActivityMatrix(options: ActivityMatrixOptions): ActivityMa
         el("strong", item.summary || typeRow.name),
         el("span", `${item.date_deadline}${item.user_name ? ` · ${item.user_name}` : ""}`, "muted"),
       );
-      const doneBtn = button("Mark Done", () => {
+      const doneBtn = button(t("Mark done"), () => {
         doneBtn.disabled = true;
-        void rpc.call("mail.activity", "action_feedback", {
+        afterWrite(rpc.call("mail.activity", "action_feedback", {
           ids: [item.id],
           feedback: null,
           attachment_ids: [],
           context,
-        }, { write: true }).then(async () => {
-          backdrop.remove();
-          await onChanged();
-        }, error => {
-          doneBtn.disabled = false;
-          report(error);
-        });
+        }, { write: true }), () => { doneBtn.disabled = false; });
       }, "secondary");
       row.append(info, doneBtn);
       list.append(row);
     }
-    const actions = el("div", undefined, "activity-modal-actions");
-    actions.append(
-      button("+ Schedule Another", () => openScheduleModal(recId, recTitle, typeRow.id), "primary"),
-      button("Close", () => backdrop.remove(), "secondary"),
-    );
-    backdrop.addEventListener("click", event => {
-      if (event.target === backdrop) backdrop.remove();
-    });
-    dialog.append(list, actions);
-    backdrop.append(dialog);
-    document.body.append(backdrop);
-    activePopover = backdrop;
+    const footer = el("div", undefined, "actions");
+    const another = button(t("Schedule another"), () => openScheduleModal(recId, typeRow.id), "primary");
+    another.dataset["defaultAction"] = "";
+    footer.append(button(t("Close"), () => closeDialog()), another);
+    openDialog(t("{type} for {record}", { type: typeRow.name, record: recTitle }), list, footer);
   };
 
   const wrapper = el("div", undefined, "activity-matrix-wrap");
@@ -234,23 +212,23 @@ export function renderActivityMatrix(options: ActivityMatrixOptions): ActivityMa
 
   const leadTh = el("th", undefined, "activity-matrix-lead-head");
   if (records.length > 0 && types.length > 0) {
-    const firstRec = records[0]!;
-    const firstId = Number(firstRec["id"]);
-    const schedBtn = button("", () => openScheduleModal(firstId, titleOf(firstRec), types[0]?.id), "activity-matrix-schedule-btn");
-    schedBtn.append(icon("plus"), el("span", "Schedule activity"));
+    const schedBtn = button("", () => openScheduleModal(undefined, types[0]?.id), "activity-matrix-schedule-btn");
+    schedBtn.append(icon("plus"), el("span", t("Schedule activity")));
     leadTh.append(schedBtn);
   } else {
-    leadTh.textContent = "Record";
+    leadTh.textContent = t("Record");
   }
   headRow.append(leadTh);
 
-  for (const t of types) {
+  for (const type of types) {
     const th = el("th", undefined, "activity-matrix-type-head");
-    th.append(el("span", t.name, "activity-type-title"));
-    const counts = colCounts.get(t.id)!;
+    th.append(el("span", type.name, "activity-type-title"));
+    const counts = colCounts.get(type.id)!;
     const total = counts.overdue + counts.today + counts.planned;
     if (total > 0) {
       const bar = el("div", undefined, "activity-type-bar");
+      bar.setAttribute("role", "img");
+      bar.setAttribute("aria-label", t("{overdue} overdue, {today} due today, {planned} planned", counts));
       if (counts.overdue) {
         const seg = el("span", undefined, "activity-bar-overdue");
         seg.style.flex = String(counts.overdue);
@@ -276,7 +254,7 @@ export function renderActivityMatrix(options: ActivityMatrixOptions): ActivityMa
   const tbody = el("tbody");
   if (records.length === 0) {
     const emptyTr = el("tr");
-    const emptyTd = el("td", "No matching records to schedule activities for.", "activity-matrix-empty");
+    const emptyTd = el("td", t("No matching records to schedule activities for."), "activity-matrix-empty");
     emptyTd.colSpan = Math.max(1, types.length + 1);
     emptyTr.append(emptyTd);
     tbody.append(emptyTr);
@@ -315,24 +293,24 @@ export function renderActivityMatrix(options: ActivityMatrixOptions): ActivityMa
     leadTd.append(recWrap);
     tr.append(leadTd);
 
-    for (const t of types) {
+    for (const type of types) {
       const td = el("td", undefined, "activity-matrix-cell");
-      const items = byCell.get(`${recId}:${t.id}`) ?? [];
+      const items = byCell.get(`${recId}:${type.id}`) ?? [];
       if (items.length > 0) {
         const stateOrder = { overdue: 0, today: 1, planned: 2 };
         const sorted = [...items].sort((a, b) => stateOrder[a.state] - stateOrder[b.state] || a.date_deadline.localeCompare(b.date_deadline));
         const top = sorted[0]!;
-        const pill = button("", () => openCellDetail(recId, recTitle, t, sorted), `activity-cell-pill is-${top.state}`);
+        const pill = button("", () => openCellDetail(recId, recTitle, type, sorted), `activity-cell-pill is-${top.state}`);
         pill.append(
           el("span", top.date_deadline, "activity-cell-date"),
           ...(items.length > 1 ? [el("span", `+${items.length - 1}`, "activity-cell-more")] : []),
         );
-        pill.title = top.summary || t.name;
+        pill.title = top.summary || type.name;
         td.append(pill);
       } else {
-        const addBtn = button("", () => openScheduleModal(recId, recTitle, t.id), "activity-cell-add");
+        const addBtn = button("", () => openScheduleModal(recId, type.id), "activity-cell-add");
         addBtn.append(icon("plus"));
-        addBtn.setAttribute("aria-label", `Schedule ${t.name} for ${recTitle}`);
+        addBtn.setAttribute("aria-label", t("Schedule {type} for {record}", { type: type.name, record: recTitle }));
         td.append(addBtn);
       }
       tr.append(td);
@@ -345,7 +323,7 @@ export function renderActivityMatrix(options: ActivityMatrixOptions): ActivityMa
   return {
     node: wrapper,
     dispose: () => {
-      closePopover();
+      closeDialog();
       wrapper.remove();
     },
   };

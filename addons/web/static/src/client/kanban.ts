@@ -5,8 +5,9 @@ import { icon, type IconName } from "./icons.js";
 import { ClientError } from "./transport.js";
 import type { Field, Node, View } from "./metadata.js";
 
-/** Where each card field goes: the first field of the card (or of `<main>`) is the title, `<aside>` is the leading tile. */
-export interface KanbanCardLayout { title: Field | undefined; lines: Field[]; aside: Field | undefined; footer: Field[] }
+/** Where each card field goes: the first field of the card (or of `<main>`) is the title, `<aside>` is the leading tile.
+ *  `accent` is an integer `color` field the card declares invisible: it colours the card's edge and is not a line. */
+export interface KanbanCardLayout { title: Field | undefined; lines: Field[]; aside: Field | undefined; footer: Field[]; accent: Field | undefined }
 
 /** The kanban root of a described view (`describeViews` already checked its shape). */
 export function kanbanRoot(view: View): Extract<Node, { kind: "kanban" }> {
@@ -26,7 +27,11 @@ export function kanbanLayout(view: View): KanbanCardLayout {
   // Fields directly in the card read as `<main>` lines (reference card_arch_parser.js: the card is free markup).
   const main = [...shown(card.children), ...region("main")];
   const [title, ...lines] = main;
-  return { title, lines, aside: region("aside")[0], footer: region("footer") };
+  // shortcut: the arch has no colour attribute on the kanban root, so an invisible `color` card field stands for it; read the
+  // attribute instead once the server sends one.
+  const declared = [...card.children, ...card.children.flatMap(child => child.kind === "kanban_section" ? child.children : [])];
+  const accent = declared.flatMap(node => node.kind === "field" && node.field.invisible && node.field.name === "color" && node.field.kind === "integer" ? [node.field] : [])[0];
+  return { title, lines, aside: region("aside")[0], footer: region("footer"), accent };
 }
 
 /** Up to two initials of a value, for the tile that stands where an image will go (is Proposed). */
@@ -61,14 +66,11 @@ function tileTone(seed: string): number {
   return (hash % 11) + 1;
 }
 
-/** Semantic icon beside common card line fields so employee/directory cards read cleanly at a glance. */
+/** An icon beside a card line, from what its widget or kind says it holds (never from a field's name). */
 function cardLineIcon(field: Field): IconName | undefined {
-  if (field.widget === "email" || field.name.includes("email")) return "mail";
-  if (field.widget === "phone" || field.name.includes("phone")) return "phone";
-  if (field.name === "job_title" || field.name === "job_id") return "briefcase";
-  if (field.name.includes("contract") || field.kind === "date") return "calendar";
-  if (field.name === "company_id") return "building";
-  if (field.name === "department_id") return "users";
+  if (field.widget === "email") return "mail";
+  if (field.widget === "phone") return "phone";
+  if (field.kind === "date" || field.kind === "datetime") return "calendar";
   return undefined;
 }
 
@@ -104,7 +106,7 @@ export function renderKanbanCards(options: KanbanCardsOptions): KanbanRendered {
   const cards: HTMLElement[] = records.map((record, index) => {
     const id = record["id"];
     if (typeof id !== "number") throw new ClientError("server", "A kanban record has no id.");
-    const rawColor = record["color"];
+    const rawColor = layout.accent ? record[layout.accent.name] : undefined;
     const colorClass = typeof rawColor === "number" && rawColor > 0 ? ` kanban-card-accent-${Math.abs(Math.trunc(rawColor)) % 12}` : "";
     const card = el("article", `kanban-card${open ? " kanban-card-open" : ""}${hasMediaAside ? " kanban-card-has-media" : ""}${colorClass}`);
     card.setAttribute("role", "listitem");
@@ -136,7 +138,6 @@ export function renderKanbanCards(options: KanbanCardsOptions): KanbanRendered {
     const body = el("div", "kanban-card-body");
     if (layout.title) field(body, layout.title, record, "kanban-card-title");
     for (const line of layout.lines) {
-      if (line.name === "color" && line.kind === "integer") continue;
       if (hasMediaAside && isEmptyCardValue(record[line.name])) continue;
       field(body, line, record, "kanban-card-line", hasMediaAside);
     }

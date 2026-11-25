@@ -190,7 +190,15 @@ function progressbarControl({ field, value, change, viewContext }: FieldControlO
   const wrap = el("div", undefined, "field-progressbar");
   const track = el("div", undefined, "field-progressbar-track");
   const fill = el("div", undefined, "field-progressbar-fill");
-  fill.style.width = `${num}%`;
+  track.setAttribute("role", "progressbar");
+  track.setAttribute("aria-label", field.label);
+  track.setAttribute("aria-valuemin", "0");
+  track.setAttribute("aria-valuemax", "100");
+  const show = (shown: number): void => {
+    fill.style.width = `${shown}%`;
+    track.setAttribute("aria-valuenow", String(Math.round(shown)));
+  };
+  show(num);
   track.append(fill);
   const label = el("span", `${Math.round(num)} %`, "field-progressbar-value");
   if (!field.readonly && viewContext !== "list" && viewContext !== "card") {
@@ -201,8 +209,10 @@ function progressbarControl({ field, value, change, viewContext }: FieldControlO
     input.value = String(Math.round(num));
     input.name = field.name;
     input.addEventListener("change", () => {
+      // A cleared input clears the value, as the other number fields do; it is not a zero.
+      if (input.value.trim() === "") { show(0); change(false); return; }
       const parsed = Math.max(0, Math.min(100, Number(input.value) || 0));
-      fill.style.width = `${parsed}%`;
+      show(parsed);
       label.textContent = `${Math.round(parsed)} %`;
       change(field.kind === "integer" ? Math.round(parsed) : parsed);
     });

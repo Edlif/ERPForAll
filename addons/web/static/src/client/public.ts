@@ -34,6 +34,7 @@ export type { DateTimeEditorOptions, DateTimeEditorHandle, DateTimeRangeEditorOp
 export { createTimeEditor } from "./time-editor.js";
 export type { TimeEditorOptions, TimeEditorHandle } from "./time-editor.js";
 export { editorLocale } from "./datetime-values.js";
+export { localDateIso } from "./activity-view.js";
 export type { EditorLocale, EditorValue, DateKind, DateParts, ParseResult } from "./datetime-values.js";
 
 export { createFileEditor } from "./file-editor.js";

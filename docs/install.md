@@ -12,9 +12,21 @@ scripts/install.sh --help     # flags: --state-dir, --port, --db-name, --pg-user
 scripts/install.sh --reset --yes   # remove only what it created
 ```
 
+Three flags help while you work on the checkout:
+
+- `--fast` builds with Cargo's incremental `local` profile instead of `release`: faster rebuilds and a smaller cache,
+  a slower server. Use it on every run of one installation, since the binary path depends on the profile.
+- `--rebuild` on an installed state directory rebuilds the changed Rust and web code, copies `addons/` again into the
+  state directory and restarts the server; the database stays. It upgrades no module: a changed view, menu or data
+  file reaches the database only through `erp module upgrade` (see [deployment](deployment.md), "Upgrades"), which
+  refuses an addon whose files changed until its identity is enrolled or the previous release is named.
+- `--clean-cache` removes `target/debug`, `target/tmp` and the web bundles in `web/dist/human-ui` that its
+  `manifest.json` no longer names; it keeps the active profile's build. Alone it only cleans; with `--rebuild` or
+  `--reset` it cleans first.
+
 Everything it owns is under `~/.erpforall/local` (`private/` holds the mode 600 URL files, the generated
 `admin-password` and `server.toml`). It installs these modules with demo data, in one command, after the base:
-`contacts account account_reporting stock sale sale_management purchase sale_stock purchase_stock account_mail
+`contacts hr account account_reporting stock sale sale_management purchase sale_stock purchase_stock account_mail
 purchase_mail stock_mail product_mail`. The rest of this guide is the manual route, for a setup of your own (other
 paths, a PostgreSQL server you manage, a different module list); it is also what the script does, step by step.
 
