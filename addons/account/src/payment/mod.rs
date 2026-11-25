@@ -13,6 +13,7 @@
 //! ([`AccountPaymentMethodLine`]) is that method on one journal, with the outstanding account it
 //! books to.
 
+pub mod batch;
 mod register;
 mod service;
 
@@ -469,10 +470,117 @@ pub struct AccountPayment {
         string = "Journal Entry"
     )]
     pub journal_entry_count: i32,
+    /// Optional batch payment grouping this payment for bank deposit or remittance.
+    #[field(
+        many2one,
+        comodel = "account.batch.payment",
+        copy = false,
+        ondelete = "set null",
+        index = "btree_not_null",
+        check_company = true,
+        string = "Batch Payment"
+    )]
+    pub batch_payment_id: Option<RecId>,
+    /// Check number when paying or receiving by check.
+    #[field(char, copy = false, string = "Check Number")]
+    pub check_number: Option<Arc<str>>,
+    /// Exact amount spelled out in words for check printing and verification.
+    #[field(
+        char,
+        compute = "_compute_check_amount_in_words",
+        string = "Amount in Words"
+    )]
+    pub check_amount_in_words: Option<Arc<str>>,
 }
 
 #[methods(AccountPayment, addon = "account")]
 impl AccountPayment {
+    /// Pre-fills date, company, currency, bank/cash journal and its default method line on new
+    /// payment forms so users do not have to re-pick them manually every time.
+    #[method(override)]
+    async fn default_get(
+        this: &RecordSet<AccountPayment>,
+        tx: &mut Transaction,
+        names: Vec<String>,
+        sup: Super,
+    ) -> Result<erp_sdk::ValueMap> {
+        let mut values: erp_sdk::ValueMap =
+            sup.call(tx, this.as_records(), (names.clone(),)).await?;
+        let env = this.env();
+        let company = env.company_id()?;
+        if let Some(cid) = company {
+            if names.iter().any(|n| n == "company_id") && !values.contains_key("company_id") {
+                values.insert("company_id".to_owned(), Value::Int(cid));
+            }
+            if names.iter().any(|n| n == "date") && !values.contains_key("date") {
+                let today = erp_addon_base::company_calendar::business_date(tx, cid)
+                    .await
+                    .unwrap_or_else(|_| Date::today());
+                values.insert("date".to_owned(), Value::Date(today));
+            }
+            let mut journal_id = match values.get("journal_id") {
+                Some(Value::Int(j)) => Some(*j),
+                _ => None,
+            };
+            if journal_id.is_none()
+                && names
+                    .iter()
+                    .any(|n| n == "journal_id" || n == "payment_method_line_id")
+            {
+                let jrows = tx
+                    .query(
+                        "SELECT id::int8 FROM account_journal \
+                         WHERE company_id = $1 AND type IN ('bank', 'cash') AND active = true \
+                         ORDER BY CASE type WHEN 'bank' THEN 0 ELSE 1 END, sequence, id LIMIT 1",
+                        &[&cid],
+                    )
+                    .await?;
+                if let Some(jid) = jrows.first().and_then(|r| r.try_get::<_, i64>(0).ok()) {
+                    journal_id = Some(jid);
+                    if names.iter().any(|n| n == "journal_id") && !values.contains_key("journal_id")
+                    {
+                        values.insert("journal_id".to_owned(), Value::Int(jid));
+                    }
+                }
+            }
+            if names.iter().any(|n| n == "currency_id") && !values.contains_key("currency_id") {
+                let crows = tx
+                    .query(
+                        "SELECT currency_id::int8 FROM res_company WHERE id = $1",
+                        &[&cid],
+                    )
+                    .await?;
+                if let Some(cur) = crows.first().and_then(|r| r.try_get::<_, i64>(0).ok()) {
+                    values.insert("currency_id".to_owned(), Value::Int(cur));
+                }
+            }
+            if names.iter().any(|n| n == "payment_method_line_id")
+                && !values.contains_key("payment_method_line_id")
+                && let Some(jid) = journal_id
+            {
+                let direction: String = match values.get("payment_type") {
+                    Some(Value::Str(s)) => s.to_string(),
+                    _ => match env.context().get("default_payment_type") {
+                        Some(Value::Str(s)) => s.to_string(),
+                        _ => "inbound".to_owned(),
+                    },
+                };
+                let mrows = tx
+                    .query(
+                        "SELECT id::int8 FROM account_payment_method_line \
+                         WHERE journal_id = $1 AND payment_type = $2 \
+                         ORDER BY sequence, id LIMIT 1",
+                        &[&jid, &direction],
+                    )
+                    .await?;
+                if let Some(mid) = mrows.first().and_then(|r| r.try_get::<_, i64>(0).ok()) {
+                    values.insert("payment_method_line_id".to_owned(), Value::Int(mid));
+                }
+            }
+        }
+        Ok(values)
+    }
+
     #[compute(depends = ["name", "state"])]
     async fn _compute_display_name(
         this: &RecordSet<AccountPayment>,
@@ -485,6 +593,52 @@ impl AccountPayment {
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| Arc::from("Draft Payment"));
             out.set(i, AccountPayment::DISPLAY_NAME, Some(shown))?;
+        }
+        Ok(())
+    }
+
+    #[compute(depends = ["amount", "currency_id"])]
+    async fn _compute_check_amount_in_words(
+        this: &RecordSet<AccountPayment>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, AccountPayment>,
+    ) -> Result<()> {
+        let amounts = this.mapped(tx, AccountPayment::AMOUNT).await?;
+        let currencies = this.mapped(tx, AccountPayment::CURRENCY_ID).await?;
+        let mut cur_ids: Vec<i64> = currencies
+            .iter()
+            .flatten()
+            .filter_map(|c| c.as_real())
+            .map(|c| c.get())
+            .collect();
+        cur_ids.sort_unstable();
+        cur_ids.dedup();
+        let mut names = std::collections::HashMap::new();
+        if !cur_ids.is_empty() {
+            let rows = tx
+                .query(
+                    "SELECT id::int8, name::text FROM res_currency WHERE id = ANY($1::int8[])",
+                    &[&cur_ids],
+                )
+                .await?;
+            for row in rows {
+                if let (Ok(id), Ok(name)) = (row.try_get::<_, i64>(0), row.try_get::<_, String>(1))
+                {
+                    names.insert(id, name);
+                }
+            }
+        }
+        for (i, (amount, cur)) in amounts.into_iter().zip(currencies).enumerate() {
+            let code = cur
+                .and_then(|c| c.as_real())
+                .and_then(|c| names.get(&c.get()))
+                .map(String::as_str)
+                .unwrap_or("USD");
+            out.set(
+                i,
+                AccountPayment::CHECK_AMOUNT_IN_WORDS,
+                Some(Arc::<str>::from(batch::amount_to_words(amount, code))),
+            )?;
         }
         Ok(())
     }

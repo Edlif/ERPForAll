@@ -59,12 +59,15 @@
               <field name="currency_id" readonly="state != 'draft'"/>
               <field name="date" readonly="state != 'draft'"/>
               <field name="memo"/>
+              <field name="check_number" readonly="state != 'draft'"/>
+              <field name="check_amount_in_words" readonly="1"/>
             </group>
             <group>
               <field name="journal_id" readonly="state != 'draft'"/>
               <field name="payment_method_line_id" readonly="state != 'draft'"
                      domain="[('journal_id', '=', journal_id), ('payment_type', '=', payment_type)]"
                      context="{'hide_payment_journal_id': 1}"/>
+              <field name="batch_payment_id" readonly="state not in ('draft', 'paid')"/>
               <field name="company_id" readonly="1"/>
               <field name="move_id" readonly="1" invisible="not move_id"/>
               <field name="outstanding_account_id" readonly="1" invisible="not move_id"/>
@@ -177,6 +180,10 @@
             <field name="payment_date"/>
             <field name="communication" readonly="not single_payment"/>
             <field name="single_payment" invisible="1"/>
+            <field name="payment_difference" readonly="1" invisible="not single_payment or payment_difference == 0"/>
+            <field name="payment_difference_handling" invisible="not single_payment or payment_difference == 0"/>
+            <field name="writeoff_account_id" invisible="not single_payment or payment_difference == 0 or payment_difference_handling != 'reconcile'"/>
+            <field name="writeoff_label" invisible="not single_payment or payment_difference == 0 or payment_difference_handling != 'reconcile'"/>
           </group>
         </group>
         <field name="invoice_ids" widget="many2many_tags"/>

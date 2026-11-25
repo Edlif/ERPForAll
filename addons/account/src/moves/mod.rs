@@ -18,6 +18,7 @@ mod display;
 pub(crate) use display::draft_label;
 mod line;
 mod post;
+mod reversal;
 
 pub use line::AccountMoveLine;
 pub(crate) use post::refuse_locked_items;

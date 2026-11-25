@@ -87,6 +87,8 @@
           <button name="action_post" type="object" string="Confirm" class="btn-primary" invisible="state != 'draft'"/>
           <button name="action_register_payment" type="object" string="Register Payment" class="btn-primary"
                   invisible="state != 'posted' or payment_state not in ('not_paid', 'partial')"/>
+          <button name="action_open_reversal_wizard" type="object" string="Credit Note"
+                  invisible="state != 'posted' or move_type not in ('out_invoice', 'in_invoice')"/>
           <!-- a posted invoice is corrected by a reversal: only a cancelled one without matched
                items or payments returns to draft, the server's reset_blocked -->
           <button name="button_draft" type="object" string="Reset to Draft" invisible="reset_blocked"/>
@@ -119,6 +121,7 @@
               <field name="invoice_date" string="Invoice Date" readonly="state != 'draft'" invisible="move_type not in ('out_invoice', 'out_refund')"/>
               <field name="invoice_date" string="Bill Date" readonly="state != 'draft'" invisible="move_type not in ('in_invoice', 'in_refund')"/>
               <field name="invoice_date_due" readonly="state != 'draft'"/>
+              <field name="invoice_payment_term_id" readonly="state != 'draft'"/>
               <field name="journal_id" readonly="state != 'draft'"/>
               <field name="currency_id" readonly="state != 'draft'"/>
             </group>
@@ -326,6 +329,31 @@
   <record id="menu_finance_payables" model="ir.ui.menu"><field name="web_icon">lucide:handshake</field></record>
   <record id="menu_action_move_in_invoice_type" model="ir.ui.menu"><field name="web_icon">lucide:receipt-text</field></record>
   <record id="menu_action_move_in_refund_type" model="ir.ui.menu"><field name="web_icon">lucide:undo-2</field></record>
+  <record id="view_account_move_reversal_form" model="ir.ui.view">
+    <field name="name">account.move.reversal.form</field>
+    <field name="model">account.move.reversal</field>
+    <field name="arch" type="xml">
+      <form string="Credit Note" record_mode="record">
+        <group>
+          <group>
+            <field name="move_id" readonly="1"/>
+            <field name="refund_method"/>
+            <field name="reason" placeholder="e.g. Returned goods or billing correction"/>
+          </group>
+          <group>
+            <field name="date"/>
+            <field name="journal_id"/>
+            <field name="company_id" invisible="1"/>
+          </group>
+        </group>
+        <footer>
+          <button name="reverse_moves" type="object" string="Reverse" class="btn-primary"/>
+          <button special="cancel" string="Cancel"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+
   <record id="res_partner_form_account_invoices_button" model="ir.ui.view">
     <field name="name">res.partner.form.account.invoices.button</field>
     <field name="model">res.partner</field>

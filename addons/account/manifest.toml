@@ -3,7 +3,7 @@ summary = "Journals, ledgers, taxes, invoices and payments"
 category = "Accounting"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.12.0"
+version = "1.13.0"
 depends = ["base", "web", "product", "analytic"]
 application = true
 exact_only = true
@@ -31,6 +31,8 @@ data = [
     "views/account_move_views.xml",
     "views/account_invoice_views.xml",
     "views/account_payment_views.xml",
+    "views/account_batch_payment_views.xml",
+    "views/account_fiscal_position_views.xml",
     "views/account_reports.xml",
     "views/account_incoterms_views.xml",
     "security/ir.access.csv",

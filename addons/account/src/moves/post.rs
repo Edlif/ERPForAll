@@ -902,9 +902,26 @@ const REVERSAL_ONLY: &str = "this company's posting policy requires a reversal (
 /// Negates every line's `balance` and `amount_currency` and applies `is_storno` when enabled
 /// on the company. Returns the created reversal entry id.
 pub async fn reverse_move(tx: &mut Transaction, moves: &Records) -> Result<i64> {
+    reverse_move_with_options(tx, moves, None, None, None).await
+}
+
+/// Create a reversed draft journal entry (or credit note) for a posted `account.move` with
+/// optional override date, journal, and reason text. Copies product line taxes so credit notes
+/// match the original invoice's tax breakdown.
+pub async fn reverse_move_with_options(
+    tx: &mut Transaction,
+    moves: &Records,
+    override_date: Option<Date>,
+    override_journal: Option<i64>,
+    reason: Option<&str>,
+) -> Result<i64> {
     authorize(tx, moves, "reverse").await?;
     let source_id = moves.ensure_one()?.int()?;
     let env = moves.env().clone();
+    let reason_owned = reason
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     tx.savepoint(async move |tx| {
         tx.flush().await?;
         let header_rows = tx
@@ -927,13 +944,14 @@ pub async fn reverse_move(tx: &mut Transaction, moves: &Records) -> Result<i64> 
         }
         let orig_name: Option<String> = hrow.try_get(1).map_err(db)?;
         let orig_type: String = hrow.try_get(2).map_err(db)?;
-        let journal_id: i64 = hrow.try_get(3).map_err(db)?;
+        let orig_journal_id: i64 = hrow.try_get(3).map_err(db)?;
         let company_id: i64 = hrow.try_get(4).map_err(db)?;
         let currency_id: i64 = hrow.try_get(5).map_err(db)?;
         let partner_id: Option<i64> = hrow.try_get(6).map_err(db)?;
         let orig_date: Date = hrow.try_get(7).map_err(db)?;
         let storno: bool = hrow.try_get(8).map_err(db)?;
 
+        let journal_id = override_journal.unwrap_or(orig_journal_id);
         let rev_type = match orig_type.as_str() {
             "out_invoice" => "out_refund",
             "out_refund" => "out_invoice",
@@ -941,22 +959,29 @@ pub async fn reverse_move(tx: &mut Transaction, moves: &Records) -> Result<i64> 
             "in_refund" => "in_invoice",
             _ => "entry",
         };
-        let ref_label = format!("Reversal of {}", orig_name.as_deref().unwrap_or("Entry"));
-        let today = erp_addon_base::company_calendar::business_date(tx, company_id)
-            .await
-            .unwrap_or(orig_date);
+        let base_label = format!("Reversal of {}", orig_name.as_deref().unwrap_or("Entry"));
+        let ref_label = match &reason_owned {
+            Some(r) => format!("{base_label}: {r}"),
+            None => base_label,
+        };
+        let rev_date = match override_date {
+            Some(d) => d,
+            None => erp_addon_base::company_calendar::business_date(tx, company_id)
+                .await
+                .unwrap_or(orig_date),
+        };
 
         let mut mvals = RawVals::new();
         mvals.insert("move_type".into(), Cell::Str(rev_type.into()));
         mvals.insert("journal_id".into(), Cell::Id(journal_id));
         mvals.insert("company_id".into(), Cell::Id(company_id));
         mvals.insert("currency_id".into(), Cell::Id(currency_id));
-        mvals.insert("date".into(), Cell::Date(today));
+        mvals.insert("date".into(), Cell::Date(rev_date));
         if matches!(
             rev_type,
             "out_refund" | "in_refund" | "out_invoice" | "in_invoice"
         ) {
-            mvals.insert("invoice_date".into(), Cell::Date(today));
+            mvals.insert("invoice_date".into(), Cell::Date(rev_date));
         }
         if let Some(pid) = partner_id {
             mvals.insert("partner_id".into(), Cell::Id(pid));
@@ -973,12 +998,14 @@ pub async fn reverse_move(tx: &mut Transaction, moves: &Records) -> Result<i64> 
 
         let line_rows = tx
             .query(
-                "SELECT account_id::int8, partner_id::int8, name, display_type::text, \
-                        currency_id::int8, COALESCE(balance, 0), COALESCE(amount_currency, 0), \
-                        product_id::int8, product_uom_id::int8, COALESCE(quantity, 0), \
-                        COALESCE(price_unit, 0), COALESCE(discount, 0) \
-                 FROM account_move_line \
-                 WHERE move_id = $1 ORDER BY sequence, id",
+                "SELECT l.id::int8, l.account_id::int8, l.partner_id::int8, l.name, l.display_type::text, \
+                        l.currency_id::int8, COALESCE(l.balance, 0), COALESCE(l.amount_currency, 0), \
+                        l.product_id::int8, l.product_uom_id::int8, COALESCE(l.quantity, 0), \
+                        COALESCE(l.price_unit, 0), COALESCE(l.discount, 0), \
+                        COALESCE(ARRAY(SELECT r.account_tax_id::int8 FROM account_move_line_account_tax_rel r \
+                                       WHERE r.account_move_line_id = l.id ORDER BY r.account_tax_id), '{}') \
+                 FROM account_move_line l \
+                 WHERE l.move_id = $1 ORDER BY l.sequence, l.id",
                 &[&source_id],
             )
             .await?;
@@ -986,21 +1013,22 @@ pub async fn reverse_move(tx: &mut Transaction, moves: &Records) -> Result<i64> 
         let unchecked_lines = super::unchecked(&env.records("account.move.line")?);
         let mut new_lines = Vec::new();
         for lrow in line_rows {
-            let display_type: String = lrow.try_get(3).map_err(db)?;
+            let display_type: String = lrow.try_get(4).map_err(db)?;
             if rev_type != "entry" && display_type != "product" {
                 continue;
             }
-            let account_id: Option<i64> = lrow.try_get(0).map_err(db)?;
-            let l_partner: Option<i64> = lrow.try_get(1).map_err(db)?;
-            let name: Option<String> = lrow.try_get(2).map_err(db)?;
-            let l_cur: i64 = lrow.try_get(4).map_err(db)?;
-            let balance: Decimal = lrow.try_get(5).map_err(db)?;
-            let amt_cur: Decimal = lrow.try_get(6).map_err(db)?;
-            let product_id: Option<i64> = lrow.try_get(7).map_err(db)?;
-            let uom_id: Option<i64> = lrow.try_get(8).map_err(db)?;
-            let qty: Decimal = lrow.try_get(9).map_err(db)?;
-            let price_unit: Decimal = lrow.try_get(10).map_err(db)?;
-            let discount: Decimal = lrow.try_get(11).map_err(db)?;
+            let account_id: Option<i64> = lrow.try_get(1).map_err(db)?;
+            let l_partner: Option<i64> = lrow.try_get(2).map_err(db)?;
+            let name: Option<String> = lrow.try_get(3).map_err(db)?;
+            let l_cur: i64 = lrow.try_get(5).map_err(db)?;
+            let balance: Decimal = lrow.try_get(6).map_err(db)?;
+            let amt_cur: Decimal = lrow.try_get(7).map_err(db)?;
+            let product_id: Option<i64> = lrow.try_get(8).map_err(db)?;
+            let uom_id: Option<i64> = lrow.try_get(9).map_err(db)?;
+            let qty: Decimal = lrow.try_get(10).map_err(db)?;
+            let price_unit: Decimal = lrow.try_get(11).map_err(db)?;
+            let discount: Decimal = lrow.try_get(12).map_err(db)?;
+            let tax_ids: Vec<i64> = lrow.try_get(13).map_err(db)?;
 
             let mut lvals = RawVals::new();
             lvals.insert("move_id".into(), Cell::Id(rev_id));
@@ -1031,6 +1059,14 @@ pub async fn reverse_move(tx: &mut Transaction, moves: &Records) -> Result<i64> 
                 lvals.insert("quantity".into(), Cell::Decimal(qty));
                 lvals.insert("price_unit".into(), Cell::Decimal(price_unit));
                 lvals.insert("discount".into(), Cell::Decimal(discount));
+                if !tax_ids.is_empty() {
+                    let rec_ids: Vec<RecId> =
+                        tax_ids.into_iter().filter_map(RecId::from_real).collect();
+                    lvals.insert_commands(
+                        "tax_ids".into(),
+                        vec![erp_sdk::Command::Set(rec_ids)],
+                    );
+                }
             }
             new_lines.push(lvals);
         }

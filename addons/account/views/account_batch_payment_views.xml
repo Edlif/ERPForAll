@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Batch Payments: Accounting > Customers / Vendors > Batch Payments -->
+<erp>
+  <record id="view_account_payment_batch_list" model="ir.ui.view">
+    <field name="name">account.payment.batch.list</field>
+    <field name="model">account.payment</field>
+    <field name="priority" eval="30"/>
+    <field name="arch" type="xml">
+      <list>
+        <field name="date"/>
+        <field name="name" string="Number"/>
+        <field name="partner_id"/>
+        <field name="payment_method_line_id"/>
+        <field name="check_number"/>
+        <field name="amount"/>
+        <field name="currency_id"/>
+        <field name="state" widget="badge" options="{'tone_success': ['paid', 'reconciled'], 'tone_warning': ['draft'], 'tone_danger': ['canceled', 'rejected']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_account_payment_batch_form" model="ir.ui.view">
+    <field name="name">account.payment.batch.form</field>
+    <field name="model">account.payment</field>
+    <field name="priority" eval="30"/>
+    <field name="arch" type="xml">
+      <form string="Batch Payment Line">
+        <sheet>
+          <group>
+            <group>
+              <field name="payment_type" readonly="state != 'draft'"/>
+              <field name="partner_type" readonly="state != 'draft'"/>
+              <field name="partner_id" readonly="state != 'draft'"/>
+              <field name="amount" readonly="state != 'draft'"/>
+              <field name="currency_id" readonly="state != 'draft'"/>
+              <field name="date" readonly="state != 'draft'"/>
+            </group>
+            <group>
+              <field name="journal_id" readonly="state != 'draft'"/>
+              <field name="payment_method_line_id" readonly="state != 'draft'"
+                     domain="[('journal_id', '=', journal_id), ('payment_type', '=', payment_type)]"
+                     context="{'hide_payment_journal_id': 1}"/>
+              <field name="check_number" readonly="state != 'draft'"/>
+              <field name="memo"/>
+              <field name="state" readonly="1"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_account_batch_payment_list" model="ir.ui.view">
+    <field name="name">account.batch.payment.list</field>
+    <field name="model">account.batch.payment</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="journal_id"/>
+        <field name="date"/>
+        <field name="payment_count" string="Payments"/>
+        <field name="amount"/>
+        <field name="currency_id"/>
+        <field name="state" widget="badge" options="{'tone_warning': ['draft'], 'tone_info': ['sent'], 'tone_success': ['reconciled']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_account_batch_payment_form" model="ir.ui.view">
+    <field name="name">account.batch.payment.form</field>
+    <field name="model">account.batch.payment</field>
+    <field name="arch" type="xml">
+      <form string="Batch Payment">
+        <header>
+          <button name="validate_batch" type="object" string="Validate" class="btn-primary" invisible="state != 'draft'"/>
+          <button name="action_reconcile_batch" type="object" string="Mark Reconciled" class="btn-primary" invisible="state != 'sent'"/>
+          <button name="action_reset_draft" type="object" string="Reset to Draft" invisible="state != 'sent'"/>
+          <field name="state" widget="statusbar" statusbar_visible="draft,sent,reconciled"/>
+        </header>
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="batch_type" readonly="state != 'draft'"/>
+              <field name="journal_id" readonly="state != 'draft'"/>
+              <field name="date" readonly="state != 'draft'"/>
+              <field name="memo"/>
+            </group>
+            <group>
+              <field name="amount" readonly="1"/>
+              <field name="currency_id" readonly="1"/>
+              <field name="payment_count" readonly="1"/>
+              <field name="company_id" readonly="1"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Payments" name="payments">
+              <field name="payment_ids" readonly="state != 'draft'"
+                     context="{'list_view_ref': 'account.view_account_payment_batch_list', 'form_view_ref': 'account.view_account_payment_batch_form'}"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_account_batch_payment_search" model="ir.ui.view">
+    <field name="name">account.batch.payment.search</field>
+    <field name="model">account.batch.payment</field>
+    <field name="arch" type="xml">
+      <search string="Batch Payments">
+        <field name="name"/>
+        <field name="journal_id"/>
+        <field name="memo"/>
+        <filter name="draft" string="New" domain="[('state', '=', 'draft')]"/>
+        <filter name="sent" string="Sent" domain="[('state', '=', 'sent')]"/>
+        <filter name="reconciled" string="Reconciled" domain="[('state', '=', 'reconciled')]"/>
+        <group>
+          <filter name="groupby_journal" string="Bank" context="{'group_by': 'journal_id'}"/>
+          <filter name="groupby_state" string="Status" context="{'group_by': 'state'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_batch_payment_in" model="ir.actions.act_window">
+    <field name="name">Batch Payments</field>
+    <field name="res_model">account.batch.payment</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_account_batch_payment_list"/>
+    <field name="search_view_id" ref="view_account_batch_payment_search"/>
+    <field name="domain">[('batch_type', '=', 'inbound')]</field>
+    <field name="context">{'default_batch_type': 'inbound'}</field>
+  </record>
+
+  <record id="action_batch_payment_out" model="ir.actions.act_window">
+    <field name="name">Batch Payments</field>
+    <field name="res_model">account.batch.payment</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_account_batch_payment_list"/>
+    <field name="search_view_id" ref="view_account_batch_payment_search"/>
+    <field name="domain">[('batch_type', '=', 'outbound')]</field>
+    <field name="context">{'default_batch_type': 'outbound'}</field>
+  </record>
+
+  <menuitem id="menu_batch_payment_purchases"
+            name="Batch Payments"
+            parent="menu_finance_payables"
+            action="action_batch_payment_out"
+            sequence="18"/>
+  <menuitem id="menu_batch_payment_sales"
+            name="Batch Payments"
+            parent="menu_finance_receivables"
+            action="action_batch_payment_in"
+            sequence="18"/>
+  <record id="menu_batch_payment_purchases" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+  <record id="menu_batch_payment_sales" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+</erp>

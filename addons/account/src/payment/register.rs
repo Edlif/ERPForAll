@@ -159,6 +159,38 @@ pub struct AccountPaymentRegister {
     /// The registration makes one payment: only then can its amount and memo be changed.
     #[field(boolean, compute = "_compute_single_payment", string = "One Payment")]
     pub single_payment: bool,
+    /// Difference between amount due and entered payment amount (`amount_due - amount`).
+    #[field(
+        monetary,
+        currency_field = "currency_id",
+        compute = "_compute_payment_difference",
+        string = "Payment Difference"
+    )]
+    pub payment_difference: Decimal,
+    /// Whether a payment difference stays open on the invoice or is written off to an account.
+    #[field(
+        selection,
+        selection = [
+            ("open", "Keep open"),
+            ("reconcile", "Mark as fully paid"),
+        ],
+        required = true,
+        default = "open",
+        string = "Payment Difference Handling"
+    )]
+    pub payment_difference_handling: Option<Arc<str>>,
+    /// Expense or income account receiving the write-off when marking fully paid.
+    #[field(
+        many2one,
+        comodel = "account.account",
+        check_company = true,
+        ondelete = "restrict",
+        string = "Post Difference In"
+    )]
+    pub writeoff_account_id: Option<RecId>,
+    /// Label of the write-off journal item.
+    #[field(char, default = "Write-Off", string = "Label")]
+    pub writeoff_label: Option<Arc<str>>,
 }
 
 /// What a document brings to a registration, read with the caller's rights.
@@ -506,8 +538,7 @@ impl AccountPaymentRegister {
                 .collect();
             let rows = tx
                 .query(
-                    "SELECT m.company_id::int8, co.currency_id::int8 FROM account_move m \
-                     JOIN res_company co ON co.id = m.company_id \
+                    "SELECT m.company_id::int8, m.currency_id::int8 FROM account_move m \
                      WHERE m.id = ANY($1::int8[]) ORDER BY m.id LIMIT 1",
                     &[&ids],
                 )
@@ -594,6 +625,21 @@ impl AccountPaymentRegister {
                 AccountPaymentRegister::COMMUNICATION,
                 Some(communication),
             )?;
+        }
+        Ok(())
+    }
+
+    /// Difference between what is due and the entered amount (`amount_due - amount`).
+    #[compute(depends = ["amount_due", "amount"])]
+    async fn _compute_payment_difference(
+        this: &RecordSet<AccountPaymentRegister>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, AccountPaymentRegister>,
+    ) -> Result<()> {
+        let dues = this.mapped(tx, AccountPaymentRegister::AMOUNT_DUE).await?;
+        let amounts = this.mapped(tx, AccountPaymentRegister::AMOUNT).await?;
+        for (i, (due, amt)) in dues.into_iter().zip(amounts).enumerate() {
+            out.set(i, AccountPaymentRegister::PAYMENT_DIFFERENCE, due - amt)?;
         }
         Ok(())
     }
@@ -825,20 +871,43 @@ impl AccountPaymentRegister {
         let line = wizard
             .get(tx, AccountPaymentRegister::PAYMENT_METHOD_LINE_ID)
             .await?;
+        let diff_handling = wizard
+            .get(tx, AccountPaymentRegister::PAYMENT_DIFFERENCE_HANDLING)
+            .await?
+            .unwrap_or_else(|| Arc::from("open"));
+        let writeoff_account = wizard
+            .get(tx, AccountPaymentRegister::WRITEOFF_ACCOUNT_ID)
+            .await?
+            .map(|id| id.get());
+        let writeoff_label = wizard
+            .get(tx, AccountPaymentRegister::WRITEOFF_LABEL)
+            .await?
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| Arc::from("Write-Off"));
         let planned = plan(&docs, group, amount, due, memo_given.as_deref())?;
         let env = wizard.env().clone();
         let company = docs.first().map(|d| d.company).unwrap_or_default();
+        let doc_currency = docs.first().map(|d| d.currency).unwrap_or_default();
         fits_company(tx, &env, journal.get(), company).await?;
         let line = match line {
             Some(line) => Some(chosen_line(tx, &env, line.get()).await?),
             None => None,
         };
+        let payment_diff = due - amount;
+        let apply_writeoff =
+            planned.len() == 1 && diff_handling.as_ref() == "reconcile" && !payment_diff.is_zero();
+        if apply_writeoff && writeoff_account.is_none() {
+            return Err(Error::user(
+                "Choose a 'Post Difference In' account to write off the payment difference.",
+            ));
+        }
         let payments_model = env.with_company(company)?.records("account.payment")?;
         let mut vals_list = Vec::with_capacity(planned.len());
         for p in &planned {
             let mut vals = RawVals::new()
                 .set_cell("date", Cell::Date(date))
                 .set_cell("company_id", Cell::Id(company))
+                .set_cell("currency_id", Cell::Id(doc_currency))
                 .set_cell("journal_id", Cell::Id(journal.get()))
                 .set_cell("amount", Cell::Decimal(p.amount))
                 .set_cell(
@@ -874,6 +943,66 @@ impl AccountPaymentRegister {
         }
         let payments = payments_model.create(tx, vals_list).await?;
         super::post_payments(tx, &payments).await?;
+        // When marking fully paid with a difference, post a balanced write-off entry and
+        // include its receivable/payable counterpart line in reconciliation.
+        let mut writeoff_counterpart_line: Option<i64> = None;
+        if apply_writeoff && let (Some(wo_account), Some(p)) = (writeoff_account, planned.first()) {
+            let (counterpart_cur, writeoff_cur) = compute_writeoff_balance(payment_diff, p.inbound);
+            let gen_journal = find_misc_journal(tx, company, journal.get()).await?;
+            let comp_currency = company_currency_id(tx, company).await?;
+            let (counterpart_bal, writeoff_bal) = if doc_currency == comp_currency {
+                (counterpart_cur, writeoff_cur)
+            } else {
+                let converted = convert_to_company_currency(
+                    tx,
+                    doc_currency,
+                    comp_currency,
+                    company,
+                    date,
+                    counterpart_cur,
+                )
+                .await?;
+                (converted, -converted)
+            };
+            let mut mvals = RawVals::new();
+            mvals.insert("move_type".into(), Cell::Str("entry".into()));
+            mvals.insert("journal_id".into(), Cell::Id(gen_journal));
+            mvals.insert("company_id".into(), Cell::Id(company));
+            mvals.insert("currency_id".into(), Cell::Id(doc_currency));
+            mvals.insert("date".into(), Cell::Date(date));
+            mvals.insert("ref".into(), Cell::Str(Arc::clone(&writeoff_label)));
+            if let Some(partner) = p.partner {
+                mvals.insert("partner_id".into(), Cell::Id(partner));
+            }
+            let unchecked_moves = crate::moves::unchecked(&env.records("account.move")?);
+            let wo_move = unchecked_moves.create(tx, vec![mvals]).await?;
+            let wo_move_id = wo_move.ids()[0];
+            let mut l1 = RawVals::new();
+            l1.insert("move_id".into(), Cell::Id(wo_move_id));
+            l1.insert("account_id".into(), Cell::Id(p.account));
+            l1.insert("name".into(), Cell::Str(Arc::clone(&writeoff_label)));
+            l1.insert("currency_id".into(), Cell::Id(doc_currency));
+            l1.insert("balance".into(), Cell::Decimal(counterpart_bal));
+            l1.insert("amount_currency".into(), Cell::Decimal(counterpart_cur));
+            if let Some(partner) = p.partner {
+                l1.insert("partner_id".into(), Cell::Id(partner));
+            }
+            let mut l2 = RawVals::new();
+            l2.insert("move_id".into(), Cell::Id(wo_move_id));
+            l2.insert("account_id".into(), Cell::Id(wo_account));
+            l2.insert("name".into(), Cell::Str(Arc::clone(&writeoff_label)));
+            l2.insert("currency_id".into(), Cell::Id(doc_currency));
+            l2.insert("balance".into(), Cell::Decimal(writeoff_bal));
+            l2.insert("amount_currency".into(), Cell::Decimal(writeoff_cur));
+            if let Some(partner) = p.partner {
+                l2.insert("partner_id".into(), Cell::Id(partner));
+            }
+            let unchecked_lines = crate::moves::unchecked(&env.records("account.move.line")?);
+            let created_lines = unchecked_lines.create(tx, vec![l1, l2]).await?;
+            writeoff_counterpart_line = created_lines.ids().first().copied();
+            crate::moves::post_moves(tx, &env.records("account.move")?.browse([wo_move_id])?)
+                .await?;
+        }
         let lines = env.records("account.move.line")?;
         for (payment, p) in payments.ids().into_iter().zip(&planned) {
             let rows = tx
@@ -891,10 +1020,15 @@ impl AccountPaymentRegister {
                     &[&payment, &p.account, &p.documents],
                 )
                 .await?;
-            let ids: Vec<i64> = rows
+            let mut ids: Vec<i64> = rows
                 .iter()
                 .map(|row| row.try_get::<_, i64>(0).map_err(db))
                 .collect::<Result<_>>()?;
+            if let Some(wo_lid) = writeoff_counterpart_line {
+                ids.push(wo_lid);
+                ids.sort_unstable();
+                ids.dedup();
+            }
             reconcile_lines(tx, &lines.browse(ids)?).await?;
         }
         let names = payments.cells(tx, "name").await?;
@@ -1034,6 +1168,108 @@ impl AccountMove {
     }
 }
 
+/// Pure exact-decimal write-off split: returns `(counterpart_balance, writeoff_balance)`
+/// such that `counterpart_balance + writeoff_balance == 0`.
+/// For an inbound customer underpayment (`difference = due - paid > 0`), receivable is credited
+/// (`-difference`) and the write-off expense account is debited (`+difference`).
+/// For an outbound vendor underpayment (`difference > 0`), payable is debited (`+difference`)
+/// and the write-off income account is credited (`-difference`).
+pub(crate) fn compute_writeoff_balance(difference: Decimal, inbound: bool) -> (Decimal, Decimal) {
+    let counterpart = if inbound { -difference } else { difference };
+    (counterpart, -counterpart)
+}
+
+async fn find_misc_journal(
+    tx: &mut Transaction,
+    company: i64,
+    fallback_journal: i64,
+) -> Result<i64> {
+    let rows = tx
+        .query(
+            "SELECT id::int8 FROM account_journal \
+             WHERE company_id = $1 AND type = 'general' AND active = true \
+             ORDER BY sequence, id LIMIT 1",
+            &[&company],
+        )
+        .await?;
+    if let Some(row) = rows.first() {
+        return row.try_get(0).map_err(db);
+    }
+    Ok(fallback_journal)
+}
+
+async fn company_currency_id(tx: &mut Transaction, company: i64) -> Result<i64> {
+    let rows = tx
+        .query(
+            "SELECT currency_id::int8 FROM res_company WHERE id = $1",
+            &[&company],
+        )
+        .await?;
+    rows.first()
+        .ok_or_else(|| Error::missing("Company currency not found."))?
+        .try_get(0)
+        .map_err(db)
+}
+
+async fn convert_to_company_currency(
+    tx: &mut Transaction,
+    from_currency: i64,
+    to_currency: i64,
+    company: i64,
+    date: Date,
+    amount: Decimal,
+) -> Result<Decimal> {
+    let rate_rows = tx
+        .query(
+            "SELECT rate FROM res_currency_rate \
+             WHERE currency_id = $1 AND company_id = $2 AND name <= $3 \
+             ORDER BY name DESC LIMIT 1",
+            &[&from_currency, &company, &date],
+        )
+        .await?;
+    let from_rate: Decimal = rate_rows
+        .first()
+        .and_then(|r| r.try_get(0).ok())
+        .unwrap_or(Decimal::ONE);
+    let to_rows = tx
+        .query(
+            "SELECT rate FROM res_currency_rate \
+             WHERE currency_id = $1 AND company_id = $2 AND name <= $3 \
+             ORDER BY name DESC LIMIT 1",
+            &[&to_currency, &company, &date],
+        )
+        .await?;
+    let to_rate: Decimal = to_rows
+        .first()
+        .and_then(|r| r.try_get(0).ok())
+        .unwrap_or(Decimal::ONE);
+    if from_rate.is_zero() {
+        return Ok(amount.round_dp(2));
+    }
+    Ok((amount * to_rate / from_rate).round_dp(2))
+}
+
 #[cfg(test)]
 #[path = "tests/register.rs"]
 mod tests;
+
+#[cfg(test)]
+mod writeoff_tests {
+    use super::compute_writeoff_balance;
+    use erp_sdk::Decimal;
+    use std::str::FromStr;
+
+    #[test]
+    fn writeoff_conserves_exact_zero_sum_inbound_and_outbound() {
+        let diff = Decimal::from_str("12.35").expect("valid decimal");
+        let (ar, wo_exp) = compute_writeoff_balance(diff, true);
+        assert_eq!(ar, -diff);
+        assert_eq!(wo_exp, diff);
+        assert_eq!(ar + wo_exp, Decimal::ZERO);
+
+        let (ap, wo_inc) = compute_writeoff_balance(diff, false);
+        assert_eq!(ap, diff);
+        assert_eq!(wo_inc, -diff);
+        assert_eq!(ap + wo_inc, Decimal::ZERO);
+    }
+}
