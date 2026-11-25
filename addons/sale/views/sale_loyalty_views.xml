@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Sales Discounts Wizard, Loyalty Programs, Rules, Rewards & Coupons -->
+<erp>
+  <record id="view_sale_order_discount_form" model="ir.ui.view">
+    <field name="name">sale.order.discount.form</field>
+    <field name="model">sale.order.discount</field>
+    <field name="arch" type="xml">
+      <form string="Discount" record_mode="record">
+        <group>
+          <field name="sale_order_id" readonly="1"/>
+          <field name="discount_type"/>
+          <field name="discount_percentage" invisible="discount_type == 'amount'"/>
+          <field name="discount_amount" invisible="discount_type != 'amount'"/>
+          <field name="currency_id" invisible="1"/>
+          <field name="company_id" invisible="1"/>
+        </group>
+        <footer>
+          <button name="action_apply_discount" type="object" string="Apply" class="btn-primary"/>
+          <button special="cancel" string="Discard"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_sale_loyalty_coupon_wizard_form" model="ir.ui.view">
+    <field name="name">sale.loyalty.coupon.wizard.form</field>
+    <field name="model">sale.loyalty.coupon.wizard</field>
+    <field name="arch" type="xml">
+      <form string="Enter Promotion or Coupon Code" record_mode="record">
+        <group>
+          <field name="order_id" readonly="1"/>
+          <field name="coupon_code" placeholder="e.g. COUP-00001 or SAVE10"/>
+          <field name="company_id" invisible="1"/>
+        </group>
+        <footer>
+          <button name="action_apply" type="object" string="Apply" class="btn-primary"/>
+          <button special="cancel" string="Cancel"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_loyalty_rule_list" model="ir.ui.view">
+    <field name="name">loyalty.rule.list</field>
+    <field name="model">loyalty.rule</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="code"/>
+        <field name="minimum_qty"/>
+        <field name="minimum_amount"/>
+        <field name="reward_point_amount"/>
+        <field name="currency_id" invisible="1"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_loyalty_rule_form" model="ir.ui.view">
+    <field name="name">loyalty.rule.form</field>
+    <field name="model">loyalty.rule</field>
+    <field name="arch" type="xml">
+      <form string="Conditional Rule">
+        <sheet>
+          <group>
+            <field name="code" placeholder="Optional promo code"/>
+            <field name="minimum_qty"/>
+            <field name="minimum_amount"/>
+            <field name="reward_point_amount"/>
+            <field name="currency_id" invisible="1"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_loyalty_reward_list" model="ir.ui.view">
+    <field name="name">loyalty.reward.list</field>
+    <field name="model">loyalty.reward</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="description"/>
+        <field name="discount_mode"/>
+        <field name="discount"/>
+        <field name="required_points"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_loyalty_reward_form" model="ir.ui.view">
+    <field name="name">loyalty.reward.form</field>
+    <field name="model">loyalty.reward</field>
+    <field name="arch" type="xml">
+      <form string="Reward">
+        <sheet>
+          <group>
+            <field name="description" placeholder="e.g. 10% off your order"/>
+            <field name="discount_mode"/>
+            <field name="discount"/>
+            <field name="required_points"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_loyalty_card_list" model="ir.ui.view">
+    <field name="name">loyalty.card.list</field>
+    <field name="model">loyalty.card</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="code"/>
+        <field name="partner_id"/>
+        <field name="points"/>
+        <field name="expiration_date"/>
+        <field name="active"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_loyalty_card_form" model="ir.ui.view">
+    <field name="name">loyalty.card.form</field>
+    <field name="model">loyalty.card</field>
+    <field name="arch" type="xml">
+      <form string="Coupon / Card">
+        <sheet>
+          <group>
+            <field name="code"/>
+            <field name="partner_id"/>
+            <field name="points"/>
+            <field name="expiration_date"/>
+            <field name="active"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_loyalty_program_list" model="ir.ui.view">
+    <field name="name">loyalty.program.list</field>
+    <field name="model">loyalty.program</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="name"/>
+        <field name="program_type"/>
+        <field name="trigger"/>
+        <field name="coupon_count"/>
+        <field name="date_from"/>
+        <field name="date_to"/>
+        <field name="active"/>
+      </list>
+    </field>
+  </record>
+  <record id="view_loyalty_program_form" model="ir.ui.view">
+    <field name="name">loyalty.program.form</field>
+    <field name="model">loyalty.program</field>
+    <field name="arch" type="xml">
+      <form string="Discount &amp; Loyalty Program">
+        <header>
+          <button name="action_generate_coupon" type="object" string="Generate Coupon" class="btn-primary"/>
+        </header>
+        <sheet>
+          <div class="oe_title"><h1><field name="name" placeholder="e.g. Summer 10% Promo"/></h1></div>
+          <group>
+            <group>
+              <field name="program_type"/>
+              <field name="trigger"/>
+              <field name="active"/>
+            </group>
+            <group>
+              <field name="date_from"/>
+              <field name="date_to"/>
+              <field name="coupon_count" readonly="1"/>
+              <field name="company_id" readonly="1"/>
+            </group>
+          </group>
+          <notebook>
+            <page string="Rules" name="rules">
+              <field name="rule_ids"/>
+            </page>
+            <page string="Rewards" name="rewards">
+              <field name="reward_ids"/>
+            </page>
+            <page string="Coupons &amp; Cards" name="cards">
+              <field name="card_ids"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_loyalty_program" model="ir.actions.act_window">
+    <field name="name">Discounts &amp; Loyalty</field>
+    <field name="res_model">loyalty.program</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="view_loyalty_program_list"/>
+  </record>
+</erp>

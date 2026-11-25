@@ -420,13 +420,44 @@ impl ProductPricelist {
         visited: &'a mut std::collections::BTreeSet<i64>,
     ) -> BoxFuture<'a, Result<Decimal>> {
         Box::pin(async move {
-            let prod = this
-                .env()
-                .records("product.product")?
-                .browse(vec![product_id])?;
+            let env = this.env();
+            let prod = env.records("product.product")?.browse(vec![product_id])?;
             let best_item = Self::get_product_rule(this, tx, product_id, quantity, date).await?;
 
-            let lst_price = cell_decimal(prod.cell(tx, "lst_price").await?, "lst_price")?;
+            let target_currency = cell_id(
+                this.as_records().cell(tx, "currency_id").await?,
+                "currency_id",
+            )?;
+            let pl_company = cell_id(
+                this.as_records().cell(tx, "company_id").await?,
+                "company_id",
+            )?;
+            let company_id = match pl_company {
+                Some(c) => c,
+                None => env.company_id()?.unwrap_or(1),
+            };
+            let company_currency = company_currency_id(tx, env, company_id).await?;
+            let rate_day = date
+                .map(|dt| Date::from_days((dt.micros() / 86_400_000_000) as i32))
+                .unwrap_or_else(Date::today);
+
+            let lst_price_raw = cell_decimal(prod.cell(tx, "lst_price").await?, "lst_price")?;
+            let lst_price = match target_currency {
+                Some(tc) if tc != company_currency => {
+                    convert_currency(
+                        env,
+                        tx,
+                        lst_price_raw,
+                        company_currency,
+                        tc,
+                        company_id,
+                        rate_day,
+                    )
+                    .await?
+                }
+                _ => lst_price_raw,
+            };
+
             let Some(item) = best_item else {
                 return Ok(lst_price);
             };
@@ -436,7 +467,7 @@ impl ProductPricelist {
                 // the cost goes through Hook N6, so a valuation addon supplies it per row
                 "standard_price" => {
                     let variant = RecordSet::<crate::ProductProduct>::try_from(prod.clone())?;
-                    variant
+                    let cost = variant
                         ._get_standard_price(tx)
                         .await?
                         .into_iter()
@@ -445,7 +476,22 @@ impl ProductPricelist {
                             Error::programming(
                                 "_get_standard_price returned no value for a variant",
                             )
-                        })?
+                        })?;
+                    match target_currency {
+                        Some(tc) if tc != company_currency => {
+                            convert_currency(
+                                env,
+                                tx,
+                                cost,
+                                company_currency,
+                                tc,
+                                company_id,
+                                rate_day,
+                            )
+                            .await?
+                        }
+                        _ => cost,
+                    }
                 }
                 "pricelist" => {
                     match cell_id(
@@ -459,10 +505,12 @@ impl ProductPricelist {
                                 }
                                 .into());
                             }
-                            let base_pl_model = this.env().records("product.pricelist")?;
+                            let base_pl_model = env.records("product.pricelist")?;
                             let base_pl = base_pl_model.browse(vec![base_pl_id])?;
+                            let base_pl_currency =
+                                cell_id(base_pl.cell(tx, "currency_id").await?, "currency_id")?;
                             let base_pl_set = RecordSet::<ProductPricelist>::try_from(base_pl)?;
-                            let price = Self::_compute_price_recursive(
+                            let raw_price = Self::_compute_price_recursive(
                                 &base_pl_set,
                                 tx,
                                 product_id,
@@ -474,7 +522,15 @@ impl ProductPricelist {
                             // a sibling branch may use the same pricelist again: only a loop
                             // along the current chain is a cycle
                             visited.remove(&base_pl_id);
-                            price
+                            match (base_pl_currency, target_currency) {
+                                (Some(src), Some(dst)) if src != dst => {
+                                    convert_currency(
+                                        env, tx, raw_price, src, dst, company_id, rate_day,
+                                    )
+                                    .await?
+                                }
+                                _ => raw_price,
+                            }
                         }
                         None => lst_price,
                     }
@@ -495,41 +551,111 @@ impl ProductPricelist {
                     if applied_on == "0_product_variant" {
                         Ok(fixed)
                     } else {
-                        let extra =
+                        let extra_raw =
                             cell_decimal(prod.cell(tx, "price_extra").await?, "price_extra")?;
+                        let extra = match target_currency {
+                            Some(tc) if tc != company_currency && !extra_raw.is_zero() => {
+                                convert_currency(
+                                    env,
+                                    tx,
+                                    extra_raw,
+                                    company_currency,
+                                    tc,
+                                    company_id,
+                                    rate_day,
+                                )
+                                .await?
+                            }
+                            _ => extra_raw,
+                        };
                         Ok(fixed + extra)
                     }
                 }
                 "discount" | "markup" => {
                     let discount =
                         cell_decimal(item.cell(tx, "price_discount").await?, "price_discount")?;
-                    let mut price = base_price - (base_price * (discount / Decimal::from(100)));
                     let round = cell_decimal(item.cell(tx, "price_round").await?, "price_round")?;
-                    if round > Decimal::ZERO {
-                        price = (price / round).round_dp_with_strategy(
-                            0,
-                            rust_decimal::RoundingStrategy::MidpointAwayFromZero,
-                        ) * round;
-                    }
                     let surcharge =
                         cell_decimal(item.cell(tx, "price_surcharge").await?, "price_surcharge")?;
-                    price += surcharge;
                     let min_margin =
                         cell_decimal(item.cell(tx, "price_min_margin").await?, "price_min_margin")?;
                     let max_margin =
                         cell_decimal(item.cell(tx, "price_max_margin").await?, "price_max_margin")?;
-                    if min_margin > Decimal::ZERO && price < base_price + min_margin {
-                        price = base_price + min_margin;
-                    }
-                    if max_margin > Decimal::ZERO && price > base_price + max_margin {
-                        price = base_price + max_margin;
-                    }
-                    Ok(price)
+                    Ok(apply_pricelist_formula(
+                        base_price, discount, round, surcharge, min_margin, max_margin,
+                    ))
                 }
                 other => Err(Error::programming(format!(
                     "pricelist item has unknown compute_price '{other}'"
                 ))),
             }
         })
+    }
+}
+
+async fn convert_currency(
+    env: &Env,
+    tx: &mut Transaction,
+    amount: Decimal,
+    from_currency: i64,
+    to_currency: i64,
+    company: i64,
+    date: Date,
+) -> Result<Decimal> {
+    if from_currency == to_currency || amount.is_zero() {
+        return Ok(amount);
+    }
+    let from = RecId::from_real(from_currency)
+        .ok_or_else(|| Error::invariant("Invalid source currency id."))?;
+    let to = RecId::from_real(to_currency)
+        .ok_or_else(|| Error::invariant("Invalid target currency id."))?;
+    let comp = RecId::from_real(company).ok_or_else(|| Error::invariant("Invalid company id."))?;
+    erp_addon_base::money::convert(env, tx, amount, from, to, comp, date).await
+}
+
+/// Pure exact-decimal pricelist formula: discount/markup, rounding multiple, surcharge,
+/// and min/max margin clamping.
+pub fn apply_pricelist_formula(
+    base_price: Decimal,
+    discount_pct: Decimal,
+    price_round: Decimal,
+    price_surcharge: Decimal,
+    min_margin: Decimal,
+    max_margin: Decimal,
+) -> Decimal {
+    let mut price = base_price - (base_price * (discount_pct / Decimal::from(100)));
+    if price_round > Decimal::ZERO {
+        price = (price / price_round)
+            .round_dp_with_strategy(0, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
+            * price_round;
+    }
+    price += price_surcharge;
+    if min_margin > Decimal::ZERO && price < base_price + min_margin {
+        price = base_price + min_margin;
+    }
+    if max_margin > Decimal::ZERO && price > base_price + max_margin {
+        price = base_price + max_margin;
+    }
+    price
+}
+
+#[cfg(test)]
+mod pricelist_formula_tests {
+    use super::apply_pricelist_formula;
+    use erp_sdk::Decimal;
+    use std::str::FromStr;
+
+    #[test]
+    fn exact_pricelist_formula_applies_discount_rounding_and_surcharge() {
+        let base = Decimal::from_str("100.00").unwrap();
+        let price = apply_pricelist_formula(
+            base,
+            Decimal::from_str("15").unwrap(),
+            Decimal::from_str("1").unwrap(),
+            Decimal::from_str("-0.01").unwrap(),
+            Decimal::ZERO,
+            Decimal::ZERO,
+        );
+        assert_eq!(price, Decimal::from_str("84.99").unwrap());
     }
 }

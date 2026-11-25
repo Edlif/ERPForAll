@@ -224,40 +224,34 @@ pub(crate) async fn price_of(
     )?;
     let price = match head.pricelist {
         Some(pricelist) => {
-            let set = RecordSet::<ProductPricelist>::try_from(
-                company_env
-                    .records("product.pricelist")?
-                    .browse([pricelist])?,
-            )?;
-            if company_currency != head.currency {
-                let rule = ProductPricelist::get_product_rule(
-                    &set,
-                    tx,
-                    product,
-                    quantity,
-                    Some(head.date_order),
-                )
-                .await?;
-                let fixed = match &rule {
-                    Some(rule) => {
-                        rule.cell(tx, "compute_price").await? == Cell::Str("fixed".into())
-                    }
-                    None => false,
-                };
-                if !fixed {
-                    return Err(unconverted(
-                        tx,
+            let pl_rec = company_env
+                .records("product.pricelist")?
+                .browse([pricelist])?;
+            let pl_currency = id_of(&pl_rec.cell(tx, "currency_id").await?, "currency_id")?;
+            let set = RecordSet::<ProductPricelist>::try_from(pl_rec)?;
+            let raw = ProductPricelist::get_product_price(
+                &set,
+                tx,
+                product,
+                quantity,
+                Some(head.date_order),
+            )
+            .await?;
+            match pl_currency {
+                Some(pc) if pc != head.currency => {
+                    convert(
                         &company_env,
-                        pricelist,
-                        record.clone(),
-                        head.currency,
-                        company_currency,
+                        tx,
+                        raw,
+                        rec(pc)?,
+                        rec(head.currency)?,
+                        rec(head.company)?,
+                        order_day(env, head.date_order)?,
                     )
-                    .await?);
+                    .await?
                 }
+                _ => raw,
             }
-            ProductPricelist::get_product_price(&set, tx, product, quantity, Some(head.date_order))
-                .await?
         }
         None => {
             let list = number(&record.cell(tx, "lst_price").await?, "lst_price")?;
@@ -281,41 +275,6 @@ pub(crate) async fn price_of(
         erp_addon_base::decimal_precision::precision_get(&company_env, tx, "Product Price").await?;
     let precision = Increment::from_places(digits)?;
     Ok(price_exact(&source, &target, price)?.quantize(&precision, CURRENCY_ROUNDING_MODE)?)
-}
-
-/// The refusal of a price that a pricelist in a foreign currency would give unconverted.
-async fn unconverted(
-    tx: &mut Transaction,
-    env: &Env,
-    pricelist: i64,
-    product: Records,
-    currency: i64,
-    company_currency: i64,
-) -> Result<Error> {
-    let name = |cell: Cell| match cell {
-        Cell::Str(text) => text.to_string(),
-        other => format!("{other:?}"),
-    };
-    let pricelist = name(
-        env.records("product.pricelist")?
-            .browse([pricelist])?
-            .cell(tx, "name")
-            .await?,
-    );
-    let product = name(product.cell(tx, "display_name").await?);
-    let currencies = env.records("res.currency")?;
-    let currency = name(currencies.browse([currency])?.cell(tx, "name").await?);
-    let company_currency = name(
-        currencies
-            .browse([company_currency])?
-            .cell(tx, "name")
-            .await?,
-    );
-    Ok(Error::validation(format!(
-        "The pricelist {pricelist} is in {currency} and the company in {company_currency}: \
-         the price of {product} would need a currency conversion, which pricelists do not do yet. \
-         Give the unit price, or price the product with a fixed-price rule of this pricelist."
-    )))
 }
 
 /// The taxes of a line: the product's sales taxes of the order company (or a parent), or for a

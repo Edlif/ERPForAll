@@ -422,53 +422,6 @@ pub(crate) async fn headers(tx: &mut Transaction, records: &Records) -> Result<V
     Ok(heads)
 }
 
-/// Refuses a pricelist change that changes the currency of an order that has lines: the lines
-/// keep the prices of the old currency and the addon has no update-prices operation yet. Within
-/// one currency the lines keep hand-set prices and the others are priced again.
-async fn refuse_pricelist_currency(
-    tx: &mut Transaction,
-    orders: &RecordSet<SaleOrder>,
-    vals: &RawVals,
-) -> Result<()> {
-    let env = orders.env().clone();
-    let new_pricelist = match vals.get("pricelist_id") {
-        Some(Cell::Id(id)) => Some(*id),
-        _ => None,
-    };
-    let old = orders.mapped(tx, SaleOrder::CURRENCY_ID).await?;
-    let companies = orders.mapped(tx, SaleOrder::COMPANY_ID).await?;
-    let headers = headers(tx, orders.as_records()).await?;
-    for (index, order) in headers.iter().enumerate() {
-        let new = match new_pricelist {
-            Some(id) => {
-                env.records("product.pricelist")?
-                    .browse([id])?
-                    .cell(tx, "currency_id")
-                    .await?
-            }
-            None => match companies.get(index).copied().flatten() {
-                Some(company) => {
-                    env.records("res.company")?
-                        .browse([company.get()])?
-                        .cell(tx, "currency_id")
-                        .await?
-                }
-                None => continue,
-            },
-        };
-        if old.get(index).copied().flatten().map(RecId::get)
-            != crate::amounts::id_of(&new, "currency_id")?
-            && has_lines(tx, order.id).await?
-        {
-            return Err(Error::validation(format!(
-                "The sales order {} has lines priced in its current currency, and the new pricelist is in another one. Prices cannot be updated to a new currency yet: remove the lines first, or make a new quotation with that pricelist.",
-                order.name
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// Whether the order `order` has a line of any kind.
 async fn has_lines(tx: &mut Transaction, order: RecId) -> Result<bool> {
     let rows = tx
@@ -960,6 +913,16 @@ impl SaleOrder {
         {
             values.insert("company_id".into(), Value::Int(company));
         }
+        if names.iter().any(|n| n == "validity_date") && !values.contains_key("validity_date") {
+            let days = crate::settings::quotation_validity_days(tx).await?;
+            if days > 0 {
+                let today = Date::today();
+                values.insert(
+                    "validity_date".into(),
+                    Value::Date(Date::from_days(today.days() + days)),
+                );
+            }
+        }
         Ok(values)
     }
 
@@ -1138,16 +1101,11 @@ impl SaleOrder {
                 )));
             }
         }
-        // the addon has no update-prices operation: a pricelist in another currency would leave
-        // every line priced in the old one, so a quotation with lines refuses it
-        if written.contains("pricelist_id") {
-            refuse_pricelist_currency(tx, this, &vals).await?;
-        }
         let recurrency = ["pricelist_id", "company_id"]
             .iter()
             .any(|field| written.contains(field));
         let ids: BTreeSet<i64> = records.ids().into_iter().collect();
-        // a new pricelist prices the lines again, except those priced by hand
+        // a new pricelist prices every line again (converting currency when needed)
         let order_lines = if written.contains("pricelist_id") {
             let lines = this
                 .env()
@@ -1161,20 +1119,50 @@ impl SaleOrder {
                     )?,
                 )
                 .await?;
-            let manual = crate::amounts::manual_prices(tx, &lines).await?;
-            Some((lines, manual))
+            Some(lines)
         } else {
             None
         };
         sup.call(tx, records, (vals,)).await?;
-        if let Some((lines, manual)) = order_lines {
-            crate::amounts::reprice(tx, this.env(), &lines, &manual, true, false).await?;
+        if let Some(lines) = order_lines {
+            let empty_manual = BTreeSet::new();
+            crate::amounts::reprice(tx, this.env(), &lines, &empty_manual, true, false).await?;
         }
         if recurrency {
             // a new currency rounds every line and total again
             crate::amounts::resync_orders(tx, this.env(), &ids).await?;
         }
         Ok(())
+    }
+
+    /// Recomputes unit prices on all product lines of draft/sent quotations from the current
+    /// pricelist (including multi-currency conversion).
+    #[method]
+    #[rpc(effect = write)]
+    pub async fn action_update_prices(
+        this: &RecordSet<SaleOrder>,
+        tx: &mut Transaction,
+    ) -> Result<()> {
+        this.as_records().check_access(tx, Operation::Write).await?;
+        let ids: BTreeSet<i64> = this.as_records().ids().into_iter().collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let lines = this
+            .env()
+            .records("sale.order.line")?
+            .search(
+                tx,
+                &Domain::condition(
+                    "order_id",
+                    Operator::In,
+                    ids.iter().copied().collect::<Vec<_>>(),
+                )?,
+            )
+            .await?;
+        let empty_manual = BTreeSet::new();
+        crate::amounts::reprice(tx, this.env(), &lines, &empty_manual, true, false).await?;
+        crate::amounts::resync_orders(tx, this.env(), &ids).await
     }
 
     /// Only a draft quotation or a cancelled order can be deleted.
