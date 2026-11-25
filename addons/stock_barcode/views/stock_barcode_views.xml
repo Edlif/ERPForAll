@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_stock_barcode_scan_line_list" model="ir.ui.view">
+    <field name="name">stock.barcode.scan.line.list</field>
+    <field name="model">stock.barcode.scan.line</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="scanned_at"/>
+        <field name="barcode"/>
+        <field name="product_id"/>
+        <field name="lot_name"/>
+        <field name="location_id"/>
+        <field name="quantity"/>
+        <field name="note"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_stock_barcode_scan_line_form" model="ir.ui.view">
+    <field name="name">stock.barcode.scan.line.form</field>
+    <field name="model">stock.barcode.scan.line</field>
+    <field name="arch" type="xml">
+      <form string="Scanned Barcode">
+        <sheet>
+          <group>
+            <group>
+              <field name="barcode" readonly="1"/>
+              <field name="product_id" readonly="1"/>
+              <field name="lot_name" readonly="1"/>
+            </group>
+            <group>
+              <field name="location_id" readonly="1"/>
+              <field name="quantity" readonly="1"/>
+              <field name="scanned_at" readonly="1"/>
+              <field name="note" readonly="1"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_stock_barcode_session_list" model="ir.ui.view">
+    <field name="name">stock.barcode.session.list</field>
+    <field name="model">stock.barcode.session</field>
+    <field name="arch" type="xml">
+      <list string="Barcode Scanning">
+        <dashboard>
+          <count name="open" string="In Progress" filter="filter_open" color="info"/>
+          <count name="done" string="Completed" filter="filter_done" color="success"/>
+        </dashboard>
+        <field name="name"/>
+        <field name="mode"/>
+        <field name="picking_id"/>
+        <field name="location_id"/>
+        <field name="scanned_count"/>
+        <field name="company_id"/>
+        <field name="state" widget="badge" options="{'tone_info': ['open'], 'tone_success': ['done'], 'tone_muted': ['cancel']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_stock_barcode_session_form" model="ir.ui.view">
+    <field name="name">stock.barcode.session.form</field>
+    <field name="model">stock.barcode.session</field>
+    <field name="arch" type="xml">
+      <form string="Barcode Scanning">
+        <header>
+          <button name="action_process_barcode" type="object" string="Scan Barcode" class="oe_highlight" invisible="state != 'open'"/>
+          <button name="action_validate_session" type="object" string="Validate / Apply" class="oe_highlight" invisible="state != 'open'"/>
+          <button name="action_cancel_session" type="object" string="Cancel" invisible="state != 'open'"/>
+          <field name="state" widget="statusbar" statusbar_visible="open,done"/>
+        </header>
+        <sheet>
+          <widget name="web_ribbon" title="Completed" bg_color="bg-success" invisible="state != 'done'"/>
+          <widget name="web_ribbon" title="Cancelled" bg_color="bg-danger" invisible="state != 'cancel'"/>
+          <div class="oe_title">
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group string="Operation">
+              <field name="mode" readonly="state != 'open'"/>
+              <field name="picking_id" readonly="state != 'open'" invisible="mode != 'transfer'"/>
+              <field name="location_id" readonly="state != 'open'" invisible="mode != 'inventory'"/>
+              <field name="company_id" readonly="state != 'open'"/>
+            </group>
+            <group string="Scanner Input">
+              <field name="barcode_input" readonly="state != 'open'" placeholder="Scan SKU, barcode, GS1-128 (01)...(10)... or combined barcode"/>
+              <field name="last_message" readonly="1"/>
+              <field name="scanned_count" readonly="1"/>
+            </group>
+          </group>
+          <notebook>
+            <page name="scans" string="Scanned Items">
+              <field name="line_ids" readonly="1"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_stock_barcode_session_search" model="ir.ui.view">
+    <field name="name">stock.barcode.session.search</field>
+    <field name="model">stock.barcode.session</field>
+    <field name="arch" type="xml">
+      <search string="Barcode Scanning">
+        <field name="name"/>
+        <field name="picking_id"/>
+        <field name="location_id"/>
+        <filter name="filter_open" string="In Progress" domain="[('state', '=', 'open')]"/>
+        <filter name="filter_done" string="Completed" domain="[('state', '=', 'done')]"/>
+        <group>
+          <filter name="group_mode" string="Mode" context="{'group_by': 'mode'}"/>
+          <filter name="group_state" string="Status" context="{'group_by': 'state'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_stock_barcode_session" model="ir.actions.act_window">
+    <field name="name">Barcode Scanning</field>
+    <field name="res_model">stock.barcode.session</field>
+    <field name="view_mode">list,form</field>
+    <field name="target">current</field>
+    <field name="search_view_id" ref="view_stock_barcode_session_search"/>
+  </record>
+
+  <menuitem id="menu_stock_barcode_session" name="Barcode Scanning" parent="stock.menu_stock_operations" action="action_stock_barcode_session" groups="stock.group_stock_user" sequence="45"/>
+  <record id="menu_stock_barcode_session" model="ir.ui.menu"><field name="web_icon">lucide:scan-barcode</field></record>
+
+  <record id="view_picking_form_barcode_button" model="ir.ui.view">
+    <field name="name">stock.picking.form.barcode.button</field>
+    <field name="model">stock.picking</field>
+    <field name="inherit_id" ref="stock.view_picking_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//header" position="inside">
+        <button name="action_open_barcode" type="object" string="Barcode" invisible="state in ('done', 'cancel')"/>
+      </xpath>
+    </field>
+  </record>
+</erp>

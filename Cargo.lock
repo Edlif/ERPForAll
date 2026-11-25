@@ -1671,6 +1671,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "erp-addon-quality_control"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-base",
+ "erp-addon-product",
+ "erp-addon-stock",
+ "erp-sdk",
+]
+
+[[package]]
 name = "erp-addon-reporting"
 version = "0.1.0"
 dependencies = [
@@ -1797,6 +1807,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "erp-addon-stock_barcode"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-barcodes_gs1_nomenclature",
+ "erp-addon-base",
+ "erp-addon-product",
+ "erp-addon-stock",
+ "erp-sdk",
+]
+
+[[package]]
 name = "erp-addon-stock_delivery"
 version = "0.1.0"
 dependencies = [
@@ -1832,6 +1853,15 @@ dependencies = [
  "erp-testkit",
  "tokio",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "erp-addon-stock_fleet"
+version = "0.1.0"
+dependencies = [
+ "erp-addon-base",
+ "erp-addon-stock",
+ "erp-sdk",
 ]
 
 [[package]]
@@ -2071,6 +2101,7 @@ dependencies = [
  "erp-addon-purchase-mail",
  "erp-addon-purchase-three-way-match",
  "erp-addon-purchase_stock",
+ "erp-addon-quality_control",
  "erp-addon-reporting",
  "erp-addon-sale",
  "erp-addon-sale_stock",
@@ -2079,8 +2110,10 @@ dependencies = [
  "erp-addon-stock",
  "erp-addon-stock-mail",
  "erp-addon-stock_account",
+ "erp-addon-stock_barcode",
  "erp-addon-stock_delivery",
  "erp-addon-stock_dropshipping",
+ "erp-addon-stock_fleet",
  "erp-addon-stock_landed_costs",
  "erp-addon-stock_sms",
  "erp-addon-theme-office-blue",

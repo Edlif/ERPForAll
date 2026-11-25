@@ -1,0 +1,5 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_fleet_vehicle_category_user,Stock Fleet: fleet.vehicle.category (user),stock_fleet.model_fleet_vehicle_category,stock.group_stock_user,r,
+access_fleet_vehicle_category_manager,Stock Fleet: fleet.vehicle.category (manager),stock_fleet.model_fleet_vehicle_category,stock.group_stock_manager,crud,
+access_fleet_vehicle_user,Stock Fleet: fleet.vehicle (user),stock_fleet.model_fleet_vehicle,stock.group_stock_user,r,
+access_fleet_vehicle_manager,Stock Fleet: fleet.vehicle (manager),stock_fleet.model_fleet_vehicle,stock.group_stock_manager,crud,

@@ -1,0 +1,5 @@
+id,name,model_id/id,group_id/id,operation,domain
+access_stock_barcode_session_user,Stock Barcode: stock.barcode.session (user),stock_barcode.model_stock_barcode_session,stock.group_stock_user,crud,
+access_stock_barcode_session_manager,Stock Barcode: stock.barcode.session (manager),stock_barcode.model_stock_barcode_session,stock.group_stock_manager,crud,
+access_stock_barcode_scan_line_user,Stock Barcode: stock.barcode.scan.line (user),stock_barcode.model_stock_barcode_scan_line,stock.group_stock_user,crud,
+access_stock_barcode_scan_line_manager,Stock Barcode: stock.barcode.scan.line (manager),stock_barcode.model_stock_barcode_scan_line,stock.group_stock_manager,crud,

@@ -3,34 +3,7 @@
 use erp_sdk::prelude::*;
 use erp_sdk::settings::{PanelItemDecl, PanelItemValue, ScopeKind, SettingsScope};
 
-const ADDONS: &str = "Unavailable until a later release supplies this addon.";
-const FEATURES: &[(&str, &str, &str, &str)] = &[
-    (
-        "stock.module_stock_fleet",
-        "Transport",
-        "Operations",
-        ADDONS,
-    ),
-    ("stock.module_stock_barcode", "Scanning", "Barcode", ADDONS),
-    (
-        "stock.module_stock_barcode_barcodelookup",
-        "Barcode lookup",
-        "Barcode",
-        ADDONS,
-    ),
-    (
-        "stock.module_quality_control",
-        "Quality checks",
-        "Operations",
-        ADDONS,
-    ),
-    (
-        "stock.module_quality_control_worksheet",
-        "Quality worksheets",
-        "Operations",
-        ADDONS,
-    ),
-];
+const FEATURES: &[(&str, &str, &str, &str)] = &[];
 // Feature groups that already show or hide menus, view elements or fields: the row turns the group on or
 // off for every internal user. `(key, label, block, group)`.
 const GROUP_TOGGLES: &[(&str, &str, &str, &str)] = &[
@@ -151,6 +124,24 @@ const MODULES: &[(&str, &str, &str, &str)] = &[
         "Landed costs",
         "Valuation",
         "stock_landed_costs",
+    ),
+    (
+        "stock.module_stock_barcode",
+        "Scanning",
+        "Barcode",
+        "stock_barcode",
+    ),
+    (
+        "stock.module_quality_control",
+        "Quality checks",
+        "Operations",
+        "quality_control",
+    ),
+    (
+        "stock.module_stock_fleet",
+        "Transport",
+        "Operations",
+        "stock_fleet",
     ),
 ];
 fn items() -> Result<Vec<PanelItemDecl>> {

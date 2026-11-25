@@ -1,0 +1,16 @@
+name = "Quality Control"
+summary = "Quality control points, checks on transfers, measurements, worksheets and quality alerts"
+category = "Inventory"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "product", "stock"]
+data = [
+    "security/ir.access.csv",
+    "data/quality_control_data.xml",
+    "views/quality_control_views.xml",
+]
+demo = [
+    "demo/quality_control_demo.xml",
+]
+exact_only = true

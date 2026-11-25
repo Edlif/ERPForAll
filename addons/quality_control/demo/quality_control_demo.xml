@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="quality_team_main" model="quality.team">
+      <field name="name">Main Quality Team</field>
+    </record>
+
+    <record id="quality_point_demo_coffee_weight" model="quality.point">
+      <field name="name">QCP/00001</field>
+      <field name="title">Incoming Coffee Pack Weight Check</field>
+      <field name="team_id" ref="quality_team_main"/>
+      <field name="company_id" ref="base.main_company"/>
+      <field name="picking_type_id" search="[('code', '=', 'incoming')]"/>
+      <field name="product_id" search="[('product_tmpl_id', '=', ref('product.product_demo_kopi'))]"/>
+      <field name="test_type">measure</field>
+      <field name="norm">250</field>
+      <field name="tolerance_min">245</field>
+      <field name="tolerance_max">255</field>
+      <field name="norm_unit">g</field>
+      <field name="note">Weigh a sample pack on the receiving scale. Acceptable range: 245 g to 255 g.</field>
+    </record>
+  </data>
+</erp>

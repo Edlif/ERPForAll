@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_fleet_vehicle_category_list" model="ir.ui.view">
+    <field name="name">fleet.vehicle.category.list</field>
+    <field name="model">fleet.vehicle.category</field>
+    <field name="arch" type="xml">
+      <list string="Vehicle Categories">
+        <field name="sequence"/>
+        <field name="name"/>
+        <field name="max_weight"/>
+        <field name="max_volume"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_fleet_vehicle_category_form" model="ir.ui.view">
+    <field name="name">fleet.vehicle.category.form</field>
+    <field name="model">fleet.vehicle.category</field>
+    <field name="arch" type="xml">
+      <form string="Vehicle Category">
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="e.g. Delivery Van"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="sequence"/>
+              <field name="max_weight"/>
+              <field name="max_volume"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_fleet_vehicle_category_search" model="ir.ui.view">
+    <field name="name">fleet.vehicle.category.search</field>
+    <field name="model">fleet.vehicle.category</field>
+    <field name="arch" type="xml">
+      <search string="Vehicle Categories">
+        <field name="name"/>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_fleet_vehicle_category" model="ir.actions.act_window">
+    <field name="name">Vehicle Categories</field>
+    <field name="res_model">fleet.vehicle.category</field>
+    <field name="view_mode">list,form</field>
+    <field name="target">current</field>
+    <field name="search_view_id" ref="view_fleet_vehicle_category_search"/>
+  </record>
+
+  <record id="view_fleet_vehicle_list" model="ir.ui.view">
+    <field name="name">fleet.vehicle.list</field>
+    <field name="model">fleet.vehicle</field>
+    <field name="arch" type="xml">
+      <list string="Fleet Vehicles">
+        <field name="name"/>
+        <field name="license_plate"/>
+        <field name="category_id"/>
+        <field name="driver_id"/>
+        <field name="max_weight"/>
+        <field name="max_volume"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_fleet_vehicle_form" model="ir.ui.view">
+    <field name="name">fleet.vehicle.form</field>
+    <field name="model">fleet.vehicle</field>
+    <field name="arch" type="xml">
+      <form string="Fleet Vehicle">
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="e.g. Van 01"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="license_plate"/>
+              <field name="category_id"/>
+              <field name="driver_id"/>
+              <field name="company_id"/>
+            </group>
+            <group string="Load Capacity">
+              <field name="max_weight"/>
+              <field name="max_volume"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_fleet_vehicle_search" model="ir.ui.view">
+    <field name="name">fleet.vehicle.search</field>
+    <field name="model">fleet.vehicle</field>
+    <field name="arch" type="xml">
+      <search string="Fleet Vehicles">
+        <field name="name"/>
+        <field name="license_plate"/>
+        <field name="category_id"/>
+        <group>
+          <filter name="group_category" string="Category" context="{'group_by': 'category_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_fleet_vehicle" model="ir.actions.act_window">
+    <field name="name">Fleet Vehicles</field>
+    <field name="res_model">fleet.vehicle</field>
+    <field name="view_mode">list,form</field>
+    <field name="target">current</field>
+    <field name="search_view_id" ref="view_fleet_vehicle_search"/>
+  </record>
+
+  <menuitem id="menu_stock_fleet_vehicles" name="Fleet Vehicles" parent="stock.menu_stock_config_settings" action="action_fleet_vehicle" groups="stock.group_stock_manager" sequence="86"/>
+  <record id="menu_stock_fleet_vehicles" model="ir.ui.menu"><field name="web_icon">lucide:truck</field></record>
+  <menuitem id="menu_stock_fleet_categories" name="Vehicle Categories" parent="stock.menu_stock_config_settings" action="action_fleet_vehicle_category" groups="stock.group_stock_manager" sequence="87"/>
+  <record id="menu_stock_fleet_categories" model="ir.ui.menu"><field name="web_icon">lucide:boxes</field></record>
+
+  <record id="view_picking_batch_form_fleet" model="ir.ui.view">
+    <field name="name">stock.picking.batch.form.fleet</field>
+    <field name="model">stock.picking.batch</field>
+    <field name="inherit_id" ref="stock.view_picking_batch_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//header" position="inside">
+        <button name="action_recompute_dispatch" type="object" string="Check Vehicle Load" invisible="state in ('done', 'cancel')"/>
+      </xpath>
+      <xpath expr="//notebook" position="inside">
+        <page name="dispatch" string="Transport Dispatch">
+          <group>
+            <group string="Vehicle &amp; Dock">
+              <field name="vehicle_id" readonly="state in ('done', 'cancel')"/>
+              <field name="vehicle_category_id" readonly="state in ('done', 'cancel')"/>
+              <field name="driver_id" readonly="state in ('done', 'cancel')"/>
+              <field name="dock_id" readonly="state in ('done', 'cancel')"/>
+            </group>
+            <group string="Load Utilization">
+              <field name="dispatch_weight" readonly="1"/>
+              <field name="weight_utilization" readonly="1"/>
+              <field name="dispatch_volume" readonly="1"/>
+              <field name="volume_utilization" readonly="1"/>
+            </group>
+          </group>
+        </page>
+      </xpath>
+    </field>
+  </record>
+</erp>

@@ -15,6 +15,9 @@ members = [
     "addons/barcodes",
     "addons/barcodes_gs1_nomenclature",
     "addons/stock",
+    "addons/stock_barcode",
+    "addons/quality_control",
+    "addons/stock_fleet",
     "addons/stock_mail",
     "addons/delivery",
     "addons/stock_delivery",
@@ -112,6 +115,9 @@ erp-addon-acceptance-notes = { package = "addon-acceptance_notes", path = "addon
 erp-addon-barcodes = { path = "addons/barcodes" }
 erp-addon-barcodes_gs1_nomenclature = { path = "addons/barcodes_gs1_nomenclature" }
 erp-addon-stock = { path = "addons/stock" }
+erp-addon-stock_barcode = { path = "addons/stock_barcode" }
+erp-addon-quality_control = { path = "addons/quality_control" }
+erp-addon-stock_fleet = { path = "addons/stock_fleet" }
 erp-addon-stock-mail = { path = "addons/stock_mail" }
 erp-addon-delivery = { path = "addons/delivery" }
 erp-addon-stock_delivery = { path = "addons/stock_delivery" }

@@ -1,0 +1,13 @@
+name = "Stock Barcode"
+summary = "Barcode scanning sessions for receipts, deliveries, internal transfers and physical counts"
+category = "Inventory"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "product", "barcodes_gs1_nomenclature", "stock"]
+data = [
+    "security/ir.access.csv",
+    "data/stock_barcode_data.xml",
+    "views/stock_barcode_views.xml",
+]
+exact_only = true

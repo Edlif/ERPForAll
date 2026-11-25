@@ -1,0 +1,15 @@
+name = "Stock Fleet"
+summary = "Transport dispatch management, vehicles and batch capacity tracking"
+category = "Inventory"
+author = "Arkana"
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
+depends = ["base", "stock"]
+data = [
+    "security/ir.access.csv",
+    "views/stock_fleet_views.xml",
+]
+demo = [
+    "demo/stock_fleet_demo.xml",
+]
+exact_only = true

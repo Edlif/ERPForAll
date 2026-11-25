@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="sequence_quality_point" model="ir.sequence">
+      <field name="name">Quality Control Point</field>
+      <field name="code">quality.point</field>
+      <field name="prefix">QCP/</field>
+      <field name="padding">5</field>
+    </record>
+    <record id="sequence_quality_check" model="ir.sequence">
+      <field name="name">Quality Check</field>
+      <field name="code">quality.check</field>
+      <field name="prefix">QC/</field>
+      <field name="padding">5</field>
+    </record>
+    <record id="sequence_quality_alert" model="ir.sequence">
+      <field name="name">Quality Alert</field>
+      <field name="code">quality.alert</field>
+      <field name="prefix">QA/</field>
+      <field name="padding">5</field>
+    </record>
+  </data>
+</erp>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="vehicle_category_van" model="fleet.vehicle.category">
+      <field name="name">Delivery Van</field>
+      <field name="sequence">10</field>
+      <field name="max_weight">1000</field>
+      <field name="max_volume">8</field>
+    </record>
+    <record id="vehicle_category_truck" model="fleet.vehicle.category">
+      <field name="name">Box Truck</field>
+      <field name="sequence">20</field>
+      <field name="max_weight">3500</field>
+      <field name="max_volume">20</field>
+    </record>
+    <record id="vehicle_demo_van_01" model="fleet.vehicle">
+      <field name="name">Delivery Van 01</field>
+      <field name="license_plate">B 1234 ERP</field>
+      <field name="category_id" ref="vehicle_category_van"/>
+      <field name="max_weight">1000</field>
+      <field name="max_volume">8</field>
+    </record>
+  </data>
+</erp>

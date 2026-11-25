@@ -1,0 +1,19 @@
+[package]
+name = "erp-addon-stock_barcode"
+description = "ERPForAll addon stock_barcode: interactive barcode scanning for transfers and inventory counts with GS1-128 and combined separator support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+erp-sdk = { workspace = true }
+erp-addon-base = { workspace = true }
+erp-addon-product = { workspace = true }
+erp-addon-barcodes_gs1_nomenclature = { workspace = true }
+erp-addon-stock = { workspace = true }
+
+[lints]
+workspace = true

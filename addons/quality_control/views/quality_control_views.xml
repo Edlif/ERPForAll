@@ -1,0 +1,342 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <!-- Quality Teams -->
+  <record id="view_quality_team_list" model="ir.ui.view">
+    <field name="name">quality.team.list</field>
+    <field name="model">quality.team</field>
+    <field name="arch" type="xml">
+      <list string="Quality Teams">
+        <field name="name"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_quality_team_form" model="ir.ui.view">
+    <field name="name">quality.team.form</field>
+    <field name="model">quality.team</field>
+    <field name="arch" type="xml">
+      <form string="Quality Team">
+        <sheet>
+          <div class="oe_title"><h1><field name="name" placeholder="e.g. Incoming Quality Team"/></h1></div>
+          <group>
+            <field name="company_id"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_quality_team_search" model="ir.ui.view">
+    <field name="name">quality.team.search</field>
+    <field name="model">quality.team</field>
+    <field name="arch" type="xml">
+      <search string="Quality Teams">
+        <field name="name"/>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_quality_team" model="ir.actions.act_window">
+    <field name="name">Quality Teams</field>
+    <field name="res_model">quality.team</field>
+    <field name="view_mode">list,form</field>
+    <field name="target">current</field>
+    <field name="search_view_id" ref="view_quality_team_search"/>
+  </record>
+
+  <!-- Quality Control Points -->
+  <record id="view_quality_point_list" model="ir.ui.view">
+    <field name="name">quality.point.list</field>
+    <field name="model">quality.point</field>
+    <field name="arch" type="xml">
+      <list string="Quality Control Points">
+        <field name="name"/>
+        <field name="title"/>
+        <field name="test_type"/>
+        <field name="team_id"/>
+        <field name="company_id"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_quality_point_form" model="ir.ui.view">
+    <field name="name">quality.point.form</field>
+    <field name="model">quality.point</field>
+    <field name="arch" type="xml">
+      <form string="Quality Control Point">
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="title" placeholder="e.g. Incoming Seal Inspection"/>
+              <field name="product_id"/>
+              <field name="picking_type_id"/>
+            </group>
+            <group>
+              <field name="test_type"/>
+              <field name="team_id"/>
+              <field name="company_id"/>
+              <field name="norm" invisible="test_type != 'measure'"/>
+              <field name="tolerance_min" invisible="test_type != 'measure'"/>
+              <field name="tolerance_max" invisible="test_type != 'measure'"/>
+              <field name="norm_unit" invisible="test_type != 'measure'"/>
+            </group>
+          </group>
+          <notebook>
+            <page name="instructions" string="Instructions / Worksheet">
+              <group>
+                <field name="note" placeholder="Inspection steps and pass/fail criteria..."/>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_quality_point_search" model="ir.ui.view">
+    <field name="name">quality.point.search</field>
+    <field name="model">quality.point</field>
+    <field name="arch" type="xml">
+      <search string="Quality Control Points">
+        <field name="name"/>
+        <field name="title"/>
+        <field name="team_id"/>
+        <filter name="filter_passfail" string="Pass - Fail" domain="[('test_type', '=', 'passfail')]"/>
+        <filter name="filter_measure" string="Measure" domain="[('test_type', '=', 'measure')]"/>
+        <group>
+          <filter name="group_type" string="Type" context="{'group_by': 'test_type'}"/>
+          <filter name="group_team" string="Team" context="{'group_by': 'team_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_quality_point" model="ir.actions.act_window">
+    <field name="name">Quality Control Points</field>
+    <field name="res_model">quality.point</field>
+    <field name="view_mode">list,form</field>
+    <field name="target">current</field>
+    <field name="search_view_id" ref="view_quality_point_search"/>
+  </record>
+
+  <!-- Quality Checks -->
+  <record id="view_quality_check_list" model="ir.ui.view">
+    <field name="name">quality.check.list</field>
+    <field name="model">quality.check</field>
+    <field name="arch" type="xml">
+      <list string="Quality Checks">
+        <dashboard>
+          <count name="todo" string="To Do" filter="filter_todo" color="warning"/>
+          <count name="pass" string="Passed" filter="filter_pass" color="success"/>
+          <count name="fail" string="Failed" filter="filter_fail" color="danger"/>
+        </dashboard>
+        <field name="name"/>
+        <field name="title"/>
+        <field name="picking_id"/>
+        <field name="product_id"/>
+        <field name="test_type"/>
+        <field name="measure"/>
+        <field name="control_date"/>
+        <field name="quality_state" widget="badge" options="{'tone_warning': ['none'], 'tone_success': ['pass'], 'tone_danger': ['fail']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_quality_check_form" model="ir.ui.view">
+    <field name="name">quality.check.form</field>
+    <field name="model">quality.check</field>
+    <field name="arch" type="xml">
+      <form string="Quality Check">
+        <header>
+          <button name="do_measure" type="object" string="Check Measurement" class="oe_highlight" invisible="test_type != 'measure' or quality_state != 'none'"/>
+          <button name="do_pass" type="object" string="Pass" class="oe_highlight" invisible="quality_state != 'none'"/>
+          <button name="do_fail" type="object" string="Fail" invisible="quality_state != 'none'"/>
+          <button name="action_create_alert" type="object" string="Create Quality Alert" invisible="quality_state != 'fail'"/>
+          <field name="quality_state" widget="statusbar" statusbar_visible="none,pass,fail"/>
+        </header>
+        <sheet>
+          <widget name="web_ribbon" title="Passed" bg_color="bg-success" invisible="quality_state != 'pass'"/>
+          <widget name="web_ribbon" title="Failed" bg_color="bg-danger" invisible="quality_state != 'fail'"/>
+          <div class="oe_title">
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="title" readonly="quality_state != 'none'"/>
+              <field name="picking_id" readonly="quality_state != 'none'"/>
+              <field name="product_id" readonly="quality_state != 'none'"/>
+              <field name="lot_id" groups="stock.group_production_lot" readonly="quality_state != 'none'"/>
+              <field name="point_id" readonly="1"/>
+            </group>
+            <group>
+              <field name="test_type" readonly="quality_state != 'none'"/>
+              <field name="team_id" readonly="quality_state != 'none'"/>
+              <field name="company_id" readonly="quality_state != 'none'"/>
+              <field name="measure" readonly="quality_state != 'none'" invisible="test_type != 'measure'"/>
+              <field name="norm" readonly="1" invisible="test_type != 'measure'"/>
+              <field name="tolerance_min" readonly="1" invisible="test_type != 'measure'"/>
+              <field name="tolerance_max" readonly="1" invisible="test_type != 'measure'"/>
+              <field name="control_date" readonly="1"/>
+              <field name="user_id" readonly="1"/>
+            </group>
+          </group>
+          <notebook>
+            <page name="worksheet" string="Worksheet &amp; Notes">
+              <group>
+                <field name="worksheet_notes" placeholder="Record inspection findings, measurements or defect notes..."/>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_quality_check_search" model="ir.ui.view">
+    <field name="name">quality.check.search</field>
+    <field name="model">quality.check</field>
+    <field name="arch" type="xml">
+      <search string="Quality Checks">
+        <field name="name"/>
+        <field name="title"/>
+        <field name="picking_id"/>
+        <field name="product_id"/>
+        <filter name="filter_todo" string="To Do" domain="[('quality_state', '=', 'none')]"/>
+        <filter name="filter_pass" string="Passed" domain="[('quality_state', '=', 'pass')]"/>
+        <filter name="filter_fail" string="Failed" domain="[('quality_state', '=', 'fail')]"/>
+        <group>
+          <filter name="group_state" string="Status" context="{'group_by': 'quality_state'}"/>
+          <filter name="group_picking" string="Transfer" context="{'group_by': 'picking_id'}"/>
+          <filter name="group_product" string="Product" context="{'group_by': 'product_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_quality_check" model="ir.actions.act_window">
+    <field name="name">Quality Checks</field>
+    <field name="res_model">quality.check</field>
+    <field name="view_mode">list,form</field>
+    <field name="target">current</field>
+    <field name="search_view_id" ref="view_quality_check_search"/>
+  </record>
+
+  <!-- Quality Alerts -->
+  <record id="view_quality_alert_list" model="ir.ui.view">
+    <field name="name">quality.alert.list</field>
+    <field name="model">quality.alert</field>
+    <field name="arch" type="xml">
+      <list string="Quality Alerts">
+        <field name="name"/>
+        <field name="title"/>
+        <field name="product_id"/>
+        <field name="picking_id"/>
+        <field name="team_id"/>
+        <field name="stage" widget="badge" options="{'tone_danger': ['new'], 'tone_warning': ['confirmed', 'action_proposed'], 'tone_success': ['solved']}"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_quality_alert_form" model="ir.ui.view">
+    <field name="name">quality.alert.form</field>
+    <field name="model">quality.alert</field>
+    <field name="arch" type="xml">
+      <form string="Quality Alert">
+        <header>
+          <button name="action_confirm" type="object" string="Confirm" class="oe_highlight" invisible="stage != 'new'"/>
+          <button name="action_solve" type="object" string="Mark Solved" class="oe_highlight" invisible="stage == 'solved'"/>
+          <field name="stage" widget="statusbar" statusbar_visible="new,confirmed,action_proposed,solved"/>
+        </header>
+        <sheet>
+          <widget name="web_ribbon" title="Solved" bg_color="bg-success" invisible="stage != 'solved'"/>
+          <div class="oe_title">
+            <h1><field name="name" readonly="1"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="title"/>
+              <field name="product_id"/>
+              <field name="lot_id" groups="stock.group_production_lot"/>
+              <field name="picking_id"/>
+              <field name="check_id"/>
+            </group>
+            <group>
+              <field name="team_id"/>
+              <field name="company_id"/>
+              <field name="priority"/>
+            </group>
+          </group>
+          <notebook>
+            <page name="description" string="Description">
+              <group>
+                <field name="description"/>
+                <field name="root_cause"/>
+              </group>
+            </page>
+            <page name="actions" string="Corrective &amp; Preventive Actions">
+              <group>
+                <field name="corrective_actions"/>
+                <field name="preventive_actions"/>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="view_quality_alert_search" model="ir.ui.view">
+    <field name="name">quality.alert.search</field>
+    <field name="model">quality.alert</field>
+    <field name="arch" type="xml">
+      <search string="Quality Alerts">
+        <field name="name"/>
+        <field name="title"/>
+        <field name="product_id"/>
+        <filter name="filter_open" string="Open" domain="[('stage', '!=', 'solved')]"/>
+        <filter name="filter_solved" string="Solved" domain="[('stage', '=', 'solved')]"/>
+        <group>
+          <filter name="group_stage" string="Stage" context="{'group_by': 'stage'}"/>
+          <filter name="group_team" string="Team" context="{'group_by': 'team_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <record id="action_quality_alert" model="ir.actions.act_window">
+    <field name="name">Quality Alerts</field>
+    <field name="res_model">quality.alert</field>
+    <field name="view_mode">list,form</field>
+    <field name="target">current</field>
+    <field name="search_view_id" ref="view_quality_alert_search"/>
+  </record>
+
+  <!-- Menus -->
+  <menuitem id="menu_quality_checks" name="Quality Checks" parent="stock.menu_stock_operations" action="action_quality_check" groups="stock.group_stock_user" sequence="75"/>
+  <record id="menu_quality_checks" model="ir.ui.menu"><field name="web_icon">lucide:clipboard-check</field></record>
+  <menuitem id="menu_quality_alerts" name="Quality Alerts" parent="stock.menu_stock_operations" action="action_quality_alert" groups="stock.group_stock_user" sequence="76"/>
+  <record id="menu_quality_alerts" model="ir.ui.menu"><field name="web_icon">lucide:list-todo</field></record>
+  <menuitem id="menu_quality_points" name="Quality Control Points" parent="stock.menu_stock_config_settings" action="action_quality_point" groups="stock.group_stock_manager" sequence="88"/>
+  <record id="menu_quality_points" model="ir.ui.menu"><field name="web_icon">lucide:clipboard-check</field></record>
+  <menuitem id="menu_quality_teams" name="Quality Teams" parent="stock.menu_stock_config_settings" action="action_quality_team" groups="stock.group_stock_manager" sequence="89"/>
+  <record id="menu_quality_teams" model="ir.ui.menu"><field name="web_icon">lucide:users</field></record>
+
+  <!-- Transfer Smart Button -->
+  <record id="view_picking_form_quality_button" model="ir.ui.view">
+    <field name="name">stock.picking.form.quality.button</field>
+    <field name="model">stock.picking</field>
+    <field name="inherit_id" ref="stock.view_picking_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button name="action_view_quality_checks" type="object" class="oe_stat_button" icon="lucide:clipboard-check" invisible="quality_check_count == 0">
+          <field name="quality_check_count" widget="statinfo" string="Quality Checks"/>
+        </button>
+      </xpath>
+    </field>
+  </record>
+</erp>

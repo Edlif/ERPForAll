@@ -276,19 +276,6 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
         .find(|c| c.addon.name == erp_addon_stock::ADDON.name)
         .expect("stock panel contribution");
     let items = (entry.declarations)().unwrap();
-    for key in [
-        "stock.module_stock_fleet",
-        "stock.module_stock_barcode",
-        "stock.module_stock_barcode_barcodelookup",
-        "stock.module_quality_control",
-        "stock.module_quality_control_worksheet",
-    ] {
-        let item = items.iter().find(|i| i.key() == key).expect(key);
-        assert!(
-            matches!(item.kind(), erp_sdk::settings::PanelItemKind::Info),
-            "{key} must be an info row"
-        );
-    }
     for (key, expected_label, expected_addon) in [
         (
             "stock.module_product_expiry",
@@ -307,6 +294,13 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
             "Landed costs",
             "stock_landed_costs",
         ),
+        ("stock.module_stock_barcode", "Scanning", "stock_barcode"),
+        (
+            "stock.module_quality_control",
+            "Quality checks",
+            "quality_control",
+        ),
+        ("stock.module_stock_fleet", "Transport", "stock_fleet"),
     ] {
         let item = items.iter().find(|i| i.key() == key).expect(key);
         match item.kind() {
