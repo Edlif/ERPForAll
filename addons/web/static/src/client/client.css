@@ -1067,9 +1067,10 @@ button.statusbar-step:hover { background: var(--selected-hover); color: var(--se
 .control-panel-form [data-control-actions] button, .status-btn-save, .status-btn-discard, .form-header-btn, .form-header-actions .form-header-btn.erp-button-normal { padding-block: 5px; line-height: 20px; }
 .form-header-actions .form-header-btn.erp-button-normal { min-height: 32px; }
 .control-panel-form .actions { gap: 8px; }
-.control-panel-form [data-control-tools] { gap: 16px; }
-.control-panel-form .view-switcher { padding: 1px; }
-.control-panel-form .view-switcher .view-btn { min-height: 28px; min-width: 30px; }
+.control-panel-form [data-control-tools] { gap: 10px; }
+.control-panel-form .view-switcher { height: var(--form-control-height); box-sizing: border-box; padding: 2px; border-color: var(--line); border-radius: var(--radius-control); }
+.control-panel-form .view-switcher .view-btn { height: 26px; min-height: 26px; min-width: 28px; padding: 0 6px; }
+.control-panel-form .view-switcher .view-btn.active { background: var(--selected); color: var(--selected-text); }
 .control-panel-form [data-control-search] { display: none; }
 .control-panel-form [data-control-tools] { grid-column: 3; }
 .control-panel-form .control-panel-tools { flex: none; width: auto; }
@@ -1079,10 +1080,11 @@ button.statusbar-step:hover { background: var(--selected-hover); color: var(--se
 .control-panel-form .form-status-indicator { margin-left: 8px; flex: none; }
 .control-panel-form .status-actions { gap: 8px; }
 .control-panel-form .form-pager { margin-left: 0; }
-.form-pager .pager-btn { width: 32px; min-height: 32px; font-size: 20px; padding: 2px 7px; }
-.control-panel-form .form-pager { display: flex; align-items: center; gap: 8px; }
+.form-pager .pager-btn { width: 32px; min-height: 32px; font-size: 20px; padding: 2px 7px; background: var(--surface); border-color: var(--line); position: relative; }
+.form-pager .pager-btn:hover:not(:disabled), .form-pager .pager-btn:focus-visible { z-index: 1; border-color: var(--input-line); }
+.control-panel-form .form-pager { display: flex; align-items: center; gap: 0; }
 .control-panel-form > .form-record-header .form-header { align-items: center; }
-.form-pager .pager-count { margin: 0 4px 0 0; white-space: nowrap; }
+.form-pager .pager-count { margin: 0 8px 0 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .many2one-buttons { align-items: center; }
 .many2one-buttons button { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 30px; line-height: 1; padding: 4px; }
 [data-client-content] > .home-menu-container { padding: 44px 24px 40px; }
@@ -1858,7 +1860,7 @@ span.field-color-toggler {
 .record-form .field-shell > .field-help { grid-column: 2; color: var(--muted); font-weight: 400; }
 .list-table .field-shell, .list-table .field-monetary { display: block; }
 .list-table .field-shell:not(.field-cell) > span:first-child, .list-table .field-help { display: none; }
-.field-currency-symbol { display: inline; padding: 0 .25rem; color: var(--muted); }
+.field-currency-symbol { display: inline; padding: 0; color: var(--muted); }
 
 .relation-tag-dot { display: inline-block; width: .65rem; height: .65rem; border-radius: 50%; margin-inline-end: .3rem; border: 1px solid var(--line); }
 .relation-chip[data-tag-color="1"], .relation-chip[data-tag-color="7"] { background: var(--danger-bg); color: var(--danger); }
@@ -1880,7 +1882,7 @@ span.field-color-toggler {
 .list-table .field-boolean-off { color: var(--muted); }
 
 /* Keep the symbol and amount in the field shell's single value slot. */
-.field-currency-value { display: inline-flex; align-items: center; gap: .35rem; min-width: 0; }
+.field-currency-value { display: inline-flex; align-items: center; gap: .25rem; min-width: 0; }
 .field-currency-value > input { flex: 1; min-width: 0; }
 
 /* Declared button presentation and scoped access-key hints. */
@@ -2846,10 +2848,12 @@ dialog, .client-block-feedback { box-shadow: var(--shadow-dialog); }
 @media (min-width: 641px) { .record-form:not(.settings-form) .form-group-grid:not(:has(> .form-group)) > .field-shell:has(> .field-link-action) > input { grid-column: 2; grid-row: 1; } }
 @media (min-width: 769px) { .record-form:not(.settings-form) .field-shell:has(> .field-link-action) > input { grid-column: 2; grid-row: 1; } }
 .record-form:not(.settings-form) .field-shell:has(> .field-link-action) > textarea { grid-column: 1 / -1; }
-/* A many2one at rest is its value and the open-record icon; Clear and Search more show on hover and focus (touch screens keep them, they have no hover). */
+/* A many2one at rest stays calm: Clear, Open and Search more show on hover and focus (touch screens keep them, they have no hover). */
 @media (hover: hover) and (pointer: fine) {
-  .many2one-control:not(:hover):not(:focus-within) :is(.many2one-clear-btn, .relation-search-more) { visibility: hidden; }
+  .many2one-control:not(:hover):not(:focus-within) :is(.many2one-clear-btn, .many2one-open-btn, .relation-search-more) { visibility: hidden; }
 }
+.record-form:not(.settings-form) .many2one-readonly > .related-record-link > .related-record-arrow { width: 13px; height: 13px; color: var(--muted); opacity: .75; }
+.record-form:not(.settings-form) .many2one-readonly > .related-record-link:hover > .related-record-arrow { color: var(--accent); opacity: 1; }
 .many2one-input:not(:focus)::placeholder { color: transparent; }
 /* The inline message under an invalid field. */
 .field-invalid > .field-error { margin-top: 2px; }
@@ -2860,30 +2864,35 @@ dialog, .client-block-feedback { box-shadow: var(--shadow-dialog); }
 /* Form header band (UI-INTEGRATION). Row 1, the control row, holds New, the breadcrumb, the smart-button strip and the
    pager; row 2, the action row, heads the sheet column: the model's header buttons on the left, the statusbar ending on
    the sheet's right edge. The chatter column starts on the same row, so its button row and the action row share a top. */
-.control-panel-form:has(> .form-record-smart) { --form-width: 1596px; padding-inline: max(24px, calc((100% - var(--form-width)) / 2)); grid-template-columns: auto auto minmax(0, 1fr) auto; }
+.control-panel-form:has(> .form-record-smart) { --form-width: 1596px; padding-inline: max(24px, calc((100% - var(--form-width)) / 2)); grid-template-columns: auto minmax(120px, auto) minmax(0, 1fr) auto; }
 :root { --form-control-height: 32px; }
 .control-panel-form:has(> .form-record-smart) [data-control-tools] { grid-column: 4; }
 .form-record-smart { grid-column: 3; grid-row: 1; justify-self: center; min-width: 0; max-width: 100%; }
 .form-record-smart:not(:has(> .form-button-box)) { display: none; }
-.form-record-smart .form-button-box { display: flex; flex-wrap: nowrap; gap: 0; max-width: 100%; border: 1px solid var(--input-line); border-radius: var(--radius-control); background: var(--surface); }
-.form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle) { flex: 0 0 auto; box-sizing: border-box; min-width: 0; min-height: calc(var(--form-control-height) - 2px); margin: 0; padding: 0 12px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.form-record-smart .form-button-box { display: flex; flex-wrap: nowrap; gap: 0; max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--surface); }
+.form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle) { flex: 0 0 auto; box-sizing: border-box; min-width: 0; height: 34px; min-height: 34px; margin: 0; padding: 3px 12px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.form-record-smart .form-button-box > .form-stat-button { min-width: 96px; }
+.form-record-smart .form-button-box > .form-overflow-toggle { padding: 0 10px; gap: 4px; font-size: 12px; font-weight: 500; color: var(--text); }
+.form-record-smart .form-button-box > .form-overflow-toggle > svg.erp-icon { width: 14px; height: 14px; flex: none; color: var(--muted); }
 .form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle) + :is(.form-stat-button, .form-overflow-toggle) { border-inline-start: 1px solid var(--line); }
 .form-record-smart .form-button-box > :first-child { border-start-start-radius: calc(var(--radius-control) - 1px); border-end-start-radius: calc(var(--radius-control) - 1px); }
 .form-record-smart .form-button-box > :last-child { border-start-end-radius: calc(var(--radius-control) - 1px); border-end-end-radius: calc(var(--radius-control) - 1px); }
 .form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle):hover:not(:disabled) { background: var(--hover); }
+.form-record-smart .form-button-box > :is(.form-stat-button, .form-overflow-toggle):focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .form-record-smart .form-stat-button { display: inline-flex; align-items: center; gap: 8px; text-align: start; }
-.form-record-smart .form-stat-button > svg.erp-icon { width: 16px; height: 16px; flex: none; color: var(--accent); }
-.form-record-smart :is(.form-stat-content, .form-stat-field) { display: flex; flex-direction: column; gap: 0; }
+.form-record-smart .form-stat-button > svg.erp-icon { width: 18px; height: 18px; flex: none; color: var(--accent); }
+.form-record-smart .form-stat-content { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.form-record-smart .form-stat-field { display: flex; flex-direction: column-reverse; gap: 0; min-width: 0; }
 .form-record-smart :is(.form-stat-value, .form-stat-label) { display: block; min-height: 0; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.form-record-smart .form-stat-value { font-size: 12px; font-weight: 600; color: var(--text); }
-.form-record-smart .form-stat-label { font-size: 11px; font-weight: 400; color: var(--muted); }
+.form-record-smart .form-stat-label { font-size: 12px; font-weight: 500; color: var(--text); }
+.form-record-smart .form-stat-value { font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* The control row sits on the page background like the rows below it, so the three rows are three bands 12px apart. */
 .control-panel-form:has(> .form-record-smart) { background: var(--canvas); border-bottom: 0; padding-block: 12px; row-gap: 0; }
 .form-viewport:has(> .record-form-viewport > .form-record-header), .record-form-viewport.record-form-viewport:has(> .form-record-header):has(> .content-sheet) { padding-top: 0; }
 .record-form-viewport > .form-record-header { min-width: 0; }
 .record-form-viewport > .form-record-header:empty { display: none; }
 .record-form-viewport > .form-record-header .form-header { flex-wrap: nowrap; gap: 8px; margin: 0; padding: 0; border: 0; min-height: var(--form-control-height); }
-.record-form-viewport > .form-record-header .form-header-actions { flex: 0 1 auto; flex-wrap: nowrap; }
+.record-form-viewport > .form-record-header .form-header-actions { flex: 0 1 auto; flex-wrap: nowrap; gap: 6px; }
 .record-form-viewport > .form-record-header .form-statusbar { flex: 0 1 auto; margin-inline-start: auto; }
 /* Without a chatter column the header and the sheet are one centred column that lines up with the control row. */
 /* Without a side column the sheet takes the whole block, so every form has the same left and right edge, in every theme. */
@@ -2994,15 +3003,23 @@ dialog, .client-block-feedback { box-shadow: var(--shadow-dialog); }
 .many2many-tags .relation-chip { box-sizing: border-box; height: 22px; padding-block: 0; border: 1px solid var(--line); border-radius: var(--radius-control); font-size: 12px; line-height: 20px; }
 
 /* Round 2 of the form header band (UI-INTEGRATION). Breadcrumb in two lines with the record menu beside the record name. */
+.form-breadcrumb-trail { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
 .control-panel-form:has(> .form-record-smart) .breadcrumbs { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; column-gap: 4px; row-gap: 0; min-width: 0; }
 .control-panel-form:has(> .form-record-smart) .form-breadcrumb-path { display: contents; }
 .control-panel-form:has(> .form-record-smart) .form-breadcrumb-divider { display: none; }
-.control-panel-form:has(> .form-record-smart) .breadcrumb-collapsed-dropdown { grid-column: 1; grid-row: 1; }
-.control-panel-form:has(> .form-record-smart) .breadcrumb-previous { grid-column: 1; grid-row: 1; font-size: 12px; line-height: 14px; }
-.control-panel-form:has(> .form-record-smart) .breadcrumbs:has(.breadcrumb-collapsed-dropdown) .breadcrumb-previous { grid-column: 2; }
-.control-panel-form:has(> .form-record-smart) .breadcrumb-previous button { min-height: 0; height: 14px; padding: 0; font-size: 12px; line-height: 14px; }
-.control-panel-form:has(> .form-record-smart) .form-breadcrumb-record { grid-column: 1; grid-row: 2; margin: 0; font-size: 14px; font-weight: 600; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 28ch; }
-.control-panel-form:has(> .form-record-smart) .form-record-menus { grid-column: 2; grid-row: 2; position: relative; display: inline-flex; }
+.control-panel-form:has(> .form-record-smart) .form-breadcrumb-trail { grid-column: 1 / 3; grid-row: 1; justify-self: start; max-width: 100%; height: 16px; font-size: 12px; line-height: 16px; }
+.control-panel-form:has(> .form-record-smart) .form-breadcrumb-trail > .form-breadcrumb-divider { display: inline; color: var(--muted); font-size: 11px; line-height: 16px; padding: 0 1px; user-select: none; }
+.control-panel-form:has(> .form-record-smart) .breadcrumb-collapsed-dropdown { flex: 0 0 auto; }
+.control-panel-form:has(> .form-record-smart) .breadcrumb-collapsed-toggle { min-height: 0; height: 16px; min-width: 18px; padding: 0 3px; font-size: 12px; line-height: 16px; background: transparent; color: var(--muted); border-radius: var(--radius-control); }
+.control-panel-form:has(> .form-record-smart) .breadcrumb-collapsed-toggle:hover,
+.control-panel-form:has(> .form-record-smart) .breadcrumb-collapsed-toggle[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+.control-panel-form:has(> .form-record-smart) .breadcrumb-previous { min-width: 0; font-size: 12px; line-height: 16px; }
+.control-panel-form:has(> .form-record-smart) .breadcrumb-previous button { min-height: 0; height: 16px; padding: 0; font-size: 12px; line-height: 16px; }
+.control-panel-form:has(> .form-record-smart) .breadcrumb-previous .breadcrumb-back { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 24ch; }
+.control-panel-form:has(> .form-record-smart) .breadcrumb-previous .breadcrumb-back svg { display: none; }
+.control-panel-form:has(> .form-record-smart) .form-breadcrumb-record { grid-column: 1; grid-row: 2; margin: 0; font-size: 14px; font-weight: 600; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32ch; }
+.control-panel-form:has(> .form-record-smart) .form-record-menus { grid-column: 2; grid-row: 2; position: relative; display: inline-flex; align-items: center; gap: 2px; margin-inline-start: 2px; }
+.control-panel-form:has(> .form-record-smart) .form-record-menus .print-toggle-btn { min-height: 22px; height: 22px; padding: 0 6px; }
 .control-panel-form:has(> .form-record-smart) .form-status-indicator { grid-column: 3; grid-row: 1 / span 2; margin-inline-start: 8px; }
 .control-panel-form .record-menu-btn.record-menu-btn { display: inline-grid; place-items: center; width: 24px; min-width: 24px; height: 24px; min-height: 24px; padding: 0; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--muted); }
 .control-panel-form .record-menu-btn:hover { background: var(--hover); color: var(--text); }
@@ -3012,8 +3029,13 @@ dialog, .client-block-feedback { box-shadow: var(--shadow-dialog); }
 .record-menu-dots::before, .record-menu-dots::after { content: ""; position: absolute; inset-inline-start: 0; }
 .record-menu-dots::before { top: -5px; }
 .record-menu-dots::after { top: 5px; }
-/* Statusbar: one quiet bordered group; stages are plain muted text and only the current stage is filled. */
-.statusbar-track { border-radius: var(--radius-control); box-shadow: inset 0 0 0 1px var(--line); }
+/* Statusbar: one quiet bordered group; stages are plain muted text with subtle chevron dividers and only the current stage is filled. */
+.statusbar-track { background: var(--surface); border-radius: var(--radius-control); box-shadow: inset 0 0 0 1px var(--line); }
+.statusbar-item:not(:last-child):not(:has(> .statusbar-step.is-current)):not(:has(+ .statusbar-item > .statusbar-step.is-current))::after {
+  content: ""; position: absolute; inset-inline-end: 2px; top: 50%; width: 10px; height: 10px;
+  border-inline-end: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  transform: translateY(-50%) rotate(-45deg); pointer-events: none;
+}
 .statusbar-step.is-passed { background: transparent; color: var(--muted); }
 button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):hover { background: var(--hover); color: var(--text); }
 /* Chatter: Send message / Log note, then the activity button, and the counters at the right as quiet icon buttons. */
@@ -3115,12 +3137,13 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 @media (max-width: 1120px) {
   .record-form-viewport:not(:has(> .record-form-chatter:not(:empty))):not(:has(> .record-form-aside:not(:empty))) { padding: 0 12px 24px; }
 }
-/* The breadcrumb block is as tall as the buttons beside it (14 + 18 = 32px). The way back spans the name and the
+/* The breadcrumb block is as tall as the buttons beside it (16 + 18 = 34px). The trail spans the name and the
    record menu's columns, so the menu always follows the record name, however long the parent's name is. */
-.control-panel-form:has(> .form-record-smart) .breadcrumbs { grid-template-rows: 14px 18px; align-self: center; }
+.control-panel-form:has(> .form-record-smart) .breadcrumbs { grid-template-rows: 16px 18px; align-self: center; }
 /* On a phone the way back is a 44px touch target: its row grows with it, so it cannot reach over the record name. */
 @media (max-width: 640px) {
   .control-panel-form:has(> .form-record-smart) .breadcrumbs { grid-template-rows: auto auto; }
+  .control-panel-form:has(> .form-record-smart) .form-breadcrumb-trail { height: auto; }
   .control-panel-form:has(> .form-record-smart) .form-status-indicator {
     grid-column: 1 / -1;
     grid-row: 3;
@@ -3128,16 +3151,12 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
     margin-inline-start: 0;
   }
 }
-.control-panel-form:has(> .form-record-smart) .breadcrumb-previous { grid-column: 1 / 3; justify-self: start; }
-.control-panel-form:has(> .form-record-smart) .breadcrumbs:has(.breadcrumb-collapsed-dropdown) .breadcrumb-previous { grid-column: 2 / 3; }
-.control-panel-form:has(> .form-record-smart) .breadcrumb-back svg { width: 14px; height: 14px; margin-inline-start: -2px; }
-/* The page a related record came from, before the back link on the same line: "Accounting Dashboard › Bills and Refunds". The
-   pair reads as a path, so the back arrow is left out. */
-.breadcrumb-previous:has(> .breadcrumb-origin) { gap: 6px; min-width: 0; }
+/* The page a related record came from, before the back link on the same line: "Accounting Dashboard / Bills and Refunds". */
+.breadcrumb-previous:has(> .breadcrumb-origin) { gap: 4px; min-width: 0; }
 /* In a narrow header the origin shortens with an ellipsis and the back link stays on its line. */
 .breadcrumb-previous > .breadcrumb-origin { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .breadcrumb-previous > .breadcrumb-origin ~ .breadcrumb-back { white-space: nowrap; }
-.control-panel-form:has(> .form-record-smart) .breadcrumb-previous > .form-breadcrumb-divider { display: inline; color: var(--muted); }
+.control-panel-form:has(> .form-record-smart) .breadcrumb-previous > .form-breadcrumb-divider { display: inline; color: var(--muted); font-size: 11px; }
 .breadcrumb-previous > .breadcrumb-origin ~ .breadcrumb-back svg { display: none; }
 .control-panel-form:has(> .form-record-smart) .form-breadcrumb-record { line-height: 18px; }
 /* The record menu keeps its 24px target; the negative block margin keeps it from making the name's row taller. */
@@ -3151,7 +3170,7 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
  every block (button row, activities, files, composer, error, thread) starts on the column's left edge and ends on its right edge. 
  */
 .record-form-chatter .erp-mail-chatter { --chatter-gap: 8px; --chatter-block: 12px; --chatter-avatar: 36px; }
-.record-form-chatter .erp-mail-chatter-header { gap: var(--chatter-gap); padding: 0 0 var(--chatter-block); }
+.record-form-chatter .erp-mail-chatter-header { gap: 6px; padding: 0 0 var(--chatter-block); }
 .record-form-chatter .erp-mail-activities { padding: 0 0 var(--chatter-block); border-bottom: 0; }
 .record-form-chatter .erp-mail-chatter-files-panel { padding: 0 0 var(--chatter-block); border-bottom: 0; }
 .record-form-chatter .erp-mail-chatter-status { margin: 0 0 var(--chatter-block); }
@@ -3167,7 +3186,9 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
 .record-form-chatter .erp-chatter-composer .erp-mail-send { grid-column: 1; margin: 0; padding: 0 12px; min-height: 28px; font-weight: 500; }
 .record-form-chatter .erp-chatter-composer .erp-mail-hint { grid-column: 2; font-size: 12px; }
 .record-form-chatter .erp-chatter-composer .erp-mail-composer-actions { grid-column: 3; margin: 0; }
-.record-form-chatter .erp-chatter-composer .erp-mail-draft { box-sizing: border-box; min-height: 36px; padding: 8px 12px; background: var(--surface); }
+.record-form-chatter .erp-chatter-composer .erp-mail-draft { box-sizing: border-box; min-height: 36px; padding: 8px 12px; background: var(--surface); border-color: var(--line); }
+.record-form-chatter .erp-chatter-composer .erp-mail-draft:hover { border-color: var(--input-line); }
+.record-form-chatter .erp-chatter-composer .erp-mail-draft:focus { border-color: var(--accent); }
 .record-form-chatter .erp-chatter-composer:not(.is-collapsed) .erp-mail-draft { min-height: 72px; }
 .record-form-chatter .erp-mail-chatter[data-kind="note"] .erp-chatter-composer { background: transparent; }
 .record-form-chatter .erp-mail-chatter[data-kind="note"] .erp-mail-draft { background: var(--warning-bg); }
@@ -3657,11 +3678,11 @@ button.statusbar-step.is-passed:hover, button.statusbar-step:not(.is-current):ho
       hairline and weight. It was a label column and a value column a hand apart, the total like any other row. */
 @media (min-width: 641px) {
   .record-form:not(.settings-form) .form-group:has(> .form-group-grid > .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> .form-group-grid > :not(.field-monetary), > .form-group-grid > .field-monetary > .field-label:not(.field-readonly))) { justify-self: end; width: max-content; max-width: 100%; }
-  .record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) { grid-template-columns: max-content minmax(7rem, max-content); justify-content: safe end; column-gap: 24px; }
+  .record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) { grid-template-columns: max-content minmax(7rem, max-content); justify-content: safe end; column-gap: 20px; }
   .record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) :is(.field-currency-value, .field-label > .field-read-value) { justify-self: end; justify-content: flex-end; }
 }
 .record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) .field-currency-value { font-variant-numeric: tabular-nums; }
-.record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) > .field-monetary:last-child { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
+.record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) > .field-monetary:last-child { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
 .record-form:not(.settings-form) .form-group-grid:has(> .field-monetary ~ .field-monetary ~ .field-monetary):not(:has(> :not(.field-monetary)), :has(> .field-monetary > .field-label:not(.field-readonly))) > .field-monetary:last-child :is(.field-label > span:first-child, .field-currency-value, .field-read-value, .field-currency-symbol) { font-size: 15px; font-weight: 600; color: var(--text); }
 /* 5. Small things of the same pass: a tag in a line cell ends in an ellipsis instead of being cut at the cell edge, and an
       empty read-only date shows the dash the other empty read-only values show. */

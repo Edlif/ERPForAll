@@ -502,3 +502,25 @@ test("More keeps destination icons and focus when sections overflow and return",
   expect(document.activeElement).toBe(original);
   expect(original.closest<HTMLElement>("[data-nav-entry]")!.hidden).toBe(false);
 });
+
+test("collapsed breadcrumb trail groups ellipsis and previous link separate from the current record", () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  try {
+    const trail = new BreadcrumbTrail(10);
+    trail.push({ id: "1", title: "Quotations", route: {} as any, url: "/orders" });
+    trail.push({ id: "2", title: "S00001", route: {} as any, url: "/orders/1", isFormView: true });
+    trail.push({ id: "3", title: "PT Sinar Abadi Elektronik", route: {} as any, url: "/partners/54", isFormView: true });
+    renderBreadcrumbs(container, trail, { isSmall: false, onNavigate: async () => {} });
+    const trailRow = container.querySelector<HTMLElement>(".form-breadcrumb-path > .form-breadcrumb-trail");
+    expect(trailRow).not.toBeNull();
+    expect(trailRow!.querySelector(".breadcrumb-collapsed-dropdown")).not.toBeNull();
+    expect(trailRow!.querySelector(".form-breadcrumb-divider")?.textContent).toBe("/");
+    expect(trailRow!.querySelector(".breadcrumb-previous .breadcrumb-back")?.textContent).toBe("S00001");
+    const current = container.querySelector<HTMLElement>(".form-breadcrumb-path > .form-breadcrumb-record");
+    expect(current?.textContent).toBe("PT Sinar Abadi Elektronik");
+    expect(trailRow!.contains(current)).toBe(false);
+  } finally {
+    container.remove();
+  }
+});

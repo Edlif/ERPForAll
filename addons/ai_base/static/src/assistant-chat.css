@@ -1,5 +1,13 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
 .ai-chat-trigger[hidden], .ai-chat-dock[hidden], .ai-chat-dock [hidden] { display: none; }
+.ai-chat-trigger {
+  position: relative; background: transparent; border: 0; cursor: pointer; color: var(--header-fg);
+  height: 32px; min-height: 0; padding: 0 8px; border-radius: var(--radius-control);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.app-bar .ai-chat-trigger:hover, .app-bar .ai-chat-trigger[aria-expanded="true"] { background: var(--header-control-hover); }
+.ai-chat-trigger:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ai-chat-trigger svg { width: 16px; height: 16px; }
 .ai-chat-dock {
   position: fixed; z-index: 45; inset-inline-end: 16px; bottom: 0;
   width: min(390px, calc(100vw - 32px)); max-height: calc(100dvh - var(--app-bar-height) - 12px);

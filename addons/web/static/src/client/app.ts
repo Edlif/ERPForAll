@@ -4606,7 +4606,7 @@ export class HumanApp {
       const originInTrail = !!origin && this.breadcrumbs.items.some(item => item.id === crumbId(origin.origin, origin.origin.id ?? "new"));
       const previous = origin && !backIsOrigin && !originInTrail ? breadcrumbs.querySelector(".breadcrumb-previous") : null;
       if (origin && previous) {
-        const divider = el("span", "›", "form-breadcrumb-divider"); divider.setAttribute("aria-hidden", "true");
+        const divider = el("span", "/", "form-breadcrumb-divider"); divider.setAttribute("aria-hidden", "true");
         previous.prepend(this.originCrumb(origin), divider);
       }
       if (recordMenu) breadcrumbs.append(recordMenu);

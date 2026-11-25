@@ -10,6 +10,7 @@ function responsiveActions(host: HTMLElement, kind: "header" | "box"): () => voi
   const controls = [...host.children].filter((node): node is HTMLButtonElement => node instanceof HTMLButtonElement);
   if (!controls.length) return () => {};
   const opener = createButtonControl({ label: kind === "header" ? "More actions" : "More", action: () => {}, className: "form-overflow-toggle" });
+  if (kind === "box") opener.append(icon("chevron-down"));
   const menu = el("div", undefined, "form-overflow-menu");
   const controller = createButtonMenu({ opener, menu, items: () => controls.filter(control => control.parentElement === menu) });
   let directCount = -1;

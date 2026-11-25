@@ -120,3 +120,20 @@ test("the stylesheet pins plain statusbar stages, the dots record menu and one c
   expect(css).toMatch(/\.many2many-tags \.relation-chip \{ box-sizing: border-box; height: 22px;/);
   expect(css).toMatch(/\.form-tabs > \.form-tab\[hidden\] \{ display: none; \}/);
 });
+
+/// (partial: smart button overflow carries a chevron and form control panel polish rules stay pinned)
+test("smart button More opener carries a chevron and control panel polish rules stay pinned", () => {
+  const stats = Array.from({ length: 7 }, (_, i) => ({ kind: "stat_button", name: `stat_${i}`, label: `Stat ${i}`, variant: "secondary", confirm: null, invisible: null, children: [] }));
+  const nodes = [{ kind: "root", children: [{ kind: "sheet", children: [{ kind: "button_box", children: stats }] }] }] as unknown as Node[];
+  const form = document.createElement("form"), smartHost = document.createElement("div");
+  const layout = renderFormLayout(form, nodes, renderField, new Map(), renderButton as never, undefined, { smartHost });
+  try {
+    const more = smartHost.querySelector<HTMLButtonElement>(".form-overflow-toggle");
+    expect(more).not.toBeNull();
+    expect(more!.querySelector("svg.erp-icon")?.getAttribute("data-icon")).toBe("chevron-down");
+  } finally { layout.dispose(); }
+  expect(css).toMatch(/\.control-panel-form:has\(> \.form-record-smart\) \.breadcrumb-collapsed-toggle \{[^}]*min-height: 0; height: 16px;/);
+  expect(css).toMatch(/\.control-panel-form \.form-pager \{[^}]*gap: 0;/);
+  expect(css).toMatch(/\.form-record-smart \.form-button-box \{[^}]*border: 1px solid var\(--line\);/);
+  expect(css).toMatch(/\.field-currency-symbol \{ display: inline; padding: 0;/);
+});

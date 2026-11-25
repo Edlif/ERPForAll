@@ -138,6 +138,7 @@ export function renderBreadcrumbs(
   }
 
   const trailContainer = el("div", undefined, "form-breadcrumb-path");
+  const trailLine = el("div", undefined, "form-breadcrumb-trail");
 
   // Collapsed history dropdown for entries older than penultimate
   if (collapsed.length > 0) {
@@ -163,7 +164,9 @@ export function renderBreadcrumbs(
       menu.append(itemBtn);
     }
     dropdownWrap.append(toggle, menu);
-    trailContainer.append(dropdownWrap, el("span", "›", "form-breadcrumb-divider"));
+    const collapsedDivider = el("span", "/", "form-breadcrumb-divider");
+    collapsedDivider.setAttribute("aria-hidden", "true");
+    trailLine.append(dropdownWrap, collapsedDivider);
   }
 
   // Penultimate entry: previous breadcrumb link
@@ -176,7 +179,13 @@ export function renderBreadcrumbs(
     link.prepend(icon("arrow-left"));
     link.setAttribute("data-tooltip", `Back to "${previous.title}"`);
     prevWrap.append(link);
-    trailContainer.append(prevWrap, el("span", "›", "form-breadcrumb-divider"));
+    trailLine.append(prevWrap);
+  }
+
+  if (trailLine.childElementCount > 0) {
+    const currentDivider = el("span", "›", "form-breadcrumb-divider form-breadcrumb-divider-current");
+    currentDivider.setAttribute("aria-hidden", "true");
+    trailContainer.append(trailLine, currentDivider);
   }
 
   // Current entry
