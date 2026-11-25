@@ -51,6 +51,14 @@ fn system(db: &TestDb) -> ModuleSystem {
         .unwrap()
 }
 
+fn hr_version() -> &'static str {
+    include_str!("../../../addons/hr/manifest.toml")
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap()
+}
+
 async fn names(client: &tokio_postgres::Client, model: &str) -> Vec<String> {
     client
         .query(
@@ -243,59 +251,151 @@ async fn install() {
     assert!(outcome.post_commit.is_clean());
 
     let client = db.client().await.unwrap();
-    let views = names(&client, "ir.ui.view").await;
-    for expected in [
-        "hr_employee_view_form",
-        "hr_employee_view_list",
-        "hr_employee_view_kanban",
-        "hr_employee_view_hierarchy",
-        "hr_employee_view_activity",
-        "hr_employee_view_graph",
-        "hr_employee_view_pivot",
-        "hr_employee_view_search",
-        "hr_department_view_form",
-        "hr_department_view_list",
-        "hr_department_view_kanban",
-        "hr_department_view_hierarchy",
-        "hr_job_view_form",
-        "hr_job_view_list",
-        "hr_departure_wizard_view_form",
+    assert_eq!(
+        names(&client, "ir.ui.view").await,
+        [
+            "hr_department_view_form",
+            "hr_department_view_hierarchy",
+            "hr_department_view_kanban",
+            "hr_department_view_list",
+            "hr_department_view_search",
+            "hr_departure_reason_view_form",
+            "hr_departure_reason_view_list",
+            "hr_departure_wizard_view_form",
+            "hr_employee_category_view_form",
+            "hr_employee_category_view_list",
+            "hr_employee_skill_view_form",
+            "hr_employee_skill_view_graph",
+            "hr_employee_skill_view_list",
+            "hr_employee_skill_view_pivot",
+            "hr_employee_skill_view_search",
+            "hr_employee_type_view_form",
+            "hr_employee_type_view_list",
+            "hr_employee_version_view_form",
+            "hr_employee_version_view_list",
+            "hr_employee_view_activity",
+            "hr_employee_view_form",
+            "hr_employee_view_graph",
+            "hr_employee_view_hierarchy",
+            "hr_employee_view_kanban",
+            "hr_employee_view_list",
+            "hr_employee_view_pivot",
+            "hr_employee_view_search",
+            "hr_job_view_form",
+            "hr_job_view_kanban",
+            "hr_job_view_list",
+            "hr_job_view_search",
+            "hr_resume_line_type_view_form",
+            "hr_resume_line_type_view_list",
+            "hr_resume_line_view_form",
+            "hr_resume_line_view_list",
+            "hr_skill_level_view_form",
+            "hr_skill_level_view_list",
+            "hr_skill_type_view_form",
+            "hr_skill_type_view_list",
+            "hr_skill_view_form",
+            "hr_skill_view_list",
+            "hr_work_location_view_form",
+            "hr_work_location_view_list",
+            "hr_work_schedule_view_form",
+            "hr_work_schedule_view_list",
+            "report_employee_badge",
+            "report_employee_badge_document",
+        ]
+    );
+    assert_eq!(
+        names(&client, "ir.actions.act_window").await,
+        [
+            "hr_department_action",
+            "hr_departure_reason_action",
+            "hr_employee_action",
+            "hr_employee_category_action",
+            "hr_employee_directory_action",
+            "hr_employee_reporting_action",
+            "hr_employee_skill_action",
+            "hr_employee_type_action",
+            "hr_employee_version_action",
+            "hr_job_action",
+            "hr_resume_line_action",
+            "hr_resume_line_type_action",
+            "hr_skill_type_action",
+            "hr_skills_reporting_action",
+            "hr_work_location_action",
+            "hr_work_schedule_action",
+        ]
+    );
+    assert_eq!(
+        names(&client, "ir.ui.menu").await,
+        [
+            "hr_config_employee_menu",
+            "hr_config_recruitment_menu",
+            "hr_config_skills_menu",
+            "hr_config_time_menu",
+            "hr_configuration_menu",
+            "hr_department_menu",
+            "hr_departure_reason_menu",
+            "hr_directory_menu",
+            "hr_employee_category_menu",
+            "hr_employee_menu",
+            "hr_employee_skill_menu",
+            "hr_employee_type_menu",
+            "hr_job_menu",
+            "hr_learning_menu",
+            "hr_menu_root",
+            "hr_reporting_contracts_menu",
+            "hr_reporting_headcount_menu",
+            "hr_reporting_menu",
+            "hr_reporting_skills_menu",
+            "hr_resume_line_menu",
+            "hr_resume_line_type_menu",
+            "hr_skill_type_menu",
+            "hr_work_location_menu",
+            "hr_work_schedule_menu",
+        ]
+    );
+
+    // Default data: every configuration model that has defaults ships them; tags ship none.
+    assert_eq!(
+        names(&client, "hr.department").await,
+        ["hr_department_administration"]
+    );
+    assert_eq!(
+        names(&client, "hr.work.location").await,
+        [
+            "hr_work_location_home",
+            "hr_work_location_office",
+            "hr_work_location_other",
+        ]
+    );
+    assert!(names(&client, "hr.employee.category").await.is_empty());
+    for (model, table) in [
+        ("hr.department", "hr_department"),
+        ("hr.work.location", "hr_work_location"),
+        ("hr.employee.type", "hr_employee_type"),
+        ("hr.work.schedule", "hr_work_schedule"),
+        ("hr.departure.reason", "hr_departure_reason"),
+        ("hr.resume.line.type", "hr_resume_line_type"),
     ] {
-        assert!(
-            views.iter().any(|v| v == expected),
-            "missing view {expected} in {views:?}"
-        );
+        let seeded = names(&client, model).await.len();
+        assert!(seeded > 0, "{model} ships default records");
+        let stored: i64 = client
+            .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(usize::try_from(stored).unwrap(), seeded, "{model}");
     }
-    let actions = names(&client, "ir.actions.act_window").await;
-    for expected in [
-        "hr_employee_action",
-        "hr_employee_directory_action",
-        "hr_department_action",
-        "hr_job_action",
-        "hr_employee_version_action",
-        "hr_employee_skill_action",
-    ] {
-        assert!(
-            actions.iter().any(|a| a == expected),
-            "missing action {expected} in {actions:?}"
-        );
-    }
-    let menus = names(&client, "ir.ui.menu").await;
-    for expected in [
-        "hr_menu_root",
-        "hr_employee_menu",
-        "hr_directory_menu",
-        "hr_department_menu",
-        "hr_learning_menu",
-        "hr_reporting_menu",
-        "hr_configuration_menu",
-        "hr_job_menu",
-    ] {
-        assert!(
-            menus.iter().any(|m| m == expected),
-            "missing menu {expected} in {menus:?}"
-        );
-    }
+
+    // The installed version is the manifest's.
+    let installed: String = client
+        .query_one(
+            "SELECT latest_version FROM ir_module_module WHERE name = 'hr'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(installed, hr_version());
 
     for model in ["hr.job", "hr.employee", "hr.department"] {
         assert_eq!(
@@ -483,7 +583,21 @@ fn hr_demo_loads_cleanly() {
                         .unwrap()
                         .get(0);
                     assert_eq!(emp_count, 12, "expected 12 demo employees");
-                    assert_eq!(dept_count, 7, "expected 7 demo departments");
+                    assert_eq!(
+                        dept_count, 8,
+                        "expected 7 demo departments and the default one"
+                    );
+                    let managed: i64 = client
+                        .query_one(
+                            "SELECT count(*) FROM hr_department d JOIN ir_model_data x \
+                             ON x.model = 'hr.department' AND x.res_id = d.id \
+                             WHERE x.name LIKE 'hr_demo_dept_%' AND d.manager_id IS NOT NULL",
+                            &[],
+                        )
+                        .await
+                        .unwrap()
+                        .get(0);
+                    assert_eq!(managed, 7, "every demo department has its manager");
                 });
         })
         .unwrap()
