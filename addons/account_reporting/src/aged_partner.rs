@@ -1,341 +1,682 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Aged Receivable & Aged Payable dynamic report providers (`account_reporting.aged_receivable`,
-//! `account_reporting.aged_payable`) with ledger-style partner -> open item treegrid, locale due
-//! dates with overdue danger tone, caret actions (`journal_items`, `partner`, `entry`), subtotals,
-//! and exact-decimal 6-bucket aging.
+//! Aged Receivable and Aged Payable dynamic report providers (`account_reporting.aged_receivable`,
+//! `account_reporting.aged_payable`): one implementation parameterised by account type. Partner
+//! lines hold the open items of the selected company aged into buckets by due date (the item's
+//! due date, else its accounting date); each partner unfolds into its journal items, one page at
+//! a time. Every read goes through the ORM as the caller, so record rules and field access apply.
+//! The bucket width is the provider option `interval_days`.
 
 use std::collections::BTreeMap;
 
 use erp_addon_reporting::{
     definition::ReportDef,
     line::{
-        Cell as ReportCell, DrillTarget, ExpandPage, Expansion, Line, LineId, LineKind, Segment,
-        SegmentKind,
+        Cell as ReportCell, CellKind, DrillTarget, ExpandPage, Expansion, Line, LineId, LineKind,
+        Segment, SegmentKind,
     },
     options::Options,
     provider::{ProviderSpec, ReportCx, ReportProvider},
+    settings::MAX_FILTER_SOURCE_ROWS,
 };
 use erp_sdk::prelude::*;
 use erp_sdk::serde_json::{Value as Json, json};
-use erp_sdk::{BoxFuture, Operation};
+use erp_sdk::{BoxFuture, Load, SearchOptions};
 
-/// Exact-decimal 6-bucket aging + total (`[not_due, d1_30, d31_60, d61_90, d91_120, older, total]`).
-pub(crate) fn aging_buckets(items: &[(Date, Decimal)], as_of: Date) -> [Decimal; 7] {
-    let mut b = [Decimal::ZERO; 7];
-    for &(due, amount) in items {
-        let days = as_of.days() - due.days();
-        let idx = if days <= 0 {
-            0
-        } else if days <= 30 {
-            1
-        } else if days <= 60 {
-            2
-        } else if days <= 90 {
-            3
-        } else if days <= 120 {
-            4
-        } else {
-            5
-        };
-        b[idx] += amount;
-        b[6] += amount;
-    }
-    b
+/// The bucket column labels, oldest last, then the total.
+const BUCKETS: [&str; 7] = [
+    "not_due", "d1_30", "d31_60", "d61_90", "d91_120", "older", "total",
+];
+const TOTAL: usize = 6;
+const INTERVAL: &str = "interval_days";
+const DEFAULT_INTERVAL: i64 = 30;
+const MAX_INTERVAL: i64 = 365;
+const ITEM_FIELDS: [&str; 7] = [
+    "id",
+    "partner_id",
+    "move_name",
+    "name",
+    "date",
+    "date_maturity",
+    "amount_residual",
+];
+
+/// One aged report: its declaration, the account type it ages, and its sign.
+pub(crate) struct Aged {
+    spec: ProviderSpec,
+    account_type: &'static str,
+    /// Payables are credits: shown with the opposite sign so open amounts read positive.
+    negate: bool,
 }
 
-struct OpenRow {
-    move_id: i64,
-    move_name: String,
-    partner_id: i64,
-    partner_name: String,
-    due_date: Date,
+pub(crate) static AGED_RECEIVABLE: Aged = Aged {
+    spec: ProviderSpec::new("account_reporting.aged_receivable", 2),
+    account_type: "asset_receivable",
+    negate: false,
+};
+pub(crate) static AGED_PAYABLE: Aged = Aged {
+    spec: ProviderSpec::new("account_reporting.aged_payable", 2),
+    account_type: "liability_payable",
+    negate: true,
+};
+
+fn invalid(message: impl Into<String>) -> Error {
+    Error::validation(message.into())
+}
+
+fn day(date: Date) -> String {
+    let (y, m, d) = date.ymd();
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn cond(value: Json) -> Result<Domain> {
+    Ok(Domain::from_json(&value)?)
+}
+
+fn get(row: &Value, field: &str, what: &str) -> Result<Value> {
+    row.dict()
+        .ok_or_else(|| Error::internal(format!("Reading {what}: the row is not a batch handle.")))?
+        .get(field)
+}
+
+fn int_of(row: &Value, field: &str, what: &str) -> Result<i64> {
+    match get(row, field, what)? {
+        Value::Int(n) => Ok(n),
+        other => Err(Error::internal(format!(
+            "Reading {what}: {field} is not an integer ({other:?})."
+        ))),
+    }
+}
+
+fn opt_id_of(row: &Value, field: &str, what: &str) -> Result<Option<i64>> {
+    match get(row, field, what)? {
+        Value::Int(n) if n > 0 => Ok(Some(n)),
+        Value::False => Ok(None),
+        other => Err(Error::internal(format!(
+            "Reading {what}: {field} is not an optional id ({other:?})."
+        ))),
+    }
+}
+
+fn text_of(row: &Value, field: &str, what: &str) -> Result<String> {
+    match get(row, field, what)? {
+        Value::Str(s) => Ok(s.to_string()),
+        Value::False => Ok(String::new()),
+        other => Err(Error::internal(format!(
+            "Reading {what}: {field} is not text ({other:?})."
+        ))),
+    }
+}
+
+fn opt_date_of(row: &Value, field: &str, what: &str) -> Result<Option<Date>> {
+    match get(row, field, what)? {
+        Value::Date(d) => Ok(Some(d)),
+        Value::False => Ok(None),
+        other => Err(Error::internal(format!(
+            "Reading {what}: {field} is not a date ({other:?})."
+        ))),
+    }
+}
+
+fn dec_of(row: &Value, field: &str, what: &str) -> Result<Decimal> {
+    match get(row, field, what)? {
+        Value::Decimal(n) => Ok(n),
+        Value::Int(n) => Ok(Decimal::from(n)),
+        Value::False => Ok(Decimal::ZERO),
+        other => Err(Error::internal(format!(
+            "Reading {what}: {field} is not decimal ({other:?})."
+        ))),
+    }
+}
+
+/// The validated `interval_days` of `options` (`report` names the report in the refusal).
+fn interval(report: &ReportDef, value: Option<&Json>) -> Result<i32> {
+    match value {
+        None => Ok(DEFAULT_INTERVAL as i32),
+        Some(v) => v
+            .as_i64()
+            .filter(|n| (1..=MAX_INTERVAL).contains(n))
+            .map(|n| n as i32)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "{} option {INTERVAL} must be a whole number of days from 1 to {MAX_INTERVAL}.",
+                    report.name
+                ))
+            }),
+    }
+}
+
+/// The bucket of an item due on `due` at `as_of` with buckets `width` days wide:
+/// 0 not due, 1..=4 the late intervals, 5 older.
+fn bucket(due: Date, as_of: Date, width: i32) -> usize {
+    let late = as_of.days() - due.days();
+    if late <= 0 {
+        0
+    } else {
+        // late >= 1 and width >= 1, so the quotient is non-negative
+        (((late - 1) / width) as usize + 1).min(5)
+    }
+}
+
+/// The inclusive due-date range of bucket `index` (`None`: open on that side).
+fn bucket_range(index: usize, as_of: Date, width: i32) -> (Option<Date>, Option<Date>) {
+    let shift = |n: i32| Date::from_days(as_of.days() - n);
+    match index {
+        0 => (Some(as_of), None),
+        1..=4 => {
+            let k = index as i32;
+            (Some(shift(k * width)), Some(shift((k - 1) * width + 1)))
+        }
+        5 => (None, Some(shift(4 * width + 1))),
+        _ => (None, None),
+    }
+}
+
+/// Items whose due date (the item's, else its accounting date) lies in `lo..=hi`.
+fn due_domain(lo: Option<Date>, hi: Option<Date>) -> Result<Domain> {
+    if lo.is_none() && hi.is_none() {
+        return cond(json!([]));
+    }
+    let mut on_maturity = vec![json!(["date_maturity", "!=", false])];
+    let mut on_date = vec![json!(["date_maturity", "=", false])];
+    if let Some(lo) = lo {
+        on_maturity.push(json!(["date_maturity", ">=", day(lo)]));
+        on_date.push(json!(["date", ">=", day(lo)]));
+    }
+    if let Some(hi) = hi {
+        on_maturity.push(json!(["date_maturity", "<=", day(hi)]));
+        on_date.push(json!(["date", "<=", day(hi)]));
+    }
+    Ok(cond(Json::Array(on_maturity))? | cond(Json::Array(on_date))?)
+}
+
+fn partner_domain(partner: i64) -> Result<Domain> {
+    if partner > 0 {
+        cond(json!([["partner_id", "=", partner]]))
+    } else {
+        cond(json!([["partner_id", "=", false]]))
+    }
+}
+
+/// What every call of one report shares: the scope, the layout and the currency.
+struct Scope<'r> {
+    report: &'r ReportDef,
+    as_of: Date,
+    width: i32,
+    base: Domain,
+    currency: i64,
+    scale: u32,
+    negate: bool,
+}
+
+impl Aged {
+    async fn scope<'r>(
+        &self,
+        cx: &mut ReportCx<'_>,
+        report: &'r ReportDef,
+        options: &Options,
+    ) -> Result<Scope<'r>> {
+        let name = &report.name;
+        for column in &report.columns {
+            let ok = match column.label.as_str() {
+                "due_date" => column.kind == CellKind::Date,
+                label if BUCKETS.contains(&label) => column.kind == CellKind::Monetary,
+                _ => false,
+            };
+            if !ok {
+                return Err(invalid(format!(
+                    "{name} column {} is not supported: use due_date (date) and {} (monetary).",
+                    column.label,
+                    BUCKETS.join(", ")
+                )));
+            }
+        }
+        if let Some(missing) = BUCKETS
+            .iter()
+            .find(|label| !report.columns.iter().any(|c| c.label == **label))
+        {
+            return Err(invalid(format!("{name} needs the column {missing}.")));
+        }
+        let [company] = options.companies.as_slice() else {
+            return Err(invalid(format!("Select one company for {name}.")));
+        };
+        let as_of = options.period.to;
+        let today = cx.env().context_today()?;
+        if as_of < today {
+            // shortcut: refuses past dates; wire the dated residual evidence of the Partner
+            // Ledger here to age as of a past cutoff
+            return Err(invalid(format!(
+                "{name} shows today's open amounts, so it cannot be dated before today: the \
+                 residuals as of a past date are not computed yet. Choose today or a later date."
+            )));
+        }
+        let width = interval(report, options.provider.get(INTERVAL))?;
+        let base = cond(json!([
+            ["company_id", "=", company],
+            ["parent_state", "=", "posted"],
+            ["date", "<=", day(as_of)],
+            ["journal_id.journal_group_id", "=", false],
+            ["account_id.account_type", "=", self.account_type],
+            ["full_reconcile_id", "=", false],
+            ["balance", "!=", 0]
+        ]))?;
+        let env = cx.env().clone();
+        let rows = env
+            .records("res.company")?
+            .browse([*company])?
+            .read_rows(cx.tx(), &["currency_id"], Load::Raw)
+            .await?;
+        let row = rows
+            .iter()
+            .next()
+            .map(Value::Row)
+            .ok_or_else(|| invalid(format!("The selected {name} company is not visible.")))?;
+        let currency = int_of(&row, "currency_id", "the company currency")?;
+        let rows = env
+            .records("res.currency")?
+            .browse([currency])?
+            .read_rows(cx.tx(), &["decimal_places"], Load::Raw)
+            .await?;
+        let row = rows
+            .iter()
+            .next()
+            .map(Value::Row)
+            .ok_or_else(|| invalid(format!("The {name} currency is not visible.")))?;
+        let scale = u32::try_from(int_of(&row, "decimal_places", "the currency precision")?)
+            .map_err(|_| invalid(format!("The {name} currency precision is invalid.")))?;
+        Ok(Scope {
+            report,
+            as_of,
+            width,
+            base,
+            currency,
+            scale,
+            negate: self.negate,
+        })
+    }
+}
+
+/// One open item as the report shows it.
+struct Item {
+    id: i64,
+    partner: i64,
+    label: String,
+    due: Date,
     amount: Decimal,
 }
 
-fn db(err: impl std::fmt::Display) -> Error {
-    Error::db(format!("Aged report query failed: {err}"))
-}
-
-async fn load_open_rows(
-    cx: &mut ReportCx<'_>,
-    options: &Options,
-    account_type: &str,
-    sign: Decimal,
-) -> Result<(Vec<OpenRow>, Option<i64>)> {
-    cx.env()
-        .records("account.move.line")?
-        .check_access(cx.tx(), Operation::Read)
-        .await?;
-    let companies = &options.companies;
-    let as_of = options.period.to;
-    let cur_rows = cx
-        .tx()
-        .query(
-            "SELECT currency_id::int8 FROM res_company WHERE id = ANY($1::int8[]) ORDER BY id LIMIT 1",
-            &[companies],
-        )
-        .await?;
-    let currency = cur_rows.first().and_then(|r| r.try_get::<_, i64>(0).ok());
-
-    let rows = cx
-        .tx()
-        .query(
-            "SELECT m.id::int8, COALESCE(m.name, 'Entry')::text, \
-                    COALESCE(l.partner_id, m.partner_id, 0)::int8, \
-                    COALESCE(p.name, 'Unknown Partner')::text, \
-                    COALESCE(l.date_maturity, m.invoice_date_due, l.date), \
-                    COALESCE(o.amount_residual, l.balance) \
-             FROM account_move_line l \
-             JOIN account_move m ON m.id = l.move_id \
-             JOIN account_account a ON a.id = l.account_id \
-             LEFT JOIN account_open_item o ON o.line_id = l.id \
-             LEFT JOIN res_partner p ON p.id = COALESCE(l.partner_id, m.partner_id) \
-             WHERE l.company_id = ANY($1::int8[]) \
-               AND l.parent_state = 'posted' \
-               AND l.date <= $2 \
-               AND a.account_type = $3 \
-               AND l.full_reconcile_id IS NULL \
-               AND COALESCE(o.amount_residual, l.balance) <> 0 \
-             ORDER BY COALESCE(p.name, ''), COALESCE(l.date_maturity, l.date), m.id",
-            &[companies, &as_of, &account_type],
-        )
-        .await?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let raw_amount: Decimal = row.try_get(5).map_err(db)?;
-        let signed = raw_amount * sign;
-        if signed.is_zero() {
-            continue;
-        }
-        out.push(OpenRow {
-            move_id: row.try_get(0).map_err(db)?,
-            move_name: row.try_get(1).map_err(db)?,
-            partner_id: row.try_get(2).map_err(db)?,
-            partner_name: row.try_get(3).map_err(db)?,
-            due_date: row.try_get(4).map_err(db)?,
-            amount: signed,
-        });
-    }
-    Ok((out, currency))
-}
-
-/// Builds the 8 cells (`due_date`, `not_due`, `d1_30`, `d31_60`, `d61_90`, `d91_120`, `older`,
-/// `total`) respecting the report's declared columns (so legacy 7-column layouts still stay safe).
-fn row_cells(
-    report: &ReportDef,
-    due_date: Option<Date>,
-    as_of: Date,
-    buckets: [Decimal; 7],
-    currency: Option<i64>,
-    drillable: bool,
-) -> Vec<ReportCell> {
-    let has_due_col = report
-        .columns
-        .first()
-        .is_some_and(|col| col.label == "due_date");
-    let mut cells = Vec::with_capacity(if has_due_col { 8 } else { 7 });
-    if has_due_col {
-        let date_cell = match due_date {
-            Some(d) => ReportCell::date(d).with_danger(d < as_of),
-            None => ReportCell::empty(),
-        };
-        cells.push(date_cell);
-    }
-    for (idx, amt) in buckets.into_iter().enumerate() {
-        let overdue_severe = (idx == 4 || idx == 5) && amt > Decimal::ZERO;
-        cells.push(
-            ReportCell::monetary(Some(amt), 2, currency)
-                .with_drillable(drillable)
-                .with_danger(overdue_severe),
-        );
-    }
-    cells
-}
-
-async fn render_lines(
-    cx: &mut ReportCx<'_>,
-    report: &ReportDef,
-    options: &Options,
-    account_type: &str,
-    sign: Decimal,
-    total_label: &str,
-) -> Result<Expansion> {
-    let as_of = options.period.to;
-    let (rows, currency) = load_open_rows(cx, options, account_type, sign).await?;
-    let root = LineId::root(report.id);
-
-    let mut by_partner: BTreeMap<(String, i64), Vec<&OpenRow>> = BTreeMap::new();
-    for row in &rows {
-        by_partner
-            .entry((row.partner_name.clone(), row.partner_id))
-            .or_default()
-            .push(row);
-    }
-
-    let mut lines = Vec::new();
-    let mut grand_items: Vec<(Date, Decimal)> = Vec::new();
-
-    for ((partner_name, partner_id), partner_rows) in by_partner {
-        let pairs: Vec<(Date, Decimal)> = partner_rows
+impl Scope<'_> {
+    fn cells(&self, due: Option<Date>, amounts: &[Decimal; 7], drillable: bool) -> Vec<ReportCell> {
+        self.report
+            .columns
             .iter()
-            .map(|r| (r.due_date, r.amount))
-            .collect();
-        grand_items.extend_from_slice(&pairs);
-        let buckets = aging_buckets(&pairs, as_of);
-        let pid_str = partner_id.to_string();
-        let line_id = root.child(Segment::group("partner_id", "res.partner", &pid_str));
-        let unfolded = options.unfold_all || options.unfolded.contains(&line_id);
+            .map(|column| {
+                let cell = match BUCKETS.iter().position(|l| *l == column.label) {
+                    Some(index) => {
+                        ReportCell::monetary(Some(amounts[index]), self.scale, Some(self.currency))
+                            .with_drillable(drillable)
+                    }
+                    // due_date, the only other label `scope` admits
+                    None => due.map_or_else(ReportCell::empty, |d| {
+                        ReportCell::date(d).with_danger(d < self.as_of)
+                    }),
+                };
+                if column.blank_if_zero {
+                    cell.blank_if_zero()
+                } else {
+                    cell
+                }
+            })
+            .collect()
+    }
+
+    fn amounts(&self, item: &Item) -> [Decimal; 7] {
+        let mut amounts = [Decimal::ZERO; 7];
+        amounts[bucket(item.due, self.as_of, self.width)] = item.amount;
+        amounts[TOTAL] = item.amount;
+        amounts
+    }
+
+    /// The items of `found`, in their order.
+    async fn items(&self, cx: &mut ReportCx<'_>, found: &Records) -> Result<Vec<Item>> {
+        let what = format!("{} journal items", self.report.name);
+        let rows = found.read_rows(cx.tx(), &ITEM_FIELDS, Load::Raw).await?;
+        rows.iter()
+            .map(Value::Row)
+            .map(|row| {
+                let id = int_of(&row, "id", &what)?;
+                let move_name = text_of(&row, "move_name", &what)?;
+                let desc = text_of(&row, "name", &what)?;
+                let label = if !move_name.is_empty() && move_name != "/" {
+                    move_name
+                } else if !desc.is_empty() {
+                    desc
+                } else {
+                    format!("Item #{id}")
+                };
+                let date = opt_date_of(&row, "date", &what)?
+                    .ok_or_else(|| Error::internal(format!("Reading {what}: {id} has no date.")))?;
+                let residual = dec_of(&row, "amount_residual", &what)?;
+                Ok(Item {
+                    id,
+                    partner: opt_id_of(&row, "partner_id", &what)?.unwrap_or(0),
+                    label,
+                    due: opt_date_of(&row, "date_maturity", &what)?.unwrap_or(date),
+                    amount: if self.negate { -residual } else { residual },
+                })
+            })
+            .collect()
+    }
+
+    fn act_window(&self, domain: Domain) -> Result<Json> {
+        Ok(json!({
+            "type": "ir.actions.act_window",
+            "name": self.report.name,
+            "res_model": "account.move.line",
+            "target": "current",
+            "views": [[false, "list"], [false, "form"]],
+            "domain": domain.to_json()?,
+            "context": {},
+        }))
+    }
+
+    /// The domain of the column at `index`, refused unless it holds an amount.
+    fn cell_domain(&self, index: usize) -> Result<Domain> {
+        let column = self
+            .report
+            .columns
+            .get(index)
+            .ok_or_else(|| invalid(format!("{} has no column {index}.", self.report.name)))?;
+        let bucket = BUCKETS
+            .iter()
+            .position(|l| *l == column.label)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "The {} column {} has no amount to open.",
+                    self.report.name, column.label
+                ))
+            })?;
+        let (lo, hi) = bucket_range(bucket, self.as_of, self.width);
+        due_domain(lo, hi)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Located {
+    Partner(i64),
+    Item(i64, i64),
+}
+
+fn locate(report: &ReportDef, id: &LineId) -> Result<Located> {
+    if id.report() != report.id {
+        return Err(invalid(format!(
+            "This line is not part of this {}.",
+            report.name
+        )));
+    }
+    let bad = || invalid(format!("This line does not belong to {}.", report.name));
+    let segments = id.segments();
+    let Some(partner) = segments.get(1) else {
+        return Err(bad());
+    };
+    if !matches!(partner.kind(), SegmentKind::Group(f) if f == "partner_id")
+        || partner.model() != "res.partner"
+    {
+        return Err(bad());
+    }
+    let pid: i64 = partner.value().parse().map_err(|_| bad())?;
+    if pid < 0 {
+        return Err(bad());
+    }
+    match segments {
+        [_, _] => Ok(Located::Partner(pid)),
+        [_, _, item]
+            if matches!(item.kind(), SegmentKind::Group(f) if f == "id")
+                && item.model() == "account.move.line" =>
+        {
+            let item_id: i64 = item.value().parse().map_err(|_| bad())?;
+            if item_id <= 0 {
+                return Err(bad());
+            }
+            Ok(Located::Item(pid, item_id))
+        }
+        _ => Err(bad()),
+    }
+}
+
+async fn top_lines(scope: &Scope<'_>, cx: &mut ReportCx<'_>) -> Result<Expansion> {
+    let name = &scope.report.name;
+    let limit = cx.bounds().max_filter_source_rows;
+    let env = cx.env().clone();
+    let found = env
+        .records("account.move.line")?
+        .search_with(
+            cx.tx(),
+            &scope.base,
+            &SearchOptions::new().order("id").limit(limit as u64 + 1),
+        )
+        .await?;
+    if found.ids().len() > limit {
+        return Err(invalid(format!(
+            "{name} has more than {limit} open journal items (setting {MAX_FILTER_SOURCE_ROWS}). \
+             Ask your administrator to review the limit."
+        )));
+    }
+    let mut by_partner: BTreeMap<i64, [Decimal; 7]> = BTreeMap::new();
+    for item in scope.items(cx, &found).await? {
+        let amounts = scope.amounts(&item);
+        let sums = by_partner.entry(item.partner).or_default();
+        for (sum, amount) in sums.iter_mut().zip(amounts) {
+            *sum += amount;
+        }
+    }
+    let real: Vec<i64> = by_partner.keys().copied().filter(|p| *p > 0).collect();
+    let mut names: BTreeMap<i64, String> = BTreeMap::new();
+    if !real.is_empty() {
+        let what = format!("{name} partners");
+        let rows = env
+            .records("res.partner")?
+            .browse(real)?
+            .read_rows(cx.tx(), &["id", "display_name"], Load::Raw)
+            .await?;
+        for row in rows.iter().map(Value::Row) {
+            names.insert(
+                int_of(&row, "id", &what)?,
+                text_of(&row, "display_name", &what)?,
+            );
+        }
+    }
+    let mut ordered: Vec<(bool, String, i64, [Decimal; 7])> = by_partner
+        .into_iter()
+        .map(|(pid, sums)| {
+            let label = match names.get(&pid) {
+                _ if pid == 0 => "Unknown Partner".to_owned(),
+                Some(n) if !n.is_empty() => n.clone(),
+                _ => format!("Partner #{pid}"),
+            };
+            (pid == 0, label, pid, sums)
+        })
+        .collect();
+    ordered.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+
+    let root = LineId::root(scope.report.id);
+    let mut grand = [Decimal::ZERO; 7];
+    let mut lines = Vec::with_capacity(ordered.len() + 1);
+    for (_, label, pid, sums) in ordered {
+        for (total, amount) in grand.iter_mut().zip(sums) {
+            *total += amount;
+        }
         let mut line = Line::new(
-            line_id.clone(),
-            partner_name.clone(),
+            root.child(Segment::group(
+                "partner_id",
+                "res.partner",
+                &pid.to_string(),
+            )),
+            label,
             LineKind::Group,
-            row_cells(report, None, as_of, buckets, currency, true),
+            scope.cells(None, &sums, true),
         );
         line.unfoldable = true;
-        line.unfolded = unfolded;
-        line.caret = if partner_id > 0 {
+        line.caret = if pid > 0 {
             vec!["journal_items", "partner"]
         } else {
             vec!["journal_items"]
         };
         lines.push(line);
-
-        if unfolded {
-            for r in &partner_rows {
-                let d_buckets = aging_buckets(&[(r.due_date, r.amount)], as_of);
-                let detail_id = line_id.child(Segment::group(
-                    "move_id",
-                    "account.move",
-                    &r.move_id.to_string(),
-                ));
-                let mut detail = Line::new(
-                    detail_id,
-                    r.move_name.clone(),
-                    LineKind::Detail,
-                    row_cells(report, Some(r.due_date), as_of, d_buckets, currency, true),
-                );
-                detail.caret = vec!["entry"];
-                lines.push(detail);
-            }
-        }
     }
-
-    let grand = aging_buckets(&grand_items, as_of);
     lines.push(Line::new(
         root.child(Segment::total()),
-        total_label,
+        format!("Total {name}"),
         LineKind::Total,
-        row_cells(report, None, as_of, grand, currency, false),
+        scope.cells(None, &grand, false),
     ));
-
     Ok(Expansion::new(lines))
 }
 
 async fn expand_partner(
+    scope: &Scope<'_>,
     cx: &mut ReportCx<'_>,
-    report: &ReportDef,
-    options: &Options,
-    line: &LineId,
-    account_type: &str,
-    sign: Decimal,
+    id: &LineId,
+    page: ExpandPage,
 ) -> Result<Expansion> {
-    let as_of = options.period.to;
-    let Some(last) = line.segments().last() else {
-        return Ok(Expansion::new(Vec::new()));
+    let Located::Partner(pid) = locate(scope.report, id)? else {
+        return Err(invalid(format!(
+            "This {} line has no children.",
+            scope.report.name
+        )));
     };
-    let partner_id: i64 = last.value().parse().unwrap_or(0);
-    let (rows, currency) = load_open_rows(cx, options, account_type, sign).await?;
-    let mut children = Vec::new();
-    for r in rows.into_iter().filter(|r| r.partner_id == partner_id) {
-        let d_buckets = aging_buckets(&[(r.due_date, r.amount)], as_of);
-        let detail_id = line.child(Segment::group(
-            "move_id",
-            "account.move",
-            &r.move_id.to_string(),
-        ));
-        let mut detail = Line::new(
-            detail_id,
-            r.move_name,
+    let domain = scope.base.clone() & partner_domain(pid)?;
+    let env = cx.env().clone();
+    let records = env.records("account.move.line")?;
+    let count = records.search_count(cx.tx(), &domain, None).await?;
+    let found = records
+        .search_with(
+            cx.tx(),
+            &domain,
+            &SearchOptions::new()
+                .order("date_maturity, date, id")
+                .offset(page.offset)
+                .limit(page.limit),
+        )
+        .await?;
+    let mut lines = Vec::new();
+    for item in scope.items(cx, &found).await? {
+        let amounts = scope.amounts(&item);
+        let mut line = Line::new(
+            id.child(Segment::group(
+                "id",
+                "account.move.line",
+                &item.id.to_string(),
+            )),
+            item.label,
             LineKind::Detail,
-            row_cells(report, Some(r.due_date), as_of, d_buckets, currency, true),
+            scope.cells(Some(item.due), &amounts, true),
         );
-        detail.caret = vec!["entry"];
-        children.push(detail);
+        line.caret = vec!["entry"];
+        lines.push(line);
     }
-    Ok(Expansion::new(children))
+    let end = page.offset.saturating_add(page.limit);
+    if count > end {
+        let mut more = Line::new(
+            id.child(Segment::more()),
+            "",
+            LineKind::More,
+            scope
+                .report
+                .columns
+                .iter()
+                .map(|_| ReportCell::empty())
+                .collect(),
+        );
+        more.remaining = Some(count - end);
+        more.next_offset = Some(end);
+        lines.push(more);
+    }
+    Ok(Expansion::new(lines))
 }
 
-fn drill_target(line: &LineId, target: &DrillTarget, account_type: &str) -> Result<Json> {
-    let mut partner_id: Option<i64> = None;
-    let mut move_id: Option<i64> = None;
-    for seg in line.segments() {
-        if let SegmentKind::Group(field) = seg.kind() {
-            if field == "partner_id" {
-                partner_id = seg.value().parse().ok();
-            } else if field == "move_id" {
-                move_id = seg.value().parse().ok();
-            }
-        }
+async fn drill_line(
+    scope: &Scope<'_>,
+    cx: &mut ReportCx<'_>,
+    id: &LineId,
+    target: &DrillTarget,
+) -> Result<Json> {
+    let name = &scope.report.name;
+    let location = locate(scope.report, id)?;
+    let (pid, item) = match location {
+        Located::Partner(pid) => (pid, None),
+        Located::Item(pid, item) => (pid, Some(item)),
+    };
+    let mut domain = scope.base.clone() & partner_domain(pid)?;
+    if let Some(item) = item {
+        domain = domain & cond(json!([["id", "=", item]]))?;
     }
-    if matches!(target, DrillTarget::Item(name) if name == "partner")
-        && let Some(pid) = partner_id
-        && pid > 0
-    {
-        return Ok(json!({
+    match (location, target) {
+        (Located::Partner(pid), DrillTarget::Item(i)) if i == "partner" && pid > 0 => Ok(json!({
             "type": "ir.actions.act_window",
             "name": "Partner",
             "res_model": "res.partner",
             "res_id": pid,
             "target": "current",
             "views": [[false, "form"]],
-        }));
+        })),
+        (Located::Partner(_), DrillTarget::Item(i)) if i == "journal_items" => {
+            scope.act_window(domain)
+        }
+        (Located::Item(..), DrillTarget::Item(i)) if i == "entry" => {
+            let found = cx
+                .env()
+                .records("account.move.line")?
+                .search(cx.tx(), &domain)
+                .await?;
+            let rows = found.read_rows(cx.tx(), &["move_id"], Load::Raw).await?;
+            let row = rows.iter().next().map(Value::Row).ok_or_else(|| {
+                invalid(format!(
+                    "This journal item is not visible in the {name} scope."
+                ))
+            })?;
+            Ok(json!({
+                "type": "ir.actions.act_window",
+                "name": "Journal Entry",
+                "res_model": "account.move",
+                "res_id": int_of(&row, "move_id", "the journal entry")?,
+                "target": "current",
+                "views": [[false, "form"]],
+            }))
+        }
+        (_, DrillTarget::Cell(index)) => scope.act_window(domain & scope.cell_domain(*index)?),
+        (_, DrillTarget::Item(i)) => Err(invalid(format!("This {name} line has no action {i}."))),
+        (_, _) => Err(invalid(format!("This {name} action is not supported."))),
     }
-    if let Some(mid) = move_id {
-        return Ok(json!({
-            "type": "ir.actions.act_window",
-            "name": "Journal Entry",
-            "res_model": "account.move",
-            "res_id": mid,
-            "target": "current",
-            "views": [[false, "form"]],
-        }));
-    }
-    let mut domain = vec![
-        json!(["parent_state", "=", "posted"]),
-        json!(["account_id.account_type", "=", account_type]),
-        json!(["full_reconcile_id", "=", false]),
-    ];
-    if let Some(pid) = partner_id
-        && pid > 0
-    {
-        domain.push(json!(["partner_id", "=", pid]));
-    }
-    Ok(json!({
-        "type": "ir.actions.act_window",
-        "name": "Open Ledger Items",
-        "res_model": "account.move.line",
-        "target": "current",
-        "views": [[false, "list"], [false, "form"]],
-        "domain": domain,
-    }))
 }
 
-pub(crate) struct AgedReceivable;
-const AR_SPEC: ProviderSpec = ProviderSpec::new("account_reporting.aged_receivable", 1);
-
-impl ReportProvider for AgedReceivable {
+impl ReportProvider for Aged {
     fn spec(&self) -> &ProviderSpec {
-        &AR_SPEC
+        &self.spec
     }
     fn init_options<'a>(
         &'a self,
         _cx: &'a mut ReportCx<'_>,
-        _report: &'a ReportDef,
-        _options: &'a mut Options,
+        report: &'a ReportDef,
+        options: &'a mut Options,
         _strict: bool,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            if let Some(key) = options.provider.keys().find(|k| *k != INTERVAL) {
+                return Err(invalid(format!(
+                    "Invalid {} option {key}. Use {INTERVAL}.",
+                    report.name
+                )));
+            }
+            let width = interval(report, options.provider.get(INTERVAL))?;
+            options
+                .provider
+                .insert(INTERVAL.to_owned(), Json::from(width));
+            Ok(())
+        })
     }
     fn lines<'a>(
         &'a self,
@@ -344,15 +685,8 @@ impl ReportProvider for AgedReceivable {
         options: &'a Options,
     ) -> BoxFuture<'a, Result<Expansion>> {
         Box::pin(async move {
-            render_lines(
-                cx,
-                report,
-                options,
-                "asset_receivable",
-                Decimal::ONE,
-                "Total Aged Receivable",
-            )
-            .await
+            let scope = self.scope(cx, report, options).await?;
+            top_lines(&scope, cx).await
         })
     }
     fn expand<'a>(
@@ -361,143 +695,58 @@ impl ReportProvider for AgedReceivable {
         report: &'a ReportDef,
         options: &'a Options,
         line: &'a LineId,
-        _page: ExpandPage,
+        page: ExpandPage,
     ) -> BoxFuture<'a, Result<Expansion>> {
         Box::pin(async move {
-            expand_partner(cx, report, options, line, "asset_receivable", Decimal::ONE).await
+            locate(report, line)?;
+            let scope = self.scope(cx, report, options).await?;
+            expand_partner(&scope, cx, line, page).await
         })
     }
     fn drill<'a>(
-        &'a self,
-        _cx: &'a mut ReportCx<'_>,
-        _report: &'a ReportDef,
-        _options: &'a Options,
-        line: &'a LineId,
-        target: &'a DrillTarget,
-    ) -> BoxFuture<'a, Result<Json>> {
-        Box::pin(async move { drill_target(line, target, "asset_receivable") })
-    }
-}
-
-pub(crate) struct AgedPayable;
-const AP_SPEC: ProviderSpec = ProviderSpec::new("account_reporting.aged_payable", 1);
-
-impl ReportProvider for AgedPayable {
-    fn spec(&self) -> &ProviderSpec {
-        &AP_SPEC
-    }
-    fn init_options<'a>(
-        &'a self,
-        _cx: &'a mut ReportCx<'_>,
-        _report: &'a ReportDef,
-        _options: &'a mut Options,
-        _strict: bool,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn lines<'a>(
-        &'a self,
-        cx: &'a mut ReportCx<'_>,
-        report: &'a ReportDef,
-        options: &'a Options,
-    ) -> BoxFuture<'a, Result<Expansion>> {
-        Box::pin(async move {
-            render_lines(
-                cx,
-                report,
-                options,
-                "liability_payable",
-                Decimal::NEGATIVE_ONE,
-                "Total Aged Payable",
-            )
-            .await
-        })
-    }
-    fn expand<'a>(
         &'a self,
         cx: &'a mut ReportCx<'_>,
         report: &'a ReportDef,
         options: &'a Options,
         line: &'a LineId,
-        _page: ExpandPage,
-    ) -> BoxFuture<'a, Result<Expansion>> {
-        Box::pin(async move {
-            expand_partner(
-                cx,
-                report,
-                options,
-                line,
-                "liability_payable",
-                Decimal::NEGATIVE_ONE,
-            )
-            .await
-        })
-    }
-    fn drill<'a>(
-        &'a self,
-        _cx: &'a mut ReportCx<'_>,
-        _report: &'a ReportDef,
-        _options: &'a Options,
-        line: &'a LineId,
         target: &'a DrillTarget,
     ) -> BoxFuture<'a, Result<Json>> {
-        Box::pin(async move { drill_target(line, target, "liability_payable") })
+        Box::pin(async move {
+            locate(report, line)?;
+            let scope = self.scope(cx, report, options).await?;
+            drill_line(&scope, cx, line, target).await
+        })
     }
 }
 
 mod ar_decl {
-    use super::AgedReceivable;
-    erp_addon_reporting::provider_declarations!(AgedReceivable);
+    erp_addon_reporting::provider_declarations!(super::AGED_RECEIVABLE);
 }
 
 mod ap_decl {
-    use super::AgedPayable;
-    erp_addon_reporting::provider_declarations!(AgedPayable);
+    erp_addon_reporting::provider_declarations!(super::AGED_PAYABLE);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::aging_buckets;
-    use erp_sdk::{Date, Decimal};
-    use std::str::FromStr;
+    use super::{bucket, bucket_range};
+    use erp_sdk::Date;
 
     #[test]
-    fn aging_buckets_classify_exact_decimals_and_conserve_total() {
+    fn buckets_and_their_ranges_agree_at_every_boundary() {
         let as_of = Date::from_ymd(2026, 11, 25).unwrap();
-        let items = vec![
-            (
-                Date::from_ymd(2026, 12, 10).unwrap(),
-                Decimal::from_str("100.10").unwrap(),
-            ),
-            (
-                Date::from_ymd(2026, 11, 10).unwrap(),
-                Decimal::from_str("200.20").unwrap(),
-            ),
-            (
-                Date::from_ymd(2026, 10, 10).unwrap(),
-                Decimal::from_str("300.30").unwrap(),
-            ),
-            (
-                Date::from_ymd(2026, 9, 10).unwrap(),
-                Decimal::from_str("400.40").unwrap(),
-            ),
-            (
-                Date::from_ymd(2026, 8, 10).unwrap(),
-                Decimal::from_str("500.50").unwrap(),
-            ),
-            (
-                Date::from_ymd(2026, 6, 1).unwrap(),
-                Decimal::from_str("600.60").unwrap(),
-            ),
-        ];
-        let b = aging_buckets(&items, as_of);
-        assert_eq!(b[0], Decimal::from_str("100.10").unwrap());
-        assert_eq!(b[1], Decimal::from_str("200.20").unwrap());
-        assert_eq!(b[2], Decimal::from_str("300.30").unwrap());
-        assert_eq!(b[3], Decimal::from_str("400.40").unwrap());
-        assert_eq!(b[4], Decimal::from_str("500.50").unwrap());
-        assert_eq!(b[5], Decimal::from_str("600.60").unwrap());
-        assert_eq!(b[6], Decimal::from_str("2102.10").unwrap());
-        assert_eq!(b[0] + b[1] + b[2] + b[3] + b[4] + b[5], b[6]);
+        for width in [1, 7, 30, 365] {
+            for late in -3..=(4 * width + 3) {
+                let due = Date::from_days(as_of.days() - late);
+                let index = bucket(due, as_of, width);
+                let (lo, hi) = bucket_range(index, as_of, width);
+                assert!(lo.is_none_or(|lo| lo <= due), "{width} {late}");
+                assert!(hi.is_none_or(|hi| due <= hi), "{width} {late}");
+            }
+        }
+        assert_eq!(bucket(as_of, as_of, 30), 0);
+        assert_eq!(bucket(Date::from_days(as_of.days() - 30), as_of, 30), 1);
+        assert_eq!(bucket(Date::from_days(as_of.days() - 31), as_of, 30), 2);
+        assert_eq!(bucket(Date::from_days(as_of.days() - 121), as_of, 30), 5);
     }
 }
