@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Demo job positions and employees with invented names and example.com-style addresses. -->
+<erp>
+  <record id="job_demo_ops_manager" model="hr.job">
+    <field name="name">Manajer Operasional</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+  <record id="job_demo_sales_exec" model="hr.job">
+    <field name="name">Staf Penjualan</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+  <record id="job_demo_buyer" model="hr.job">
+    <field name="name">Staf Pembelian</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+  <record id="job_demo_warehouse" model="hr.job">
+    <field name="name">Kepala Gudang</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+  <record id="job_demo_accountant" model="hr.job">
+    <field name="name">Akuntan</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+
+  <record id="employee_demo_budi" model="hr.employee">
+    <field name="name">Budi Santoso</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="work_email">budi.santoso@contoh.example</field>
+    <field name="work_phone">+62 21 555 0301</field>
+  </record>
+  <record id="employee_demo_siti" model="hr.employee">
+    <field name="name">Siti Rahayu</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="work_email">siti.rahayu@contoh.example</field>
+    <field name="work_phone">+62 21 555 0302</field>
+  </record>
+  <record id="employee_demo_andi" model="hr.employee">
+    <field name="name">Andi Wijaya</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="work_email">andi.wijaya@contoh.example</field>
+    <field name="work_phone">+62 21 555 0303</field>
+  </record>
+  <record id="employee_demo_rina" model="hr.employee">
+    <field name="name">Rina Kusuma</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="work_email">rina.kusuma@contoh.example</field>
+    <field name="work_phone">+62 21 555 0304</field>
+  </record>
+  <record id="employee_demo_dedi" model="hr.employee">
+    <field name="name">Dedi Kurniawan</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="work_email">dedi.kurniawan@contoh.example</field>
+    <field name="work_phone">+62 21 555 0305</field>
+  </record>
+</erp>

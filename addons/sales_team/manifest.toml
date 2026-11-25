@@ -17,3 +17,6 @@ data = [
     "views/crm_team_member_views.xml",
     "security/ir.access.csv",
 ]
+demo = [
+    "demo/sales_team_demo.xml",
+]

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Demo inventory storage categories, package types, and lots. -->
+<erp>
+  <record id="storage_category_demo_standard" model="stock.storage.category">
+    <field name="name">Rak Standar</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+  <record id="storage_category_demo_heavy" model="stock.storage.category">
+    <field name="name">Rak Beban Berat</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+
+  <record id="package_type_demo_box" model="stock.package.type">
+    <field name="name">Kardus Sedang</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+  <record id="package_type_demo_pallet" model="stock.package.type">
+    <field name="name">Palet Kayu</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+
+  <record id="lot_demo_kopi_01" model="stock.lot">
+    <field name="name">LOT-KOPI-2026-01</field>
+    <field name="product_id" search="[('product_tmpl_id', '=', ref('product.product_demo_kopi'))]"/>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+  <record id="lot_demo_rak_01" model="stock.lot">
+    <field name="name">LOT-RAK-2026-01</field>
+    <field name="product_id" search="[('product_tmpl_id', '=', ref('product.product_demo_rak'))]"/>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+</erp>

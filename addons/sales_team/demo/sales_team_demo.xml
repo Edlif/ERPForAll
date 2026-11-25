@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Demo sales teams and CRM tags. -->
+<erp>
+  <record id="tag_demo_priority" model="crm.tag">
+    <field name="name">Prioritas</field>
+    <field name="color">1</field>
+  </record>
+  <record id="tag_demo_b2b" model="crm.tag">
+    <field name="name">B2B</field>
+    <field name="color">4</field>
+  </record>
+  <record id="tag_demo_retail" model="crm.tag">
+    <field name="name">Retail</field>
+    <field name="color">3</field>
+  </record>
+  <record id="tag_demo_contract" model="crm.tag">
+    <field name="name">Kontrak Tahunan</field>
+    <field name="color">2</field>
+  </record>
+
+  <record id="team_demo_corporate" model="crm.team">
+    <field name="name">Penjualan Korporat</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+  <record id="team_demo_online" model="crm.team">
+    <field name="name">Penjualan Daring</field>
+    <field name="company_id" ref="base.main_company"/>
+  </record>
+</erp>

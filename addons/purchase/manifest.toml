@@ -20,3 +20,6 @@ data = [
     "views/bill_source_review.xml",
     "security/ir.access.csv",
 ]
+demo = [
+    "demo/purchase_demo.xml",
+]

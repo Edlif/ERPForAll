@@ -11,3 +11,6 @@ data = [
     "views/hr_employee_views.xml",
     "security/ir.access.csv",
 ]
+demo = [
+    "demo/hr_demo.xml",
+]

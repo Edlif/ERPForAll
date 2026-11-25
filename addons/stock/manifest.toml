@@ -35,4 +35,7 @@ data = [
     "data/current_position_report.xml",
     "views/stock_report_menus.xml",
 ]
+demo = [
+    "demo/stock_demo.xml",
+]
 exact_only = true

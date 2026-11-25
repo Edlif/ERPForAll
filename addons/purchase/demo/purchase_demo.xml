@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Demo requests for quotation referencing base demo vendors and product demo catalog. -->
+<erp>
+  <record id="purchase_order_demo_1" model="purchase.order">
+    <field name="name">PO-DEMO-001</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="partner_id" ref="base.partner_demo_mitra_kayu"/>
+    <field name="currency_id" ref="base.USD"/>
+    <field name="date_order">2026-11-19 08:30:00</field>
+    <field name="origin">RESTOCK-2026-11</field>
+  </record>
+  <record id="purchase_order_line_demo_1_rak" model="purchase.order.line">
+    <field name="order_id" ref="purchase_order_demo_1"/>
+    <field name="product_id" search="[('product_tmpl_id', '=', ref('product.product_demo_rak'))]"/>
+    <field name="name">Rak Buku Minimalis</field>
+    <field name="product_qty">10</field>
+    <field name="price_unit">70</field>
+  </record>
+  <record id="purchase_order_line_demo_1_kertas" model="purchase.order.line">
+    <field name="order_id" ref="purchase_order_demo_1"/>
+    <field name="product_id" search="[('product_tmpl_id', '=', ref('product.product_demo_kertas'))]"/>
+    <field name="name">Kertas A4 80 gsm</field>
+    <field name="product_qty">25</field>
+    <field name="price_unit">4</field>
+  </record>
+
+  <record id="purchase_order_demo_2" model="purchase.order">
+    <field name="name">PO-DEMO-002</field>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="partner_id" ref="base.partner_demo_kopi_gunung"/>
+    <field name="currency_id" ref="base.USD"/>
+    <field name="date_order">2026-11-20 14:00:00</field>
+    <field name="origin">PANTRY-2026-11</field>
+  </record>
+  <record id="purchase_order_line_demo_2_kopi" model="purchase.order.line">
+    <field name="order_id" ref="purchase_order_demo_2"/>
+    <field name="product_id" search="[('product_tmpl_id', '=', ref('product.product_demo_kopi'))]"/>
+    <field name="name">Kopi Arabika Gunung 250 g</field>
+    <field name="product_qty">30</field>
+    <field name="price_unit">4</field>
+  </record>
+  <record id="purchase_order_line_demo_2_robusta" model="purchase.order.line">
+    <field name="order_id" ref="purchase_order_demo_2"/>
+    <field name="product_id" search="[('product_tmpl_id', '=', ref('product.product_demo_robusta'))]"/>
+    <field name="name">Kopi Robusta Curah</field>
+    <field name="product_qty">20</field>
+    <field name="price_unit">3</field>
+  </record>
+</erp>

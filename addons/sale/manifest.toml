@@ -17,3 +17,6 @@ data = [
     "views/sale_reports.xml",
     "security/ir.access.csv",
 ]
+demo = [
+    "demo/sale_demo.xml",
+]

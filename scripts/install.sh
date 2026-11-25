@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # working: accounting (account, account_reporting), inventory (stock), sales (sale, sale_management),
 # purchase (purchase), the two bridges to inventory (sale_stock, purchase_stock), contacts, and the chatter
 # addons of those applications. Dependencies (uom, product, mail, ...) install with them.
-DEFAULT_MODULES="contacts account account_reporting stock sale sale_management purchase sale_stock purchase_stock account_mail purchase_mail stock_mail product_mail"
+DEFAULT_MODULES="contacts hr account account_reporting stock sale sale_management purchase sale_stock purchase_stock account_mail purchase_mail stock_mail product_mail"
 
 STATE="${ERPFORALL_LOCAL_STATE:-$HOME/.erpforall/local}"
 PORT=8069
@@ -238,12 +238,12 @@ build_binaries() {
 # ---- 4. web client ------------------------------------------------------------------------------
 build_web() {
   step "4/8 Building the web client"
-  dry "scripts/web-toolchain.sh install; pnpm --dir web install --frozen-lockfile; node web/scripts/build-human-ui.mjs" && return 0
+  dry "scripts/web-toolchain.sh install; pnpm --dir web install --frozen-lockfile; node web/scripts/build-human-ui.mjs --addons web,reporting,stock_account" && return 0
   ( cd "$ROOT"
     scripts/web-toolchain.sh install
     eval "$(scripts/web-toolchain.sh env)"
     pnpm --dir web install --frozen-lockfile
-    ERP_UI_COMPILER="$ROOT/target/release/erp-ui-compile" node web/scripts/build-human-ui.mjs )
+    ERP_UI_COMPILER="$ROOT/target/release/erp-ui-compile" node web/scripts/build-human-ui.mjs --addons web,reporting,stock_account )
   [ -f "$ROOT/web/dist/human-ui/manifest.json" ] || die "the web client build left no web/dist/human-ui/manifest.json"
 }
 
