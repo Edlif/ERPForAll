@@ -417,28 +417,35 @@
     <field name="category_ids" eval="[Command.set([ref('hr_demo_tag_remote')])]"/>
   </record>
 
-  <!-- Wire Department Managers -->
-  <record id="hr_demo_dept_management" model="hr.department">
-    <field name="manager_id" ref="hr_demo_emp_nadia"/>
-  </record>
-  <record id="hr_demo_dept_engineering" model="hr.department">
-    <field name="manager_id" ref="hr_demo_emp_budi"/>
-  </record>
-  <record id="hr_demo_dept_backend" model="hr.department">
-    <field name="manager_id" ref="hr_demo_emp_fajar"/>
-  </record>
-  <record id="hr_demo_dept_frontend" model="hr.department">
-    <field name="manager_id" ref="hr_demo_emp_gita"/>
-  </record>
-  <record id="hr_demo_dept_sales" model="hr.department">
-    <field name="manager_id" ref="hr_demo_emp_citra"/>
-  </record>
-  <record id="hr_demo_dept_operations" model="hr.department">
-    <field name="manager_id" ref="hr_demo_emp_dimas"/>
-  </record>
-  <record id="hr_demo_dept_people" model="hr.department">
-    <field name="manager_id" ref="hr_demo_emp_eka"/>
-  </record>
+  <!-- Department managers: the departments exist before their employees, so each manager is set once here -->
+  <function model="hr.department" name="write">
+    <value eval="[ref('hr_demo_dept_management')]"/>
+    <value eval="{'manager_id': ref('hr_demo_emp_nadia')}"/>
+  </function>
+  <function model="hr.department" name="write">
+    <value eval="[ref('hr_demo_dept_engineering')]"/>
+    <value eval="{'manager_id': ref('hr_demo_emp_budi')}"/>
+  </function>
+  <function model="hr.department" name="write">
+    <value eval="[ref('hr_demo_dept_backend')]"/>
+    <value eval="{'manager_id': ref('hr_demo_emp_fajar')}"/>
+  </function>
+  <function model="hr.department" name="write">
+    <value eval="[ref('hr_demo_dept_frontend')]"/>
+    <value eval="{'manager_id': ref('hr_demo_emp_gita')}"/>
+  </function>
+  <function model="hr.department" name="write">
+    <value eval="[ref('hr_demo_dept_sales')]"/>
+    <value eval="{'manager_id': ref('hr_demo_emp_citra')}"/>
+  </function>
+  <function model="hr.department" name="write">
+    <value eval="[ref('hr_demo_dept_operations')]"/>
+    <value eval="{'manager_id': ref('hr_demo_emp_dimas')}"/>
+  </function>
+  <function model="hr.department" name="write">
+    <value eval="[ref('hr_demo_dept_people')]"/>
+    <value eval="{'manager_id': ref('hr_demo_emp_eka')}"/>
+  </function>
 
   <!-- Contract History Versions -->
   <record id="hr_demo_ver_nadia_1" model="hr.employee.version">
