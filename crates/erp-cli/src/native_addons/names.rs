@@ -25,6 +25,7 @@ pub const LINKED: &[&str] = &[
     "reporting",
     "account_reporting",
     "stock",
+    "product_expiry",
     "stock_account",
     "valuation",
     "stock_mail",
@@ -46,7 +47,6 @@ pub const DECLARED_ONLY: &str = "declared, no behaviour yet (manifest and depend
 /// the addon catalogue logs for each. Every crate under `addons/` is in [`LINKED`] or here.
 pub const NOT_LINKED: &[(&str, &str)] = &[
     ("delivery", DECLARED_ONLY),
-    ("product_expiry", DECLARED_ONLY),
     ("stock_delivery", DECLARED_ONLY),
     ("stock_landed_costs", DECLARED_ONLY),
     ("stock_sms", DECLARED_ONLY),

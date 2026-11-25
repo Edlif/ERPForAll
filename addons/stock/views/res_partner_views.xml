@@ -39,6 +39,15 @@
           <field name="reordering_rule_count" widget="statinfo" string="Reordering"/>
         </button>
       </xpath>
+      <xpath expr="//notebook" position="inside">
+        <page name="inventory" string="Inventory" groups="stock.group_stock_user">
+          <group>
+            <group name="traceability" string="Traceability">
+              <field name="tracking" groups="stock.group_production_lot"/>
+            </group>
+          </group>
+        </page>
+      </xpath>
     </field>
   </record>
 </erp>

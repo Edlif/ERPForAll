@@ -28,6 +28,7 @@ erp-addon-purchase_stock.workspace = true
 erp-addon-stock_dropshipping.workspace = true
 erp-addon-barcodes_gs1_nomenclature.workspace = true
 erp-addon-stock.workspace = true
+erp-addon-product_expiry.workspace = true
 # message thread and chatter on entries, purchase orders and transfers (bridges, auto-installed with mail)
 erp-addon-account-mail.workspace = true
 erp-addon-purchase-mail.workspace = true

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="view_barcode_nomenclature_form_gs1" model="ir.ui.view">
+    <field name="name">barcode.nomenclature.form.gs1</field>
+    <field name="model">barcode.nomenclature</field>
+    <field name="inherit_id" ref="barcodes.nomenclature_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='upc_ean_conv']" position="after">
+        <field name="is_gs1_nomenclature"/>
+        <field name="gs1_separator_fnc1" invisible="not is_gs1_nomenclature"/>
+      </xpath>
+    </field>
+  </record>
+  <record id="view_barcode_rule_form_gs1" model="ir.ui.view">
+    <field name="name">barcode.rule.form.gs1</field>
+    <field name="model">barcode.rule</field>
+    <field name="inherit_id" ref="barcodes.rule_form"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='pattern']" position="after">
+        <field name="gs1_content_type" invisible="not is_gs1_nomenclature"/>
+        <field name="gs1_decimal_usage" invisible="not is_gs1_nomenclature"/>
+      </xpath>
+    </field>
+  </record>
+</erp>

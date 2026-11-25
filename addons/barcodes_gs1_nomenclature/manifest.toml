@@ -3,6 +3,9 @@ summary = "Parse barcodes according to GS1-128 specifications"
 category = "Inventory"
 author = "Arkana"
 license = "MIT OR Apache-2.0"
-version = "1.0.0"
+version = "1.1.0"
 depends = ["base", "barcodes"]
-data = []
+data = [
+    "data/barcodes_gs1_nomenclature_data.xml",
+    "views/barcode_gs1_views.xml",
+]

@@ -650,7 +650,7 @@ async fn line_refusals_are_named() {
     let error = f
         .add_lines(
             &mut tx,
-            vec![line(mv, "1").set_cell("lot_name", text("A1"))],
+            vec![line(mv, "1").set_cell("child_mode", Cell::Bool(true))],
         )
         .await
         .unwrap_err();
@@ -3176,5 +3176,70 @@ async fn the_count_buttons_count_readable_links_and_open_them_by_domain() {
         locations.cells(&mut tx, "picking_count").await.unwrap(),
         vec![Cell::Int(0), Cell::Int(0)]
     );
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn lot_and_serial_validation_creates_lots_and_enforces_tracking() {
+    let f = fixture().await;
+    let mut tx = f.h.begin().await.unwrap();
+    let env = f.env(&tx);
+
+    // Enable lot tracking on f.p's template
+    let tmpl_id: i64 = tx
+        .query(
+            "SELECT product_tmpl_id::int8 FROM product_product WHERE id = $1",
+            &[&f.p],
+        )
+        .await
+        .unwrap()[0]
+        .get(0);
+    env.records("product.template")
+        .unwrap()
+        .browse([tmpl_id])
+        .unwrap()
+        .write(&mut tx, RawVals::new().set_cell("tracking", text("lot")))
+        .await
+        .unwrap();
+
+    // Missing lot on a lot-tracked receipt is refused on validate
+    let p_missing = f.picking(&mut tx, f.receipt_type, f.vendor, f.l).await;
+    let m_missing = f
+        .move_in(&mut tx, Some(p_missing), f.p, f.vendor, f.l, "2")
+        .await;
+    f.add_lines(&mut tx, vec![line(m_missing, "2")])
+        .await
+        .unwrap();
+    let err = f
+        .call(&mut tx, p_missing, "button_validate")
+        .await
+        .unwrap_err();
+    user_error(&err, "Lot/Serial Number");
+
+    // Providing lot_name creates stock.lot and posts quant with that lot_id
+    let p_ok = f.picking(&mut tx, f.receipt_type, f.vendor, f.l).await;
+    let m_ok = f
+        .move_in(&mut tx, Some(p_ok), f.p, f.vendor, f.l, "5")
+        .await;
+    f.add_lines(
+        &mut tx,
+        vec![line(m_ok, "5").set_cell("lot_name", text("LOT-TEST-001"))],
+    )
+    .await
+    .unwrap();
+    f.call(&mut tx, p_ok, "button_validate").await.unwrap();
+
+    let lot_rows = tx
+        .query(
+            "SELECT l.id::int8, q.quantity FROM stock_lot l \
+             JOIN stock_quant q ON q.lot_id = l.id \
+             WHERE l.product_id = $1 AND l.name = 'LOT-TEST-001' AND q.location_id = $2",
+            &[&f.p, &f.l],
+        )
+        .await
+        .unwrap();
+    assert_eq!(lot_rows.len(), 1);
+    let qty: Decimal = lot_rows[0].get(1);
+    assert_eq!(qty, dec("5"));
     tx.rollback().await.unwrap();
 }

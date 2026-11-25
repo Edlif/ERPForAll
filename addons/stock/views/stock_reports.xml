@@ -58,6 +58,11 @@ The printed inventory documents of a transfer, built on the shared document part
             <t t-set="done_label">Delivered</t>
             <t t-call="stock.report_picking_head" title.translate="Delivery Slip" party.translate="Customer"/>
             <t t-call="stock.report_picking_quantities"/>
+            <t t-if="o.signed_by or o.signature" t-call="web.document_note" label.translate="Delivery Signature">
+                <t t-if="o.signed_by"><strong t-out="o.signed_by"/></t>
+                <t t-if="o.signed_by and o.signature"> — </t>
+                <t t-if="o.signature"><span t-out="o.signature"/></t>
+            </t>
             <t t-call="web.document_signatures">
                 <t t-call="web.document_signature" label.translate="Delivered by"/>
                 <t t-call="web.document_signature" label.translate="Received by (name and signature)"/>
@@ -220,6 +225,35 @@ The printed inventory documents of a transfer, built on the shared document part
             </t>
         </t>
     </template>
+
+    <template id="report_lot_label_gs1">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <t t-foreach="docs" t-as="lot">
+                        <div class="mb-3 p-2 border">
+                            <div><strong t-field="lot.product_id"/></div>
+                            <div>Lot/Serial: <strong t-field="lot.name"/></div>
+                            <div t-if="lot.ref"><small class="text-muted">Ref: <span t-field="lot.ref"/></small></div>
+                            <div class="mt-2">
+                                <span t-field="lot.name" t-options="{'widget': 'barcode', 'img_style': 'width:70mm;height:12mm'}"/>
+                            </div>
+                        </div>
+                    </t>
+                </div>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_report_lot_label_gs1" model="ir.actions.report">
+        <field name="name">GS1 Lot/Serial Label</field>
+        <field name="model">stock.lot</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">stock.report_lot_label_gs1</field>
+        <field name="print_report_name">'Lot Label - ' + object.name</field>
+        <field name="binding_model_id" ref="stock.model_stock_lot"/>
+        <field name="binding_type">report</field>
+    </record>
 
     <record id="action_report_deliveryslip" model="ir.actions.report">
         <field name="name">Delivery Slip</field>

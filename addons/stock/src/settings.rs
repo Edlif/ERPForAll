@@ -159,7 +159,7 @@ fn declarations() -> Result<Vec<SettingDecl>> {
             "Shipping", 42, "Default and available channel: SMS. Saved only; no message is sent yet.")?,
         SettingDecl::string("stock.barcode_separator", "Combined barcode separator", Global, ",", 16)?
             .validator(separator)?.block("Barcode")?.sequence(50)
-            .help("Default: comma. Allowed: 1 to 16 UTF-8 bytes without control characters. Shared by all companies. Saved only; barcode aggregation does not use this value yet.")?
+            .help("Default: comma. Allowed: 1 to 16 UTF-8 bytes without control characters. Shared by all companies to split combined barcode scans.")?
             .access(&[ADMIN], &[ADMIN])?,
     ];
     Ok(declarations)

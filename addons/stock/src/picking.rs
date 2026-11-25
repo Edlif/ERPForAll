@@ -341,6 +341,22 @@ pub struct StockPicking {
     /// `assigned` only while it is 0, that is, while every non-scrap move is make-to-stock.
     #[field(integer, required = true, readonly = true, copy = false, default = 0)]
     pub mto_nonscrap_count: i32,
+    /// Name of the recipient who signed the delivery.
+    #[field(
+        char,
+        copy = false,
+        groups = "stock.group_stock_sign_delivery",
+        string = "Signed By"
+    )]
+    pub signed_by: Option<Arc<str>>,
+    /// Delivery recipient signature text or encoded signature payload.
+    #[field(
+        text,
+        copy = false,
+        groups = "stock.group_stock_sign_delivery",
+        string = "Signature"
+    )]
+    pub signature: Option<Arc<str>>,
     /// Non-blocking contact and parent company notices for this transfer. Computed elevated, then
     /// limited to the partners the caller's own rights can read: a record the caller cannot read
     /// adds no message.

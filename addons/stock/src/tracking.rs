@@ -16,15 +16,86 @@
 
 use std::collections::BTreeMap;
 
+use erp_addon_product::ProductTemplate;
 use erp_sdk::prelude::*;
 
 use crate::error::StockError;
+
+#[extend(ProductTemplate, addon = "stock")]
+pub struct StockProductTracking {
+    /// How this product is tracked across inventory operations.
+    #[field(
+        selection,
+        selection = [
+            ("none", "No Tracking"),
+            ("lot", "By Lots"),
+            ("serial", "By Unique Serial Number")
+        ],
+        required = true,
+        default = "none",
+        string = "Tracking"
+    )]
+    pub tracking: Option<Arc<str>>,
+}
+
+#[methods(ProductTemplate, addon = "stock")]
+impl StockProductTracking {
+    #[method(override)]
+    async fn write(
+        this: &RecordSet<ProductTemplate>,
+        tx: &mut Transaction,
+        vals: RawVals,
+        sup: Super,
+    ) -> Result<()> {
+        let new_tracking = match vals.get("tracking") {
+            Some(Cell::Str(s)) => Some(Tracking::from_selection(Some(s.as_ref()))?),
+            Some(Cell::Null) => Some(Tracking::Untracked),
+            _ => None,
+        };
+        if let Some(to) = new_tracking {
+            let tmpl_ids = this.ids();
+            if !tmpl_ids.is_empty() {
+                tx.flush().await?;
+                let rows = tx
+                    .query(
+                        "SELECT pp.id::int8, pt.tracking \
+                         FROM product_product pp \
+                         JOIN product_template pt ON pt.id = pp.product_tmpl_id \
+                         WHERE pt.id = ANY($1) ORDER BY pp.id",
+                        &[&tmpl_ids],
+                    )
+                    .await?;
+                let mut changes = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let product_id: i64 = row
+                        .try_get(0)
+                        .map_err(|e| Error::internal(format!("tracking read: {e}")))?;
+                    let old: Option<String> = row
+                        .try_get(1)
+                        .map_err(|e| Error::internal(format!("tracking read: {e}")))?;
+                    let from = Tracking::from_selection(old.as_deref())?;
+                    if from != to {
+                        changes.push(TrackingChange {
+                            product_id,
+                            from,
+                            to,
+                        });
+                    }
+                }
+                if !changes.is_empty() {
+                    check_tracking_change(tx, &changes).await?;
+                }
+            }
+        }
+        sup.call(tx, this.as_records(), (vals,)).await
+    }
+}
 
 /// A tracking mode of a product: the selection of the product's `tracking` field, where empty means
 /// untracked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tracking {
-    /// No lots or serial numbers (the field is empty).
+    /// No lots or serial numbers (the field is empty or `none`).
     Untracked,
     /// By lot: many units under one lot number.
     Lot,
@@ -33,10 +104,10 @@ pub enum Tracking {
 }
 
 impl Tracking {
-    /// The mode named by a stored selection value; a value outside none, `lot` and `serial` is refused.
+    /// The mode named by a stored selection value; a value outside `none`, `lot` and `serial` is refused.
     pub fn from_selection(value: Option<&str>) -> Result<Self> {
         match value {
-            None | Some("") => Ok(Self::Untracked),
+            None | Some("") | Some("none") => Ok(Self::Untracked),
             Some("lot") => Ok(Self::Lot),
             Some("serial") => Ok(Self::Serial),
             Some(other) => Err(Error::validation(format!(

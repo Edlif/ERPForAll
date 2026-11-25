@@ -3,30 +3,9 @@
 use erp_sdk::prelude::*;
 use erp_sdk::settings::{PanelItemDecl, PanelItemValue, ScopeKind, SettingsScope};
 
-const GROUPS: &str = "Unavailable until a later release supplies feature-group changes.";
-const TRACKING: &str =
-    "Unavailable until a later release and a later release supply tracking controls.";
 const ROUTES: &str = "Unavailable until a later release supplies route activation.";
 const ADDONS: &str = "Unavailable until a later release supplies this addon.";
 const FEATURES: &[(&str, &str, &str, &str)] = &[
-    (
-        "stock.group_stock_lot_print_gs1",
-        "GS1 tracking labels",
-        "Traceability",
-        TRACKING,
-    ),
-    (
-        "stock.group_lot_on_delivery_slip",
-        "Tracking details on delivery documents",
-        "Traceability",
-        TRACKING,
-    ),
-    (
-        "stock.group_stock_sign_delivery",
-        "Delivery signatures",
-        "Shipping",
-        GROUPS,
-    ),
     (
         "stock.replenish_on_order",
         "Replenish on order",
@@ -85,6 +64,24 @@ const GROUP_TOGGLES: &[(&str, &str, &str, &str)] = &[
         "Company-wide lot tracking",
         "Traceability",
         "stock.group_production_lot",
+    ),
+    (
+        "stock.group_stock_lot_print_gs1",
+        "GS1 tracking labels",
+        "Traceability",
+        "stock.group_stock_lot_print_gs1",
+    ),
+    (
+        "stock.group_lot_on_delivery_slip",
+        "Tracking details on delivery documents",
+        "Traceability",
+        "stock.group_lot_on_delivery_slip",
+    ),
+    (
+        "stock.group_stock_sign_delivery",
+        "Delivery signatures",
+        "Shipping",
+        "stock.group_stock_sign_delivery",
     ),
     (
         "stock.group_stock_tracking_lot",

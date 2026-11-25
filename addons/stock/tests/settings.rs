@@ -350,6 +350,21 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
             "Batch transfers",
             "stock.group_stock_picking_batch",
         ),
+        (
+            "stock.group_stock_lot_print_gs1",
+            "GS1 tracking labels",
+            "stock.group_stock_lot_print_gs1",
+        ),
+        (
+            "stock.group_lot_on_delivery_slip",
+            "Tracking details on delivery documents",
+            "stock.group_lot_on_delivery_slip",
+        ),
+        (
+            "stock.group_stock_sign_delivery",
+            "Delivery signatures",
+            "stock.group_stock_sign_delivery",
+        ),
     ] {
         let item = items.iter().find(|i| i.key() == key).expect(key);
         match item.kind() {
@@ -364,18 +379,6 @@ fn stock_panel_items_distinguish_available_addons_from_unavailable_features() {
             item.scope_restriction(),
             None,
             "{key}: groups are database-wide"
-        );
-    }
-    // Groups that gate nothing yet stay information rows.
-    for key in [
-        "stock.group_stock_lot_print_gs1",
-        "stock.group_lot_on_delivery_slip",
-        "stock.group_stock_sign_delivery",
-    ] {
-        let item = items.iter().find(|i| i.key() == key).expect(key);
-        assert!(
-            matches!(item.kind(), erp_sdk::settings::PanelItemKind::Info),
-            "{key} must be an info row"
         );
     }
 }

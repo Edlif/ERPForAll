@@ -11,7 +11,6 @@ pub(crate) struct StockPickingMoveLines {
         one2many,
         comodel = "stock.move.line",
         inverse_name = "picking_id",
-        readonly = true,
         copy = false,
         string = "Operations"
     )]

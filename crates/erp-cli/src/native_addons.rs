@@ -28,6 +28,7 @@ pub static DESCRIPTORS: &[&AddonDescriptor] = &[
     &erp_addon_reporting::ADDON,
     &erp_addon_account_reporting::ADDON,
     &erp_addon_stock::ADDON,
+    &erp_addon_product_expiry::ADDON,
     &erp_addon_stock_account::ADDON,
     &erp_addon_valuation::ADDON,
     &erp_addon_stock_mail::ADDON,

@@ -165,32 +165,27 @@ fn label(tx: &Transaction, field: &str) -> Result<String> {
         .ok_or_else(|| Error::internal(format!("stock.move.line has no field '{field}'")))
 }
 
-/// The line fields of lots and serial rows, refused until lots exist.
-const LOT_FIELDS: [&str; 3] = ["lot_id", "lot_name", "child_mode"];
-
-/// A lot, a lot name or serial rows named with a value: refused until lots exist.
-fn refuse_lots(vals: &RawVals) -> Result<()> {
-    let named = |field: &str| match vals.get(field) {
-        None | Some(Cell::Null) | Some(Cell::Bool(false)) => false,
-        Some(Cell::Str(text)) => !text.is_empty(),
-        Some(_) => true,
-    };
-    if LOT_FIELDS.into_iter().any(named) {
+/// Serial child-row mode remains reserved for a later slice; plain lines support `lot_id` and `lot_name`.
+fn validate_lot_vals(vals: &RawVals) -> Result<()> {
+    if matches!(vals.get("child_mode"), Some(Cell::Bool(true))) {
         return Err(StockError::LotsNotAvailable.into());
+    }
+    let has_lot_id = matches!(vals.get("lot_id"), Some(Cell::Id(_)) | Some(Cell::Int(_)));
+    let has_lot_name = matches!(vals.get("lot_name"), Some(Cell::Str(s)) if !s.trim().is_empty());
+    if has_lot_id && has_lot_name {
+        return Err(Error::validation(
+            "Specify either an existing Lot/Serial Number or a new Lot/Serial Number Name, not both.",
+        ));
     }
     Ok(())
 }
 
-/// The same refusal for the `default_<field>` context keys a create applies after the values were
-/// read here: a key with a value names a lot as the value would.
-fn refuse_lot_defaults(env: &Env) -> Result<()> {
-    let context = env.context();
-    let named = |field: &str| match context.get(&format!("default_{field}")) {
-        None | Some(Value::False | Value::Bool(false)) => false,
-        Some(Value::Str(text)) => !text.is_empty(),
-        Some(_) => true,
-    };
-    if LOT_FIELDS.into_iter().any(named) {
+/// Refuse `default_child_mode=true` in context; `default_lot_id` and `default_lot_name` are allowed.
+fn validate_lot_defaults(env: &Env) -> Result<()> {
+    if matches!(
+        env.context().get("default_child_mode"),
+        Some(Value::Bool(true))
+    ) {
         return Err(StockError::LotsNotAvailable.into());
     }
     Ok(())
@@ -356,10 +351,10 @@ pub(crate) async fn create_lines(
     }
     // a caller without the right gets the access error before any refusal of the values
     records.check_access(tx, Operation::Create).await?;
-    refuse_lot_defaults(records.env())?;
+    validate_lot_defaults(records.env())?;
     let mut moves = BTreeSet::new();
     for vals in &vals_list {
-        refuse_lots(vals)?;
+        validate_lot_vals(vals)?;
         let move_id = match vals.get("move_id") {
             Some(cell) => cell_id(cell),
             None => default_move,
@@ -446,7 +441,7 @@ pub(crate) async fn write_lines(
     }
     // a caller without the right gets the access error before any refusal of the values
     records.check_access(tx, Operation::Write).await?;
-    refuse_lots(&vals)?;
+    validate_lot_vals(&vals)?;
     if let Some(field) = RELINK_FIELDS.iter().find(|f| vals.contains(f)) {
         return Err(StockError::LineRelink {
             field: label(tx, field)?,

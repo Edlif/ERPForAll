@@ -105,6 +105,10 @@
                   <field name="date_done"/>
                 </group>
               </group>
+              <group name="delivery_signature" string="Delivery Signature" groups="stock.group_stock_sign_delivery">
+                <field name="signed_by" placeholder="Recipient name"/>
+                <field name="signature" placeholder="Recipient signature note or reference"/>
+              </group>
             </page>
           </notebook>
         </sheet>
@@ -159,9 +163,10 @@
         <field name="product_id"/>
         <field name="location_id"/>
         <field name="location_dest_id"/>
-        <field name="lot_id"/>
-        <field name="package_id"/>
-        <field name="result_package_id"/>
+        <field name="lot_id" groups="stock.group_production_lot"/>
+        <field name="lot_name" groups="stock.group_production_lot"/>
+        <field name="package_id" groups="stock.group_tracking_lot"/>
+        <field name="result_package_id" groups="stock.group_tracking_lot"/>
         <field name="quantity"/>
         <field name="uom_id" string="Unit"/>
       </list>
@@ -178,13 +183,14 @@
               <field name="product_id"/>
               <field name="quantity"/>
               <field name="uom_id" string="Unit"/>
-              <field name="lot_id"/>
+              <field name="lot_id" groups="stock.group_production_lot"/>
+              <field name="lot_name" groups="stock.group_production_lot"/>
             </group>
             <group>
               <field name="location_id"/>
               <field name="location_dest_id"/>
-              <field name="package_id"/>
-              <field name="result_package_id"/>
+              <field name="package_id" groups="stock.group_tracking_lot"/>
+              <field name="result_package_id" groups="stock.group_tracking_lot"/>
             </group>
           </group>
         </sheet>

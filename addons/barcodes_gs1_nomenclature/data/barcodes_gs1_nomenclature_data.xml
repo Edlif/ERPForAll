@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp noupdate="1">
+  <record id="default_gs1_nomenclature" model="barcode.nomenclature">
+    <field name="name">Default GS1 Nomenclature</field>
+    <field name="is_gs1_nomenclature" eval="True"/>
+    <field name="gs1_separator_fnc1">\x1D</field>
+    <field name="upc_ean_conv">none</field>
+  </record>
+  <record id="gs1_rule_gtin" model="barcode.rule">
+    <field name="name">Global Trade Item Number (GTIN)</field>
+    <field name="barcode_nomenclature_id" ref="default_gs1_nomenclature"/>
+    <field name="sequence">10</field>
+    <field name="encoding">any</field>
+    <field name="type">product</field>
+    <field name="pattern">01..............</field>
+    <field name="gs1_content_type">identifier</field>
+  </record>
+  <record id="gs1_rule_lot" model="barcode.rule">
+    <field name="name">Batch or Lot Number</field>
+    <field name="barcode_nomenclature_id" ref="default_gs1_nomenclature"/>
+    <field name="sequence">20</field>
+    <field name="encoding">any</field>
+    <field name="type">product</field>
+    <field name="pattern">10.*</field>
+    <field name="gs1_content_type">alpha</field>
+  </record>
+  <record id="gs1_rule_expiration_date" model="barcode.rule">
+    <field name="name">Expiration Date (YYMMDD)</field>
+    <field name="barcode_nomenclature_id" ref="default_gs1_nomenclature"/>
+    <field name="sequence">30</field>
+    <field name="encoding">any</field>
+    <field name="type">product</field>
+    <field name="pattern">17......</field>
+    <field name="gs1_content_type">date</field>
+  </record>
+  <record id="gs1_rule_best_before_date" model="barcode.rule">
+    <field name="name">Best Before Date (YYMMDD)</field>
+    <field name="barcode_nomenclature_id" ref="default_gs1_nomenclature"/>
+    <field name="sequence">35</field>
+    <field name="encoding">any</field>
+    <field name="type">product</field>
+    <field name="pattern">15......</field>
+    <field name="gs1_content_type">date</field>
+  </record>
+  <record id="gs1_rule_serial" model="barcode.rule">
+    <field name="name">Serial Number</field>
+    <field name="barcode_nomenclature_id" ref="default_gs1_nomenclature"/>
+    <field name="sequence">40</field>
+    <field name="encoding">any</field>
+    <field name="type">product</field>
+    <field name="pattern">21.*</field>
+    <field name="gs1_content_type">alpha</field>
+  </record>
+</erp>

@@ -76,15 +76,17 @@ pub const DONE_MOVE_WRITABLE: [&str; 8] = [
     "reference_ids",
 ];
 
-/// The fields a done transfer may still change: notes and bookkeeping, nothing that moves stock.
+/// The fields a done transfer may still change: notes, signature and bookkeeping, nothing that moves stock.
 /// The one allow-list of done transfers.
-pub const DONE_PICKING_WRITABLE: [&str; 6] = [
+pub const DONE_PICKING_WRITABLE: [&str; 8] = [
     "note",
     "origin",
     "user_id",
     "printed",
     "is_locked",
     "priority",
+    "signed_by",
+    "signature",
 ];
 
 /// The fields a cancelled transfer may still change: those of a done one, and the batch link that
@@ -572,6 +574,7 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
         }
     }
 
+    resolve_and_check_lots(records, tx, &done_lines).await?;
     crate::returns::guard_completion(records, tx, &origins, &done_lines).await?;
 
     // one engine call: the released reservations and the on-hand changes, netted per key
@@ -660,6 +663,116 @@ async fn validate(records: &Records, tx: &mut Transaction) -> Result<Vec<i64>> {
     notify_pickings(records, tx, &roots).await?;
     confirm_moves(records, tx, &backorders, true).await?;
     Ok(original_lines)
+}
+
+/// Resolve `lot_name` into `stock.lot` records and verify lot/serial tracking rules on lines
+/// entering the done ledger.
+async fn resolve_and_check_lots(
+    records: &Records,
+    tx: &mut Transaction,
+    done_lines: &[i64],
+) -> Result<()> {
+    if done_lines.is_empty() {
+        return Ok(());
+    }
+    let rows = tx
+        .query(
+            "SELECT l.id::int8, l.company_id::int8, l.product_id::int8, l.lot_id::int8, \
+                    l.lot_name, l.quantity_product_uom, pt.is_storable, pt.tracking, \
+                    COALESCE(t.use_create_lots, true) \
+             FROM stock_move_line l \
+             JOIN product_product pp ON pp.id = l.product_id \
+             JOIN product_template pt ON pt.id = pp.product_tmpl_id \
+             LEFT JOIN stock_picking p ON p.id = l.picking_id \
+             LEFT JOIN stock_picking_type t ON t.id = p.picking_type_id \
+             WHERE l.id = ANY($1) \
+             ORDER BY l.id",
+            &[&done_lines],
+        )
+        .await?;
+    let lot_model = records.env().records("stock.lot")?;
+    for row in rows {
+        let line_id: i64 = row.try_get(0).map_err(decode)?;
+        let company_id: i64 = row.try_get(1).map_err(decode)?;
+        let product_id: i64 = row.try_get(2).map_err(decode)?;
+        let mut lot_id: Option<i64> = row.try_get(3).map_err(decode)?;
+        let lot_name: Option<String> = row.try_get(4).map_err(decode)?;
+        let qty_product_uom: Decimal = row.try_get(5).map_err(decode)?;
+        let _is_storable: bool = row.try_get(6).map_err(decode)?;
+        let tracking: Option<String> = row.try_get(7).map_err(decode)?;
+        let use_create_lots: bool = row.try_get(8).map_err(decode)?;
+
+        if lot_id.is_none()
+            && let Some(raw_name) = lot_name.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        {
+            let existing = tx
+                .query(
+                    "SELECT id::int8 FROM stock_lot \
+                     WHERE product_id = $1 AND name = $2 \
+                       AND (company_id = $3 OR company_id IS NULL) \
+                     ORDER BY company_id NULLS LAST, id LIMIT 1",
+                    &[&product_id, &raw_name, &company_id],
+                )
+                .await?;
+            let resolved = if let Some(found) = existing.first() {
+                found.try_get::<_, i64>(0).map_err(decode)?
+            } else {
+                if !use_create_lots {
+                    let name = product_name(tx, product_id).await?;
+                    return Err(Error::user(format!(
+                        "Cannot create new lot/serial number '{raw_name}' for product '{name}': \
+                         this operation type only allows existing lots."
+                    )));
+                }
+                let mut vals = RawVals::new();
+                vals.insert("name".into(), Cell::Str(raw_name.into()));
+                vals.insert("product_id".into(), Cell::Id(product_id));
+                vals.insert("company_id".into(), Cell::Id(company_id));
+                let created = lot_model.create(tx, vec![vals]).await?;
+                tx.flush().await?;
+                created
+                    .ids()
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| Error::invariant("Created stock.lot returned no id."))?
+            };
+            tx.execute(
+                "UPDATE stock_move_line SET lot_id = $1 WHERE id = $2",
+                &[&resolved, &line_id],
+            )
+            .await?;
+            lot_id = Some(resolved);
+        }
+
+        if !qty_product_uom.is_zero() {
+            match tracking.as_deref() {
+                Some("lot") => {
+                    if lot_id.is_none() {
+                        let name = product_name(tx, product_id).await?;
+                        return Err(Error::user(format!(
+                            "You need to supply a Lot/Serial Number for product '{name}'."
+                        )));
+                    }
+                }
+                Some("serial") => {
+                    if lot_id.is_none() {
+                        let name = product_name(tx, product_id).await?;
+                        return Err(Error::user(format!(
+                            "You need to supply a Serial Number for product '{name}'."
+                        )));
+                    }
+                    if qty_product_uom != Decimal::ONE {
+                        let name = product_name(tx, product_id).await?;
+                        return Err(Error::user(format!(
+                            "Serial-tracked product '{name}' must be moved with quantity 1 per line (got {qty_product_uom})."
+                        )));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 #[methods(StockPicking, addon = "stock")]

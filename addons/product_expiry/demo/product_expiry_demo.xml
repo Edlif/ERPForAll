@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <record id="product.product_demo_kopi" model="product.template">
+    <field name="is_storable" eval="True"/>
+    <field name="tracking">lot</field>
+    <field name="use_expiration_date" eval="True"/>
+    <field name="expiration_time">180</field>
+    <field name="use_time">30</field>
+    <field name="removal_time">15</field>
+    <field name="alert_time">60</field>
+  </record>
+
+  <record id="stock.lot_demo_kopi_01" model="stock.lot">
+    <field name="expiration_date">2027-05-31 00:00:00</field>
+    <field name="use_date">2027-05-01 00:00:00</field>
+    <field name="removal_date">2027-05-16 00:00:00</field>
+    <field name="alert_date">2027-04-01 00:00:00</field>
+  </record>
+
+  <record id="lot_demo_kopi_expired" model="stock.lot">
+    <field name="name">LOT-KOPI-2025-EXP</field>
+    <field name="product_id" search="[('product_tmpl_id', '=', ref('product.product_demo_kopi'))]"/>
+    <field name="company_id" ref="base.main_company"/>
+    <field name="expiration_date">2026-01-15 00:00:00</field>
+    <field name="use_date">2025-12-15 00:00:00</field>
+    <field name="removal_date">2025-12-31 00:00:00</field>
+    <field name="alert_date">2025-11-15 00:00:00</field>
+  </record>
+</erp>
