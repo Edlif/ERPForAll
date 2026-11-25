@@ -1,5 +1,5 @@
 /*! SPDX-License-Identifier: MIT OR Apache-2.0 */
-import { registerFieldWidget, type WidgetEnvironment, type WidgetHandle } from "@erpforall/client";
+import { localDateIso, registerFieldWidget, type WidgetEnvironment, type WidgetHandle } from "@erpforall/client";
 
 type Obj = Record<string, unknown>;
 
@@ -67,6 +67,13 @@ function makeButton(label: string, className: string, onClick: () => void): HTML
   btn.textContent = label;
   btn.addEventListener("click", onClick);
   return btn;
+}
+
+/** Asks before removing a line; the widget's form provides the dialog service, and without it nothing is removed. */
+async function confirmRemoval(env: WidgetEnvironment, title: string, message: string): Promise<boolean> {
+  if (!env.messages) throw new Error(`${title}: this form offers no confirmation dialog, so nothing was removed.`);
+  const decision = await env.messages.dialogs.confirm({ title, message, confirmLabel: "Remove", destructive: true }).result;
+  return decision === "confirm";
 }
 
 function dataUriForImage(raw: unknown): string | null {
@@ -173,7 +180,7 @@ function renderOrgChart(env: WidgetEnvironment): WidgetHandle {
         list.append(subHeading);
         subordinates.forEach(sub => list.append(drawNode(sub, "subordinate", managers.length + 1)));
       }
-      body.replaceChildren(list);
+      body.replaceChildren(...truncatedNotice(data, "The chart is cut at the server's limit: not every manager or direct report is shown."), list);
     } catch (error) {
       if (disposed || mine !== seq) return;
       body.replaceChildren(makeEl("p", "hr-widget-error", error instanceof Error ? error.message : String(error)));
@@ -192,6 +199,14 @@ function renderOrgChart(env: WidgetEnvironment): WidgetHandle {
       stop?.();
     },
   };
+}
+
+/** The notice for a chart the server cut short; a result without `truncated: true` is complete. */
+function truncatedNotice(data: Obj, text: string): HTMLElement[] {
+  if (data["truncated"] !== true) return [];
+  const notice = makeEl("p", "hr-widget-empty hr-chart-truncated", text);
+  notice.setAttribute("role", "status");
+  return [notice];
 }
 
 /* ============================================================================
@@ -256,7 +271,7 @@ function renderDepartmentChart(env: WidgetEnvironment): WidgetHandle {
         list.append(makeEl("div", "hr-org-section-label", `Sub-departments (${children.length})`));
         children.forEach(child => list.append(drawDept(child, "subordinate", ancestors.length + 1)));
       }
-      body.replaceChildren(list);
+      body.replaceChildren(...truncatedNotice(data, "The chart is cut at the server's limit: not every parent or sub-department is shown."), list);
     } catch (error) {
       if (disposed || mine !== seq) return;
       body.replaceChildren(makeEl("p", "hr-widget-error", error instanceof Error ? error.message : String(error)));
@@ -284,7 +299,7 @@ function renderResumeTimeline(env: WidgetEnvironment): WidgetHandle {
   const root = makeEl("section", "hr-widget hr-resume-timeline");
   const head = makeEl("div", "hr-widget-head");
   head.append(makeEl("h3", "hr-widget-title", "Resume"));
-  const addBtn = makeButton("+ Add Entry", "erp-button hr-widget-add-btn", () => void openAddModal());
+  const addBtn = makeButton("+ Add Entry", "erp-button hr-widget-add-btn", () => env.run(openAddModal));
   if (!env.field.readonly) head.append(addBtn);
   const body = makeEl("div", "hr-widget-body");
   root.append(head, body);
@@ -308,13 +323,13 @@ function renderResumeTimeline(env: WidgetEnvironment): WidgetHandle {
     if (disposed) return;
     const types = asList(asObj(typesResp)["records"]);
 
-    const overlay = makeEl("div", "activity-dialog-overlay");
-    const dialog = makeEl("div", "activity-dialog");
+    const overlay = makeEl("div", "hr-dialog-overlay");
+    const dialog = makeEl("div", "hr-dialog");
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-modal", "true");
-    const dlgHead = makeEl("div", "activity-dialog-header");
+    const dlgHead = makeEl("div", "hr-dialog-header");
     dlgHead.append(makeEl("span", undefined, "Add Resume Entry"), makeButton("✕", "erp-button", closeDialog));
-    const dlgBody = makeEl("div", "activity-dialog-body");
+    const dlgBody = makeEl("div", "hr-dialog-body");
 
     const titleInput = document.createElement("input");
     titleInput.type = "text";
@@ -325,7 +340,7 @@ function renderResumeTimeline(env: WidgetEnvironment): WidgetHandle {
     }
     const startInput = document.createElement("input");
     startInput.type = "date";
-    startInput.value = new Date().toISOString().slice(0, 10);
+    startInput.value = localDateIso();
     const endInput = document.createElement("input");
     endInput.type = "date";
     const descInput = document.createElement("textarea");
@@ -333,7 +348,7 @@ function renderResumeTimeline(env: WidgetEnvironment): WidgetHandle {
     descInput.placeholder = "Optional highlights or achievements";
 
     const fieldRow = (label: string, control: HTMLElement): HTMLElement => {
-      const lbl = makeEl("label", "activity-dialog-field", label);
+      const lbl = makeEl("label", "hr-dialog-field", label);
       lbl.append(control);
       return lbl;
     };
@@ -348,7 +363,7 @@ function renderResumeTimeline(env: WidgetEnvironment): WidgetHandle {
     errText.hidden = true;
     dlgBody.append(errText);
 
-    const footer = makeEl("div", "activity-dialog-footer");
+    const footer = makeEl("div", "hr-dialog-footer");
     footer.append(
       makeButton("Cancel", "erp-button", closeDialog),
       makeButton("Save Entry", "erp-button erp-button-primary", () => {
@@ -448,11 +463,13 @@ function renderResumeTimeline(env: WidgetEnvironment): WidgetHandle {
           if (!env.field.readonly && itemId > 0) {
             const del = makeButton("×", "hr-timeline-del", () => {
               env.run(async () => {
+                if (!await confirmRemoval(env, "Remove resume entry", `Remove "${titleText}" from the resume?`)) return;
                 await env.rpc.call("hr.resume.line", "unlink", { ids: [itemId], context: env.context }, { write: true });
                 await load();
               });
             });
             del.title = "Remove entry";
+            del.setAttribute("aria-label", `Remove ${titleText}`);
             top.append(del);
           }
           content.append(top);
@@ -493,7 +510,7 @@ function renderSkillsPanel(env: WidgetEnvironment): WidgetHandle {
   const root = makeEl("section", "hr-widget hr-skills-panel");
   const head = makeEl("div", "hr-widget-head");
   head.append(makeEl("h3", "hr-widget-title", "Skills"));
-  const addBtn = makeButton("+ Add Skill", "erp-button hr-widget-add-btn", () => void openAddModal());
+  const addBtn = makeButton("+ Add Skill", "erp-button hr-widget-add-btn", () => env.run(openAddModal));
   if (!env.field.readonly) head.append(addBtn);
   const body = makeEl("div", "hr-widget-body");
   root.append(head, body);
@@ -535,13 +552,13 @@ function renderSkillsPanel(env: WidgetEnvironment): WidgetHandle {
       return 0;
     };
 
-    const overlay = makeEl("div", "activity-dialog-overlay");
-    const dialog = makeEl("div", "activity-dialog");
+    const overlay = makeEl("div", "hr-dialog-overlay");
+    const dialog = makeEl("div", "hr-dialog");
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-modal", "true");
-    const dlgHead = makeEl("div", "activity-dialog-header");
+    const dlgHead = makeEl("div", "hr-dialog-header");
     dlgHead.append(makeEl("span", undefined, "Add Skill or Certification"), makeButton("✕", "erp-button", closeDialog));
-    const dlgBody = makeEl("div", "activity-dialog-body");
+    const dlgBody = makeEl("div", "hr-dialog-body");
 
     const typeSelect = document.createElement("select");
     for (const item of types) typeSelect.add(new Option(asStr(item["name"]), String(asNum(item["id"]))));
@@ -567,7 +584,7 @@ function renderSkillsPanel(env: WidgetEnvironment): WidgetHandle {
     syncOptions();
 
     const fieldRow = (label: string, control: HTMLElement): HTMLElement => {
-      const lbl = makeEl("label", "activity-dialog-field", label);
+      const lbl = makeEl("label", "hr-dialog-field", label);
       lbl.append(control);
       return lbl;
     };
@@ -582,7 +599,7 @@ function renderSkillsPanel(env: WidgetEnvironment): WidgetHandle {
     errText.hidden = true;
     dlgBody.append(errText);
 
-    const footer = makeEl("div", "activity-dialog-footer");
+    const footer = makeEl("div", "hr-dialog-footer");
     footer.append(
       makeButton("Cancel", "erp-button", closeDialog),
       makeButton("Save Skill", "erp-button erp-button-primary", () => {
@@ -675,11 +692,13 @@ function renderSkillsPanel(env: WidgetEnvironment): WidgetHandle {
           if (!env.field.readonly && itemId > 0) {
             const del = makeButton("×", "hr-timeline-del", () => {
               env.run(async () => {
+                if (!await confirmRemoval(env, "Remove skill", `Remove the skill "${skillName}"?`)) return;
                 await env.rpc.call("hr.employee.skill", "unlink", { ids: [itemId], context: env.context }, { write: true });
                 await load();
               });
             });
             del.title = "Remove skill";
+            del.setAttribute("aria-label", `Remove ${skillName}`);
             right.append(del);
           }
           top.append(right);
