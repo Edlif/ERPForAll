@@ -406,11 +406,18 @@ impl Cell {
         self.drillable = Some(supported && self.number.is_some());
         self
     }
-    /// Mark a cell with the `danger` tone (for example an overdue due date).
+    /// Mark a cell with the `danger` tone when `danger` holds (for example an overdue due date). A cell that
+    /// shows nothing carries no tone, and `false` leaves the cell as it is.
     #[must_use]
     pub fn with_danger(mut self, danger: bool) -> Self {
-        self.tone = danger.then_some(CellTone::Danger);
+        if danger && self.kind != CellKind::Empty {
+            self.tone = Some(CellTone::Danger);
+        }
         self
+    }
+    /// The tone, if the cell has one.
+    pub fn tone(&self) -> Option<CellTone> {
+        self.tone
     }
     /// Generated totals have their own line IDs and cannot reuse a definition cell's drill.
     pub(crate) fn suppress_declared_drill(&mut self) {

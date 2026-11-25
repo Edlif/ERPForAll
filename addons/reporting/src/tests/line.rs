@@ -91,6 +91,33 @@ fn cell_drill_capability_is_optional_and_generated_values_do_not_inherit_it() {
 }
 
 #[test]
+fn a_tone_marks_a_shown_value_and_travels_only_when_set() {
+    let due = Cell::date(erp_sdk::Date::from_ymd(2026, 11, 5).unwrap());
+    assert_eq!(due.tone(), None);
+    assert!(due.to_json().get("tone").is_none());
+
+    let overdue = due.clone().with_danger(true);
+    assert_eq!(overdue.tone(), Some(CellTone::Danger));
+    assert_eq!(overdue.to_json()["tone"], CellTone::Danger.as_str());
+    // A later `false` does not take the mark away, and the value is untouched.
+    assert_eq!(
+        overdue.clone().with_danger(false).tone(),
+        Some(CellTone::Danger)
+    );
+    assert_eq!(overdue.to_json()["value"], due.to_json()["value"]);
+
+    // A cell that shows nothing has nothing to mark.
+    assert_eq!(Cell::empty().with_danger(true).tone(), None);
+    assert!(
+        Cell::empty()
+            .with_danger(true)
+            .to_json()
+            .get("tone")
+            .is_none()
+    );
+}
+
+#[test]
 fn drill_targets_are_an_item_or_a_cell() {
     assert_eq!(
         DrillTarget::parse(&json!({"item": "open"})).unwrap(),

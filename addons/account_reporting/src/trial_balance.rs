@@ -10,8 +10,8 @@ use erp_addon_account::ledger::code::codes_by_account;
 use erp_addon_reporting::{
     definition::ReportDef,
     line::{
-        Cell as ReportCell, DrillTarget, ExpandPage, Expansion, Line, LineId, LineKind, Segment,
-        SegmentKind,
+        Cell as ReportCell, CellKind, DrillTarget, ExpandPage, Expansion, Line, LineId, LineKind,
+        Segment, SegmentKind,
     },
     options::{Options, Period},
     provider::{ProviderSpec, ReportCx, ReportProvider},
@@ -152,6 +152,7 @@ fn period_cells(
                 "debit" => Some(amounts.debit),
                 "credit" => Some(amounts.credit),
                 "closing" | "balance" => Some(amounts.closing),
+                // `init_options` refused every other label before any line was built
                 _ => None,
             };
             let cell = ReportCell::monetary(value, ctx.scale, Some(ctx.currency))
@@ -444,13 +445,31 @@ impl ReportProvider for TrialBalance {
     fn init_options<'a>(
         &'a self,
         _cx: &'a mut ReportCx<'_>,
-        _report: &'a ReportDef,
+        report: &'a ReportDef,
         options: &'a mut Options,
         _strict: bool,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if options.order.is_some() {
                 return Err(invalid("Trial Balance rows are ordered by account code."));
+            }
+            if let Some(key) = options.provider.keys().next() {
+                return Err(invalid(format!(
+                    "Invalid Trial Balance option {key}. This report has no provider options."
+                )));
+            }
+            // The cells are built by column label: a column this provider cannot fill is refused, never left blank.
+            if let Some(column) = report.columns.iter().find(|c| {
+                c.kind != CellKind::Monetary
+                    || !matches!(
+                        c.label.as_str(),
+                        "opening" | "debit" | "credit" | "closing" | "balance"
+                    )
+            }) {
+                return Err(invalid(format!(
+                    "Trial Balance column {} is not supported; its columns are monetary opening, debit, credit, closing and balance.",
+                    column.label
+                )));
             }
             Ok(())
         })

@@ -119,7 +119,14 @@ fn require_scope(options: &Options) -> Result<(i64, Date, Date)> {
 
 /// Resolves the caller-scoped base domain (`account.move.line` up through `period.to`),
 /// enforcing historical reconciliation admission when `provider.unreconciled = true`.
-async fn eligible_base(cx: &mut ReportCx<'_>, options: &Options) -> Result<Domain> {
+///
+/// With `partner`, the scope is that partner's items from the start, so unfolding or drilling one partner does not
+/// establish residuals for the whole company again.
+async fn eligible_base(
+    cx: &mut ReportCx<'_>,
+    options: &Options,
+    partner: Option<i64>,
+) -> Result<Domain> {
     let (company, _from, cutoff) = require_scope(options)?;
     let mut base = cond(json!([
         ["company_id", "=", company],
@@ -132,6 +139,9 @@ async fn eligible_base(cx: &mut ReportCx<'_>, options: &Options) -> Result<Domai
             ["asset_receivable", "liability_payable"]
         ]
     ]))?;
+    if let Some(partner) = partner {
+        base = partner_domain(base, partner)?;
+    }
     if options.provider.get("unreconciled").and_then(Json::as_bool) != Some(true) {
         return Ok(base);
     }
@@ -228,6 +238,21 @@ async fn eligible_base(cx: &mut ReportCx<'_>, options: &Options) -> Result<Domai
     }
     base = base & cond(json!([["id", "in", eligible]]))?;
     Ok(base)
+}
+
+/// The partner of a group row: an item without a partner belongs to the "no partner" group (0); any other key
+/// that is not a record is a broken answer, never silently that group.
+fn partner_key(value: Option<&GroupValue>) -> Result<i64> {
+    match value {
+        Some(GroupValue::Null | GroupValue::False) => Ok(0),
+        Some(key) => key
+            .record_id()
+            .map(|id| id.get())
+            .ok_or_else(|| Error::internal("Partner Ledger partner group is not a record.")),
+        None => Err(Error::internal(
+            "Partner Ledger group row has no partner key.",
+        )),
+    }
 }
 
 fn partner_domain(base: Domain, partner_id: i64) -> Result<Domain> {
@@ -404,7 +429,7 @@ async fn top_lines(
 ) -> Result<Expansion> {
     let (company, from, _to) = require_scope(options)?;
     let ctx = load_currency_ctx(cx, company).await?;
-    let base = eligible_base(cx, options).await?;
+    let base = eligible_base(cx, options, None).await?;
     let period = base.clone() & cond(json!([["date", ">=", day(from)]]))?;
     let env = cx.env().clone();
     let records = env.records("account.move.line")?;
@@ -431,20 +456,12 @@ async fn top_lines(
 
     let mut closing_by_partner: BTreeMap<i64, Decimal> = BTreeMap::new();
     for row in closing_groups.rows() {
-        let pid = row
-            .first()
-            .and_then(GroupValue::record_id)
-            .map(|id| id.get())
-            .unwrap_or(0);
+        let pid = partner_key(row.first())?;
         closing_by_partner.insert(pid, num(row.get(1))?);
     }
     let mut period_by_partner: BTreeMap<i64, [Decimal; 2]> = BTreeMap::new();
     for row in period_groups.rows() {
-        let pid = row
-            .first()
-            .and_then(GroupValue::record_id)
-            .map(|id| id.get())
-            .unwrap_or(0);
+        let pid = partner_key(row.first())?;
         period_by_partner.insert(pid, [num(row.get(1))?, num(row.get(2))?]);
     }
 
@@ -580,9 +597,17 @@ async fn expand_partner(
     let Located::Partner(pid) = locate(report, id)? else {
         return Err(invalid("This Partner Ledger line has no children."));
     };
-    let (company, from, to) = require_scope(options)?;
+    let (company, from, _to) = require_scope(options)?;
+    // The same page bound as the General Ledger: a client cannot ask for an offset past what a screen may hold.
+    page.offset
+        .checked_add(page.limit)
+        .filter(|end| *end <= cx.bounds().max_screen_lines as u64)
+        .ok_or_else(|| {
+            invalid("Partner Ledger paging exceeds reporting.max_screen_lines; narrow the scope.")
+        })?;
+    let today = cx.env().context_today()?;
     let ctx = load_currency_ctx(cx, company).await?;
-    let base = partner_domain(eligible_base(cx, options).await?, pid)?;
+    let base = eligible_base(cx, options, Some(pid)).await?;
     let opening_domain = base.clone() & cond(json!([["date", "<", day(from)]]))?;
     let period_domain = base.clone() & cond(json!([["date", ">=", day(from)]]))?;
 
@@ -710,7 +735,8 @@ async fn expand_partner(
             .map(String::as_str)
             .unwrap_or("");
         let item_date = opt_date_field(&row, "date")?;
-        let due_date = opt_date_field(&row, "date_maturity")?.or(item_date);
+        // The due date is shown as recorded: an item without one has none, and is never painted overdue.
+        let due_date = opt_date_field(&row, "date_maturity")?;
         let matching = text_field(&row, "matching_number")?;
         let reconciled = opt_int_field(&row, "full_reconcile_id")?.is_some();
         let debit = dec_field(&row, "debit")?;
@@ -719,7 +745,7 @@ async fn expand_partner(
         running = running
             .checked_add(bal)
             .ok_or_else(|| invalid("Partner Ledger running balance is too large."))?;
-        let due_danger = due_date.is_some_and(|d| d < to) && !reconciled && !bal.is_zero();
+        let due_danger = due_date.is_some_and(|d| d < today) && !reconciled && !bal.is_zero();
 
         let mut detail = Line::new(
             id.child(Segment::group(
@@ -792,7 +818,8 @@ async fn drill_line(
 ) -> Result<Json> {
     let loc = locate(report, id)?;
     let (_company, from, _to) = require_scope(options)?;
-    let base = eligible_base(cx, options).await?;
+    let (Located::Partner(scope) | Located::Initial(scope) | Located::Item(scope, _)) = loc;
+    let base = eligible_base(cx, options, Some(scope)).await?;
     let env = cx.env().clone();
 
     match (loc, target) {
