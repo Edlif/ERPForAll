@@ -9,8 +9,33 @@ use erp_addon_mail::{MailActivityMixin, MailThread};
 use erp_sdk::prelude::*;
 use erp_sdk::{Operation, ValueMap};
 
-const MAX_MANAGER_HOPS: usize = 64;
-const MAX_ORG_CHART_SUBORDINATES: usize = 100;
+use crate::counts::{as_field, count_by};
+use crate::{HIERARCHY_DEPTH_KEY, ORG_CHART_ROWS_KEY, count_parameter};
+
+fn too_deep(depth: usize) -> Error {
+    Error::validation(format!(
+        "The manager chain is deeper than {HIERARCHY_DEPTH_KEY} ({depth}) levels."
+    ))
+}
+
+/// Random codes tried before giving up on a company whose codes are nearly all taken.
+const BADGE_ATTEMPTS: usize = 8;
+
+/// A 12-digit badge code: `041` and nine digits from a randomly keyed hash of the clock, so a
+/// code cannot be derived from the record id.
+fn random_badge() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    hasher.write_u128(nanos);
+    format!("041{:09}", hasher.finish() % 1_000_000_000)
+}
+
+fn recursive_managers() -> Error {
+    Error::validation("You cannot create a recursive manager hierarchy.")
+}
 
 /// `hr.employee`: a person employed by one company, with full HR profile, org chart,
 /// contract/payroll summary, resume & skills, personal data (protected by `hr.group_hr_user`),
@@ -21,11 +46,18 @@ const MAX_ORG_CHART_SUBORDINATES: usize = 100;
     inherit = [ImageMixin, MailThread, MailActivityMixin],
     order = "name, id",
     company_access = direct(field = "company_id", branch = "exact", empty = "deny"),
-    constraints = [(
-        "_user_company_uniq",
-        "UNIQUE (company_id, user_id)",
-        "This user is already linked to another employee of this company."
-    )]
+    constraints = [
+        (
+            "_user_company_uniq",
+            "UNIQUE (company_id, user_id)",
+            "This user is already linked to another employee of this company."
+        ),
+        (
+            "_barcode_company_uniq",
+            "UNIQUE (company_id, barcode)",
+            "This Badge ID is already used by another employee of this company."
+        ),
+    ]
 )]
 pub struct HrEmployee {
     // ── Identity & Work Contact (Public Directory) ──────────────────────────
@@ -213,7 +245,7 @@ pub struct HrEmployee {
     )]
     pub sunday_location_id: Option<RecId>,
     /// Internal work note.
-    #[field(text, string = "Note")]
+    #[field(text, groups = "hr.group_hr_user", string = "Note")]
     pub additional_note: Option<Arc<str>>,
 
     // ── Payroll & Contract Summary ──────────────────────────────────────────
@@ -228,15 +260,26 @@ pub struct HrEmployee {
     )]
     pub employee_type_id: Option<RecId>,
     /// Current contract start date.
-    #[field(date, tracking = true, string = "Contract Start Date")]
+    #[field(
+        date,
+        tracking = true,
+        groups = "hr.group_hr_user",
+        string = "Contract Start Date"
+    )]
     pub contract_date_start: Option<Date>,
     /// Current contract end date.
-    #[field(date, tracking = true, string = "Contract End Date")]
+    #[field(
+        date,
+        tracking = true,
+        groups = "hr.group_hr_user",
+        string = "Contract End Date"
+    )]
     pub contract_date_end: Option<Date>,
     /// Formatted contract date span shown on Kanban cards (e.g. "Jan 1, 2025 - Dec 31, 2027").
     #[field(
         char,
         compute = "_compute_contract_period_label",
+        groups = "hr.group_hr_user",
         string = "Contract Period"
     )]
     pub contract_period_label: Option<Arc<str>>,
@@ -484,7 +527,8 @@ pub struct HrEmployee {
         string = "Related User"
     )]
     pub user_id: Option<RecId>,
-    #[field(char, default = "Asia/Jakarta", string = "Timezone")]
+    /// Defaults to the creating user's time zone, else the company's.
+    #[field(char, string = "Timezone")]
     pub tz: Option<Arc<str>>,
     #[field(
         many2one,
@@ -509,6 +553,19 @@ pub struct HrEmployee {
 
 #[methods(HrEmployee, addon = "hr")]
 impl HrEmployee {
+    /// `tz` defaults to the creating user's time zone, else the current company's.
+    #[method(override)]
+    async fn default_get(
+        this: &RecordSet<HrEmployee>,
+        tx: &mut Transaction,
+        names: Vec<String>,
+        sup: Super,
+    ) -> Result<ValueMap> {
+        let wants_tz = names.iter().any(|name| name == "tz");
+        let values = sup.call(tx, this.as_records(), (names,)).await?;
+        crate::with_default_tz(tx, this.env(), wants_tz, values).await
+    }
+
     #[compute(depends = ["department_id", "department_id.color"])]
     async fn _compute_department_color(
         this: &RecordSet<HrEmployee>,
@@ -531,36 +588,41 @@ impl HrEmployee {
         Ok(())
     }
 
-    #[compute(depends = ["child_ids"])]
+    #[compute(depends = ["child_ids"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_subordinate_count(
         this: &RecordSet<HrEmployee>,
         tx: &mut Transaction,
         out: &mut Assign<'_, HrEmployee>,
     ) -> Result<()> {
-        let employees = this.env().records("hr.employee")?;
-        for (index, id) in this.as_records().rec_ids().iter().enumerate() {
-            let domain = Domain::condition("parent_id", Operator::Eq, id.get())?;
-            let count = employees.search_count(tx, &domain, None).await?;
-            let count = i32::try_from(count).map_err(|_| {
-                Error::programming(format!("subordinate count {count} exceeds i32"))
-            })?;
+        let ids: Vec<i64> = this
+            .as_records()
+            .rec_ids()
+            .iter()
+            .map(|id| id.get())
+            .collect();
+        let counts = count_by(tx, this.env(), "hr.employee", "parent_id", &ids).await?;
+        for (index, id) in ids.iter().enumerate() {
+            let count = as_field(counts.get(id).copied().unwrap_or(0), "subordinate")?;
             out.set(index, HrEmployee::SUBORDINATE_COUNT, count)?;
         }
         Ok(())
     }
 
-    #[compute(depends = ["version_ids"])]
+    #[compute(depends = ["version_ids"], depends_context = ["uid", "allowed_company_ids"])]
     async fn _compute_versions_count(
         this: &RecordSet<HrEmployee>,
         tx: &mut Transaction,
         out: &mut Assign<'_, HrEmployee>,
     ) -> Result<()> {
-        let versions = this.env().records("hr.employee.version")?;
-        for (index, id) in this.as_records().rec_ids().iter().enumerate() {
-            let domain = Domain::condition("employee_id", Operator::Eq, id.get())?;
-            let count = versions.search_count(tx, &domain, None).await?;
-            let count = i32::try_from(count)
-                .map_err(|_| Error::programming(format!("version count {count} exceeds i32")))?;
+        let ids: Vec<i64> = this
+            .as_records()
+            .rec_ids()
+            .iter()
+            .map(|id| id.get())
+            .collect();
+        let counts = count_by(tx, this.env(), "hr.employee.version", "employee_id", &ids).await?;
+        for (index, id) in ids.iter().enumerate() {
+            let count = as_field(counts.get(id).copied().unwrap_or(0), "version")?;
             out.set(index, HrEmployee::VERSIONS_COUNT, count)?;
         }
         Ok(())
@@ -591,21 +653,25 @@ impl HrEmployee {
         this: &RecordSet<HrEmployee>,
         tx: &mut Transaction,
     ) -> Result<()> {
+        let depth = count_parameter(tx, HIERARCHY_DEPTH_KEY).await?;
         let employees = this.env().records("hr.employee")?;
         for id in this.as_records().rec_ids() {
             let start = id.get();
             let mut seen = BTreeSet::from([start]);
             let mut cursor = start;
-            for _ in 0..MAX_MANAGER_HOPS {
+            let mut hops = 0;
+            loop {
                 let row = employees.browse([cursor])?;
                 let next = match row.cell(tx, "parent_id").await? {
                     Cell::Id(pid) => pid,
                     _ => break,
                 };
                 if !seen.insert(next) {
-                    return Err(Error::validation(
-                        "You cannot create a recursive manager hierarchy.",
-                    ));
+                    return Err(recursive_managers());
+                }
+                hops += 1;
+                if hops > depth {
+                    return Err(too_deep(depth));
                 }
                 cursor = next;
             }
@@ -713,14 +779,7 @@ impl HrEmployee {
             Cell::Str(s) => format!("{s} — Contract History"),
             _ => "Contract History".to_string(),
         };
-        let company_id = match this.as_records().cell(tx, "company_id").await? {
-            Cell::Id(cid) => Some(cid),
-            _ => None,
-        };
-        let mut ctx = ValueMap::from([("default_employee_id".into(), Value::Int(id))]);
-        if let Some(cid) = company_id {
-            ctx.insert("default_company_id".into(), Value::Int(cid));
-        }
+        let ctx = ValueMap::from([("default_employee_id".into(), Value::Int(id))]);
         Ok(Value::Map(Arc::new(ValueMap::from([
             ("type".into(), Value::str("ir.actions.act_window")),
             ("name".into(), Value::str(name)),
@@ -888,9 +947,33 @@ impl HrEmployee {
         tx: &mut Transaction,
     ) -> Result<Value> {
         let rec = this.as_records();
-        let id = rec.ensure_one()?.int()?;
+        rec.ensure_one()?;
         rec.check_access(tx, Operation::Write).await?;
-        let code = format!("0410{:08}", id.unsigned_abs());
+        let Cell::Id(company) = rec.cell(tx, "company_id").await? else {
+            return Err(Error::validation("The employee has no company."));
+        };
+        let employees = this.env().records("hr.employee")?;
+        let mut code = None;
+        for _ in 0..BADGE_ATTEMPTS {
+            let candidate = random_badge();
+            let taken = Domain::and([
+                Domain::field("company_id")?.eq(company),
+                Domain::field("barcode")?.eq(candidate.as_str()),
+            ]);
+            let search = SearchOptions {
+                active_test: false,
+                ..SearchOptions::default()
+            };
+            if employees.search_with(tx, &taken, &search).await?.is_empty() {
+                code = Some(candidate);
+                break;
+            }
+        }
+        let Some(code) = code else {
+            return Err(Error::user(
+                "No free Badge ID was found for this company; try again.",
+            ));
+        };
         rec.write(
             tx,
             RawVals::new().set_cell("barcode", Cell::Str(code.clone().into())),
@@ -913,11 +996,15 @@ impl HrEmployee {
         ]))))
     }
 
-    /// Returns `{ self, managers, subordinates }` for the inline `hr.org_chart` widget.
+    /// Returns `{ self, managers, subordinates, subordinates_total, subordinates_truncated }` for
+    /// the inline `hr.org_chart` widget. At most `hr.max_org_chart_rows` subordinates are listed;
+    /// a manager chain longer than `hr.max_hierarchy_depth` or a cycle is an error.
     #[method]
     #[rpc(effect = read)]
     async fn get_org_chart(this: &RecordSet<HrEmployee>, tx: &mut Transaction) -> Result<Value> {
         let current_id = this.as_records().ensure_one()?.int()?;
+        let depth = count_parameter(tx, HIERARCHY_DEPTH_KEY).await?;
+        let rows = count_parameter(tx, ORG_CHART_ROWS_KEY).await?;
         let employees = this.env().records("hr.employee")?;
         let depts = this.env().records("hr.department")?;
 
@@ -925,10 +1012,12 @@ impl HrEmployee {
             read_employee_node(&employees, &depts, current_id, tx).await?;
         let mut managers = Vec::new();
         let mut seen = BTreeSet::from([current_id]);
-        for _ in 0..MAX_MANAGER_HOPS {
-            let Some(mid) = manager_cursor else { break };
+        while let Some(mid) = manager_cursor {
             if !seen.insert(mid) {
-                break;
+                return Err(recursive_managers());
+            }
+            if managers.len() == depth {
+                return Err(too_deep(depth));
             }
             let (val, next_parent) = read_employee_node(&employees, &depts, mid, tx).await?;
             managers.push(val);
@@ -937,22 +1026,28 @@ impl HrEmployee {
         managers.reverse();
 
         let sub_domain = Domain::condition("parent_id", Operator::Eq, current_id)?;
-        let sub_recs = employees.search(tx, &sub_domain).await?;
-        let mut subordinates = Vec::with_capacity(sub_recs.len().min(MAX_ORG_CHART_SUBORDINATES));
-        for sid in sub_recs
-            .ids()
-            .iter()
-            .copied()
-            .take(MAX_ORG_CHART_SUBORDINATES)
-        {
+        let total = employees.search_count(tx, &sub_domain, None).await?;
+        let limit = u64::try_from(rows)
+            .map_err(|_| Error::programming(format!("{ORG_CHART_ROWS_KEY} {rows} exceeds u64")))?;
+        let sub_recs = employees
+            .search_with(tx, &sub_domain, &SearchOptions::new().limit(limit))
+            .await?;
+        let mut subordinates = Vec::with_capacity(sub_recs.len());
+        for sid in sub_recs.ids().iter().copied() {
             let (val, _) = read_employee_node(&employees, &depts, sid, tx).await?;
             subordinates.push(val);
         }
+        let shown = u64::try_from(subordinates.len())
+            .map_err(|_| Error::programming("subordinate rows exceed u64"))?;
+        let total_val = i64::try_from(total)
+            .map_err(|_| Error::programming(format!("subordinate count {total} exceeds i64")))?;
 
         Ok(Value::Map(Arc::new(ValueMap::from([
             ("self".into(), self_val),
             ("managers".into(), Value::list(managers)),
             ("subordinates".into(), Value::list(subordinates)),
+            ("subordinates_total".into(), Value::Int(total_val)),
+            ("subordinates_truncated".into(), Value::Bool(total > shown)),
         ]))))
     }
 }

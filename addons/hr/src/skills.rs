@@ -90,10 +90,10 @@ pub struct HrResumeLine {
     #[field(char, string = "Reference URL")]
     pub external_url: Option<Arc<str>>,
     /// Optional certificate attachment.
-    #[field(binary, string = "Certificate")]
+    #[field(binary, groups = "hr.group_hr_user", string = "Certificate")]
     pub certificate_file: Option<Blob>,
     /// Certificate filename.
-    #[field(char, string = "Certificate Filename")]
+    #[field(char, groups = "hr.group_hr_user", string = "Certificate Filename")]
     pub certificate_filename: Option<Arc<str>>,
 }
 
@@ -341,10 +341,10 @@ pub struct HrEmployeeSkill {
     #[field(date, string = "Valid Until")]
     pub valid_to: Option<Date>,
     /// Optional uploaded certificate file.
-    #[field(binary, string = "Certificate")]
+    #[field(binary, groups = "hr.group_hr_user", string = "Certificate")]
     pub certificate_file: Option<Blob>,
     /// Certificate filename.
-    #[field(char, string = "Certificate Filename")]
+    #[field(char, groups = "hr.group_hr_user", string = "Certificate Filename")]
     pub certificate_filename: Option<Arc<str>>,
 }
 

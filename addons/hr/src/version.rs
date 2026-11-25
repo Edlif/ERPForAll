@@ -24,12 +24,13 @@ pub struct HrEmployeeVersion {
         string = "Employee"
     )]
     pub employee_id: Option<RecId>,
-    /// Owning company.
+    /// Company of the employee: always the employee's, so a wage row is never visible to an
+    /// officer of another company.
     #[field(
         many2one,
         comodel = "res.company",
-        required = true,
-        ondelete = "restrict",
+        compute = "_compute_company_id",
+        store = true,
         index = true,
         string = "Company"
     )]
@@ -110,6 +111,31 @@ pub struct HrEmployeeVersion {
 
 #[methods(HrEmployeeVersion, addon = "hr")]
 impl HrEmployeeVersion {
+    #[compute(depends = ["employee_id", "employee_id.company_id"])]
+    async fn _compute_company_id(
+        this: &RecordSet<HrEmployeeVersion>,
+        tx: &mut Transaction,
+        out: &mut Assign<'_, HrEmployeeVersion>,
+    ) -> Result<()> {
+        let employees = this.env().records("hr.employee")?;
+        let emp_ids = this.mapped(tx, HrEmployeeVersion::EMPLOYEE_ID).await?;
+        for (index, emp_opt) in emp_ids.into_iter().enumerate() {
+            let company = match emp_opt {
+                Some(eid) => match employees
+                    .browse([eid.get()])?
+                    .cell(tx, "company_id")
+                    .await?
+                {
+                    Cell::Id(cid) => RecId::from_real(cid),
+                    _ => None,
+                },
+                None => None,
+            };
+            out.set(index, HrEmployeeVersion::COMPANY_ID, company)?;
+        }
+        Ok(())
+    }
+
     #[constrains("date_start", "date_end")]
     async fn _check_dates(this: &RecordSet<HrEmployeeVersion>, tx: &mut Transaction) -> Result<()> {
         let starts = this.mapped(tx, HrEmployeeVersion::DATE_START).await?;
