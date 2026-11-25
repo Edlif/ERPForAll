@@ -9,11 +9,16 @@ import { imageDataUrl } from "./image-field.js";
 import { initials } from "./kanban.js";
 import { ClientError } from "./transport.js";
 import type { Field, HierarchyNode, Node, View } from "./metadata.js";
+import type { DialogService } from "./dialog-service.js";
+import { t } from "./translate.js";
 
 export interface HierarchyRendered {
   node: HTMLElement;
   dispose: () => void;
 }
+
+/** What the user unfolded and focused; the view keeps one across reloads so a reassignment leaves the chart as it was. */
+export interface HierarchyState { expanded?: Set<number>; focus?: number | null }
 
 export interface HierarchyRenderOptions {
   view: View;
@@ -26,6 +31,10 @@ export interface HierarchyRenderOptions {
   onReassign?: (childId: number, newParentId: number) => Promise<void>;
   /** Render a field read-only when custom display is needed. */
   formatField: (field: Field, record: Record<string, unknown>) => string;
+  /** Kept across renders of one view; empty on the first render. */
+  state?: HierarchyState;
+  /** Opens the keyboard path for a reassignment (a choice of the new parent); without it only drag and drop moves a card. */
+  dialogs?: DialogService;
 }
 
 export function hierarchyRoot(view: View): HierarchyNode {
@@ -61,7 +70,8 @@ function paletteIndex(raw: unknown, seedText: string): number {
 
 /** Build the interactive org-chart / hierarchy tree canvas. */
 export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyRendered {
-  const { view, records, focusId, open, onReassign, formatField } = options;
+  const { view, records, focusId, open, onReassign, formatField, dialogs } = options;
+  const state = options.state ?? {};
   const rootNode = hierarchyRoot(view);
   const fields = hierarchyCardFields(rootNode);
   const titleField = fields[0];
@@ -70,7 +80,7 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
   const avatarFieldName = rootNode.avatarField?.name;
   const colorFieldName = rootNode.colorField?.name;
   const countFieldName = rootNode.countField?.name;
-  const childNoun = rootNode.label ?? "items";
+  const childNoun = rootNode.label ?? t("items");
 
   const byId = new Map<number, Record<string, unknown>>();
   const childrenMap = new Map<number, number[]>();
@@ -107,10 +117,16 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
     if (parentMap.get(id) === null) roots.push(id);
   }
 
-  // Focused root: either explicit focusId or the single top-level root when there is only one.
-  const expanded = new Set<number>();
-  let activeFocus: number | null = focusId !== undefined && byId.has(focusId) ? focusId : null;
-  if (activeFocus !== null) {
+  // Focused root: either explicit focusId or the single top-level root when there is only one; a later render of the
+  // same view keeps what the user unfolded and focused.
+  const restored = state.expanded !== undefined;
+  const expanded = state.expanded ?? new Set<number>();
+  state.expanded = expanded;
+  let activeFocus: number | null = restored ? (state.focus !== undefined && state.focus !== null && byId.has(state.focus) ? state.focus : null)
+    : focusId !== undefined && byId.has(focusId) ? focusId : null;
+  if (restored) {
+    for (const id of [...expanded]) if (!byId.has(id)) expanded.delete(id);
+  } else if (activeFocus !== null) {
     // Expand the focused node (or its parent if leaf).
     if ((childrenMap.get(activeFocus)?.length ?? 0) > 0) {
       expanded.add(activeFocus);
@@ -123,6 +139,8 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
   }
 
   const host = el("div", undefined, "hierarchy-canvas");
+  host.setAttribute("role", "tree");
+  host.setAttribute("aria-label", rootNode.parentField.label);
   let draggedId: number | null = null;
   let disposed = false;
 
@@ -150,6 +168,38 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
     return wrap;
   };
 
+  const descendants = (id: number, found = new Set<number>()): Set<number> => {
+    for (const child of childrenMap.get(id) ?? []) if (!found.has(child)) { found.add(child); descendants(child, found); }
+    return found;
+  };
+
+  /** The keyboard path of a reassignment: choose the new parent among the loaded records (not the card or its subtree). */
+  const changeParent = (id: number, title: string): void => {
+    if (!dialogs || !onReassign) return;
+    const excluded = descendants(id).add(id);
+    const select = el("select");
+    select.name = parentFieldName;
+    select.autofocus = true;
+    for (const [candidate, rec] of byId) {
+      if (excluded.has(candidate)) continue;
+      const option = new Option(titleOf(rec), String(candidate));
+      option.selected = parentMap.get(id) === candidate;
+      select.append(option);
+    }
+    const label = el("label", undefined, "activity-modal-field");
+    label.append(el("span", rootNode.parentField.label), select);
+    const footer = el("div", undefined, "actions");
+    const save = button(t("Save"), () => {
+      const target = Number(select.value);
+      handle.close();
+      if (Number.isSafeInteger(target) && target > 0 && target !== parentMap.get(id)) void onReassign(id, target);
+    }, "primary");
+    save.dataset["defaultAction"] = "";
+    save.disabled = select.options.length === 0;
+    footer.append(button(t("Cancel"), () => handle.close()), save);
+    const handle = dialogs.open({ title: t("Change {field} of {record}", { field: rootNode.parentField.label, record: title }), body: label, footer, size: "sm" });
+  };
+
   const buildCard = (id: number, isExpanded: boolean): HTMLElement => {
     const rec = byId.get(id)!;
     const title = titleOf(rec);
@@ -160,7 +210,16 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
     const card = el("article", undefined, `hierarchy-card${open ? " hierarchy-card-clickable" : ""}`);
     card.dataset["id"] = String(id);
     card.setAttribute("role", "treeitem");
+    card.setAttribute("aria-label", title);
     if (directChildren.length > 0) card.setAttribute("aria-expanded", String(isExpanded));
+    if (open) {
+      card.tabIndex = 0;
+      card.addEventListener("keydown", event => {
+        if (event.target !== card || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        open(id);
+      });
+    }
 
     if (rootNode.draggable && onReassign) {
       card.draggable = true;
@@ -213,7 +272,7 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
     if (countFieldName) {
       const val = rec[countFieldName];
       if (typeof val === "number") {
-        body.append(el("div", `${val} ${val === 1 ? "Employee" : "Employees"}`, "hierarchy-card-stat"));
+        body.append(el("div", t("{label}: {count}", { label: rootNode.countField!.label, count: val }), "hierarchy-card-stat"));
       }
     }
     card.append(body);
@@ -226,10 +285,10 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
     }
 
     if (directChildren.length > 0) {
-      const noun = directChildren.length === 1
-        ? (childNoun === "people" ? "person" : childNoun.endsWith("s") ? childNoun.slice(0, -1) : childNoun)
-        : childNoun;
-      const toggleLabel = `${directChildren.length} ${noun}${totalSub > directChildren.length ? ` (${totalSub})` : ""}`;
+      // The arch names one plural noun; "noun: count" reads right for any count without a plural rule per language.
+      const toggleLabel = totalSub > directChildren.length
+        ? t("{noun}: {count} ({total})", { noun: childNoun, count: directChildren.length, total: totalSub })
+        : t("{noun}: {count}", { noun: childNoun, count: directChildren.length });
       const toggle = button("", () => {
         if (expanded.has(id)) {
           expanded.delete(id);
@@ -244,6 +303,15 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
       toggle.addEventListener("click", event => event.stopPropagation());
       toggle.append(icon(isExpanded ? "chevron-down" : "chevron-right"), el("span", toggleLabel));
       card.append(toggle);
+    }
+
+    if (rootNode.draggable && onReassign && dialogs) {
+      const move = button("", () => changeParent(id, title), "hierarchy-card-move");
+      move.addEventListener("click", event => event.stopPropagation());
+      move.append(icon("network"));
+      move.setAttribute("aria-label", t("Change {field} of {record}", { field: rootNode.parentField.label, record: title }));
+      move.title = t("Change {field}", { field: rootNode.parentField.label });
+      card.append(move);
     }
 
     return card;
@@ -294,6 +362,7 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
 
   const render = (): void => {
     if (disposed) return;
+    state.focus = activeFocus;
     host.replaceChildren();
     if (byId.size === 0) return;
 
@@ -301,7 +370,7 @@ export function renderHierarchyTree(options: HierarchyRenderOptions): HierarchyR
     if (activeFocus !== null && parentMap.get(activeFocus) !== null) {
       const ancestors = ancestorChain(activeFocus);
       const trail = el("div", undefined, "hierarchy-ancestors");
-      const allBtn = button("Top Level", () => {
+      const allBtn = button(t("Top level"), () => {
         activeFocus = null;
         expanded.clear();
         if (roots.length === 1) expanded.add(roots[0]!);

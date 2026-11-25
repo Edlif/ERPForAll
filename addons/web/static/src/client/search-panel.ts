@@ -207,6 +207,7 @@ export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPan
 
     // "All" root item
     const allLi = el("li", undefined, "search-panel-item");
+    allLi.setAttribute("role", "treeitem");
     const allRow = el("div", undefined, `search-panel-row${active === undefined ? " is-active" : ""}`);
     if (section.hierarchize && data?.parentField) {
       allRow.append(el("span", undefined, "search-panel-caret-spacer"));
@@ -218,6 +219,7 @@ export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPan
       render();
       onChange();
     }, "search-panel-pick");
+    allBtn.dataset["focusKey"] = `${section.id}:all`;
     allBtn.append(el("span", "All", "search-panel-label"));
     allBtn.setAttribute("aria-current", active === undefined ? "true" : "false");
     allRow.append(allBtn);
@@ -275,6 +277,7 @@ export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPan
             render();
           }, "search-panel-caret");
           caret.addEventListener("click", event => event.stopPropagation());
+          caret.dataset["focusKey"] = `${section.id}:caret:${String(item.id)}`;
           caret.append(icon(isOpen ? "chevron-down" : "chevron-right"));
           caret.setAttribute("aria-label", `${isOpen ? "Collapse" : "Expand"} ${item.label}`);
           row.append(caret);
@@ -291,6 +294,7 @@ export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPan
           onChange();
         }, "search-panel-pick");
         pick.setAttribute("aria-current", isActive ? "true" : "false");
+        pick.dataset["focusKey"] = `${section.id}:pick:${String(item.id)}`;
         const displayLabel =
           section.hierarchize && data?.parentField && depth > 0 && item.label.includes(" / ")
             ? (item.label.split(" / ").at(-1) ?? item.label)
@@ -333,6 +337,7 @@ export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPan
       const checkbox = el("input");
       checkbox.type = "checkbox";
       checkbox.checked = selected.has(item.id);
+      checkbox.dataset["focusKey"] = `${section.id}:check:${String(item.id)}`;
       checkbox.addEventListener("change", () => {
         const next = activeFilters.get(section.id) ?? new Set<number | string>();
         if (checkbox.checked) next.add(item.id);
@@ -353,6 +358,9 @@ export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPan
   };
 
   const render = (): void => {
+    // A pick rebuilds the sections; the control that had focus gets it back, so keyboard users keep their place.
+    const focused = document.activeElement instanceof HTMLElement && body.contains(document.activeElement)
+      ? document.activeElement.dataset["focusKey"] : undefined;
     body.replaceChildren();
     updateMobileBadge();
     if (panel.notice) body.append(el("p", panel.notice, "search-panel-note muted"));
@@ -365,6 +373,7 @@ export function createSearchPanelSidebar(options: SearchPanelOptions): SearchPan
       else renderFilterSection(section, wrap);
       body.append(wrap);
     }
+    if (focused !== undefined) [...body.querySelectorAll<HTMLElement>("[data-focus-key]")].find(node => node.dataset["focusKey"] === focused)?.focus();
   };
 
   const refresh = async (searchDomain: readonly unknown[]): Promise<void> => {
