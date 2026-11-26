@@ -244,7 +244,8 @@ async fn eligible_base(
 /// that is not a record is a broken answer, never silently that group.
 fn partner_key(value: Option<&GroupValue>) -> Result<i64> {
     match value {
-        Some(GroupValue::Null | GroupValue::False) => Ok(0),
+        // The empty relational group (items without a partner) arrives as an empty record set.
+        Some(GroupValue::Records(records)) if records.is_empty() => Ok(0),
         Some(key) => key
             .record_id()
             .map(|id| id.get())
