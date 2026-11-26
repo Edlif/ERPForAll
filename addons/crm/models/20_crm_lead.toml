@@ -1,0 +1,208 @@
+# One model for leads and opportunities: `type` says which one a record is. A lead is an
+# unqualified contact request; changing `type` to "opportunity" moves it into the pipeline.
+# The chatter (messages, followers, activities) comes from the two mail mixins.
+#
+# No company_id in this version: a model file cannot default it to the current company, and
+# once the model is company-scoped the company check refuses a lead without a company that
+# links a team or contact bound to a company. See the manifest description.
+[[model]]
+name = "crm.lead"
+description = "Lead/Opportunity"
+order = "priority desc, id desc"
+inherit = ["mail.thread", "mail.activity.mixin"]
+
+[[model.field]]
+name = "name"
+type = "char"
+string = "Opportunity"
+required = true
+index = true
+
+[[model.field]]
+name = "type"
+type = "selection"
+selection = [["lead", "Lead"], ["opportunity", "Opportunity"]]
+string = "Type"
+required = true
+default = "lead"
+index = true
+
+[[model.field]]
+name = "active"
+type = "boolean"
+string = "Active"
+help = "Archive a lost or obsolete record instead of deleting it."
+default = true
+
+[[model.field]]
+name = "priority"
+type = "selection"
+selection = [["0", "Normal"], ["1", "Medium"], ["2", "High"], ["3", "Very High"]]
+string = "Priority"
+default = "0"
+index = true
+
+[[model.field]]
+name = "color"
+type = "integer"
+string = "Color Index"
+default = 0
+
+# Who and where: a linked contact, or the details typed in before a contact exists.
+[[model.field]]
+name = "partner_id"
+type = "many2one"
+comodel = "res.partner"
+string = "Customer"
+ondelete = "set null"
+index = "btree_not_null"
+
+[[model.field]]
+name = "contact_name"
+type = "char"
+string = "Contact Name"
+
+[[model.field]]
+name = "partner_name"
+type = "char"
+string = "Company Name"
+help = "The company of the contact, kept as text until a customer is linked."
+
+[[model.field]]
+name = "email_from"
+type = "char"
+string = "Email"
+
+[[model.field]]
+name = "phone"
+type = "char"
+string = "Phone"
+
+[[model.field]]
+name = "mobile"
+type = "char"
+string = "Mobile"
+
+[[model.field]]
+name = "website"
+type = "char"
+string = "Website"
+
+[[model.field]]
+name = "street"
+type = "char"
+string = "Street"
+
+[[model.field]]
+name = "street2"
+type = "char"
+string = "Street 2"
+
+[[model.field]]
+name = "zip"
+type = "char"
+string = "ZIP"
+
+[[model.field]]
+name = "city"
+type = "char"
+string = "City"
+
+[[model.field]]
+name = "state_id"
+type = "many2one"
+comodel = "res.country.state"
+string = "State"
+ondelete = "restrict"
+
+[[model.field]]
+name = "country_id"
+type = "many2one"
+comodel = "res.country"
+string = "Country"
+ondelete = "restrict"
+
+# Follow-up: who works on it and where it stands.
+[[model.field]]
+name = "user_id"
+type = "many2one"
+comodel = "res.users"
+string = "Salesperson"
+ondelete = "set null"
+index = "btree_not_null"
+
+[[model.field]]
+name = "team_id"
+type = "many2one"
+comodel = "crm.team"
+string = "Sales Team"
+ondelete = "set null"
+index = "btree_not_null"
+
+[[model.field]]
+name = "stage_id"
+type = "many2one"
+comodel = "crm.stage"
+string = "Stage"
+ondelete = "restrict"
+index = true
+
+[[model.field]]
+name = "tag_ids"
+type = "many2many"
+comodel = "crm.tag"
+relation = "crm_tag_rel"
+column1 = "lead_id"
+column2 = "tag_id"
+string = "Tags"
+
+[[model.field]]
+name = "referred"
+type = "char"
+string = "Referred By"
+
+[[model.field]]
+name = "description"
+type = "html"
+string = "Notes"
+
+# Forecast and closing, entered by hand in this version.
+[[model.field]]
+name = "currency_id"
+type = "many2one"
+comodel = "res.currency"
+string = "Currency"
+ondelete = "restrict"
+
+[[model.field]]
+name = "expected_revenue"
+type = "monetary"
+currency_field = "currency_id"
+string = "Expected Revenue"
+
+[[model.field]]
+name = "probability"
+type = "float"
+string = "Probability (%)"
+help = "The chance of winning, from 0 to 100."
+
+[[model.field]]
+name = "date_deadline"
+type = "date"
+string = "Expected Closing"
+index = true
+
+[[model.field]]
+name = "date_closed"
+type = "datetime"
+string = "Closed Date"
+copy = false
+
+[[model.field]]
+name = "lost_reason_id"
+type = "many2one"
+comodel = "crm.lost.reason"
+string = "Lost Reason"
+ondelete = "restrict"
+index = "btree_not_null"
+copy = false

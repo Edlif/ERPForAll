@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- The default pipeline, shared by every sales team. noupdate: edits a database makes to these
+     stages survive an upgrade. -->
+<erp noupdate="1">
+  <record id="stage_new" model="crm.stage">
+    <field name="name">New</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="stage_qualified" model="crm.stage">
+    <field name="name">Qualified</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <record id="stage_proposition" model="crm.stage">
+    <field name="name">Proposition</field>
+    <field name="sequence" eval="30"/>
+  </record>
+  <record id="stage_won" model="crm.stage">
+    <field name="name">Won</field>
+    <field name="sequence" eval="90"/>
+    <field name="is_won" eval="True"/>
+    <field name="fold" eval="True"/>
+  </record>
+</erp>

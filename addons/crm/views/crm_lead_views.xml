@@ -1,0 +1,342 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Leads and opportunities: one search view, a list and a form for each type, the pipeline board,
+     the calendar of expected closings, the pivot and the graph, and the two window actions. -->
+<erp>
+  <record id="crm_lead_view_search" model="ir.ui.view">
+    <field name="name">crm.lead.search</field>
+    <field name="model">crm.lead</field>
+    <field name="arch" type="xml">
+      <search string="Leads and Opportunities">
+        <field name="name" string="Lead or Opportunity" filter_domain="['|', '|', '|', ('name', 'ilike', self), ('partner_name', 'ilike', self), ('contact_name', 'ilike', self), ('email_from', 'ilike', self)]"/>
+        <field name="partner_id"/>
+        <field name="user_id"/>
+        <field name="team_id"/>
+        <field name="stage_id"/>
+        <field name="tag_ids"/>
+        <filter name="my_pipeline" string="My Pipeline" domain="[('user_id', '=', uid)]"/>
+        <filter name="unassigned" string="Unassigned" domain="[('user_id', '=', False)]"/>
+        <separator/>
+        <filter name="leads" string="Leads" domain="[('type', '=', 'lead')]"/>
+        <filter name="opportunities" string="Opportunities" domain="[('type', '=', 'opportunity')]"/>
+        <separator/>
+        <filter name="open" string="Active" domain="[('active', '=', True)]"/>
+        <filter name="won" string="Won" domain="[('stage_id.is_won', '=', True)]"/>
+        <filter name="lost" string="Lost" domain="[('active', '=', False), ('lost_reason_id', '!=', False)]"/>
+        <group>
+          <filter name="group_stage" string="Stage" context="{'group_by': 'stage_id'}"/>
+          <filter name="group_user" string="Salesperson" context="{'group_by': 'user_id'}"/>
+          <filter name="group_team" string="Sales Team" context="{'group_by': 'team_id'}"/>
+        </group>
+      </search>
+    </field>
+  </record>
+
+  <!-- Leads -->
+  <record id="crm_lead_view_list_lead" model="ir.ui.view">
+    <field name="name">crm.lead.list.lead</field>
+    <field name="model">crm.lead</field>
+    <field name="arch" type="xml">
+      <list string="Leads">
+        <field name="name" string="Lead"/>
+        <field name="contact_name"/>
+        <field name="partner_name"/>
+        <field name="email_from" widget="email"/>
+        <field name="phone" widget="phone"/>
+        <field name="city"/>
+        <field name="country_id"/>
+        <field name="user_id"/>
+        <field name="team_id"/>
+        <field name="priority" widget="priority"/>
+        <field name="create_date" string="Created On"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="crm_lead_view_form_lead" model="ir.ui.view">
+    <field name="name">crm.lead.form.lead</field>
+    <field name="model">crm.lead</field>
+    <field name="priority" eval="20"/>
+    <field name="arch" type="xml">
+      <form string="Lead">
+        <sheet>
+          <field name="active" invisible="1"/>
+          <widget name="web_ribbon" title="Archived" bg_color="bg-danger" invisible="active"/>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="What the contact asked for"/></h1>
+          </div>
+          <group>
+            <group string="Contact">
+              <field name="contact_name"/>
+              <field name="partner_name"/>
+              <field name="email_from" widget="email"/>
+              <field name="phone" widget="phone"/>
+              <field name="mobile" widget="phone"/>
+              <field name="website" widget="url"/>
+            </group>
+            <group string="Follow-up">
+              <field name="type" widget="radio"/>
+              <field name="partner_id"/>
+              <field name="user_id" widget="many2one_avatar"/>
+              <field name="team_id"/>
+              <field name="priority" widget="priority"/>
+              <field name="tag_ids" widget="many2many_tags"/>
+            </group>
+          </group>
+          <notebook>
+            <page name="notes" string="Notes">
+              <field name="description" widget="html"/>
+            </page>
+            <page name="address" string="Address">
+              <group>
+                <field name="street"/>
+                <field name="street2"/>
+                <field name="zip"/>
+                <field name="city"/>
+                <field name="state_id"/>
+                <field name="country_id"/>
+              </group>
+            </page>
+            <page name="extra" string="Extra Information">
+              <group>
+                <field name="referred"/>
+                <field name="lost_reason_id"/>
+                <field name="color" widget="color_picker"/>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+        <chatter/>
+      </form>
+    </field>
+  </record>
+
+  <!-- Opportunities -->
+  <record id="crm_lead_view_list_opportunity" model="ir.ui.view">
+    <field name="name">crm.lead.list.opportunity</field>
+    <field name="model">crm.lead</field>
+    <field name="arch" type="xml">
+      <list string="Opportunities">
+        <field name="name"/>
+        <field name="partner_id"/>
+        <field name="stage_id"/>
+        <field name="expected_revenue"/>
+        <field name="currency_id" invisible="1"/>
+        <field name="probability"/>
+        <field name="date_deadline"/>
+        <field name="user_id"/>
+        <field name="team_id"/>
+        <field name="priority" widget="priority"/>
+        <field name="tag_ids" widget="many2many_tags"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="crm_lead_view_form" model="ir.ui.view">
+    <field name="name">crm.lead.form.opportunity</field>
+    <field name="model">crm.lead</field>
+    <field name="priority" eval="10"/>
+    <field name="arch" type="xml">
+      <form string="Opportunity">
+        <sheet>
+          <field name="active" invisible="1"/>
+          <widget name="web_ribbon" title="Lost" bg_color="bg-danger" invisible="active"/>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="What the customer wants to buy"/></h1>
+          </div>
+          <group>
+            <group string="Opportunity">
+              <field name="partner_id"/>
+              <field name="expected_revenue"/>
+              <field name="currency_id"/>
+              <field name="probability"/>
+              <field name="stage_id" domain="['|', ('team_id', '=', False), ('team_id', '=', team_id)]"/>
+              <field name="date_deadline"/>
+            </group>
+            <group string="Follow-up">
+              <field name="user_id" widget="many2one_avatar"/>
+              <field name="team_id"/>
+              <field name="priority" widget="priority"/>
+              <field name="tag_ids" widget="many2many_tags"/>
+            </group>
+          </group>
+          <notebook>
+            <page name="notes" string="Notes">
+              <field name="description" widget="html"/>
+            </page>
+            <page name="contact" string="Contact">
+              <group>
+                <group string="Contact">
+                  <field name="contact_name"/>
+                  <field name="partner_name"/>
+                  <field name="email_from" widget="email"/>
+                  <field name="phone" widget="phone"/>
+                  <field name="mobile" widget="phone"/>
+                  <field name="website" widget="url"/>
+                </group>
+                <group string="Address">
+                  <field name="street"/>
+                  <field name="street2"/>
+                  <field name="zip"/>
+                  <field name="city"/>
+                  <field name="state_id"/>
+                  <field name="country_id"/>
+                </group>
+              </group>
+            </page>
+            <page name="extra" string="Extra Information">
+              <group>
+                <group string="Closing">
+                  <field name="lost_reason_id"/>
+                  <field name="date_closed"/>
+                </group>
+                <group string="Other">
+                  <field name="type" widget="radio"/>
+                  <field name="referred"/>
+                  <field name="color" widget="color_picker"/>
+                </group>
+              </group>
+            </page>
+          </notebook>
+        </sheet>
+        <chatter/>
+      </form>
+    </field>
+  </record>
+
+  <!-- The pipeline board. default_group_by asks for one column per stage; a client that does not
+       draw grouped columns yet shows the cards ungrouped, so each card also shows its stage. -->
+  <record id="crm_lead_view_kanban" model="ir.ui.view">
+    <field name="name">crm.lead.kanban</field>
+    <field name="model">crm.lead</field>
+    <field name="arch" type="xml">
+      <kanban string="Pipeline" default_group_by="stage_id">
+        <templates>
+          <t t-name="card">
+            <main>
+              <field name="name"/>
+              <field name="partner_id"/>
+              <field name="tag_ids" widget="many2many_tags"/>
+            </main>
+            <aside>
+              <field name="expected_revenue"/>
+              <field name="currency_id" invisible="1"/>
+            </aside>
+            <footer>
+              <field name="priority" widget="priority"/>
+              <field name="stage_id" widget="badge"/>
+              <field name="user_id" widget="many2one_avatar"/>
+            </footer>
+          </t>
+        </templates>
+      </kanban>
+    </field>
+  </record>
+
+  <record id="crm_lead_view_calendar" model="ir.ui.view">
+    <field name="name">crm.lead.calendar</field>
+    <field name="model">crm.lead</field>
+    <field name="arch" type="xml">
+      <calendar string="Expected Closings" date_start="date_deadline" color="user_id" mode="month">
+        <field name="name"/>
+        <field name="partner_id"/>
+        <field name="stage_id" filters="1"/>
+        <field name="user_id" filters="1"/>
+      </calendar>
+    </field>
+  </record>
+
+  <record id="crm_lead_view_pivot" model="ir.ui.view">
+    <field name="name">crm.lead.pivot</field>
+    <field name="model">crm.lead</field>
+    <field name="arch" type="xml">
+      <pivot string="Pipeline Analysis" display_quantity="1">
+        <field name="stage_id" type="row"/>
+        <field name="date_deadline" type="col" interval="month"/>
+        <field name="expected_revenue" type="measure"/>
+      </pivot>
+    </field>
+  </record>
+
+  <record id="crm_lead_view_graph" model="ir.ui.view">
+    <field name="name">crm.lead.graph</field>
+    <field name="model">crm.lead</field>
+    <field name="arch" type="xml">
+      <graph string="Pipeline Analysis" type="bar">
+        <field name="stage_id"/>
+        <field name="user_id"/>
+        <field name="expected_revenue" type="measure"/>
+      </graph>
+    </field>
+  </record>
+
+  <!-- Pipeline: opportunities only, board first. -->
+  <record id="crm_lead_action_pipeline" model="ir.actions.act_window">
+    <field name="name">Pipeline</field>
+    <field name="res_model">crm.lead</field>
+    <field name="view_mode">kanban,list,form,calendar,pivot,graph</field>
+    <field name="domain">[('type', '=', 'opportunity')]</field>
+    <field name="context">{'default_type': 'opportunity'}</field>
+    <field name="view_id" ref="crm_lead_view_kanban"/>
+    <field name="search_view_id" ref="crm_lead_view_search"/>
+  </record>
+  <record id="crm_lead_action_pipeline_kanban" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="crm_lead_action_pipeline"/>
+    <field name="view_id" ref="crm_lead_view_kanban"/>
+    <field name="view_mode">kanban</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="crm_lead_action_pipeline_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="crm_lead_action_pipeline"/>
+    <field name="view_id" ref="crm_lead_view_list_opportunity"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="20"/>
+  </record>
+  <record id="crm_lead_action_pipeline_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="crm_lead_action_pipeline"/>
+    <field name="view_id" ref="crm_lead_view_form"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="30"/>
+  </record>
+  <record id="crm_lead_action_pipeline_calendar" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="crm_lead_action_pipeline"/>
+    <field name="view_id" ref="crm_lead_view_calendar"/>
+    <field name="view_mode">calendar</field>
+    <field name="sequence" eval="40"/>
+  </record>
+  <record id="crm_lead_action_pipeline_pivot" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="crm_lead_action_pipeline"/>
+    <field name="view_id" ref="crm_lead_view_pivot"/>
+    <field name="view_mode">pivot</field>
+    <field name="sequence" eval="50"/>
+  </record>
+  <record id="crm_lead_action_pipeline_graph" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="crm_lead_action_pipeline"/>
+    <field name="view_id" ref="crm_lead_view_graph"/>
+    <field name="view_mode">graph</field>
+    <field name="sequence" eval="60"/>
+  </record>
+
+  <!-- Leads: records of type lead, created as leads. -->
+  <record id="crm_lead_action_leads" model="ir.actions.act_window">
+    <field name="name">Leads</field>
+    <field name="res_model">crm.lead</field>
+    <field name="view_mode">list,form</field>
+    <field name="domain">[('type', '=', 'lead')]</field>
+    <field name="context">{'default_type': 'lead'}</field>
+    <field name="view_id" ref="crm_lead_view_list_lead"/>
+    <field name="search_view_id" ref="crm_lead_view_search"/>
+  </record>
+  <record id="crm_lead_action_leads_list" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="crm_lead_action_leads"/>
+    <field name="view_id" ref="crm_lead_view_list_lead"/>
+    <field name="view_mode">list</field>
+    <field name="sequence" eval="10"/>
+  </record>
+  <record id="crm_lead_action_leads_form" model="ir.actions.act_window.view">
+    <field name="act_window_id" ref="crm_lead_action_leads"/>
+    <field name="view_id" ref="crm_lead_view_form_lead"/>
+    <field name="view_mode">form</field>
+    <field name="sequence" eval="20"/>
+  </record>
+</erp>

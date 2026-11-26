@@ -1,0 +1,45 @@
+name = "CRM"
+summary = "Leads, opportunities and a sales pipeline"
+description = """
+The CRM app: track leads and opportunities through a sales pipeline. Data-only: the models, \
+screens, menus, access rows and default data are declared in files, with no Rust code.
+
+One model, crm.lead, holds both kinds of record; its type is lead or opportunity. The Leads menu \
+lists and creates leads, and the Pipeline menu lists and creates opportunities (board, list, \
+calendar of expected closings, pivot and graph over the expected revenue). A lead becomes an \
+opportunity when its type is changed in the form. Every lead and opportunity has a chatter with \
+messages, followers and activities. Stages (crm.stage, shared by all teams or tied to one sales \
+team) and lost reasons (crm.lost.reason) are configured by sales administrators; tags and sales \
+teams are those of sales_team.
+
+Access uses the Sales groups of sales_team: "User: Own Documents Only" reads, creates and edits \
+its own and unassigned leads, "User: All Documents" all leads, and "Administrator" also deletes \
+them and manages stages and lost reasons.
+
+What this version does by hand, until a native addon adds the logic: there is no button to \
+convert a lead (change its type and link or create the customer yourself) or to mark an \
+opportunity won or lost (move it to a won stage, or set a lost reason and archive it); \
+probability, closed date, salesperson, sales team, stage and currency get no automatic value; \
+changes are not tracked in the chatter; and the board lists the cards without stage columns \
+until the web client draws grouped kanban columns. The leads have no company field yet, so \
+every company sees them.
+"""
+version = "1.0.0"
+license = "MIT OR Apache-2.0"
+author = "ERPForAll contributors"
+category = "Sales/CRM"
+application = true
+icon = "lucide:target"
+depends = ["base", "web", "mail", "contacts", "sales_team"]
+# Access rows first, then the default data, the screens and the menus that open them.
+data = [
+    "security/ir.access.csv",
+    "data/crm_stage_data.xml",
+    "data/crm_lost_reason_data.xml",
+    "views/crm_lead_views.xml",
+    "views/crm_config_views.xml",
+    "views/crm_menus.xml",
+]
+demo = [
+    "demo/crm_demo.xml",
+]

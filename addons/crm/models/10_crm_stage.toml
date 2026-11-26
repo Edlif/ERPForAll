@@ -1,0 +1,46 @@
+# A step of the sales pipeline. A stage without a team is offered to every team.
+[[model]]
+name = "crm.stage"
+description = "CRM Stage"
+order = "sequence, name, id"
+
+[[model.field]]
+name = "name"
+type = "char"
+string = "Stage Name"
+required = true
+
+[[model.field]]
+name = "sequence"
+type = "integer"
+string = "Sequence"
+help = "Stages are shown in ascending order of this number."
+default = 10
+
+[[model.field]]
+name = "fold"
+type = "boolean"
+string = "Folded in Pipeline"
+help = "Shows this stage's column collapsed when the pipeline is grouped by stage."
+default = false
+
+[[model.field]]
+name = "is_won"
+type = "boolean"
+string = "Is Won Stage"
+help = "Opportunities in this stage count as won."
+default = false
+
+[[model.field]]
+name = "team_id"
+type = "many2one"
+comodel = "crm.team"
+string = "Sales Team"
+help = "Leave empty to offer the stage to every sales team."
+ondelete = "set null"
+
+[[model.field]]
+name = "requirements"
+type = "text"
+string = "Requirements"
+help = "What the salesperson should have done before moving an opportunity to this stage."

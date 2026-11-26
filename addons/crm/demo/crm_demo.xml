@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Demo customers, tags, leads and opportunities. Every name, address and number is invented.
+     The records use the default Sales team of sales_team and leave the salesperson empty, so
+     every salesperson sees them. -->
+<erp>
+  <record id="partner_demo_northwind" model="res.partner">
+    <field name="name">Northwind Rooftop Solar</field>
+    <field name="vat">DEMO-CRM-0001</field>
+    <field name="email">office@northwind-solar.example.com</field>
+    <field name="phone">+1 555 0100 201</field>
+    <field name="website">https://northwind-solar.example.com</field>
+    <field name="city">Springfield</field>
+    <field name="country_id" ref="base.us"/>
+  </record>
+  <record id="partner_demo_northwind_mara" model="res.partner">
+    <field name="name">Mara Ellison</field>
+    <field name="parent_id" ref="partner_demo_northwind"/>
+    <field name="email">mara.ellison@northwind-solar.example.com</field>
+    <field name="phone">+1 555 0100 202</field>
+  </record>
+  <record id="partner_demo_bluepine" model="res.partner">
+    <field name="name">Blue Pine Dental Clinics</field>
+    <field name="vat">DEMO-CRM-0002</field>
+    <field name="email">contact@bluepine-dental.example.com</field>
+    <field name="phone">+1 555 0100 301</field>
+    <field name="city">Riverton</field>
+    <field name="country_id" ref="base.us"/>
+  </record>
+  <record id="partner_demo_bluepine_omar" model="res.partner">
+    <field name="name">Omar Haddad</field>
+    <field name="parent_id" ref="partner_demo_bluepine"/>
+    <field name="email">omar.haddad@bluepine-dental.example.com</field>
+  </record>
+  <record id="partner_demo_quarry" model="res.partner">
+    <field name="name">Quarry Lane Bakery</field>
+    <field name="vat">DEMO-CRM-0003</field>
+    <field name="email">hello@quarrylane-bakery.example.com</field>
+    <field name="city">Lakeside</field>
+    <field name="country_id" ref="base.us"/>
+  </record>
+
+  <record id="tag_demo_website" model="crm.tag">
+    <field name="name">Website Inquiry</field>
+    <field name="color" eval="5"/>
+  </record>
+  <record id="tag_demo_trade_fair" model="crm.tag">
+    <field name="name">Trade Fair</field>
+    <field name="color" eval="7"/>
+  </record>
+  <record id="tag_demo_referral" model="crm.tag">
+    <field name="name">Referral</field>
+    <field name="color" eval="10"/>
+  </record>
+
+  <!-- Leads: contact requests that nobody has qualified yet. -->
+  <record id="lead_demo_coworking" model="crm.lead">
+    <field name="name">Furniture for a new coworking floor</field>
+    <field name="type">lead</field>
+    <field name="contact_name">Lena Fischer</field>
+    <field name="partner_name">Harbor Desk Coworking</field>
+    <field name="email_from">lena.fischer@harbordesk.example.com</field>
+    <field name="phone">+1 555 0100 401</field>
+    <field name="city">Portside</field>
+    <field name="country_id" ref="base.us"/>
+    <field name="team_id" ref="sales_team.team_sales_department"/>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_website')])]"/>
+    <field name="priority">1</field>
+  </record>
+  <record id="lead_demo_school" model="crm.lead">
+    <field name="name">Projectors for twelve classrooms</field>
+    <field name="type">lead</field>
+    <field name="contact_name">Daniel Okafor</field>
+    <field name="partner_name">Maple Grove Middle School</field>
+    <field name="email_from">d.okafor@maplegrove-school.example.com</field>
+    <field name="referred">Trade fair visitor list</field>
+    <field name="team_id" ref="sales_team.team_sales_department"/>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_trade_fair')])]"/>
+  </record>
+  <record id="lead_demo_bakery" model="crm.lead">
+    <field name="name">Point-of-sale terminals for two shops</field>
+    <field name="type">lead</field>
+    <field name="partner_id" ref="partner_demo_quarry"/>
+    <field name="partner_name">Quarry Lane Bakery</field>
+    <field name="email_from">hello@quarrylane-bakery.example.com</field>
+    <field name="team_id" ref="sales_team.team_sales_department"/>
+  </record>
+
+  <!-- Opportunities across the default stages, one won and one lost. -->
+  <record id="opportunity_demo_solar_panels" model="crm.lead">
+    <field name="name">Inverters for the spring installations</field>
+    <field name="type">opportunity</field>
+    <field name="partner_id" ref="partner_demo_northwind"/>
+    <field name="contact_name">Mara Ellison</field>
+    <field name="email_from">mara.ellison@northwind-solar.example.com</field>
+    <field name="team_id" ref="sales_team.team_sales_department"/>
+    <field name="stage_id" ref="stage_new"/>
+    <field name="currency_id" ref="base.USD"/>
+    <field name="expected_revenue">18500</field>
+    <field name="probability" eval="10.0"/>
+    <field name="date_deadline">2027-01-29</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_website')])]"/>
+  </record>
+  <record id="opportunity_demo_dental_chairs" model="crm.lead">
+    <field name="name">Replacement chairs for three clinics</field>
+    <field name="type">opportunity</field>
+    <field name="partner_id" ref="partner_demo_bluepine"/>
+    <field name="contact_name">Omar Haddad</field>
+    <field name="email_from">omar.haddad@bluepine-dental.example.com</field>
+    <field name="team_id" ref="sales_team.team_sales_department"/>
+    <field name="stage_id" ref="stage_qualified"/>
+    <field name="currency_id" ref="base.USD"/>
+    <field name="expected_revenue">42000</field>
+    <field name="probability" eval="35.0"/>
+    <field name="date_deadline">2026-12-18</field>
+    <field name="priority">2</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_referral')])]"/>
+    <field name="description" type="html"><p>Wants a demonstration unit in the Riverton clinic before ordering.</p></field>
+  </record>
+  <record id="opportunity_demo_maintenance" model="crm.lead">
+    <field name="name">Yearly maintenance contract</field>
+    <field name="type">opportunity</field>
+    <field name="partner_id" ref="partner_demo_northwind"/>
+    <field name="team_id" ref="sales_team.team_sales_department"/>
+    <field name="stage_id" ref="stage_proposition"/>
+    <field name="currency_id" ref="base.USD"/>
+    <field name="expected_revenue">9600</field>
+    <field name="probability" eval="60.0"/>
+    <field name="date_deadline">2026-12-10</field>
+    <field name="priority">3</field>
+  </record>
+  <record id="opportunity_demo_ovens" model="crm.lead">
+    <field name="name">Two deck ovens</field>
+    <field name="type">opportunity</field>
+    <field name="partner_id" ref="partner_demo_quarry"/>
+    <field name="team_id" ref="sales_team.team_sales_department"/>
+    <field name="stage_id" ref="stage_won"/>
+    <field name="currency_id" ref="base.USD"/>
+    <field name="expected_revenue">15200</field>
+    <field name="probability" eval="100.0"/>
+    <field name="date_deadline">2026-11-20</field>
+    <field name="date_closed">2026-11-18 10:30:00</field>
+  </record>
+  <record id="opportunity_demo_xray" model="crm.lead">
+    <field name="name">Digital X-ray sensors</field>
+    <field name="type">opportunity</field>
+    <field name="partner_id" ref="partner_demo_bluepine"/>
+    <field name="team_id" ref="sales_team.team_sales_department"/>
+    <field name="stage_id" ref="stage_qualified"/>
+    <field name="currency_id" ref="base.USD"/>
+    <field name="expected_revenue">27000</field>
+    <field name="probability" eval="0.0"/>
+    <field name="date_deadline">2026-11-15</field>
+    <field name="lost_reason_id" ref="lost_reason_competitor"/>
+    <field name="active" eval="False"/>
+  </record>
+</erp>
