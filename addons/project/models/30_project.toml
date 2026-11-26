@@ -1,0 +1,99 @@
+# A project: a body of work for a customer, split into tasks.
+[[model]]
+name = "project.project"
+description = "Project"
+order = "sequence, name, id"
+inherit = ["mail.thread", "mail.activity.mixin"]
+
+# A project with a company is seen only in that company; a project without one is shared by every company
+# (the same rule as sales teams).
+[model.company_access]
+direct = { field = "company_id", branch = "exact", empty = "allow" }
+
+[[model.field]]
+name = "name"
+type = "char"
+string = "Name"
+required = true
+index = true
+
+[[model.field]]
+name = "description"
+type = "html"
+string = "Description"
+
+# Archived projects leave the default lists and boards.
+[[model.field]]
+name = "active"
+type = "boolean"
+string = "Active"
+default = true
+
+[[model.field]]
+name = "sequence"
+type = "integer"
+string = "Sequence"
+default = 10
+
+[[model.field]]
+name = "color"
+type = "integer"
+string = "Color"
+default = 0
+
+[[model.field]]
+name = "partner_id"
+type = "many2one"
+comodel = "res.partner"
+string = "Customer"
+ondelete = "set null"
+index = true
+
+[[model.field]]
+name = "user_id"
+type = "many2one"
+comodel = "res.users"
+string = "Project Manager"
+ondelete = "set null"
+index = true
+
+[[model.field]]
+name = "tag_ids"
+type = "many2many"
+comodel = "project.tags"
+string = "Tags"
+
+[[model.field]]
+name = "date_start"
+type = "date"
+string = "Start Date"
+
+[[model.field]]
+name = "date"
+type = "date"
+string = "End Date"
+
+# Empty: the project is shared by every company.
+[[model.field]]
+name = "company_id"
+type = "many2one"
+comodel = "res.company"
+string = "Company"
+index = true
+
+[[model.field]]
+name = "task_ids"
+type = "one2many"
+comodel = "project.task"
+inverse = "project_id"
+string = "Tasks"
+
+# The stages this project's tasks move through: the other side of project.task.type.project_ids.
+[[model.field]]
+name = "type_ids"
+type = "many2many"
+comodel = "project.task.type"
+relation = "project_task_type_rel"
+column1 = "project_id"
+column2 = "type_id"
+string = "Stages"

@@ -1,0 +1,19 @@
+# A label that projects and tasks can carry (several per record).
+[[model]]
+name = "project.tags"
+description = "Project Tags"
+order = "name, id"
+
+[[model.field]]
+name = "name"
+type = "char"
+string = "Name"
+required = true
+index = true
+
+# The colour of the tag chip (an index into the client's palette; 0 is no colour).
+[[model.field]]
+name = "color"
+type = "integer"
+string = "Color"
+default = 0

@@ -1,0 +1,133 @@
+# A task: one piece of work in a project, assigned to people and moved through stages.
+[[model]]
+name = "project.task"
+description = "Task"
+order = "priority desc, sequence, id desc"
+inherit = ["mail.thread", "mail.activity.mixin"]
+
+# A task follows its project's company (company_id below is the project's); a task without a project, or of a
+# project without a company, is shared by every company.
+[model.company_access]
+direct = { field = "company_id", branch = "exact", empty = "allow" }
+
+[[model.field]]
+name = "name"
+type = "char"
+string = "Title"
+required = true
+index = true
+
+[[model.field]]
+name = "description"
+type = "html"
+string = "Description"
+
+# Archived tasks leave the default lists and boards.
+[[model.field]]
+name = "active"
+type = "boolean"
+string = "Active"
+default = true
+
+[[model.field]]
+name = "sequence"
+type = "integer"
+string = "Sequence"
+default = 10
+
+[[model.field]]
+name = "color"
+type = "integer"
+string = "Color"
+default = 0
+
+# A project that still holds tasks cannot be deleted: archive it, or move or delete its tasks first.
+[[model.field]]
+name = "project_id"
+type = "many2one"
+comodel = "project.project"
+string = "Project"
+ondelete = "restrict"
+index = true
+
+# A stage that tasks still use cannot be deleted.
+[[model.field]]
+name = "stage_id"
+type = "many2one"
+comodel = "project.task.type"
+string = "Stage"
+ondelete = "restrict"
+index = true
+
+[[model.field]]
+name = "user_ids"
+type = "many2many"
+comodel = "res.users"
+relation = "project_task_user_rel"
+column1 = "task_id"
+column2 = "user_id"
+string = "Assignees"
+
+[[model.field]]
+name = "partner_id"
+type = "many2one"
+comodel = "res.partner"
+string = "Customer"
+ondelete = "set null"
+index = true
+
+[[model.field]]
+name = "tag_ids"
+type = "many2many"
+comodel = "project.tags"
+string = "Tags"
+
+[[model.field]]
+name = "priority"
+type = "selection"
+selection = [["0", "Normal"], ["1", "Important"]]
+string = "Priority"
+default = "0"
+required = true
+index = true
+
+# Where the task stands inside its stage. Nothing changes it automatically in this version.
+[[model.field]]
+name = "kanban_state"
+type = "selection"
+selection = [["normal", "On Track"], ["done", "Ready for Next Stage"], ["blocked", "Blocked"]]
+string = "Status"
+default = "normal"
+required = true
+
+[[model.field]]
+name = "date_deadline"
+type = "date"
+string = "Deadline"
+index = true
+
+# Subtasks: a task may be split into child tasks. Deleting the parent keeps its subtasks as tasks of their own.
+[[model.field]]
+name = "parent_id"
+type = "many2one"
+comodel = "project.task"
+string = "Parent Task"
+ondelete = "set null"
+index = true
+
+[[model.field]]
+name = "child_ids"
+type = "one2many"
+comodel = "project.task"
+inverse = "parent_id"
+string = "Subtasks"
+
+# The project's company, kept on the task so the company restriction can read it.
+[[model.field]]
+name = "company_id"
+type = "many2one"
+comodel = "res.company"
+related = "project_id.company_id"
+store = true
+index = true
+string = "Company"

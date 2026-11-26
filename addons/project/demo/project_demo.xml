@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Demo projects and tasks with invented names. Two customers, two projects using the default stages, and tasks
+     in every stage, with priorities, statuses, deadlines and two subtasks. No task is assigned: the demo ships no
+     users of its own. -->
+<erp>
+  <record id="tag_demo_design" model="project.tags">
+    <field name="name">Design</field>
+    <field name="color">4</field>
+  </record>
+  <record id="tag_demo_operations" model="project.tags">
+    <field name="name">Operations</field>
+    <field name="color">2</field>
+  </record>
+  <record id="tag_demo_customer_review" model="project.tags">
+    <field name="name">Customer Review</field>
+    <field name="color">9</field>
+  </record>
+
+  <record id="partner_demo_arunika" model="res.partner">
+    <field name="name">Arunika Studio</field>
+    <field name="vat">DEMO-AS-0001</field>
+    <field name="email">hello@arunika.example.com</field>
+    <field name="phone">+62 21 555 0140</field>
+    <field name="city">Yogyakarta</field>
+  </record>
+  <record id="partner_demo_arunika_maya" model="res.partner">
+    <field name="name">Maya Lestari</field>
+    <field name="parent_id" ref="partner_demo_arunika"/>
+    <field name="email">maya@arunika.example.com</field>
+  </record>
+  <record id="partner_demo_bumi" model="res.partner">
+    <field name="name">Bumi Hijau Farms</field>
+    <field name="vat">DEMO-BH-0002</field>
+    <field name="email">office@bumihijau.example.com</field>
+    <field name="phone">+62 22 555 0150</field>
+    <field name="city">Bandung</field>
+  </record>
+
+  <record id="project_demo_website" model="project.project">
+    <field name="name">Website Redesign</field>
+    <field name="partner_id" ref="partner_demo_arunika"/>
+    <field name="date_start">2026-11-02</field>
+    <field name="date">2027-01-29</field>
+    <field name="color">4</field>
+    <field name="sequence">10</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_design'), ref('tag_demo_customer_review')])]"/>
+    <field name="type_ids" eval="[Command.set([ref('task_type_new'), ref('task_type_in_progress'), ref('task_type_done'), ref('task_type_cancelled')])]"/>
+    <field name="description" type="html"><p>A new public website for the studio: fresh page layouts, a lighter blog and a contact form.</p></field>
+  </record>
+  <record id="project_demo_warehouse" model="project.project">
+    <field name="name">Warehouse Move</field>
+    <field name="partner_id" ref="partner_demo_bumi"/>
+    <field name="date_start">2026-12-01</field>
+    <field name="date">2027-02-26</field>
+    <field name="color">2</field>
+    <field name="sequence">20</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_operations')])]"/>
+    <field name="type_ids" eval="[Command.set([ref('task_type_new'), ref('task_type_in_progress'), ref('task_type_done')])]"/>
+    <field name="description" type="html"><p>Move the farm's stock to the new warehouse without stopping deliveries.</p></field>
+  </record>
+
+  <record id="task_demo_brief" model="project.task">
+    <field name="name">Collect the content brief</field>
+    <field name="project_id" ref="project_demo_website"/>
+    <field name="stage_id" ref="task_type_done"/>
+    <field name="partner_id" ref="partner_demo_arunika_maya"/>
+    <field name="kanban_state">done</field>
+    <field name="date_deadline">2026-11-13</field>
+    <field name="sequence">10</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_customer_review')])]"/>
+  </record>
+  <record id="task_demo_wireframes" model="project.task">
+    <field name="name">Draw the page wireframes</field>
+    <field name="project_id" ref="project_demo_website"/>
+    <field name="stage_id" ref="task_type_in_progress"/>
+    <field name="partner_id" ref="partner_demo_arunika"/>
+    <field name="priority">1</field>
+    <field name="date_deadline">2026-12-04</field>
+    <field name="sequence">20</field>
+    <field name="color">4</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_design')])]"/>
+    <field name="description" type="html"><p>One wireframe per page type. The customer reviews them together.</p></field>
+  </record>
+  <record id="task_demo_wireframes_home" model="project.task">
+    <field name="name">Home page wireframe</field>
+    <field name="project_id" ref="project_demo_website"/>
+    <field name="parent_id" ref="task_demo_wireframes"/>
+    <field name="stage_id" ref="task_type_in_progress"/>
+    <field name="kanban_state">done</field>
+    <field name="date_deadline">2026-11-27</field>
+    <field name="sequence">21</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_design')])]"/>
+  </record>
+  <record id="task_demo_wireframes_contact" model="project.task">
+    <field name="name">Contact page wireframe</field>
+    <field name="project_id" ref="project_demo_website"/>
+    <field name="parent_id" ref="task_demo_wireframes"/>
+    <field name="stage_id" ref="task_type_new"/>
+    <field name="date_deadline">2026-12-02</field>
+    <field name="sequence">22</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_design')])]"/>
+  </record>
+  <record id="task_demo_hosting" model="project.task">
+    <field name="name">Choose the hosting plan</field>
+    <field name="project_id" ref="project_demo_website"/>
+    <field name="stage_id" ref="task_type_new"/>
+    <field name="partner_id" ref="partner_demo_arunika"/>
+    <field name="kanban_state">blocked</field>
+    <field name="date_deadline">2026-12-11</field>
+    <field name="sequence">30</field>
+    <field name="description" type="html"><p>Waiting for the customer's budget for the yearly plan.</p></field>
+  </record>
+  <record id="task_demo_old_blog" model="project.task">
+    <field name="name">Migrate the old blog</field>
+    <field name="project_id" ref="project_demo_website"/>
+    <field name="stage_id" ref="task_type_cancelled"/>
+    <field name="sequence">40</field>
+    <field name="description" type="html"><p>Dropped: the customer starts the blog again from scratch.</p></field>
+  </record>
+
+  <record id="task_demo_stock_count" model="project.task">
+    <field name="name">Count the stock before the move</field>
+    <field name="project_id" ref="project_demo_warehouse"/>
+    <field name="stage_id" ref="task_type_new"/>
+    <field name="partner_id" ref="partner_demo_bumi"/>
+    <field name="priority">1</field>
+    <field name="date_deadline">2026-12-18</field>
+    <field name="sequence">10</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_operations')])]"/>
+  </record>
+  <record id="task_demo_trucks" model="project.task">
+    <field name="name">Book the trucks</field>
+    <field name="project_id" ref="project_demo_warehouse"/>
+    <field name="stage_id" ref="task_type_in_progress"/>
+    <field name="partner_id" ref="partner_demo_bumi"/>
+    <field name="date_deadline">2027-01-08</field>
+    <field name="sequence">20</field>
+    <field name="tag_ids" eval="[Command.set([ref('tag_demo_operations')])]"/>
+  </record>
+  <record id="task_demo_labels" model="project.task">
+    <field name="name">Print the new shelf labels</field>
+    <field name="project_id" ref="project_demo_warehouse"/>
+    <field name="stage_id" ref="task_type_new"/>
+    <field name="date_deadline">2027-01-15</field>
+    <field name="sequence">30</field>
+  </record>
+</erp>

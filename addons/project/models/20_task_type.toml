@@ -1,0 +1,40 @@
+# A stage a task moves through. Stages are shared: each project lists the stages it uses.
+[[model]]
+name = "project.task.type"
+description = "Task Stage"
+order = "sequence, id"
+
+[[model.field]]
+name = "name"
+type = "char"
+string = "Name"
+required = true
+index = true
+
+[[model.field]]
+name = "sequence"
+type = "integer"
+string = "Sequence"
+default = 10
+
+# A folded stage (finished or abandoned work) is meant to be drawn folded on the task board.
+[[model.field]]
+name = "fold"
+type = "boolean"
+string = "Folded in Kanban"
+default = false
+
+[[model.field]]
+name = "description"
+type = "text"
+string = "Description"
+
+# The projects that use this stage: the other side of project.project.type_ids (same table, columns swapped).
+[[model.field]]
+name = "project_ids"
+type = "many2many"
+comodel = "project.project"
+relation = "project_task_type_rel"
+column1 = "type_id"
+column2 = "project_id"
+string = "Projects"
