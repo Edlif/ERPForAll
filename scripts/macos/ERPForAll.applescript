@@ -78,6 +78,7 @@ on moreMenu(st)
 	end if
 	set end of items_ to "Copy admin password"
 	set end of items_ to "Show server log"
+	set end of items_ to "Install an addon (in Terminal)..."
 	set end of items_ to "Rebuild after git pull (in Terminal)"
 	set end of items_ to "Details"
 	if st is "running" then
@@ -115,6 +116,17 @@ on moreMenu(st)
 			on error
 				my report("There is no server log yet: " & logFile)
 			end try
+		end if
+	else if chosen starts with "Install an addon" then
+		try
+			set addonReply to display dialog "Technical name of the addon in the addons folder of the checkout, for example sample_library. The app rebuilds, stops the server, installs the addon and starts the server again." with title appTitle default answer "" buttons {"Cancel", "Install"} default button "Install" cancel button "Cancel"
+		on error number -128
+			return false
+		end try
+		set addonName to text returned of addonReply
+		if addonName is not "" then
+			my runInTerminal("modules install " & quoted form of addonName)
+			return true
 		end if
 	else if chosen starts with "Rebuild" then
 		my runInTerminal("rebuild")

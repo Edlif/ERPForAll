@@ -130,4 +130,30 @@ printf 'line1\nline2\nline3\n' > "$STATE/server.log"
 if ctl logs abc 2>/dev/null; then fail "logs accepted a non-number"; fi
 ok "logs prints the tail and refuses a non-number"
 
+# 9. modules install: rebuild, stop, install with the owner URL, publish grants, start.
+mkdir -p "$FAKE_ROOT/addons/demo_addon"
+printf 'name = "Demo"\n' > "$FAKE_ROOT/addons/demo_addon/manifest.toml"
+printf 'postgres://owner:pw@127.0.0.1:5432/erpforall_local\n' > "$STATE/private/owner-url"
+cat > "$FAKE_ROOT/target/local/erp" <<EOF
+#!/usr/bin/env bash
+printf '%s | %s\n' "\${DATABASE_URL:-}" "\$*" >> "$WORK/erp.calls"
+EOF
+chmod +x "$FAKE_ROOT/target/local/erp"
+ctl modules install demo_addon > "$WORK/out"
+grep -qx -- '--rebuild --fast' "$WORK/install.calls" || fail "modules install did not rebuild with the profile"
+OWNER='postgres://owner:pw@127.0.0.1:5432/erpforall_local'
+expected="$OWNER | module install -d erpforall_local demo_addon --addons-path $STATE/addons --dry-run
+$OWNER | module install -d erpforall_local demo_addon --addons-path $STATE/addons
+$OWNER | db publish-grants --config $STATE/private/server.toml"
+[ "$(cat "$WORK/erp.calls")" = "$expected" ] || fail "erp calls: $(cat "$WORK/erp.calls")"
+expect_status running
+ctl stop > /dev/null
+ok "modules install rebuilds, installs with the owner URL, publishes grants and starts again"
+if ctl modules install nope 2>"$WORK/err"; then fail "modules install accepted a missing addon"; fi
+grep -q 'no addon nope' "$WORK/err" || fail "missing addon: $(cat "$WORK/err")"
+if ctl modules install Bad-Name 2>"$WORK/err"; then fail "modules install accepted a bad name"; fi
+grep -q 'not an addon name' "$WORK/err" || fail "bad name: $(cat "$WORK/err")"
+if ctl modules 2>/dev/null; then fail "modules without a subcommand succeeded"; fi
+ok "modules install refuses a missing addon, a bad name and a missing subcommand"
+
 printf 'all %s tests passed\n' "$PASS"

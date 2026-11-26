@@ -37,7 +37,8 @@ step:
 | port busy | Another program holds port 8069 (a local Odoo, for example). Stop it and refresh. |
 
 **More...** lists the rest: stop the server but keep the database container running, copy the admin password to
-the clipboard (the login is `admin`), show the server log in Console, rebuild after a `git pull`, and details.
+the clipboard (the login is `admin`), show the server log in Console, install an addon from the `addons/`
+folder, rebuild after a `git pull`, and details.
 
 The first time the app opens Terminal, macOS asks whether ERPForAll may control Terminal. Allow it, or the
 install and rebuild buttons do nothing.
@@ -50,6 +51,7 @@ install and rebuild buttons do nothing.
 scripts/macos/erpforall-ctl status      # not-installed, stopped, starting, running or port-busy
 scripts/macos/erpforall-ctl start
 scripts/macos/erpforall-ctl stop        # add --keep-db to leave the database container running
+scripts/macos/erpforall-ctl modules install my_addon   # rebuild, stop, install, publish grants, start
 scripts/macos/erpforall-ctl help
 ```
 

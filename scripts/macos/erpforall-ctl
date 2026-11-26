@@ -26,6 +26,9 @@ Usage: erpforall-ctl COMMAND
   stop            stop the server, then the database container that install.sh created
   stop --keep-db  stop the server only
   rebuild         rebuild changed code after a git pull and restart (the database stays)
+  modules install NAME...
+                  install addons of addons/ into the database: rebuild, stop the server, install,
+                  publish the grants, start again
   open            open the web client in the browser
   url             print the web client URL
   logs [N]        print the last N lines of the server log (default 50)
@@ -211,6 +214,37 @@ cmd_rebuild() {
   if [ -n "$flag" ]; then run_install --rebuild "$flag"; else run_install --rebuild; fi
 }
 
+# Install addons of the checkout into the installed database, the way the install guide does it: the copy of addons/
+# and the binary are refreshed by install.sh --rebuild, the module operation runs while the server is stopped with the
+# owner URL in DATABASE_URL, and the grants are published before the server starts again.
+cmd_modules() {
+  local sub="${1:-}" m flag erp
+  [ "$#" -eq 0 ] || shift
+  [ "$sub" = install ] || die "usage: erpforall-ctl modules install NAME..."
+  [ "$#" -gt 0 ] || die "name at least one addon: erpforall-ctl modules install NAME..."
+  need_checkout
+  need_installed
+  for m in "$@"; do
+    case "$m" in ''|[!a-z]*|*[!a-z0-9_]*) die "'$m' is not an addon name (lower-case letters, digits and underscores)" ;; esac
+    [ -f "$ROOT/addons/$m/manifest.toml" ] || die "there is no addon $m in $ROOT/addons (no manifest.toml)"
+  done
+  if [ "$PG_MODE" = docker ]; then ensure_docker; fi
+  flag="$(profile_flag)" || flag=""
+  say "rebuilding and copying addons/ to $STATE/addons..."
+  if [ -n "$flag" ]; then run_install --rebuild "$flag"; else run_install --rebuild; fi
+  flag="$(profile_flag)" || die "the rebuild left no erp binary in $ROOT/target"
+  if [ "$flag" = --fast ]; then erp="$ROOT/target/local/erp"; else erp="$ROOT/target/release/erp"; fi
+  say "stopping the server for the module operation..."
+  cmd_stop --keep-db
+  ( DATABASE_URL="$(cat "$STATE/private/owner-url")"
+    export DATABASE_URL
+    "$erp" module install -d "$DB_NAME" "$@" --addons-path "$STATE/addons" --dry-run
+    "$erp" module install -d "$DB_NAME" "$@" --addons-path "$STATE/addons"
+    "$erp" db publish-grants --config "$STATE/private/server.toml" )
+  say "installed: $*"
+  cmd_start
+}
+
 cmd_open() {
   need_installed
   if [ "$OS" = Darwin ]; then open "$(url)"
@@ -234,6 +268,7 @@ case "$cmd" in
   start) cmd_start ;;
   stop) cmd_stop ${@+"$@"} ;;
   rebuild) cmd_rebuild ;;
+  modules) cmd_modules ${@+"$@"} ;;
   open) cmd_open ;;
   url) need_installed; url; printf '\n' ;;
   logs) cmd_logs ${@+"$@"} ;;
