@@ -1,0 +1,373 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+    <data noupdate="1">
+        <record id="report_balance_sheet" model="reporting.report">
+            <field name="name">Balance Sheet</field>
+            <field name="provider">account_reporting.balance_sheet</field>
+            <field name="date_mode">single</field>
+            <field name="date_default">today</field>
+            <field name="multi_company" eval="False"/>
+            <field name="comparison" eval="True"/>
+            <field name="totals_below" eval="True"/>
+            <field name="unfold_all" eval="True"/>
+            <field name="search_bar" eval="True"/>
+            <field name="hide_zero">optional</field>
+        </record>
+        <record id="position_column" model="reporting.report.column">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="sequence">10</field>
+            <field name="name">Balance</field>
+            <field name="label">amount</field>
+            <field name="kind">monetary</field>
+        </record>
+
+        <!-- ASSETS -->
+        <record id="position_asset" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="sequence">10</field>
+            <field name="name">Assets</field>
+            <field name="code">ASSET</field>
+            <field name="foldable">always_unfolded</field>
+        </record>
+        <record id="position_asset_total" model="reporting.report.expression">
+            <field name="line_id" ref="position_asset"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">sum_children</field>
+        </record>
+
+        <record id="position_current_assets" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_asset"/>
+            <field name="sequence">11</field>
+            <field name="name">Current Assets</field>
+            <field name="code">CURRENT_ASSETS</field>
+            <field name="foldable">always_unfolded</field>
+        </record>
+        <record id="position_current_assets_total" model="reporting.report.expression">
+            <field name="line_id" ref="position_current_assets"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">sum_children</field>
+        </record>
+
+        <record id="position_cash" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_current_assets"/>
+            <field name="sequence">12</field>
+            <field name="name">Bank and Cash Accounts</field>
+            <field name="code">CASH</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_cash_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_cash"/>
+            <field name="label">amount</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_cash"]]</field>
+        </record>
+
+        <record id="position_receivables" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_current_assets"/>
+            <field name="sequence">13</field>
+            <field name="name">Receivables</field>
+            <field name="code">RECEIVABLES</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_receivables_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_receivables"/>
+            <field name="label">amount</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_receivable"]]</field>
+        </record>
+
+        <record id="position_other_current_assets" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_current_assets"/>
+            <field name="sequence">14</field>
+            <field name="name">Other Current Assets</field>
+            <field name="code">OTHER_CURRENT_ASSETS</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_other_current_assets_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_other_current_assets"/>
+            <field name="label">amount</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_current"]]</field>
+        </record>
+
+        <record id="position_prepayments" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_current_assets"/>
+            <field name="sequence">15</field>
+            <field name="name">Prepayments</field>
+            <field name="code">PREPAYMENTS</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_prepayments_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_prepayments"/>
+            <field name="label">amount</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_prepayments"]]</field>
+        </record>
+
+        <record id="position_fixed_assets" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_asset"/>
+            <field name="sequence">16</field>
+            <field name="name">Fixed Assets</field>
+            <field name="code">FIXED_ASSETS</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_fixed_assets_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_fixed_assets"/>
+            <field name="label">amount</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_fixed"]]</field>
+        </record>
+
+        <record id="position_non_current_assets" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_asset"/>
+            <field name="sequence">17</field>
+            <field name="name">Non-current Assets</field>
+            <field name="code">NON_CURRENT_ASSETS</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_non_current_assets_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_non_current_assets"/>
+            <field name="label">amount</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_non_current"]]</field>
+        </record>
+
+        <!-- LIABILITIES -->
+        <record id="position_liability" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="sequence">20</field>
+            <field name="name">Liabilities</field>
+            <field name="code">LIABILITY</field>
+            <field name="foldable">always_unfolded</field>
+        </record>
+        <record id="position_liability_total" model="reporting.report.expression">
+            <field name="line_id" ref="position_liability"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">sum_children</field>
+        </record>
+
+        <record id="position_current_liabilities" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_liability"/>
+            <field name="sequence">21</field>
+            <field name="name">Current Liabilities</field>
+            <field name="code">CURRENT_LIABILITIES</field>
+            <field name="foldable">always_unfolded</field>
+        </record>
+        <record id="position_current_liabilities_total" model="reporting.report.expression">
+            <field name="line_id" ref="position_current_liabilities"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">sum_children</field>
+        </record>
+
+        <record id="position_payables" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_current_liabilities"/>
+            <field name="sequence">22</field>
+            <field name="name">Payables</field>
+            <field name="code">PAYABLES</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_payables_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_payables"/>
+            <field name="label">booked</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","liability_payable"]]</field>
+        </record>
+        <record id="position_payables_display" model="reporting.report.expression">
+            <field name="line_id" ref="position_payables"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">0 - booked</field>
+        </record>
+
+        <record id="position_credit_cards" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_current_liabilities"/>
+            <field name="sequence">23</field>
+            <field name="name">Credit Cards</field>
+            <field name="code">CREDIT_CARDS</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_credit_cards_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_credit_cards"/>
+            <field name="label">booked</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","liability_credit_card"]]</field>
+        </record>
+        <record id="position_credit_cards_display" model="reporting.report.expression">
+            <field name="line_id" ref="position_credit_cards"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">0 - booked</field>
+        </record>
+
+        <record id="position_other_current_liabilities" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_current_liabilities"/>
+            <field name="sequence">24</field>
+            <field name="name">Other Current Liabilities</field>
+            <field name="code">OTHER_CURRENT_LIABILITIES</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_other_current_liabilities_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_other_current_liabilities"/>
+            <field name="label">booked</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","liability_current"]]</field>
+        </record>
+        <record id="position_other_current_liabilities_display" model="reporting.report.expression">
+            <field name="line_id" ref="position_other_current_liabilities"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">0 - booked</field>
+        </record>
+
+        <record id="position_non_current_liabilities" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_liability"/>
+            <field name="sequence">25</field>
+            <field name="name">Non-current Liabilities</field>
+            <field name="code">NON_CURRENT_LIABILITIES</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_non_current_liabilities_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_non_current_liabilities"/>
+            <field name="label">booked</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","liability_non_current"]]</field>
+        </record>
+        <record id="position_non_current_liabilities_display" model="reporting.report.expression">
+            <field name="line_id" ref="position_non_current_liabilities"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">0 - booked</field>
+        </record>
+
+        <!-- EQUITY -->
+        <record id="position_equity" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="sequence">30</field>
+            <field name="name">Equity</field>
+            <field name="code">EQUITY</field>
+            <field name="foldable">always_unfolded</field>
+        </record>
+        <record id="position_equity_display" model="reporting.report.expression">
+            <field name="line_id" ref="position_equity"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">sum_children</field>
+        </record>
+
+        <record id="position_earnings" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_equity"/>
+            <field name="sequence">31</field>
+            <field name="name">Unallocated Earnings</field>
+            <field name="code">EARNINGS</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_earnings_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_earnings"/>
+            <field name="label">booked</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","in",["income","income_other","expense","expense_other","expense_depreciation","expense_direct_cost"]]]</field>
+        </record>
+        <record id="position_earnings_display" model="reporting.report.expression">
+            <field name="line_id" ref="position_earnings"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">0 - booked</field>
+        </record>
+
+        <record id="position_capital" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="parent_id" ref="position_equity"/>
+            <field name="sequence">32</field>
+            <field name="name">Retained Earnings &amp; Capital</field>
+            <field name="code">CAPITAL</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="position_capital_booked" model="reporting.report.expression">
+            <field name="line_id" ref="position_capital"/>
+            <field name="label">booked</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">from_beginning</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","in",["equity","equity_unaffected"]]]</field>
+        </record>
+        <record id="position_capital_display" model="reporting.report.expression">
+            <field name="line_id" ref="position_capital"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">0 - booked</field>
+        </record>
+
+        <!-- LIABILITIES + EQUITY -->
+        <record id="position_financing" model="reporting.report.line">
+            <field name="report_id" ref="report_balance_sheet"/>
+            <field name="sequence">40</field>
+            <field name="name">Liabilities and Equity</field>
+            <field name="code">FINANCING</field>
+        </record>
+        <record id="position_financing_display" model="reporting.report.expression">
+            <field name="line_id" ref="position_financing"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">LIABILITY.amount + EQUITY.amount</field>
+        </record>
+    </data>
+    <record id="action_balance_sheet" model="ir.actions.client">
+        <field name="name">Balance Sheet</field>
+        <field name="tag">reporting.report</field>
+        <field name="params" eval="{'report': ref('report_balance_sheet')}"/>
+    </record>
+    <menuitem id="menu_balance_sheet" name="Balance Sheet" parent="menu_account_reporting" action="action_balance_sheet" groups="account.group_account_readonly" sequence="34"/>
+    <record id="menu_balance_sheet" model="ir.ui.menu"><field name="web_icon">lucide:scale</field></record>
+</erp>

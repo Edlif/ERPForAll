@@ -42,7 +42,7 @@
       <field name="field">debit</field>
       <field name="date_field">date</field>
       <field name="date_scope">strict_range</field>
-      <field name="domain">[["parent_state","=","posted"],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","sale"]]</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","sale"]]</field>
     </record>
     <record id="tax_report_sales_credit" model="reporting.report.expression">
       <field name="line_id" ref="tax_report_sales"/>
@@ -51,7 +51,7 @@
       <field name="field">credit</field>
       <field name="date_field">date</field>
       <field name="date_scope">strict_range</field>
-      <field name="domain">[["parent_state","=","posted"],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","sale"]]</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","sale"]]</field>
     </record>
     <record id="tax_report_sales_booked" model="reporting.report.expression">
       <field name="line_id" ref="tax_report_sales"/>
@@ -60,7 +60,7 @@
       <field name="field">balance</field>
       <field name="date_field">date</field>
       <field name="date_scope">strict_range</field>
-      <field name="domain">[["parent_state","=","posted"],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","sale"]]</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","sale"]]</field>
     </record>
     <record id="tax_report_sales_tax" model="reporting.report.expression">
       <field name="line_id" ref="tax_report_sales"/>
@@ -82,7 +82,7 @@
       <field name="field">debit</field>
       <field name="date_field">date</field>
       <field name="date_scope">strict_range</field>
-      <field name="domain">[["parent_state","=","posted"],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","purchase"]]</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","purchase"]]</field>
     </record>
     <record id="tax_report_purchase_credit" model="reporting.report.expression">
       <field name="line_id" ref="tax_report_purchase"/>
@@ -91,7 +91,7 @@
       <field name="field">credit</field>
       <field name="date_field">date</field>
       <field name="date_scope">strict_range</field>
-      <field name="domain">[["parent_state","=","posted"],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","purchase"]]</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","purchase"]]</field>
     </record>
     <record id="tax_report_purchase_tax" model="reporting.report.expression">
       <field name="line_id" ref="tax_report_purchase"/>
@@ -100,7 +100,48 @@
       <field name="field">balance</field>
       <field name="date_field">date</field>
       <field name="date_scope">strict_range</field>
-      <field name="domain">[["parent_state","=","posted"],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","purchase"]]</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","purchase"]]</field>
+    </record>
+    <!-- Group member taxes (type none) can still reach a tax line; they keep the payable sign. -->
+    <record id="tax_report_other" model="reporting.report.line">
+      <field name="report_id" ref="report_tax_report"/>
+      <field name="sequence">25</field>
+      <field name="name">Other Taxes</field>
+      <field name="code">OTHER_TAX</field>
+      <field name="groupby">tax_line_id,account_id</field>
+    </record>
+    <record id="tax_report_other_debit" model="reporting.report.expression">
+      <field name="line_id" ref="tax_report_other"/>
+      <field name="label">debit</field>
+      <field name="model">account.move.line</field>
+      <field name="field">debit</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","none"]]</field>
+    </record>
+    <record id="tax_report_other_credit" model="reporting.report.expression">
+      <field name="line_id" ref="tax_report_other"/>
+      <field name="label">credit</field>
+      <field name="model">account.move.line</field>
+      <field name="field">credit</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","none"]]</field>
+    </record>
+    <record id="tax_report_other_booked" model="reporting.report.expression">
+      <field name="line_id" ref="tax_report_other"/>
+      <field name="label">booked</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["tax_line_id","!=",false],["tax_line_id.type_tax_use","=","none"]]</field>
+    </record>
+    <record id="tax_report_other_tax" model="reporting.report.expression">
+      <field name="line_id" ref="tax_report_other"/>
+      <field name="label">tax</field>
+      <field name="engine">formula</field>
+      <field name="formula">0 - booked</field>
     </record>
     <record id="tax_report_net" model="reporting.report.line">
       <field name="report_id" ref="report_tax_report"/>
@@ -112,7 +153,7 @@
       <field name="line_id" ref="tax_report_net"/>
       <field name="label">tax</field>
       <field name="engine">formula</field>
-      <field name="formula">SALES_TAX.tax - PURCHASE_TAX.tax</field>
+      <field name="formula">SALES_TAX.tax - PURCHASE_TAX.tax + OTHER_TAX.tax</field>
     </record>
   </data>
   <record id="action_tax_report" model="ir.actions.client">

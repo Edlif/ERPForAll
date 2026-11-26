@@ -306,20 +306,20 @@ async fn historical() {
         .await
         .unwrap();
     assert_eq!(amount(&february, "Assets"), num("7"));
-    assert_eq!(amount(&february, "Liabilities and equity"), num("7"));
-    let asset_id = format!("root~reporting.report~{}|line:ASSET~~", f.report);
+    assert_eq!(amount(&february, "Liabilities and Equity"), num("7"));
+    // the bank account of these books is a current asset, grouped by account since 1.13
+    let asset_id = format!(
+        "root~reporting.report~{}|line:ASSET~~|line:CURRENT_ASSETS~~|line:OTHER_CURRENT_ASSETS~~",
+        f.report
+    );
     let accounts =
         runtime::report_expand(&tx.env(), &mut tx, &input(&f, "2024-02-29"), &asset_id, 0)
             .await
             .unwrap();
-    let account_id = accounts["lines"][0]["id"].as_str().unwrap();
-    let details =
-        runtime::report_expand(&tx.env(), &mut tx, &input(&f, "2024-02-29"), account_id, 0)
-            .await
-            .unwrap();
-    let leaf = details["lines"][0]["id"].as_str().unwrap();
+    // the account group is the last level of that line (grouped by account only)
+    let leaf = accounts["lines"][0]["id"].as_str().unwrap();
     let mut stale = input(&f, "2024-02-29");
-    stale["unfolded"] = json!([asset_id, account_id, leaf]);
+    stale["unfolded"] = json!([asset_id, leaf]);
     stale["loaded_pages"] = json!({leaf: 1});
     let error = runtime::report_lines(&tx.env(), &mut tx, &stale)
         .await
@@ -387,7 +387,7 @@ async fn historical() {
         .await
         .unwrap();
     assert_eq!(amount(&visible, "Assets"), num("16"));
-    assert_eq!(amount(&visible, "Liabilities and equity"), Decimal::ZERO);
+    assert_eq!(amount(&visible, "Liabilities and Equity"), Decimal::ZERO);
 }
 
 // These are genuine predecessor XML/manifest files from the provenance pins, exercised with
@@ -458,7 +458,8 @@ fn predecessor(
         &erp_addon_reporting::ADDON,
     ];
     // 1.4 was data-only and did not declare the native descriptor's explicit base dependency.
-    if version == "1.5.0" {
+    // Releases before 1.13 predate the native descriptor's dependencies (analytic).
+    if version == "1.13.0" {
         code.push(&erp_addon_account_reporting::ADDON);
     }
     let system = erp_modules::system::ModuleSystem::builder(db.pool().clone(), index)
@@ -582,7 +583,8 @@ async fn upgrade(version: &str) {
     let ledger = runtime::report_lines(&tx.env(), &mut tx, &ledger_options)
         .await
         .unwrap();
-    assert_eq!(ledger["lines"].as_array().unwrap().len(), 2);
+    // Since 1.13 the ledger lists partners; no posted item of this test names one.
+    assert_eq!(ledger["lines"].as_array().unwrap().len(), 0);
 
     if let Some(menu_id) = existing_gl_menu {
         assert_eq!(
@@ -602,7 +604,8 @@ async fn upgrade(version: &str) {
         .await
         .unwrap();
     assert_eq!(amount(&after, "Configured assets"), num("40"));
-    assert_eq!(amount(&after, "Liabilities and equity"), num("30"));
+    // 1.13 renamed the shipped line; the changed asset expression keeps its own figure.
+    assert_eq!(amount(&after, "Liabilities and Equity"), num("30"));
     assert_eq!(after["options"]["columns"][0]["name"], "Configured amount");
     let report_row = tx
         .env()
@@ -849,4 +852,630 @@ async fn assert_movement_definition(orm: &erp_sdk::Orm, ids: &ReportingIds) {
         previous.cell(&mut tx, "name").await.unwrap(),
         text("Configured journal activity")
     );
+}
+
+// Upgrades of the report definitions from 1.10 (before the classified layouts) and from 1.13 (the
+// first release with them) to the current version.
+
+type Previous = std::collections::BTreeMap<ModuleName, String>;
+
+async fn install_previous(version: &str) -> (TestDb, erp_sdk::Orm, Previous) {
+    let db = TestDb::builder().pool_size(8).create().await.unwrap();
+    let (_sources, old_system, previous) = predecessor(&db, version);
+    let initial = Box::pin(old_system.initialize(InitOptions::new().with_skip_auto_install(true)))
+        .await
+        .unwrap();
+    let installed = Box::pin(old_system.button_immediate_install(
+        &initial.orm.env(SUPERUSER_ID, Context::new()),
+        &[ModuleName::new("account_reporting").unwrap()],
+    ))
+    .await
+    .unwrap();
+    assert!(installed.post_commit.is_clean());
+    (db, installed.orm, previous)
+}
+
+async fn upgrade_current(
+    db: &TestDb,
+    previous: Previous,
+) -> std::result::Result<erp_sdk::Orm, erp_modules::Error> {
+    let target = system(db, Some(previous));
+    let upgraded = Box::pin(target.button_immediate_upgrade(
+        &target.system_env(Context::new()),
+        &[ModuleName::new("account_reporting").unwrap()],
+    ))
+    .await?;
+    assert!(upgraded.post_commit.is_clean());
+    Ok(upgraded.orm)
+}
+
+/// Every report record of this addon by external id: its values (ids replaced by the external ids
+/// they point at), `DANGLING` for an id without a record, and the report records without an id.
+async fn definitions(orm: &erp_sdk::Orm) -> std::collections::BTreeMap<String, String> {
+    let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+    let mut out = std::collections::BTreeMap::new();
+    let xid = |fk: &str, model: &str| {
+        format!(
+            "COALESCE((SELECT string_agg(x.name, ',' ORDER BY x.name) FROM ir_model_data x \
+             WHERE x.module = 'account_reporting' AND x.model = '{model}' AND x.res_id = r.{fk}), '')"
+        )
+    };
+    for (model, table, refs) in [
+        ("reporting.report", "reporting_report", "''".to_owned()),
+        (
+            "reporting.report.line",
+            "reporting_report_line",
+            format!(
+                "{} || ' ' || {}",
+                xid("report_id", "reporting.report"),
+                xid("parent_id", "reporting.report.line")
+            ),
+        ),
+        (
+            "reporting.report.column",
+            "reporting_report_column",
+            xid("report_id", "reporting.report"),
+        ),
+        (
+            "reporting.report.expression",
+            "reporting_report_expression",
+            xid("line_id", "reporting.report.line"),
+        ),
+    ] {
+        let sql = format!(
+            "SELECT d.model || ' ' || d.name, CASE WHEN r.id IS NULL THEN 'DANGLING' ELSE \
+             (to_jsonb(r) - '{{id,create_date,write_date,create_uid,write_uid,report_id,parent_id,line_id}}'::text[])::text \
+             || ' ' || {refs} END \
+             FROM ir_model_data d LEFT JOIN {table} r ON r.id = d.res_id \
+             WHERE d.module = 'account_reporting' AND d.model = $1"
+        );
+        for row in tx.query(&sql, &[&model]).await.unwrap() {
+            out.insert(row.get(0), row.get(1));
+        }
+    }
+    for (what, sql) in [
+        (
+            "lines without an external id",
+            "SELECT count(*) FROM reporting_report_line r WHERE NOT EXISTS (SELECT 1 FROM ir_model_data x \
+             WHERE x.model = 'reporting.report.line' AND x.res_id = r.id)",
+        ),
+        (
+            "columns without an external id",
+            "SELECT count(*) FROM reporting_report_column r WHERE NOT EXISTS (SELECT 1 FROM ir_model_data x \
+             WHERE x.model = 'reporting.report.column' AND x.res_id = r.id)",
+        ),
+        (
+            "expressions without an external id",
+            "SELECT count(*) FROM reporting_report_expression r WHERE NOT EXISTS (SELECT 1 FROM ir_model_data x \
+             WHERE x.model = 'reporting.report.expression' AND x.res_id = r.id)",
+        ),
+    ] {
+        let count: i64 = tx.query(sql, &[]).await.unwrap()[0].get(0);
+        out.insert(what.to_owned(), count.to_string());
+    }
+    out
+}
+
+fn assert_same_definitions(
+    fresh: &std::collections::BTreeMap<String, String>,
+    upgraded: &std::collections::BTreeMap<String, String>,
+    from: &str,
+) {
+    assert!(
+        !fresh.values().any(|v| v == "DANGLING"),
+        "fresh install has dangling ids"
+    );
+    for key in fresh.keys().chain(upgraded.keys()) {
+        assert_eq!(
+            fresh.get(key),
+            upgraded.get(key),
+            "{key}: fresh install vs upgrade from {from}"
+        );
+    }
+}
+
+#[test]
+fn report_definitions_upgraded_from_1_10_and_1_13_equal_a_fresh_install() {
+    big_stack(|| async {
+        let fresh = definitions(&setup().await.orm).await;
+        for version in ["1.10.0", "1.13.0"] {
+            let (db, _, previous) = install_previous(version).await;
+            let orm = upgrade_current(&db, previous).await.unwrap();
+            assert_same_definitions(&fresh, &definitions(&orm).await, version);
+        }
+    });
+}
+
+async fn write(tx: &mut Transaction, model: &str, id: i64, vals: RawVals) {
+    tx.env()
+        .records(model)
+        .unwrap()
+        .browse([id])
+        .unwrap()
+        .write(tx, vals)
+        .await
+        .unwrap();
+}
+
+async fn cell_of(tx: &mut Transaction, model: &str, id: i64, field: &str) -> Cell {
+    tx.env()
+        .records(model)
+        .unwrap()
+        .browse([id])
+        .unwrap()
+        .cell(tx, field)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn report_upgrade_from_1_10_keeps_administrator_changes() {
+    big_stack(|| async {
+        let (db, orm, previous) = install_previous("1.10.0").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let expense = xml_id(&mut tx, "account_reporting", "profit_loss_expense_booked").await;
+        write(
+            &mut tx,
+            "reporting.report.expression",
+            expense,
+            RawVals::new().set_cell("field", text("debit")),
+        )
+        .await;
+        let date_column = xml_id(&mut tx, "account_reporting", "gl_column_date").await;
+        write(
+            &mut tx,
+            "reporting.report.column",
+            date_column,
+            RawVals::new().set_cell("name", text("Booked on")),
+        )
+        .await;
+        let ledger = xml_id(&mut tx, "account_reporting", "report_general_ledger").await;
+        write(
+            &mut tx,
+            "reporting.report",
+            ledger,
+            RawVals::new().set_cell("date_default", text("last_year")),
+        )
+        .await;
+        let partner_ledger = xml_id(&mut tx, "account_reporting", "report_partner_ledger").await;
+        let added = tx
+            .env()
+            .records("reporting.report.line")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("report_id", Cell::Id(partner_ledger))
+                        .set_cell("name", text("Disputed"))
+                        .set_cell("code", text("DISPUTED")),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        tx.commit().await.unwrap();
+
+        let orm = upgrade_current(&db, previous).await.unwrap();
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        // The changed expression stays and stands in for the new total of its line.
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report.expression", expense, "field").await,
+            text("debit")
+        );
+        assert_eq!(
+            xml_id(&mut tx, "account_reporting", "profit_loss_expense_total").await,
+            expense
+        );
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report.column", date_column, "name").await,
+            text("Booked on")
+        );
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report", ledger, "date_default").await,
+            text("last_year")
+        );
+        // the flag the administrator did not change still moves to the new default
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report", ledger, "search_bar").await,
+            Cell::Bool(true)
+        );
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report.line", added, "code").await,
+            text("DISPUTED")
+        );
+        let shipped = tx
+            .query(
+                "SELECT count(*) FROM ir_model_data WHERE module = 'account_reporting' \
+                 AND name IN ('partner_ledger_receivable', 'partner_ledger_payable')",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(shipped[0].get::<_, i64>(0), 0);
+        let profit_loss = xml_id(&mut tx, "account_reporting", "report_profit_loss").await;
+        runtime::report_options(&tx.env(), &mut tx, profit_loss, &Json::Null)
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn report_upgrade_from_1_10_stops_on_a_changed_equity_formula() {
+    big_stack(|| async {
+        let (db, orm, previous) = install_previous("1.10.0").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let equity = xml_id(&mut tx, "account_reporting", "position_equity_display").await;
+        write(
+            &mut tx,
+            "reporting.report.expression",
+            equity,
+            RawVals::new().set_cell("formula", text("CAPITAL.amount")),
+        )
+        .await;
+        tx.commit().await.unwrap();
+        let Err(error) = upgrade_current(&db, previous).await else {
+            panic!("the upgrade must stop on the changed Equity formula");
+        };
+        let message = format!("{error:?}");
+        assert!(
+            message.contains("account_reporting.position_equity_display")
+                && message.contains("'CAPITAL.amount'")
+                && message.contains("0 rows changed, 1 expected"),
+            "{message}"
+        );
+    });
+}
+
+#[test]
+fn report_upgrade_from_1_13_keeps_a_changed_invoice_expression_and_aged_flag() {
+    big_stack(|| async {
+        let (db, orm, previous) = install_previous("1.13.0").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let total = xml_id(&mut tx, "account_reporting", "inv_an_out_inv_tot").await;
+        write(
+            &mut tx,
+            "reporting.report.expression",
+            total,
+            RawVals::new().set_cell("field", text("amount_untaxed")),
+        )
+        .await;
+        let receivable = xml_id(&mut tx, "account_reporting", "report_aged_receivable").await;
+        write(
+            &mut tx,
+            "reporting.report",
+            receivable,
+            RawVals::new().set_cell("comparison", Cell::Bool(true)),
+        )
+        .await;
+        tx.commit().await.unwrap();
+        let orm = upgrade_current(&db, previous).await.unwrap();
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report.expression", total, "field").await,
+            text("amount_untaxed")
+        );
+        let untaxed = xml_id(&mut tx, "account_reporting", "inv_an_out_inv_u").await;
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report.expression", untaxed, "engine").await,
+            text("aggregate")
+        );
+        // the unchanged Customer Credit Notes line took the new layout
+        let refunds = xml_id(&mut tx, "account_reporting", "inv_an_out_ref_u").await;
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report.expression", refunds, "engine").await,
+            text("formula")
+        );
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report", receivable, "current_only").await,
+            Cell::Bool(false)
+        );
+        let payable = xml_id(&mut tx, "account_reporting", "report_aged_payable").await;
+        assert_eq!(
+            cell_of(&mut tx, "reporting.report", payable, "current_only").await,
+            Cell::Bool(true)
+        );
+    });
+}
+
+async fn one(
+    tx: &mut Transaction,
+    sql: &str,
+    params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+) -> i64 {
+    tx.query(sql, params).await.unwrap()[0].get(0)
+}
+
+/// A 10 % tax of `use_` (`sale`, `purchase` or `none`) booked on `account`, written directly.
+async fn percent_tax(
+    tx: &mut Transaction,
+    company: i64,
+    name: &str,
+    use_: &str,
+    account: i64,
+) -> i64 {
+    let group = one(
+        tx,
+        "INSERT INTO account_tax_group (name, sequence, company_id) \
+         VALUES (jsonb_build_object('en_US', $2::text), 10, $1) RETURNING id::int8",
+        &[&company, &name],
+    )
+    .await;
+    let country = one(
+        tx,
+        "SELECT id::int8 FROM res_country ORDER BY id LIMIT 1",
+        &[],
+    )
+    .await;
+    let tax = one(
+        tx,
+        "INSERT INTO account_tax (name, invoice_label, type_tax_use, amount_type, active, company_id, \
+         root_company_id, sequence, amount, include_base_amount, is_base_affected, tax_group_id, \
+         country_id, repartition_serial, analytic) \
+         VALUES (jsonb_build_object('en_US', $4::text), jsonb_build_object('en_US', $4::text), \
+         $5::text, 'percent', true, $1, $1, 1, 10, false, true, $2, $3, 0, false) RETURNING id::int8",
+        &[&company, &group, &country, &name, &use_],
+    )
+    .await;
+    tx.execute(
+        "INSERT INTO account_tax_repartition_line (factor_percent, repartition_type, document_type, \
+         account_id, tax_id, company_id, sequence, use_in_tax_closing) VALUES \
+         (100, 'base', 'invoice', NULL, $1, $2, 1, false), (100, 'tax', 'invoice', $3, $1, $2, 2, true), \
+         (100, 'base', 'refund', NULL, $1, $2, 1, false), (100, 'tax', 'refund', $3, $1, $2, 2, true)",
+        &[&tax, &company, &account],
+    )
+    .await
+    .unwrap();
+    tax
+}
+
+struct Document<'a> {
+    move_type: &'a str,
+    partner: i64,
+    journal: i64,
+    currency: Option<i64>,
+    price: &'a str,
+    taxes: &'a [i64],
+}
+
+async fn document(tx: &mut Transaction, company: i64, doc: Document<'_>) -> i64 {
+    let line = erp_sdk::Command::create(
+        RawVals::new()
+            .set_cell("name", text("Service"))
+            .set_cell("quantity", Cell::Decimal(num("1")))
+            .set_cell("price_unit", Cell::Decimal(num(doc.price)))
+            .set_commands(
+                "tax_ids",
+                [erp_sdk::Command::set(doc.taxes.iter().map(|t| rec(*t)))],
+            ),
+    );
+    let mut vals = RawVals::new()
+        .set_cell("move_type", text(doc.move_type))
+        .set_cell("partner_id", Cell::Id(doc.partner))
+        .set_cell("journal_id", Cell::Id(doc.journal))
+        .set_cell("invoice_date", Cell::Date(d(2024, 3, 5)))
+        .set_cell("date", Cell::Date(d(2024, 3, 5)))
+        .set_commands("invoice_line_ids", vec![line]);
+    if let Some(currency) = doc.currency {
+        vals.insert("currency_id".into(), Cell::Id(currency));
+    }
+    let created = moves(tx, company).create(tx, vec![vals]).await.unwrap();
+    created.call::<(), ()>(tx, "action_post", ()).await.unwrap();
+    created.ids()[0]
+}
+
+/// The company-currency balance of the `kind` items of entry `id`, negated (credit positive).
+async fn credit_of(tx: &mut Transaction, id: i64, kind: &str) -> Decimal {
+    let rows = tx
+        .query(
+            "SELECT COALESCE(-SUM(balance), 0)::text FROM account_move_line \
+             WHERE move_id = $1 AND display_type = $2",
+            &[&id, &kind],
+        )
+        .await
+        .unwrap();
+    num(&rows[0].get::<_, String>(0))
+}
+
+fn cells(output: &Json, name: &str) -> Vec<Decimal> {
+    let row = output["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == name)
+        .unwrap_or_else(|| panic!("no line {name}: {output}"));
+    row["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cell| cell["value"].as_str().map_or(Decimal::ZERO, num))
+        .collect()
+}
+
+#[test]
+fn invoice_analysis_and_tax_report_read_company_currency_journal_items() {
+    big_stack(|| async {
+        let f = setup().await;
+        let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+        let sale_tax_account = account(&mut tx, f.company, "251000", "liability_current").await;
+        let sales_tax = percent_tax(&mut tx, f.company, "Sales 10", "sale", sale_tax_account).await;
+        let member_tax =
+            percent_tax(&mut tx, f.company, "Member 10", "none", sale_tax_account).await;
+        let sales = one(
+            &mut tx,
+            "SELECT id::int8 FROM account_journal WHERE code = 'INV' AND company_id = $1",
+            &[&f.company],
+        )
+        .await;
+        let bills = one(
+            &mut tx,
+            "SELECT id::int8 FROM account_journal WHERE code = 'BILL' AND company_id = $1",
+            &[&f.company],
+        )
+        .await;
+        let foreign = tx
+            .env()
+            .records("res.currency")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("name", text("XEU"))
+                        .set_cell("symbol", text("XEU"))
+                        .set_cell("rounding", Cell::Decimal(num("0.01")))
+                        .set_cell("active", Cell::Bool(true)),
+                ],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        tx.env()
+            .with_company(f.company)
+            .unwrap()
+            .records("res.currency.rate")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![
+                    RawVals::new()
+                        .set_cell("currency_id", Cell::Id(foreign))
+                        .set_cell("company_id", Cell::Id(f.company))
+                        .set_cell("name", Cell::Date(d(2024, 1, 1)))
+                        .set_cell("rate", Cell::Decimal(num("2"))),
+                ],
+            )
+            .await
+            .unwrap();
+        let abroad = document(
+            &mut tx,
+            f.company,
+            Document {
+                move_type: "out_invoice",
+                partner: f.books.customer,
+                journal: sales,
+                currency: Some(foreign),
+                price: "1000",
+                taxes: &[sales_tax],
+            },
+        )
+        .await;
+        let refund = document(
+            &mut tx,
+            f.company,
+            Document {
+                move_type: "in_refund",
+                partner: f.books.vendor,
+                journal: bills,
+                currency: None,
+                price: "300",
+                taxes: &[],
+            },
+        )
+        .await;
+        tx.commit().await.unwrap();
+
+        let reader_orm = policy_orm(&f.db, &f.orm).await;
+        let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+        let analysis = xml_id(&mut tx, "account_reporting", "report_invoice_analysis").await;
+        let mut read = reader_orm.begin(f.reader).await.unwrap();
+        let options = |report: i64| {
+            json!({"report":report,"companies":[f.company],
+                   "date":{"preset":"custom","from":"2024-01-01","to":"2024-12-31"}})
+        };
+        let output = runtime::report_lines(&read.env(), &mut read, &options(analysis))
+            .await
+            .unwrap();
+        read.commit().await.unwrap();
+        let untaxed = credit_of(&mut tx, abroad, "product").await;
+        let tax = credit_of(&mut tx, abroad, "tax").await;
+        let receivable = -credit_of(&mut tx, abroad, "payment_term").await;
+        let document_untaxed = num(&tx
+            .query(
+                "SELECT amount_untaxed::text FROM account_move WHERE id = $1",
+                &[&abroad],
+            )
+            .await
+            .unwrap()[0]
+            .get::<_, String>(0));
+        assert_ne!(
+            untaxed, document_untaxed,
+            "the invoice must be in another currency"
+        );
+        assert_eq!(
+            cells(&output, "Customer Invoices"),
+            [untaxed, tax, untaxed + tax]
+        );
+        assert_eq!(untaxed + tax, receivable);
+        // a vendor credit note credits its expense line
+        let refunded = credit_of(&mut tx, refund, "product").await;
+        assert!(refunded > Decimal::ZERO);
+        assert_eq!(
+            cells(&output, "Vendor Credit Notes"),
+            [refunded, Decimal::ZERO, refunded]
+        );
+        tx.commit().await.unwrap();
+
+        // A management-ledger invoice stays out of the tax report; a group member tax is counted.
+        let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+        let group = tx
+            .env()
+            .records("account.journal.group")
+            .unwrap()
+            .create(
+                &mut tx,
+                vec![RawVals::new().set_cell("name", text("Management book"))],
+            )
+            .await
+            .unwrap()
+            .ids()[0];
+        let management = journal(&mut tx, f.company, "MGT", "sale", Some(f.books.income)).await;
+        write(
+            &mut tx,
+            "account.journal",
+            management,
+            RawVals::new().set_cell("journal_group_id", Cell::Id(group)),
+        )
+        .await;
+        let managed = document(
+            &mut tx,
+            f.company,
+            Document {
+                move_type: "out_invoice",
+                partner: f.books.customer,
+                journal: management,
+                currency: None,
+                price: "500",
+                taxes: &[sales_tax],
+            },
+        )
+        .await;
+        let member = document(
+            &mut tx,
+            f.company,
+            Document {
+                move_type: "out_invoice",
+                partner: f.books.customer,
+                journal: sales,
+                currency: None,
+                price: "200",
+                taxes: &[member_tax],
+            },
+        )
+        .await;
+        tx.commit().await.unwrap();
+        let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+        let report = xml_id(&mut tx, "account_reporting", "report_tax_report").await;
+        let mut read = reader_orm.begin(f.reader).await.unwrap();
+        let output = runtime::report_lines(&read.env(), &mut read, &options(report))
+            .await
+            .unwrap();
+        read.commit().await.unwrap();
+        assert!(credit_of(&mut tx, managed, "tax").await > Decimal::ZERO);
+        let other = credit_of(&mut tx, member, "tax").await;
+        assert!(other > Decimal::ZERO);
+        assert_eq!(cells(&output, "Sales Taxes")[2], tax);
+        assert_eq!(cells(&output, "Other Taxes")[2], other);
+        assert_eq!(cells(&output, "Net Tax Payable")[2], tax + other);
+    });
 }

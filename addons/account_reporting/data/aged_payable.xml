@@ -8,6 +8,7 @@
       <field name="date_mode">single</field>
       <field name="date_default">today</field>
       <field name="comparison" eval="False"/>
+      <field name="current_only" eval="True"/>
       <field name="multi_company" eval="False"/>
       <field name="totals_below" eval="True"/>
     </record>

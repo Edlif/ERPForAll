@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="report_cash_flow" model="reporting.report">
+      <field name="name">Cash Flow Statement</field>
+      <field name="date_default">this_year</field>
+      <field name="multi_company" eval="False"/>
+      <field name="totals_below" eval="True"/>
+    </record>
+    <record id="cash_flow_amount" model="reporting.report.column">
+      <field name="report_id" ref="report_cash_flow"/>
+      <field name="name">Cash flow</field>
+      <field name="label">amount</field>
+      <field name="kind">monetary</field>
+    </record>
+    <!-- A class requires that every nonzero noncash counterpart shares exactly that one master tag.
+         Untagged, mixed and ambiguous movements stay unclassified. Domains return the cash-side items. -->
+    <record id="cash_flow_opening" model="reporting.report.line">
+      <field name="report_id" ref="report_cash_flow"/>
+      <field name="sequence">10</field>
+      <field name="code">OPENING</field>
+      <field name="name">Opening cash and bank balance</field>
+      <field name="groupby">account_id,move_id</field>
+    </record>
+    <record id="cash_flow_opening_amount" model="reporting.report.expression">
+      <field name="line_id" ref="cash_flow_opening"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">before_period</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_cash"]]</field>
+    </record>
+    <record id="cash_flow_operating" model="reporting.report.line">
+      <field name="report_id" ref="report_cash_flow"/>
+      <field name="sequence">20</field>
+      <field name="code">OPERATING</field>
+      <field name="name">Operating activities</field>
+      <field name="groupby">account_id,move_id</field>
+    </record>
+    <record id="cash_flow_operating_amount" model="reporting.report.expression">
+      <field name="line_id" ref="cash_flow_operating"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain" eval="'[[&quot;parent_state&quot;,&quot;=&quot;,&quot;posted&quot;],[&quot;journal_id.journal_group_id&quot;,&quot;=&quot;,false],[&quot;account_id.account_type&quot;,&quot;=&quot;,&quot;asset_cash&quot;],[&quot;move_id.line_ids&quot;,&quot;any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0]]],[&quot;move_id.line_ids&quot;,&quot;not any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0],&quot;|&quot;,&quot;|&quot;,[&quot;account_id.tag_ids&quot;,&quot;!=&quot;,{0}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{1}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{2}]]]]'.format(ref('account.account_tag_operating'), ref('account.account_tag_investing'), ref('account.account_tag_financing'))"/>
+    </record>
+    <record id="cash_flow_investing" model="reporting.report.line">
+      <field name="report_id" ref="report_cash_flow"/>
+      <field name="sequence">30</field>
+      <field name="code">INVESTING</field>
+      <field name="name">Investing activities</field>
+      <field name="groupby">account_id,move_id</field>
+    </record>
+    <record id="cash_flow_investing_amount" model="reporting.report.expression">
+      <field name="line_id" ref="cash_flow_investing"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain" eval="'[[&quot;parent_state&quot;,&quot;=&quot;,&quot;posted&quot;],[&quot;journal_id.journal_group_id&quot;,&quot;=&quot;,false],[&quot;account_id.account_type&quot;,&quot;=&quot;,&quot;asset_cash&quot;],[&quot;move_id.line_ids&quot;,&quot;any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0]]],[&quot;move_id.line_ids&quot;,&quot;not any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0],&quot;|&quot;,&quot;|&quot;,[&quot;account_id.tag_ids&quot;,&quot;!=&quot;,{1}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{0}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{2}]]]]'.format(ref('account.account_tag_operating'), ref('account.account_tag_investing'), ref('account.account_tag_financing'))"/>
+    </record>
+    <record id="cash_flow_financing" model="reporting.report.line">
+      <field name="report_id" ref="report_cash_flow"/>
+      <field name="sequence">40</field>
+      <field name="code">FINANCING</field>
+      <field name="name">Financing activities</field>
+      <field name="groupby">account_id,move_id</field>
+    </record>
+    <record id="cash_flow_financing_amount" model="reporting.report.expression">
+      <field name="line_id" ref="cash_flow_financing"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain" eval="'[[&quot;parent_state&quot;,&quot;=&quot;,&quot;posted&quot;],[&quot;journal_id.journal_group_id&quot;,&quot;=&quot;,false],[&quot;account_id.account_type&quot;,&quot;=&quot;,&quot;asset_cash&quot;],[&quot;move_id.line_ids&quot;,&quot;any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0]]],[&quot;move_id.line_ids&quot;,&quot;not any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0],&quot;|&quot;,&quot;|&quot;,[&quot;account_id.tag_ids&quot;,&quot;!=&quot;,{2}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{0}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{1}]]]]'.format(ref('account.account_tag_operating'), ref('account.account_tag_investing'), ref('account.account_tag_financing'))"/>
+    </record>
+    <record id="cash_flow_unclassified" model="reporting.report.line">
+      <field name="report_id" ref="report_cash_flow"/>
+      <field name="sequence">50</field>
+      <field name="code">UNCLASSIFIED</field>
+      <field name="name">Unclassified cash movements</field>
+      <field name="groupby">account_id,move_id</field>
+    </record>
+    <record id="cash_flow_unclassified_amount" model="reporting.report.expression">
+      <field name="line_id" ref="cash_flow_unclassified"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain" eval="'[[&quot;parent_state&quot;,&quot;=&quot;,&quot;posted&quot;],[&quot;journal_id.journal_group_id&quot;,&quot;=&quot;,false],[&quot;account_id.account_type&quot;,&quot;=&quot;,&quot;asset_cash&quot;],[&quot;move_id.line_ids&quot;,&quot;any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0]]],[&quot;move_id.line_ids&quot;,&quot;any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0],&quot;|&quot;,&quot;|&quot;,[&quot;account_id.tag_ids&quot;,&quot;!=&quot;,{0}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{1}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{2}]]],[&quot;move_id.line_ids&quot;,&quot;any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0],&quot;|&quot;,&quot;|&quot;,[&quot;account_id.tag_ids&quot;,&quot;!=&quot;,{1}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{0}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{2}]]],[&quot;move_id.line_ids&quot;,&quot;any&quot;,[[&quot;account_id&quot;,&quot;!=&quot;,false],[&quot;account_id.account_type&quot;,&quot;!=&quot;,&quot;asset_cash&quot;],[&quot;balance&quot;,&quot;!=&quot;,0],&quot;|&quot;,&quot;|&quot;,[&quot;account_id.tag_ids&quot;,&quot;!=&quot;,{2}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{0}],[&quot;account_id.tag_ids&quot;,&quot;=&quot;,{1}]]]]'.format(ref('account.account_tag_operating'), ref('account.account_tag_investing'), ref('account.account_tag_financing'))"/>
+    </record>
+    <record id="cash_flow_net" model="reporting.report.line">
+      <field name="report_id" ref="report_cash_flow"/>
+      <field name="sequence">60</field>
+      <field name="code">NET</field>
+      <field name="name">Net change in cash</field>
+      <field name="groupby">account_id,move_id</field>
+    </record>
+    <record id="cash_flow_net_amount" model="reporting.report.expression">
+      <field name="line_id" ref="cash_flow_net"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_cash"],["move_id.line_ids","any",[["account_id","!=",false],["account_id.account_type","!=","asset_cash"],["balance","!=",0]]]]</field>
+    </record>
+    <record id="cash_flow_closing" model="reporting.report.line">
+      <field name="report_id" ref="report_cash_flow"/>
+      <field name="sequence">70</field>
+      <field name="code">CLOSING</field>
+      <field name="name">Closing cash and bank balance</field>
+      <field name="groupby">account_id,move_id</field>
+    </record>
+    <record id="cash_flow_closing_amount" model="reporting.report.expression">
+      <field name="line_id" ref="cash_flow_closing"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">from_beginning</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_cash"]]</field>
+    </record>
+  </data>
+  <record id="action_cash_flow" model="ir.actions.client">
+    <field name="name">Cash Flow Statement</field>
+    <field name="tag">reporting.report</field>
+    <field name="params" eval="{'report': ref('report_cash_flow')}"/>
+  </record>
+  <menuitem id="menu_cash_flow" name="Cash Flow Statement" parent="menu_account_reporting" action="action_cash_flow" groups="account.group_account_readonly" sequence="36"/>
+  <record id="menu_cash_flow" model="ir.ui.menu"><field name="web_icon">lucide:chart-line</field></record>
+</erp>

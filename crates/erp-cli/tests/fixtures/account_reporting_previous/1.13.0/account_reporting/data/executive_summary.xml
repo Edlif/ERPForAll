@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+  <data noupdate="1">
+    <record id="report_executive_summary" model="reporting.report">
+      <field name="name">Executive Summary</field>
+      <field name="date_default">this_year</field>
+      <field name="multi_company" eval="False"/>
+      <field name="totals_below" eval="True"/>
+    </record>
+    <record id="exec_sum_col_amt" model="reporting.report.column">
+      <field name="report_id" ref="report_executive_summary"/>
+      <field name="sequence">10</field>
+      <field name="name">Amount</field>
+      <field name="label">amount</field>
+      <field name="kind">monetary</field>
+    </record>
+    <record id="exec_sum_cash" model="reporting.report.line">
+      <field name="report_id" ref="report_executive_summary"/>
+      <field name="sequence">10</field>
+      <field name="name">Cash and Bank Balance</field>
+      <field name="code">CASH</field>
+      <field name="groupby">account_id</field>
+    </record>
+    <record id="exec_sum_cash_amt" model="reporting.report.expression">
+      <field name="line_id" ref="exec_sum_cash"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">from_beginning</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_cash"]]</field>
+    </record>
+    <record id="exec_sum_ar" model="reporting.report.line">
+      <field name="report_id" ref="report_executive_summary"/>
+      <field name="sequence">20</field>
+      <field name="name">Accounts Receivable</field>
+      <field name="code">AR</field>
+      <field name="groupby">partner_id</field>
+    </record>
+    <record id="exec_sum_ar_amt" model="reporting.report.expression">
+      <field name="line_id" ref="exec_sum_ar"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">from_beginning</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","asset_receivable"]]</field>
+    </record>
+    <record id="exec_sum_ap" model="reporting.report.line">
+      <field name="report_id" ref="report_executive_summary"/>
+      <field name="sequence">30</field>
+      <field name="name">Accounts Payable</field>
+      <field name="code">AP</field>
+      <field name="groupby">partner_id</field>
+    </record>
+    <record id="exec_sum_ap_raw" model="reporting.report.expression">
+      <field name="line_id" ref="exec_sum_ap"/>
+      <field name="label">raw</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">from_beginning</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","liability_payable"]]</field>
+    </record>
+    <record id="exec_sum_ap_amt" model="reporting.report.expression">
+      <field name="line_id" ref="exec_sum_ap"/>
+      <field name="label">amount</field>
+      <field name="engine">formula</field>
+      <field name="formula">0 - raw</field>
+    </record>
+    <record id="exec_sum_income" model="reporting.report.line">
+      <field name="report_id" ref="report_executive_summary"/>
+      <field name="sequence">40</field>
+      <field name="name">Period Revenue</field>
+      <field name="code">INC</field>
+      <field name="groupby">account_id</field>
+    </record>
+    <record id="exec_sum_income_raw" model="reporting.report.expression">
+      <field name="line_id" ref="exec_sum_income"/>
+      <field name="label">raw</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","in",["income","income_other"]]]</field>
+    </record>
+    <record id="exec_sum_income_amt" model="reporting.report.expression">
+      <field name="line_id" ref="exec_sum_income"/>
+      <field name="label">amount</field>
+      <field name="engine">formula</field>
+      <field name="formula">0 - raw</field>
+    </record>
+    <record id="exec_sum_expense" model="reporting.report.line">
+      <field name="report_id" ref="report_executive_summary"/>
+      <field name="sequence">50</field>
+      <field name="name">Period Expenses</field>
+      <field name="code">EXP</field>
+      <field name="groupby">account_id</field>
+    </record>
+    <record id="exec_sum_expense_amt" model="reporting.report.expression">
+      <field name="line_id" ref="exec_sum_expense"/>
+      <field name="label">amount</field>
+      <field name="model">account.move.line</field>
+      <field name="field">balance</field>
+      <field name="date_field">date</field>
+      <field name="date_scope">strict_range</field>
+      <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","in",["expense","expense_other","expense_depreciation","expense_direct_cost"]]]</field>
+    </record>
+    <record id="exec_sum_profit" model="reporting.report.line">
+      <field name="report_id" ref="report_executive_summary"/>
+      <field name="sequence">60</field>
+      <field name="name">Net Profit</field>
+      <field name="code">NET_PROFIT</field>
+    </record>
+    <record id="exec_sum_profit_amt" model="reporting.report.expression">
+      <field name="line_id" ref="exec_sum_profit"/>
+      <field name="label">amount</field>
+      <field name="engine">formula</field>
+      <field name="formula">INC.amount - EXP.amount</field>
+    </record>
+  </data>
+  <record id="action_executive_summary" model="ir.actions.client">
+    <field name="name">Executive Summary</field>
+    <field name="tag">reporting.report</field>
+    <field name="params" eval="{'report': ref('report_executive_summary')}"/>
+  </record>
+  <menuitem id="menu_executive_summary" name="Executive Summary" parent="menu_account_reporting" action="action_executive_summary" groups="account.group_account_readonly" sequence="5"/>
+  <record id="menu_executive_summary" model="ir.ui.menu"><field name="web_icon">lucide:trending-up</field></record>
+</erp>

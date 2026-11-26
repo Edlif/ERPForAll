@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<erp>
+    <data noupdate="1">
+        <record id="report_profit_loss" model="reporting.report">
+            <field name="name">Profit and Loss</field>
+            <field name="date_mode">range</field>
+            <field name="date_default">this_year</field>
+            <field name="multi_company" eval="False"/>
+            <field name="comparison" eval="True"/>
+            <field name="totals_below" eval="True"/>
+            <field name="unfold_all" eval="True"/>
+            <field name="search_bar" eval="True"/>
+            <field name="hide_zero">optional</field>
+        </record>
+        <record id="profit_loss_amount" model="reporting.report.column">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="sequence">10</field>
+            <field name="name">Balance</field>
+            <field name="label">amount</field>
+            <field name="kind">monetary</field>
+        </record>
+
+        <!-- INCOME -->
+        <record id="profit_loss_income" model="reporting.report.line">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="sequence">10</field>
+            <field name="name">Income</field>
+            <field name="code">INCOME</field>
+            <field name="foldable">always_unfolded</field>
+        </record>
+        <record id="profit_loss_income_amount" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_income"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">GROSS_PROFIT.amount + OTHER_INCOME.amount</field>
+        </record>
+
+        <record id="profit_loss_gross_profit" model="reporting.report.line">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="parent_id" ref="profit_loss_income"/>
+            <field name="sequence">11</field>
+            <field name="name">Gross Profit</field>
+            <field name="code">GROSS_PROFIT</field>
+            <field name="foldable">always_unfolded</field>
+        </record>
+        <record id="profit_loss_gross_profit_amount" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_gross_profit"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">OP_INCOME.amount - COGS.amount</field>
+        </record>
+
+        <record id="profit_loss_op_income" model="reporting.report.line">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="parent_id" ref="profit_loss_gross_profit"/>
+            <field name="sequence">12</field>
+            <field name="name">Operating Income</field>
+            <field name="code">OP_INCOME</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="profit_loss_op_income_booked" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_op_income"/>
+            <field name="label">booked</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">strict_range</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","income"]]</field>
+        </record>
+        <record id="profit_loss_op_income_amount" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_op_income"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">0 - booked</field>
+        </record>
+
+        <record id="profit_loss_cogs" model="reporting.report.line">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="parent_id" ref="profit_loss_gross_profit"/>
+            <field name="sequence">13</field>
+            <field name="name">Cost of Revenue</field>
+            <field name="code">COGS</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="profit_loss_cogs_amount" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_cogs"/>
+            <field name="label">amount</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">strict_range</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","expense_direct_cost"]]</field>
+        </record>
+
+        <record id="profit_loss_other_income" model="reporting.report.line">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="parent_id" ref="profit_loss_income"/>
+            <field name="sequence">14</field>
+            <field name="name">Other Income</field>
+            <field name="code">OTHER_INCOME</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="profit_loss_other_income_booked" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_other_income"/>
+            <field name="label">booked</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">strict_range</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","income_other"]]</field>
+        </record>
+        <record id="profit_loss_other_income_amount" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_other_income"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">0 - booked</field>
+        </record>
+
+        <!-- EXPENSES -->
+        <record id="profit_loss_expense" model="reporting.report.line">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="sequence">20</field>
+            <field name="name">Expenses</field>
+            <field name="code">EXPENSE</field>
+            <field name="foldable">always_unfolded</field>
+        </record>
+        <record id="profit_loss_expense_total" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_expense"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">sum_children</field>
+        </record>
+
+        <record id="profit_loss_op_expense" model="reporting.report.line">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="parent_id" ref="profit_loss_expense"/>
+            <field name="sequence">21</field>
+            <field name="name">Operating Expenses</field>
+            <field name="code">OP_EXPENSE</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="profit_loss_op_expense_amount" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_op_expense"/>
+            <field name="label">amount</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">strict_range</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","in",["expense","expense_other"]]]</field>
+        </record>
+
+        <record id="profit_loss_depreciation" model="reporting.report.line">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="parent_id" ref="profit_loss_expense"/>
+            <field name="sequence">22</field>
+            <field name="name">Depreciation</field>
+            <field name="code">DEPRECIATION</field>
+            <field name="groupby">account_id</field>
+        </record>
+        <record id="profit_loss_depreciation_amount" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_depreciation"/>
+            <field name="label">amount</field>
+            <field name="model">account.move.line</field>
+            <field name="field">balance</field>
+            <field name="date_field">date</field>
+            <field name="date_scope">strict_range</field>
+            <field name="domain">[["parent_state","=","posted"],["journal_id.journal_group_id","=",false],["account_id.account_type","=","expense_depreciation"]]</field>
+        </record>
+
+        <!-- NET PROFIT -->
+        <record id="profit_loss_result" model="reporting.report.line">
+            <field name="report_id" ref="report_profit_loss"/>
+            <field name="sequence">30</field>
+            <field name="name">Net Profit</field>
+            <field name="code">RESULT</field>
+        </record>
+        <record id="profit_loss_result_amount" model="reporting.report.expression">
+            <field name="line_id" ref="profit_loss_result"/>
+            <field name="label">amount</field>
+            <field name="engine">formula</field>
+            <field name="formula">INCOME.amount - EXPENSE.amount</field>
+        </record>
+    </data>
+    <record id="action_profit_loss" model="ir.actions.client">
+        <field name="name">Profit and Loss</field>
+        <field name="tag">reporting.report</field>
+        <field name="params" eval="{'report': ref('report_profit_loss')}"/>
+    </record>
+    <menuitem id="menu_profit_loss" name="Profit and Loss" parent="menu_account_reporting" action="action_profit_loss" groups="account.group_account_readonly" sequence="35"/>
+    <record id="menu_profit_loss" model="ir.ui.menu"><field name="web_icon">lucide:chart-column</field></record>
+</erp>
