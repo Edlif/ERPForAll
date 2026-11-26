@@ -365,16 +365,19 @@ async fn buckets() {
         assert_eq!(got, message);
     }
 
-    // a past cutoff is refused, never answered with today's residuals
-    let past = options(
+    // a past cutoff is refused, never answered with today's residuals: the report is current
+    // only, so opening it falls back to today and a request for a past date is refused by name
+    let mut past = options(
         &mut tx,
         &f,
         json!({"date": {"preset": "custom", "to": "2024-02-28"}}),
     )
     .await
     .unwrap();
+    assert_eq!(past["date"]["preset"], "today", "{past}");
+    past["date"] = json!({"mode": "single", "preset": "custom", "from": null, "to": "2024-02-28"});
     let got = refusal(runtime::report_lines(&env, &mut tx, &past).await).await;
-    assert!(got.contains("cannot be dated before today"), "{got}");
+    assert!(got.contains("reads current stock or balances"), "{got}");
 
     // line id and target refusals
     let root = format!("root~reporting.report~{}", f.report);

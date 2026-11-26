@@ -568,6 +568,14 @@ fn definition_reports_compute_unfold_page_and_compare() {
             (format!("{on_hand}|total~~").as_str(), "total")
         );
         assert_eq!(cells(total), cells(line(&answer, &on_hand)));
+        // The generated total says what it totals: the unfolded line's own name after "Total".
+        assert_eq!(
+            total["name"].as_str().unwrap(),
+            format!(
+                "Total {}",
+                line(&answer, &on_hand)["name"].as_str().unwrap()
+            )
+        );
         for generated in [more, total] {
             assert_eq!(generated["caret"], json!([]));
             assert!(
