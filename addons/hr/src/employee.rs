@@ -783,6 +783,7 @@ impl HrEmployee {
         let ctx = ValueMap::from([("default_employee_id".into(), Value::Int(id))]);
         Ok(Value::Map(Arc::new(ValueMap::from([
             ("type".into(), Value::str("ir.actions.act_window")),
+            ("target".into(), Value::str("current")),
             ("name".into(), Value::str(name)),
             ("res_model".into(), Value::str("hr.employee.version")),
             (
@@ -817,14 +818,13 @@ impl HrEmployee {
         };
         Ok(Value::Map(Arc::new(ValueMap::from([
             ("type".into(), Value::str("ir.actions.act_window")),
+            ("target".into(), Value::str("current")),
             ("name".into(), Value::str(name)),
             ("res_model".into(), Value::str("hr.employee")),
             (
                 "views".into(),
                 Value::list([
-                    Value::list([Value::Bool(false), Value::str("kanban")]),
                     Value::list([Value::Bool(false), Value::str("list")]),
-                    Value::list([Value::Bool(false), Value::str("hierarchy")]),
                     Value::list([Value::Bool(false), Value::str("form")]),
                 ]),
             ),

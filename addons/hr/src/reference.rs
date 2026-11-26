@@ -104,12 +104,12 @@ impl HrEmployeeType {
         };
         Ok(Value::Map(Arc::new(ValueMap::from([
             ("type".into(), Value::str("ir.actions.act_window")),
+            ("target".into(), Value::str("current")),
             ("name".into(), Value::str(label)),
             ("res_model".into(), Value::str("hr.employee")),
             (
                 "views".into(),
                 Value::list([
-                    Value::list([Value::Bool(false), Value::str("kanban")]),
                     Value::list([Value::Bool(false), Value::str("list")]),
                     Value::list([Value::Bool(false), Value::str("form")]),
                 ]),

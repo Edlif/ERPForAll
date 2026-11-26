@@ -260,6 +260,87 @@ fn org_chart_reports_its_total_and_truncation() {
     });
 }
 
+/// A stat button's related list opens in the page: the web client takes a domain only from a result with
+/// `target = "current"` and the views list then form, and refuses any other shape before it opens anything.
+#[test]
+fn stat_button_lists_open_in_the_page_with_list_and_form() {
+    run(|| async {
+        let (db, orm) = cloned_installed().await;
+        let company = xid(&db, "base", "main_company").await;
+        let mut tx = orm.begin(SUPERUSER_ID).await.unwrap();
+        let department = create(&mut tx, "hr.department", named("Operations")).await;
+        let job = create(&mut tx, "hr.job", named("Planner")).await;
+        let kind = create(&mut tx, "hr.employee.type", named("Seasonal")).await;
+        let lead = create(&mut tx, "hr.employee", employee("Lead", company, None)).await;
+        let cases: [(&str, i64, &'static str, &str, &str); 6] = [
+            (
+                "hr.employee",
+                lead,
+                "action_open_versions",
+                "hr.employee.version",
+                "employee_id",
+            ),
+            (
+                "hr.employee",
+                lead,
+                "action_open_subordinates",
+                "hr.employee",
+                "parent_id",
+            ),
+            (
+                "hr.department",
+                department,
+                "action_open_employees",
+                "hr.employee",
+                "department_id",
+            ),
+            (
+                "hr.department",
+                department,
+                "action_open_child_departments",
+                "hr.department",
+                "parent_id",
+            ),
+            (
+                "hr.job",
+                job,
+                "action_open_employees",
+                "hr.employee",
+                "job_id",
+            ),
+            (
+                "hr.employee.type",
+                kind,
+                "action_open_employees",
+                "hr.employee",
+                "employee_type_id",
+            ),
+        ];
+        for (model, id, method, opens, field) in cases {
+            let action = call(&mut tx, model, id, method).await.unwrap();
+            let what = format!("{model}.{method}");
+            assert_eq!(
+                key(&action, "type"),
+                &Value::str("ir.actions.act_window"),
+                "{what}"
+            );
+            assert_eq!(key(&action, "target"), &Value::str("current"), "{what}");
+            assert_eq!(key(&action, "res_model"), &Value::str(opens), "{what}");
+            let views: Vec<&Value> = list(key(&action, "views"))
+                .iter()
+                .map(|view| &list(view)[1])
+                .collect();
+            assert_eq!(views, [&Value::str("list"), &Value::str("form")], "{what}");
+            // One condition on the related field of the record whose button was pressed.
+            let [condition] = list(key(&action, "domain")) else {
+                panic!("{what}: not one condition")
+            };
+            assert_eq!(list(condition)[0], Value::str(field), "{what}");
+            assert_eq!(int(&list(condition)[2]), id, "{what}");
+        }
+    })
+}
+
 /// `get_department_chart` cuts the sub-departments the same way; the employee count of a
 /// department covers its whole subtree and the child count its direct sub-departments.
 #[test]

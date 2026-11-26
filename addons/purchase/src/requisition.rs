@@ -320,7 +320,9 @@ impl PurchaseRequisition {
             "type": "ir.actions.act_window",
             "name": "RFQs / Orders",
             "res_model": "purchase.order",
-            "view_mode": "list,form",
+            // The web client takes a domain only from a result that opens in the page, with list then form.
+            "target": "current",
+            "views": [[false, "list"], [false, "form"]],
             "domain": [["requisition_id", "=", rid]],
             "context": {"default_requisition_id": rid},
         }))))
