@@ -9,6 +9,7 @@
 #[path = "support/accounting.rs"]
 mod accounting;
 use accounting::*;
+use erp_addon_reporting::line::{LineId, Segment};
 use erp_addon_reporting::runtime;
 use erp_modules::{InitOptions, ModuleName};
 use erp_sdk::prelude::*;
@@ -122,8 +123,87 @@ async fn setup_with_calendar(june_close: bool) -> Fixture {
     }
 }
 
+/// A shown amount; a missing value is a failure (the balance column is never blank).
 fn amount(row: &Json, column: usize) -> Decimal {
     num(row["cells"][column]["value"].as_str().unwrap())
+}
+
+/// A debit or credit cell: the column is blank when zero, which reads as zero.
+fn blank_or(row: &Json, column: usize) -> Decimal {
+    match &row["cells"][column]["value"] {
+        Json::Null => Decimal::ZERO,
+        value => num(value.as_str().unwrap()),
+    }
+}
+
+/// The index of the column with `label` in the main column group of resolved options.
+fn col(options: &Json, label: &str) -> usize {
+    options["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|c| c["group"] == 0 && c["label"] == label)
+        .unwrap_or_else(|| panic!("no column {label}"))
+}
+
+struct Cols {
+    date: usize,
+    debit: usize,
+    credit: usize,
+    balance: usize,
+}
+
+fn cols(options: &Json) -> Cols {
+    Cols {
+        date: col(options, "date"),
+        debit: col(options, "debit"),
+        credit: col(options, "credit"),
+        balance: col(options, "balance"),
+    }
+}
+
+fn account_line(report: i64, account: i64) -> LineId {
+    LineId::root(report).child(Segment::group(
+        "account_id",
+        "account.account",
+        &account.to_string(),
+    ))
+}
+
+fn account_id(report: i64, account: i64) -> String {
+    account_line(report, account).to_string()
+}
+
+fn opening_id(report: i64, account: i64) -> String {
+    account_line(report, account)
+        .child(Segment::line("OPENING"))
+        .to_string()
+}
+
+fn item_id(report: i64, account: i64, item: i64) -> String {
+    account_line(report, account)
+        .child(Segment::group("id", "account.move.line", &item.to_string()))
+        .to_string()
+}
+
+fn total_id(report: i64) -> String {
+    LineId::root(report).child(Segment::total()).to_string()
+}
+
+fn unallocated_id(report: i64) -> String {
+    LineId::root(report)
+        .child(Segment::line("UNALLOCATED"))
+        .to_string()
+}
+
+/// The top-level lines without the grand total, and the grand total (always last).
+fn split_total(lines: &[Json], report: i64) -> (&[Json], &Json) {
+    let (total, rest) = lines
+        .split_last()
+        .expect("a General Ledger with items has a total");
+    assert_eq!(line_id(total), total_id(report));
+    assert_eq!(total["kind"], "total");
+    (rest, total)
 }
 
 #[test]
@@ -140,37 +220,91 @@ async fn oracle() {
         .await
         .unwrap()["options"]
         .clone();
+    let c = cols(&options);
     let top = runtime::report_lines(&env, &mut tx, &options)
         .await
         .unwrap();
-    assert_eq!(amount(&top["lines"][0], 2), num("220"));
-    assert_eq!(amount(&top["lines"][0], 3), num("220"));
-    assert_eq!(amount(&top["lines"][0], 4), Decimal::ZERO);
-    let root = top["lines"][0]["id"].as_str().unwrap();
-    let accounts = runtime::report_expand(&env, &mut tx, &options, root, 0)
-        .await
-        .unwrap();
-    let suffix = format!("group:account_id~account.account~{}", b.bank);
-    let cash = accounts["lines"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["id"].as_str().unwrap().ends_with(&suffix))
-        .unwrap();
-    let items = runtime::report_expand(&env, &mut tx, &options, cash["id"].as_str().unwrap(), 0)
+    let (accounts, total) = split_total(top["lines"].as_array().unwrap(), report);
+    // Grand total: period debit and credit of the balanced February books, closing balance zero.
+    assert_eq!(amount(total, c.debit), num("220"));
+    assert_eq!(amount(total, c.credit), num("220"));
+    assert_eq!(amount(total, c.balance), Decimal::ZERO);
+    // Accounts are the top level (no wrapper line), named code + name, ordered by code, and add up
+    // to the grand total.
+    let mut sums = [Decimal::ZERO; 3];
+    let mut codes = Vec::new();
+    for row in accounts {
+        assert_eq!(row["level"], 0, "{row}");
+        let id = LineId::parse(line_id(row)).unwrap();
+        let account = id.segments()[1].value().parse::<i64>().unwrap();
+        assert_eq!(line_id(row), account_id(report, account));
+        let record = env
+            .records("account.account")
+            .unwrap()
+            .browse([account])
+            .unwrap();
+        let code = string(&record, &mut tx, "code").await;
+        let name = string(&record, &mut tx, "name").await;
+        assert_eq!(row["name"], format!("{code} {name}"));
+        codes.push(code);
+        sums[0] += blank_or(row, c.debit);
+        sums[1] += blank_or(row, c.credit);
+        sums[2] += amount(row, c.balance);
+    }
+    let mut sorted = codes.clone();
+    sorted.sort();
+    assert_eq!(codes, sorted);
+    assert_eq!(
+        sums,
+        [
+            amount(total, c.debit),
+            amount(total, c.credit),
+            amount(total, c.balance)
+        ]
+    );
+    let cash = account_row(accounts, b.bank);
+    let items = runtime::report_expand(&env, &mut tx, &options, &cash_id(&f), 0)
         .await
         .unwrap();
     let rows = items["lines"].as_array().unwrap();
-    assert_eq!(rows.len(), 4);
+    // Initial balance (January's 1000), then the two February bank items with their running balance.
+    assert_eq!(rows.len(), 3);
+    assert_eq!(line_id(&rows[0]), opening_id(report, b.bank));
+    assert_eq!(rows[0]["name"], "Initial balance");
     assert_eq!(
-        rows.iter().map(|r| amount(r, 4)).collect::<Vec<_>>(),
-        [num("1000"), num("1050"), num("1040"), num("1040")]
+        rows.iter()
+            .map(|r| amount(r, c.balance))
+            .collect::<Vec<_>>(),
+        [num("1000"), num("1050"), num("1040")]
     );
-    assert_eq!(rows[1]["cells"][0]["kind"], "date");
-    assert_eq!(rows[1]["cells"][0]["value"], "2024-02-10");
-    assert_eq!(rows[2]["cells"][0]["value"], "2024-02-20");
-    for row in rows {
-        for (column, field) in [(2, "debit"), (3, "credit"), (4, "balance")] {
+    assert_eq!(rows[1]["cells"][c.date]["kind"], "date");
+    assert_eq!(rows[1]["cells"][c.date]["value"], "2024-02-10");
+    assert_eq!(rows[2]["cells"][c.date]["value"], "2024-02-20");
+    // Opening + period movement of the visible items = the account's closing balance; the items'
+    // debit and credit are the account's period debit and credit.
+    let mut movement = [Decimal::ZERO; 2];
+    for row in &rows[1..] {
+        movement[0] += blank_or(row, c.debit);
+        movement[1] += blank_or(row, c.credit);
+    }
+    assert_eq!(
+        movement,
+        [blank_or(cash, c.debit), blank_or(cash, c.credit)]
+    );
+    assert_eq!(
+        amount(&rows[0], c.balance) + movement[0] - movement[1],
+        amount(cash, c.balance)
+    );
+    assert_eq!(
+        amount(rows.last().unwrap(), c.balance),
+        amount(cash, c.balance)
+    );
+    for row in rows.iter().chain([cash]) {
+        for (column, field) in [
+            (c.debit, "debit"),
+            (c.credit, "credit"),
+            (c.balance, "balance"),
+        ] {
             if row["cells"][column]["value"].is_null() {
                 continue;
             }
@@ -200,9 +334,42 @@ async fn oracle() {
                     ref other => panic!("{other:?}"),
                 })
                 .sum();
-            assert_eq!(sum, amount(row, column));
+            assert_eq!(sum, amount(row, column), "{} cell {column}", row["id"]);
         }
     }
+    // Unfolded through the engine: the account, its rows, then its total row carrying the closing.
+    let mut unfold_input = input.clone();
+    unfold_input["unfolded"] = json!([cash_id(&f)]);
+    let unfolded_options = runtime::report_options(&env, &mut tx, report, &unfold_input)
+        .await
+        .unwrap()["options"]
+        .clone();
+    let unfolded = runtime::report_lines(&env, &mut tx, &unfolded_options)
+        .await
+        .unwrap();
+    let unfolded = unfolded["lines"].as_array().unwrap();
+    let at = unfolded
+        .iter()
+        .position(|r| line_id(r) == cash_id(&f))
+        .unwrap();
+    assert_eq!(unfolded[at]["unfolded"], true);
+    let shown: Vec<&str> = unfolded[at + 1..at + 1 + rows.len()]
+        .iter()
+        .map(line_id)
+        .collect();
+    assert_eq!(shown, rows.iter().map(line_id).collect::<Vec<_>>());
+    let cash_total = &unfolded[at + 1 + rows.len()];
+    assert_eq!(
+        line_id(cash_total),
+        account_line(report, b.bank)
+            .child(Segment::total())
+            .to_string()
+    );
+    assert_eq!(cash_total["kind"], "total");
+    assert_eq!(
+        amount(cash_total, c.balance),
+        amount(rows.last().unwrap(), c.balance)
+    );
     tx.commit().await.unwrap();
     erp_addon_account::fiscal::ensure_periods_with(
         orm,
@@ -226,23 +393,27 @@ async fn oracle() {
     let cash = runtime::report_expand(&tx.env(), &mut tx, &opts, &cash_id(&f), 0)
         .await
         .unwrap();
-    assert_eq!(amount(&cash["lines"][0], 4), num("1003"));
+    assert_eq!(line_id(&cash["lines"][0]), opening_id(report, b.bank));
+    assert_eq!(amount(&cash["lines"][0], c.balance), num("1003"));
     assert_eq!(
-        amount(cash["lines"].as_array().unwrap().last().unwrap(), 4),
+        amount(cash["lines"].as_array().unwrap().last().unwrap(), c.balance),
         num("1043")
     );
-    let income_id = format!(
-        "root~reporting.report~{}|line:GL~~|group:account_id~account.account~{}",
-        report, b.income
-    );
-    let income = runtime::report_expand(&tx.env(), &mut tx, &opts, &income_id, 0)
-        .await
-        .unwrap();
-    assert_eq!(amount(&income["lines"][0], 4), num("-3"));
+    let income =
+        runtime::report_expand(&tx.env(), &mut tx, &opts, &account_id(report, b.income), 0)
+            .await
+            .unwrap();
+    assert_eq!(line_id(&income["lines"][0]), opening_id(report, b.income));
+    assert_eq!(amount(&income["lines"][0], c.balance), num("-3"));
     assert_eq!(
-        amount(income["lines"].as_array().unwrap().last().unwrap(), 4),
+        amount(
+            income["lines"].as_array().unwrap().last().unwrap(),
+            c.balance
+        ),
         num("-123")
     );
+    // A range that starts before every item: the opening is zero, so no initial balance row, and the
+    // running balance starts from the first item.
     let crossing = json!({"report":report,"companies":[company],"date":{"preset":"custom","from":"2023-12-01","to":"2024-02-29"}});
     let opts = runtime::report_options(&tx.env(), &mut tx, report, &crossing)
         .await
@@ -251,11 +422,18 @@ async fn oracle() {
     let cash = runtime::report_expand(&tx.env(), &mut tx, &opts, &cash_id(&f), 0)
         .await
         .unwrap();
-    assert_eq!(amount(&cash["lines"][0], 4), Decimal::ZERO);
-    assert_eq!(
-        amount(cash["lines"].as_array().unwrap().last().unwrap(), 4),
-        num("1043")
+    let rows = cash["lines"].as_array().unwrap();
+    assert!(
+        rows.iter()
+            .all(|r| line_id(r) != opening_id(report, b.bank))
     );
+    assert_eq!(rows[0]["cells"][c.date]["value"], "2023-12-31");
+    assert_eq!(
+        amount(&rows[0], c.balance),
+        blank_or(&rows[0], c.debit) - blank_or(&rows[0], c.credit)
+    );
+    assert_eq!(amount(rows.last().unwrap(), c.balance), num("1043"));
+    // No items in scope: no account lines, no total, and an account cannot be unfolded there.
     let empty = json!({"report":report,"companies":[company],"date":{"preset":"custom","from":"2022-01-01","to":"2022-01-31"}});
     let opts = runtime::report_options(&tx.env(), &mut tx, report, &empty)
         .await
@@ -264,17 +442,15 @@ async fn oracle() {
     let top = runtime::report_lines(&tx.env(), &mut tx, &opts)
         .await
         .unwrap();
-    assert_eq!(amount(&top["lines"][0], 4), Decimal::ZERO);
-    let empty = runtime::report_expand(
-        &tx.env(),
-        &mut tx,
-        &opts,
-        top["lines"][0]["id"].as_str().unwrap(),
-        0,
-    )
-    .await
-    .unwrap();
-    assert_eq!(empty["lines"], json!([]));
+    assert_eq!(top["lines"], json!([]));
+    let error = runtime::report_expand(&tx.env(), &mut tx, &opts, &cash_id(&f), 0)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "This account has no visible posted items in the General Ledger scope."
+    );
 }
 
 async fn post(tx: &mut Transaction, f: &Fixture, value: &str, date: Date) {
@@ -377,46 +553,70 @@ async fn fiscal_opening() {
         .await
         .unwrap()["options"]
         .clone();
+    let balance = col(&fiscal, "balance");
     assert_eq!(fiscal["provider"]["fiscal_year_start"], "2024-07-01");
-    let rows = fiscal_accounts(&mut tx, &fiscal, f.report).await;
+    let (rows, total) = fiscal_accounts(&mut tx, &fiscal).await;
     let unallocated = rows
         .iter()
-        .find(|row| line_id(row).ends_with("|line:UNALLOCATED~~"))
+        .find(|row| line_id(row) == unallocated_id(f.report))
         .unwrap();
-    assert_eq!(amount(unallocated, 4), num("-110"));
+    // Income and expense before the fiscal year start (Feb: -120 + 40, June: -30) are carried as
+    // one unallocated line, not on their accounts.
+    assert_eq!(amount(unallocated, balance), num("-110"));
     let action = runtime::report_drill(
         &env,
         &mut tx,
         &fiscal,
         line_id(unallocated),
-        &json!({"cell":4}),
+        &json!({"cell":balance}),
     )
     .await
     .unwrap();
     assert_eq!(drill_balance(&mut tx, &action).await, num("-110"));
     assert_eq!(
-        rows.iter().map(|row| amount(row, 4)).sum::<Decimal>(),
+        rows.iter().map(|row| amount(row, balance)).sum::<Decimal>(),
         Decimal::ZERO
     );
+    assert_eq!(amount(&total, balance), Decimal::ZERO);
 
     let income = account_row(&rows, f.books.income);
     let items = runtime::report_expand(&env, &mut tx, &fiscal, line_id(income), 0)
         .await
         .unwrap();
-    let balances = items["lines"]
-        .as_array()
-        .unwrap()
+    let items = items["lines"].as_array().unwrap();
+    let balances = items
         .iter()
-        .map(|row| amount(row, 4))
+        .map(|row| amount(row, balance))
         .collect::<Vec<_>>();
-    assert_eq!(balances, [num("-25"), num("-38"), num("-38")]);
-    for row in items["lines"].as_array().unwrap() {
-        let action =
-            runtime::report_drill(&env, &mut tx, &fiscal, line_id(row), &json!({"cell":4}))
-                .await
-                .unwrap();
-        assert_eq!(drill_balance(&mut tx, &action).await, amount(row, 4));
+    // July's opening of the fiscal year, then the August item; the closing is the account's balance.
+    assert_eq!(line_id(&items[0]), opening_id(f.report, f.books.income));
+    assert_eq!(balances, [num("-25"), num("-38")]);
+    assert_eq!(amount(income, balance), num("-38"));
+    for row in items {
+        let action = runtime::report_drill(
+            &env,
+            &mut tx,
+            &fiscal,
+            line_id(row),
+            &json!({"cell":balance}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(drill_balance(&mut tx, &action).await, amount(row, balance));
     }
+    let action = runtime::report_drill(
+        &env,
+        &mut tx,
+        &fiscal,
+        line_id(income),
+        &json!({"cell":balance}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        drill_balance(&mut tx, &action).await,
+        amount(income, balance)
+    );
     fiscal_input_refusals(&mut tx, f.report, &fiscal_input, &fiscal).await;
 
     let mut raw_input = fiscal_input.clone();
@@ -425,15 +625,15 @@ async fn fiscal_opening() {
         .await
         .unwrap()["options"]
         .clone();
-    let raw_rows = fiscal_accounts(&mut tx, &raw, f.report).await;
+    let (raw_rows, _) = fiscal_accounts(&mut tx, &raw).await;
     assert_eq!(
-        amount(account_row(&raw_rows, f.books.income), 4),
+        amount(account_row(&raw_rows, f.books.income), balance),
         num("-188")
     );
     assert!(
         raw_rows
             .iter()
-            .all(|row| !line_id(row).ends_with("|line:UNALLOCATED~~"))
+            .all(|row| line_id(row) != unallocated_id(f.report))
     );
     tx.commit().await.unwrap();
 
@@ -473,17 +673,21 @@ async fn fiscal_opening() {
         .await
         .unwrap()["options"]
         .clone();
-    let rows = fiscal_accounts(&mut tx, &refreshed, f.report).await;
-    assert_eq!(amount(account_row(&rows, retained), 4), num("-110"));
-    assert_eq!(amount(account_row(&rows, f.books.income), 4), num("-38"));
+    let (rows, total) = fiscal_accounts(&mut tx, &refreshed).await;
+    assert_eq!(amount(account_row(&rows, retained), balance), num("-110"));
+    assert_eq!(
+        amount(account_row(&rows, f.books.income), balance),
+        num("-38")
+    );
     assert!(
         rows.iter()
-            .all(|row| !line_id(row).ends_with("|line:UNALLOCATED~~"))
+            .all(|row| line_id(row) != unallocated_id(f.report))
     );
     assert_eq!(
-        rows.iter().map(|row| amount(row, 4)).sum::<Decimal>(),
+        rows.iter().map(|row| amount(row, balance)).sum::<Decimal>(),
         Decimal::ZERO
     );
+    assert_eq!(amount(&total, balance), Decimal::ZERO);
 }
 
 async fn fiscal_input_refusals(tx: &mut Transaction, report: i64, input: &Json, normal: &Json) {
@@ -529,14 +733,16 @@ fn account_row(rows: &[Json], account: i64) -> &Json {
         .unwrap()
 }
 
-async fn fiscal_accounts(tx: &mut Transaction, options: &Json, report: i64) -> Vec<Json> {
-    let root = format!("root~reporting.report~{report}|line:GL~~");
-    runtime::report_expand(&tx.env(), tx, options, &root, 0)
-        .await
-        .unwrap()["lines"]
+/// The top-level lines of the report (accounts and, under fiscal opening, the unallocated line)
+/// and its grand total.
+async fn fiscal_accounts(tx: &mut Transaction, options: &Json) -> (Vec<Json>, Json) {
+    let lines = runtime::report_lines(&tx.env(), tx, options).await.unwrap()["lines"]
         .as_array()
         .unwrap()
-        .clone()
+        .clone();
+    let report = options["report"].as_i64().unwrap();
+    let (rows, total) = split_total(&lines, report);
+    (rows.to_vec(), total.clone())
 }
 
 async fn drill_balance(tx: &mut Transaction, action: &Json) -> Decimal {
@@ -558,10 +764,7 @@ async fn drill_balance(tx: &mut Transaction, action: &Json) -> Decimal {
 }
 
 fn cash_id(f: &Fixture) -> String {
-    format!(
-        "root~reporting.report~{}|line:GL~~|group:account_id~account.account~{}",
-        f.report, f.books.bank
-    )
+    account_id(f.report, f.books.bank)
 }
 
 #[test]
@@ -616,16 +819,29 @@ async fn pages() {
     let mut tx = f.orm.begin(f.reader).await.unwrap();
     let env = tx.env();
     let opts = ledger_options(&mut tx, &f).await;
+    let c = cols(&opts);
     let first = runtime::report_expand(&env, &mut tx, &opts, &cash_id(&f), 0)
         .await
         .unwrap();
+    // Page one: the initial balance, ten items and the load-more line pointing at offset 10.
+    let more = first["lines"].as_array().unwrap().last().unwrap();
+    assert_eq!(more["kind"], "more");
+    assert_eq!(more["next_offset"], 10);
+    assert_eq!(more["remaining"], 6);
     let second = runtime::report_expand(&env, &mut tx, &opts, &cash_id(&f), 10)
         .await
         .unwrap();
+    assert!(
+        second["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["kind"] != "more" && line_id(row) != opening_id(f.report, f.books.bank))
+    );
     let mut actual = Vec::new();
     for page in [&first, &second] {
         for row in page["lines"].as_array().unwrap() {
-            if row["cells"][0]["kind"] == "date" {
+            if row["cells"][c.date]["kind"] == "date" {
                 actual.push(row);
             }
         }
@@ -674,7 +890,7 @@ async fn pages() {
         assert!(seen.insert(id));
         running += balance;
         assert_eq!(
-            row["cells"][0]["value"],
+            row["cells"][c.date]["value"],
             format!(
                 "{:04}-{:02}-{:02}",
                 date.ymd().0,
@@ -682,17 +898,15 @@ async fn pages() {
                 date.ymd().2
             )
         );
-        assert!(
-            row["id"]
-                .as_str()
-                .unwrap()
-                .ends_with(&format!("group:id~account.move.line~{id}"))
-        );
-        assert_eq!(amount(row, 4), running);
+        assert_eq!(line_id(row), item_id(f.report, f.books.bank, id));
+        assert_eq!(amount(row, c.balance), running);
     }
     assert_eq!(running, num("1051.11"));
     assert_eq!(
-        amount(second["lines"].as_array().unwrap().last().unwrap(), 4),
+        amount(
+            second["lines"].as_array().unwrap().last().unwrap(),
+            c.balance
+        ),
         running
     );
     tx.commit().await.unwrap();
@@ -711,7 +925,7 @@ async fn pages() {
         .await
         .unwrap();
     assert_eq!(
-        amount(page["lines"].as_array().unwrap().last().unwrap(), 4),
+        amount(page["lines"].as_array().unwrap().last().unwrap(), c.balance),
         num("1051.14")
     );
     tx.commit().await.unwrap();
@@ -723,7 +937,7 @@ async fn pages() {
         .await
         .unwrap();
     assert_eq!(
-        amount(page["lines"].as_array().unwrap().last().unwrap(), 4),
+        amount(page["lines"].as_array().unwrap().last().unwrap(), c.balance),
         num("1051.14")
     );
 }
@@ -797,7 +1011,7 @@ async fn rights() {
     periods(&f.orm, other).await;
     let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
     let b2 = books(&mut tx, other).await;
-    posted_entry(
+    let foreign = posted_entry(
         &mut tx,
         &b2,
         b2.bank,
@@ -807,6 +1021,8 @@ async fn rights() {
         d(2024, 2, 12),
     )
     .await;
+    let foreign_item = items_on(&mut tx, &[&foreign], b2.bank).await.ids()[0];
+    let other_report = xml_id(&mut tx, "account_reporting", "report_balance_sheet").await;
     let model = xml_id(&mut tx, "account", "model_account_move_line").await;
     tx.env()
         .records("ir.access")
@@ -830,49 +1046,59 @@ async fn rights() {
     let restricted = policy_orm(&f.db, &f.orm).await;
     let mut tx = restricted.begin(f.reader).await.unwrap();
     let opts = ledger_options(&mut tx, &f).await;
+    let c = cols(&opts);
     let top = runtime::report_lines(&tx.env(), &mut tx, &opts)
         .await
         .unwrap();
-    assert_eq!(amount(&top["lines"][0], 2), num("50"));
-    assert_eq!(amount(&top["lines"][0], 3), num("10"));
-    assert_eq!(amount(&top["lines"][0], 4), num("1040"));
-    let accounts = runtime::report_expand(
-        &tx.env(),
-        &mut tx,
-        &opts,
-        top["lines"][0]["id"].as_str().unwrap(),
-        0,
-    )
-    .await
-    .unwrap();
-    assert_eq!(accounts["lines"].as_array().unwrap().len(), 1);
-    let forged = format!(
-        "root~reporting.report~{}|line:GL~~|group:account_id~account.account~{}",
-        f.report, f.books.income
-    );
-    let error = runtime::report_expand(&tx.env(), &mut tx, &opts, &forged, 0)
+    // Only the readable bank items count: the draft, the alternate-ledger and the other company's
+    // entries stay out, and the restriction is not bypassed to balance the books.
+    let (accounts, total) = split_total(top["lines"].as_array().unwrap(), f.report);
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(line_id(&accounts[0]), cash_id(&f));
+    assert_eq!(amount(total, c.debit), num("50"));
+    assert_eq!(amount(total, c.credit), num("10"));
+    assert_eq!(amount(total, c.balance), num("1040"));
+    for forged in [
+        account_id(f.report, f.books.income),
+        account_id(f.report, b2.bank),
+    ] {
+        let error = runtime::report_expand(&tx.env(), &mut tx, &opts, &forged, 0)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+        assert_eq!(
+            error.message(),
+            "This account has no visible posted items in the General Ledger scope."
+        );
+    }
+    for item in [i64::MAX, foreign_item] {
+        let error = runtime::report_drill(
+            &tx.env(),
+            &mut tx,
+            &opts,
+            &item_id(f.report, f.books.bank, item),
+            &json!({"item":"open"}),
+        )
         .await
         .unwrap_err();
-    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
-    assert_eq!(
-        error.message(),
-        "This account has no visible posted items in the General Ledger scope."
-    );
+        assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+        assert_eq!(
+            error.message(),
+            "This journal item is not visible in the General Ledger scope."
+        );
+    }
     let error = runtime::report_drill(
         &tx.env(),
         &mut tx,
         &opts,
-        &format!(
-            "{}|group:id~account.move.line~9223372036854775807",
-            cash_id(&f)
-        ),
-        &json!({"item":"open"}),
+        &account_id(other_report, f.books.bank),
+        &json!({"cell":c.balance}),
     )
     .await
     .unwrap_err();
     assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
     assert_eq!(
         error.message(),
-        "This journal item is not visible in the General Ledger scope."
+        "This line is not part of this General Ledger."
     );
 }

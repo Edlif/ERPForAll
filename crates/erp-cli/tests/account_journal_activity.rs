@@ -3,6 +3,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::panic,
     reason = "integration assertions"
 )]
 
@@ -14,6 +15,7 @@
 mod accounting;
 
 use accounting::*;
+use erp_addon_reporting::line::{LineId, Segment};
 use erp_addon_reporting::runtime;
 use erp_modules::{InitOptions, ModuleName};
 use erp_orm::{Command, UserId};
@@ -73,6 +75,72 @@ fn numbers(line: &Json) -> Vec<Decimal> {
         .iter()
         .map(|c| num(c["value"].as_str().unwrap()))
         .collect()
+}
+
+/// The amounts of `line` by cell index; a blank cell (a debit or credit column that hides zero)
+/// reads as zero, and a text or date cell has no amount (zero).
+fn cell_values(line: &Json) -> Vec<Decimal> {
+    line["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| match (&c["value"], c["kind"].as_str()) {
+            (Json::Null, _) | (_, Some("text" | "date" | "empty")) => Decimal::ZERO,
+            (value, _) => num(value.as_str().unwrap()),
+        })
+        .collect()
+}
+
+/// The index of the column `label` of column group `group` in resolved options.
+fn column(options: &Json, group: u64, label: &str) -> usize {
+    options["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|c| c["group"] == group && c["label"] == label)
+        .unwrap_or_else(|| panic!("no column {label} in group {group}"))
+}
+
+fn line_id(line: &Json) -> &str {
+    line["id"].as_str().unwrap()
+}
+
+fn group_line(report: i64, field: &str, model: &str, id: i64) -> LineId {
+    LineId::root(report).child(Segment::group(field, model, &id.to_string()))
+}
+
+fn total_line(report: i64) -> String {
+    LineId::root(report).child(Segment::total()).to_string()
+}
+
+/// The lines of a native ledger report without its grand total, and the grand total (always last).
+fn split_total(lines: &[Json], report: i64) -> (&[Json], &Json) {
+    let (total, rest) = lines.split_last().expect("a report with rows has a total");
+    assert_eq!(line_id(total), total_line(report));
+    assert_eq!(total["kind"], "total");
+    (rest, total)
+}
+
+async fn drilled_ids(
+    env: &Env,
+    tx: &mut Transaction,
+    options: &Json,
+    line: &str,
+    cell: usize,
+) -> Vec<i64> {
+    let action = runtime::report_drill(env, tx, options, line, &json!({"cell":cell}))
+        .await
+        .unwrap();
+    assert_eq!(action["res_model"], "account.move.line");
+    let mut ids = env
+        .records("account.move.line")
+        .unwrap()
+        .search(tx, &Domain::from_json(&action["domain"]).unwrap())
+        .await
+        .unwrap()
+        .ids();
+    ids.sort_unstable();
+    ids
 }
 
 #[test]
@@ -409,19 +477,29 @@ async fn profit_loss() {
     .await
     .unwrap();
     let lines = shown["lines"].as_array().unwrap();
+    let line = |label: &str| {
+        lines
+            .iter()
+            .find(|line| line["name"] == label)
+            .unwrap_or_else(|| panic!("no line {label}"))
+    };
+    // February only: the January opening equity (1000 on an equity account) is no part of it.
     for (label, expected, drillable) in [
         ("Income", "120", false),
-        ("Expenses", "40", true),
-        ("Net profit", "80", false),
+        ("Gross Profit", "120", false),
+        ("Operating Income", "120", false),
+        ("Expenses", "40", false),
+        ("Operating Expenses", "40", true),
+        ("Net Profit", "80", false),
     ] {
-        let line = lines.iter().find(|line| line["name"] == label).unwrap();
-        assert_eq!(numbers(line), [num(expected)], "{label}");
-        assert_eq!(line["cells"][0]["drillable"], drillable, "{label}");
+        assert_eq!(numbers(line(label)), [num(expected)], "{label}");
+        assert_eq!(line(label)["cells"][0]["drillable"], drillable, "{label}");
     }
-    let expense = lines
-        .iter()
-        .find(|line| line["name"] == "Expenses")
-        .unwrap();
+    assert_eq!(
+        numbers(line("Net Profit"))[0],
+        numbers(line("Income"))[0] - numbers(line("Expenses"))[0]
+    );
+    let expense = line("Operating Expenses");
     let action = runtime::report_drill(
         &env,
         &mut tx,
@@ -432,7 +510,21 @@ async fn profit_loss() {
     .await
     .unwrap();
     assert_eq!(action["res_model"], "account.move.line");
-    let income = lines.iter().find(|line| line["name"] == "Income").unwrap();
+    let items = env
+        .records("account.move.line")
+        .unwrap()
+        .search(&mut tx, &Domain::from_json(&action["domain"]).unwrap())
+        .await
+        .unwrap();
+    let booked: Decimal = items
+        .read_with(&mut tx, &["balance"], erp_sdk::Load::Raw)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| booked_amount(&row["balance"]))
+        .sum();
+    assert_eq!(booked, numbers(expense)[0]);
+    let income = line("Operating Income");
     let accounts = runtime::report_expand(
         &env,
         &mut tx,
@@ -458,7 +550,7 @@ async fn profit_loss() {
     assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
     assert_eq!(
         error.message(),
-        "The amount cell of line INCOME is a formula; no records are behind it."
+        "The amount cell of line OP_INCOME is a formula; no records are behind it."
     );
     tx.rollback().await.unwrap();
     let mut tx = orm.begin(UserId::new(admin).unwrap()).await.unwrap();
@@ -615,9 +707,18 @@ async fn trial_balance() {
     let shown = runtime::report_lines(&env, &mut tx, &options)
         .await
         .unwrap();
-    let root = &shown["lines"][0];
+    let resolved = &shown["options"];
+    // Current period first, then the comparison: opening, debit, credit, closing in each group.
+    let mut cells = Vec::new();
+    for group in [0, 1] {
+        for label in ["opening", "debit", "credit", "closing"] {
+            cells.push(column(resolved, group, label));
+        }
+    }
+    assert_eq!(cells, (0..8).collect::<Vec<_>>());
+    let (rows, total) = split_total(shown["lines"].as_array().unwrap(), report);
     assert_eq!(
-        numbers(root),
+        cell_values(total),
         [
             num("0"),
             num("58.31"),
@@ -629,15 +730,35 @@ async fn trial_balance() {
             num("0")
         ]
     );
-    let expanded = runtime::report_expand(&env, &mut tx, &options, root["id"].as_str().unwrap(), 0)
-        .await
-        .unwrap();
-    let rows = expanded["lines"].as_array().unwrap();
     assert_eq!(
         rows.len(),
         5,
         "opening-only and current-only accounts must remain visible"
     );
+    // One flat line per account, ordered by account code, named code + name; none unfolds.
+    let mut codes = Vec::new();
+    for row in rows {
+        assert_eq!(row["level"], 0);
+        assert_eq!(row["unfoldable"], false);
+        let id = LineId::parse(line_id(row)).unwrap();
+        let account = id.segments()[1].value().parse::<i64>().unwrap();
+        assert_eq!(
+            line_id(row),
+            group_line(report, "account_id", "account.account", account).to_string()
+        );
+        let record = env
+            .records("account.account")
+            .unwrap()
+            .browse([account])
+            .unwrap();
+        let code = string(&record, &mut tx, "code").await;
+        let name = string(&record, &mut tx, "name").await;
+        assert_eq!(row["name"], format!("{code} {name}"));
+        codes.push(code);
+    }
+    let mut sorted = codes.clone();
+    sorted.sort();
+    assert_eq!(codes, sorted);
     let expected = [
         (
             bank,
@@ -663,12 +784,9 @@ async fn trial_balance() {
     ];
     let mut totals = [Decimal::ZERO; 8];
     for (account, expected) in expected {
-        let suffix = format!("group:account_id~account.account~{account}");
-        let row = rows
-            .iter()
-            .find(|r| r["id"].as_str().unwrap().ends_with(&suffix))
-            .unwrap();
-        let actual = numbers(row);
+        let id = group_line(report, "account_id", "account.account", account).to_string();
+        let row = rows.iter().find(|r| line_id(r) == id).unwrap();
+        let actual = cell_values(row);
         assert_eq!(actual, expected.map(num));
         assert_eq!(actual[0] + actual[1] - actual[2], actual[3]);
         assert_eq!(actual[4] + actual[5] - actual[6], actual[7]);
@@ -705,7 +823,12 @@ async fn trial_balance() {
             assert_eq!(sum, actual[cell]);
         }
     }
-    assert_eq!(totals.to_vec(), numbers(root));
+    assert_eq!(totals.to_vec(), cell_values(total));
+    let error = runtime::report_expand(&env, &mut tx, &options, line_id(&rows[0]), 0)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(error.message(), "Trial Balance lines do not unfold.");
     let mut denied = options.clone();
     denied["companies"] = json!([f.other]);
     let error = runtime::report_lines(&env, &mut tx, &denied)
@@ -763,30 +886,25 @@ async fn trial_balance() {
     let shown = runtime::report_lines(&env, &mut tx, &options)
         .await
         .unwrap();
+    let (rows, total) = split_total(shown["lines"].as_array().unwrap(), report);
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
     assert_eq!(
-        numbers(&shown["lines"][0]),
-        [
-            num("81.01"),
-            num("37.25"),
-            num("11.05"),
-            num("107.21"),
-            num("8.91"),
-            num("72.10"),
-            num("0"),
-            num("81.01")
-        ]
+        line_id(row),
+        group_line(report, "account_id", "account.account", bank).to_string()
     );
-    let restricted_rows = runtime::report_expand(
-        &env,
-        &mut tx,
-        &options,
-        shown["lines"][0]["id"].as_str().unwrap(),
-        0,
-    )
-    .await
-    .unwrap();
-    assert_eq!(restricted_rows["lines"].as_array().unwrap().len(), 1);
-    let row = &restricted_rows["lines"][0];
+    let bank_row = [
+        num("81.01"),
+        num("37.25"),
+        num("11.05"),
+        num("107.21"),
+        num("8.91"),
+        num("72.10"),
+        num("0"),
+        num("81.01"),
+    ];
+    assert_eq!(cell_values(row), bank_row);
+    assert_eq!(cell_values(total), bank_row);
     let drill = runtime::report_drill(
         &env,
         &mut tx,
@@ -815,16 +933,18 @@ async fn trial_balance() {
 }
 
 #[test]
-fn ledger_trial_balance_paging_preserves_each_scope_and_refuses_ambiguous_dates() {
+fn trial_balance_lists_every_account_in_one_answer_and_refuses_ambiguous_dates() {
     big_stack(trial_balance_pages);
 }
 
 async fn trial_balance_pages() {
     let f = fixture().await;
     let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    let mut created = Vec::new();
     for i in 0..12 {
         let account = account(&mut tx, f.company, &format!("6200{i:02}"), "expense").await;
         trial_entry(&mut tx, &f, account, f.books.bank, "1.01", d(2024, 1, 10)).await;
+        created.push(account);
     }
     let report = xml_id(&mut tx, "account_reporting", "report_ledger_trial_balance").await;
     let definition = tx
@@ -833,6 +953,7 @@ async fn trial_balance_pages() {
         .unwrap()
         .browse([report])
         .unwrap();
+    // A load-more page size smaller than the account count does not page or cut the account list.
     definition
         .write(
             &mut tx,
@@ -848,57 +969,49 @@ async fn trial_balance_pages() {
     let top = runtime::report_lines(&env, &mut tx, &options)
         .await
         .unwrap();
-    let root = &top["lines"][0];
-    let root_id = root["id"].as_str().unwrap();
-    let page = runtime::report_expand(&env, &mut tx, &options, root_id, 0)
-        .await
-        .unwrap();
-    let rows = page["lines"].as_array().unwrap();
-    assert_eq!(rows.len(), 11);
-    let more = rows.last().unwrap();
-    assert_eq!(more["remaining"], 4);
-    let mut first = [Decimal::ZERO; 4];
+    let (rows, total) = split_total(top["lines"].as_array().unwrap(), report);
+    // bank and income of the fixture plus the twelve opening-only expense accounts
+    assert_eq!(rows.len(), 14);
+    let mut sum = [Decimal::ZERO; 4];
     let mut ids = std::collections::BTreeSet::new();
-    for row in &rows[..10] {
-        assert!(ids.insert(row["id"].as_str().unwrap().to_owned()));
-        for (sum, value) in first.iter_mut().zip(numbers(row)) {
+    for row in rows {
+        assert_ne!(row["kind"], "more");
+        assert!(ids.insert(line_id(row).to_owned()));
+        for (sum, value) in sum.iter_mut().zip(cell_values(row)) {
             *sum += value;
         }
     }
-    let mut with_more = first;
-    for (sum, value) in with_more.iter_mut().zip(numbers(more)) {
-        *sum += value;
+    for account in [f.books.bank, f.books.income].into_iter().chain(created) {
+        assert!(
+            ids.contains(&group_line(report, "account_id", "account.account", account).to_string())
+        );
     }
-    assert_eq!(with_more.to_vec(), numbers(root));
-    let second = runtime::report_expand(&env, &mut tx, &options, root_id, 10)
-        .await
-        .unwrap();
-    let second = second["lines"].as_array().unwrap();
-    assert_eq!(second.len(), 4);
-    let mut remainder = [Decimal::ZERO; 4];
-    for row in second {
-        assert!(ids.insert(row["id"].as_str().unwrap().to_owned()));
-        for (sum, value) in remainder.iter_mut().zip(numbers(row)) {
-            *sum += value;
-        }
-    }
-    assert_eq!(remainder.to_vec(), numbers(more));
+    assert_eq!(sum.to_vec(), cell_values(total));
     let mut empty = options.clone();
     empty["date"] = json!({"preset":"custom", "from":"2020-01-01", "to":"2020-01-31"});
     let zero = runtime::report_lines(&env, &mut tx, &empty).await.unwrap();
-    assert_eq!(numbers(&zero["lines"][0]), [Decimal::ZERO; 4]);
-    let zero = runtime::report_expand(&env, &mut tx, &empty, root_id, 0)
+    assert_eq!(zero["lines"], json!([]));
+    // Provider options are refused by name: this report has none.
+    let mut forged = options.clone();
+    forged["provider"] = json!({"fiscal_opening": true});
+    let error = runtime::report_lines(&env, &mut tx, &forged)
         .await
-        .unwrap();
-    assert!(zero["lines"].as_array().unwrap().is_empty());
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "Invalid Trial Balance option fiscal_opening. This report has no provider options."
+    );
     drop(tx);
     let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
-    let column = xml_id(&mut tx, "account_reporting", "trial_balance_column_debit").await;
-    tx.env()
+    let column_id = xml_id(&mut tx, "account_reporting", "trial_balance_column_debit").await;
+    let debit = tx
+        .env()
         .records("reporting.report.column")
         .unwrap()
-        .browse([column])
-        .unwrap()
+        .browse([column_id])
+        .unwrap();
+    debit
         .write(
             &mut tx,
             RawVals::new().set_cell("sortable", Cell::Bool(true)),
@@ -909,15 +1022,59 @@ async fn trial_balance_pages() {
     let mut tx = f.orm.begin(f.reader).await.unwrap();
     let mut sorted = options.clone();
     sorted["order"] = json!({"column":"debit", "direction":"desc"});
-    let error = runtime::report_expand(&tx.env(), &mut tx, &sorted, root_id, 0)
+    let error = runtime::report_lines(&tx.env(), &mut tx, &sorted)
         .await
         .unwrap_err();
     assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
     assert_eq!(
         error.message(),
-        "options.order: column debit is not sortable."
+        "Trial Balance rows are ordered by account code."
     );
     drop(tx);
+    // A column the provider cannot fill is refused by name, never shown blank. The definition is
+    // changed in an administrator transaction that is rolled back; the reader asks in it.
+    let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    let env = tx.env().with_user(f.reader);
+    debit
+        .write(&mut tx, RawVals::new().set_cell("kind", text("decimal")))
+        .await
+        .unwrap();
+    let error = runtime::report_lines(&env, &mut tx, &options)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "Trial Balance column debit is not supported; its columns are monetary opening, debit, credit, closing and balance."
+    );
+    tx.rollback().await.unwrap();
+    let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    tx.env()
+        .records("reporting.report.column")
+        .unwrap()
+        .create(
+            &mut tx,
+            vec![
+                RawVals::new()
+                    .set_cell("report_id", Cell::Id(report))
+                    .set_cell("sequence", Cell::Int(50))
+                    .set_cell("name", text("Share"))
+                    .set_cell("label", text("share"))
+                    .set_cell("kind", text("monetary")),
+            ],
+        )
+        .await
+        .unwrap();
+    let env = tx.env().with_user(f.reader);
+    let error = runtime::report_lines(&env, &mut tx, &options)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "Trial Balance column share is not supported; its columns are monetary opening, debit, credit, closing and balance."
+    );
+    tx.rollback().await.unwrap();
     let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
     definition
         .write(
@@ -939,29 +1096,7 @@ async fn trial_balance_pages() {
     assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
     assert_eq!(
         error.message(),
-        "The before_period date scope requires a date range with a start date."
-    );
-    drop(tx);
-    let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
-    let expression = xml_id(
-        &mut tx,
-        "account_reporting",
-        "trial_balance_expression_opening",
-    )
-    .await;
-    let error = tx
-        .env()
-        .records("reporting.report.expression")
-        .unwrap()
-        .browse([expression])
-        .unwrap()
-        .write(&mut tx, RawVals::new().set_cell("date_field", Cell::Null))
-        .await
-        .unwrap_err();
-    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
-    assert_eq!(
-        error.message(),
-        "Report 'Ledger Trial Balance': line TRIAL_BALANCE, opening: The before_period date scope requires a date field."
+        "Trial Balance requires a date range with a start date."
     );
 }
 
@@ -979,10 +1114,14 @@ async fn partner_ledger() {
     let ap = (f.books.payable, f.books.bank);
     let prior = partner_entry(&mut tx, &f, ar, Some(p), "120", d(2024, 1, 31)).await;
     let current = partner_entry(&mut tx, &f, ar, Some(p), "-50", d(2024, 2, 15)).await;
-    partner_entry(&mut tx, &f, ap, Some(q), "-90", d(2024, 2, 15)).await;
-    partner_entry(&mut tx, &f, ar, None, "3.01", d(2024, 2, 29)).await;
+    let supplier = partner_entry(&mut tx, &f, ap, Some(q), "-90", d(2024, 2, 15)).await;
+    let unknown = partner_entry(&mut tx, &f, ar, None, "3.01", d(2024, 2, 29)).await;
     partner_entry(&mut tx, &f, ar, Some(p), "99", d(2024, 3, 1)).await;
     let expected = items_on(&mut tx, &[&prior, &current], ar.0).await.ids();
+    let current_item = items_on(&mut tx, &[&current], ar.0).await.ids()[0];
+    let supplier_item = items_on(&mut tx, &[&supplier], ap.0).await.ids()[0];
+    let unknown_item = items_on(&mut tx, &[&unknown], ar.0).await.ids()[0];
+    let accounts = env_accounts(&mut tx, f.company, &[ar.0, ap.0]).await;
     let report = xml_id(&mut tx, "account_reporting", "report_partner_ledger").await;
     assert!(xml_id(&mut tx, "account_reporting", "menu_partner_ledger").await > 0);
     tx.commit().await.unwrap();
@@ -994,53 +1133,253 @@ async fn partner_ledger() {
     let shown = runtime::report_lines(&env, &mut tx, &options)
         .await
         .unwrap();
-    let roots = shown["lines"].as_array().unwrap();
-    assert_eq!(roots.len(), 2);
-    for (root, expected) in roots
-        .iter()
-        .zip([["120", "3.01", "50", "73.01"], ["0", "0", "90", "-90"]])
+    let resolved = &shown["options"];
+    let [debit, credit, balance, account, date] =
+        ["debit", "credit", "balance", "account", "date"].map(|label| column(resolved, 0, label));
+    let (partners, total) = split_total(shown["lines"].as_array().unwrap(), report);
+    // Partners at the top level (no receivable/payable sections); the items without a partner last.
+    let partner_line = |id: i64| group_line(report, "partner_id", "res.partner", id).to_string();
+    assert_eq!(
+        partners.iter().map(line_id).collect::<Vec<_>>(),
+        [partner_line(p), partner_line(q), partner_line(0)]
+    );
+    // Feb only for debit and credit; the balance runs from the beginning to 29 Feb (March is out).
+    for (line, expected) in
+        partners
+            .iter()
+            .zip([["0", "50", "70"], ["0", "90", "-90"], ["3.01", "0", "3.01"]])
     {
-        assert_eq!(numbers(root), expected.map(num));
+        let values = cell_values(line);
+        assert_eq!(
+            [values[debit], values[credit], values[balance]],
+            expected.map(num),
+            "{}",
+            line["name"]
+        );
     }
-    let expanded =
-        runtime::report_expand(&env, &mut tx, &options, roots[0]["id"].as_str().unwrap(), 0)
-            .await
-            .unwrap();
-    let partners = expanded["lines"].as_array().unwrap();
-    assert_eq!(partners.len(), 2);
-    let suffix = format!("group:partner_id~res.partner~{p}");
-    let customer = partners
-        .iter()
-        .find(|line| line["id"].as_str().unwrap().ends_with(&suffix))
+    let mut sums = [Decimal::ZERO; 3];
+    for line in partners {
+        let values = cell_values(line);
+        sums[0] += values[debit];
+        sums[1] += values[credit];
+        sums[2] += values[balance];
+    }
+    let totals = cell_values(total);
+    assert_eq!(sums, [totals[debit], totals[credit], totals[balance]]);
+    // The customer: the January item as initial balance, then the February item on the
+    // receivable account with its running balance.
+    let customer = &partners[0];
+    let rows = runtime::report_expand(&env, &mut tx, &options, line_id(customer), 0)
+        .await
         .unwrap();
-    assert_eq!(numbers(customer), ["120", "0", "50", "70"].map(num));
-    let accounts =
-        runtime::report_expand(&env, &mut tx, &options, customer["id"].as_str().unwrap(), 0)
+    let rows = rows["lines"].as_array().unwrap();
+    let customer_id = LineId::parse(line_id(customer)).unwrap();
+    assert_eq!(
+        rows.iter().map(line_id).collect::<Vec<_>>(),
+        [
+            customer_id.child(Segment::line("INITIAL")).to_string(),
+            customer_id
+                .child(Segment::group(
+                    "id",
+                    "account.move.line",
+                    &current_item.to_string()
+                ))
+                .to_string(),
+        ]
+    );
+    assert_eq!(cell_values(&rows[0])[balance], num("120"));
+    assert_eq!(rows[1]["cells"][date]["value"], "2024-02-15");
+    assert_eq!(rows[1]["cells"][account]["value"], accounts[0].as_str());
+    assert_eq!(cell_values(&rows[1])[credit], num("50"));
+    assert_eq!(
+        cell_values(&rows[1])[balance],
+        cell_values(customer)[balance]
+    );
+    // The supplier's and the unknown partner's items sit on their own accounts.
+    for (line, item, code) in [
+        (&partners[1], supplier_item, &accounts[1]),
+        (&partners[2], unknown_item, &accounts[0]),
+    ] {
+        let rows = runtime::report_expand(&env, &mut tx, &options, line_id(line), 0)
             .await
             .unwrap();
-    let accounts = accounts["lines"].as_array().unwrap();
-    assert_eq!(accounts.len(), 1);
-    assert_eq!(numbers(&accounts[0]), numbers(customer));
-    let drill = runtime::report_drill(
-        &env,
+        let rows = rows["lines"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(line_id(&rows[0]).ends_with(&format!("|group:id~account.move.line~{item}")));
+        assert_eq!(rows[0]["cells"][account]["value"], code.as_str());
+        assert_eq!(cell_values(&rows[0])[balance], cell_values(line)[balance]);
+    }
+    let mut expected = expected;
+    expected.sort_unstable();
+    assert_eq!(
+        drilled_ids(&env, &mut tx, &options, line_id(customer), balance).await,
+        expected
+    );
+    assert_eq!(
+        drilled_ids(&env, &mut tx, &options, line_id(customer), credit).await,
+        [current_item]
+    );
+}
+
+/// The codes of `accounts`, as the account records hold them.
+async fn env_accounts(tx: &mut Transaction, company: i64, accounts: &[i64]) -> Vec<String> {
+    let mut codes = Vec::new();
+    for account in accounts {
+        let record = tx
+            .env()
+            .with_company(company)
+            .unwrap()
+            .records("account.account")
+            .unwrap()
+            .browse([*account])
+            .unwrap();
+        codes.push(string(&record, tx, "code").await);
+    }
+    codes
+}
+
+/// A posted receivable item of `amount` for `partner`, with `due` as its recorded due date.
+async fn due_entry(
+    tx: &mut Transaction,
+    f: &Fixture,
+    partner: i64,
+    amount: &str,
+    date: Date,
+    due: Option<Date>,
+) -> Records {
+    let amount = num(amount);
+    let mut first = RawVals::new()
+        .set_cell("account_id", Cell::Id(f.books.receivable))
+        .set_cell("partner_id", Cell::Id(partner))
+        .set_cell("balance", Cell::Decimal(amount));
+    if let Some(due) = due {
+        first.insert("date_maturity".into(), Cell::Date(due));
+    }
+    let created = moves(tx, f.company)
+        .create(
+            tx,
+            vec![
+                RawVals::new()
+                    .set_cell("date", Cell::Date(date))
+                    .set_cell("journal_id", Cell::Id(f.statutory_journal))
+                    .set_commands(
+                        "line_ids",
+                        vec![
+                            Command::create(first),
+                            Command::create(
+                                RawVals::new()
+                                    .set_cell("account_id", Cell::Id(f.books.bank))
+                                    .set_cell("balance", Cell::Decimal(-amount)),
+                            ),
+                        ],
+                    ),
+            ],
+        )
+        .await
+        .unwrap();
+    created.call::<(), ()>(tx, "action_post", ()).await.unwrap();
+    let item = items_on(tx, &[&created], f.books.receivable).await;
+    match (item.cell(tx, "date_maturity").await.unwrap(), due) {
+        (Cell::Date(recorded), Some(due)) => assert_eq!(recorded, due),
+        (Cell::Null | Cell::Bool(false), None) => {}
+        (recorded, due) => panic!("fixture due date {recorded:?}, wanted {due:?}"),
+    }
+    item
+}
+
+#[test]
+fn partner_ledger_due_dates_are_shown_as_recorded_and_overdue_only_while_open() {
+    big_stack(partner_ledger_due_dates);
+}
+
+async fn partner_ledger_due_dates() {
+    let f = fixture().await;
+    let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
+    let p = partner(&mut tx, "Due date customer").await;
+    // All in January; the report covers January only, so "overdue" must follow the caller's today,
+    // not the end of the reported period (each due date below is after 31 January).
+    let overdue = due_entry(&mut tx, &f, p, "100", d(2024, 1, 10), Some(d(2024, 2, 15))).await;
+    let undated = due_entry(&mut tx, &f, p, "30", d(2024, 1, 11), None).await;
+    let future = due_entry(&mut tx, &f, p, "40", d(2024, 1, 12), Some(d(2099, 12, 31))).await;
+    let settled = due_entry(&mut tx, &f, p, "25", d(2024, 1, 13), Some(d(2024, 3, 1))).await;
+    let payment = due_entry(&mut tx, &f, p, "-25", d(2024, 1, 14), Some(d(2024, 3, 1))).await;
+    let company = tx.env().with_company(f.company).unwrap();
+    try_call(
+        &settled.union(&payment).unwrap().with_env(company),
         &mut tx,
-        &options,
-        accounts[0]["id"].as_str().unwrap(),
-        &json!({"cell":3}),
+        "reconcile",
     )
     .await
     .unwrap();
-    let mut items = env
-        .records("account.move.line")
-        .unwrap()
-        .search(&mut tx, &Domain::from_json(&drill["domain"]).unwrap())
+    assert_ne!(
+        settled.cell(&mut tx, "full_reconcile_id").await.unwrap(),
+        Cell::Null
+    );
+    let report = xml_id(&mut tx, "account_reporting", "report_partner_ledger").await;
+    tx.commit().await.unwrap();
+
+    let mut tx = f.orm.begin(f.reader).await.unwrap();
+    let env = tx.env();
+    let today = env.context_today().unwrap();
+    assert!(d(2024, 2, 15) < today && today < d(2099, 12, 31));
+    let options = json!({"report":report, "companies":[f.company],
+        "date":{"preset":"custom","from":"2024-01-01","to":"2024-01-31"}});
+    let resolved = runtime::report_options(&env, &mut tx, report, &options)
         .await
-        .unwrap()
-        .ids();
-    items.sort_unstable();
-    let mut expected = expected;
-    expected.sort_unstable();
-    assert_eq!(items, expected);
+        .unwrap()["options"]
+        .clone();
+    let due = column(&resolved, 0, "due_date");
+    let customer = group_line(report, "partner_id", "res.partner", p);
+    let rows = runtime::report_expand(&env, &mut tx, &resolved, &customer.to_string(), 0)
+        .await
+        .unwrap();
+    let rows = rows["lines"].as_array().unwrap();
+    let row = |item: &Records| {
+        let id = customer
+            .child(Segment::group(
+                "id",
+                "account.move.line",
+                &item.ids()[0].to_string(),
+            ))
+            .to_string();
+        rows.iter()
+            .find(|row| line_id(row) == id)
+            .unwrap_or_else(|| panic!("no row {id}"))
+    };
+    for (item, shown, danger) in [
+        (&overdue, Some("2024-02-15"), true),
+        (&undated, None, false),
+        (&future, Some("2099-12-31"), false),
+        (&settled, Some("2024-03-01"), false),
+        (&payment, Some("2024-03-01"), false),
+    ] {
+        let line = row(item);
+        let cell = &line["cells"][due];
+        assert_eq!(cell["value"].as_str(), shown, "{line}");
+        assert_eq!(
+            cell.get("tone").and_then(Json::as_str),
+            danger.then_some("danger"),
+            "{line}"
+        );
+        for (index, other) in line["cells"].as_array().unwrap().iter().enumerate() {
+            if index != due {
+                assert!(other.get("tone").is_none(), "{line}");
+            }
+        }
+    }
+    // A page past what one screen may hold is refused before any query.
+    let bounds = erp_addon_reporting::settings::read(&env, &mut tx)
+        .await
+        .unwrap();
+    let offset = i64::try_from(bounds.max_screen_lines).unwrap();
+    let error = runtime::report_expand(&env, &mut tx, &resolved, &customer.to_string(), offset)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), erp_sdk::ErrorKind::Validation);
+    assert_eq!(
+        error.message(),
+        "Partner Ledger paging exceeds reporting.max_screen_lines; narrow the scope."
+    );
 }
 
 #[test]
@@ -1059,14 +1398,24 @@ async fn partner_ledger_unreconciled() {
     let invoice = items_on(&mut tx, &[&invoice], ar.0).await;
     let first = items_on(&mut tx, &[&first], ar.0).await;
     let second = items_on(&mut tx, &[&second], ar.0).await;
+    // Matching is done in the company, as a user of that company does it.
+    let company = tx.env().with_company(f.company).unwrap();
     for payment in [&first, &second] {
-        try_call(&invoice.union(payment).unwrap(), &mut tx, "reconcile")
-            .await
-            .unwrap();
-    }
-    try_call(&second, &mut tx, "remove_move_reconcile")
+        try_call(
+            &invoice.union(payment).unwrap().with_env(company.clone()),
+            &mut tx,
+            "reconcile",
+        )
         .await
         .unwrap();
+    }
+    try_call(
+        &second.with_env(company.clone()),
+        &mut tx,
+        "remove_move_reconcile",
+    )
+    .await
+    .unwrap();
     let removed = erp_addon_base::company_calendar::business_date(&mut tx, f.company)
         .await
         .unwrap();
@@ -1099,8 +1448,8 @@ async fn partner_ledger_unreconciled() {
         let shown = runtime::report_lines(&env, &mut tx, &options)
             .await
             .unwrap();
-        let root = &shown["lines"][0];
-        let values = numbers(root);
+        let balance = column(&shown["options"], 0, "balance");
+        let lines = shown["lines"].as_array().unwrap();
         let expected_closing = if cutoff == "2024-02-10" {
             "0"
         } else if cutoff == removed {
@@ -1108,27 +1457,22 @@ async fn partner_ledger_unreconciled() {
         } else {
             "120"
         };
+        // The closing of the open items as of the cutoff, and the items behind it, partner by partner.
+        let mut closing = Decimal::ZERO;
+        let mut actual = Vec::new();
+        if !lines.is_empty() {
+            let (partners, total) = split_total(lines, report);
+            for line in partners {
+                closing += cell_values(line)[balance];
+                actual.extend(drilled_ids(&env, &mut tx, &options, line_id(line), balance).await);
+            }
+            assert_eq!(cell_values(total)[balance], closing, "total at {cutoff}");
+        }
         assert_eq!(
-            values[3],
+            closing,
             num(expected_closing),
             "filtered booked balance at {cutoff}"
         );
-        let drill = runtime::report_drill(
-            &env,
-            &mut tx,
-            &options,
-            root["id"].as_str().unwrap(),
-            &json!({"cell":3}),
-        )
-        .await
-        .unwrap();
-        let mut actual = env
-            .records("account.move.line")
-            .unwrap()
-            .search(&mut tx, &Domain::from_json(&drill["domain"]).unwrap())
-            .await
-            .unwrap()
-            .ids();
         actual.sort_unstable();
         expected.sort_unstable();
         assert_eq!(actual, expected, "unreconciled closing drill at {cutoff}");
@@ -1138,7 +1482,10 @@ async fn partner_ledger_unreconciled() {
     let mut tx = f.orm.begin(SUPERUSER_ID).await.unwrap();
     let env = tx.env();
     let items = env.records("account.move.line").unwrap();
-    let replacement = items.browse(invoice.union(&second).unwrap().ids()).unwrap();
+    let replacement = items
+        .browse(invoice.union(&second).unwrap().ids())
+        .unwrap()
+        .with_env(env.with_company(f.company).unwrap());
     try_call(&replacement, &mut tx, "reconcile").await.unwrap();
     tx.commit().await.unwrap();
     let mut tx = f.orm.begin(f.reader).await.unwrap();

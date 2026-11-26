@@ -118,9 +118,17 @@ async fn statement() {
         };
         assert_eq!(amount("Assets"), num("1110"));
         assert_eq!(amount("Liabilities"), num("30"));
-        assert_eq!(amount("Posted equity"), num(capital));
-        assert_eq!(amount("Unallocated earnings"), num(open_result));
-        assert_eq!(amount("Total equity"), num("1080"));
-        assert_eq!(amount("Assets"), amount("Liabilities and equity"));
+        assert_eq!(amount("Retained Earnings & Capital"), num(capital));
+        assert_eq!(amount("Unallocated Earnings"), num(open_result));
+        assert_eq!(amount("Equity"), num("1080"));
+        assert_eq!(
+            amount("Equity"),
+            amount("Retained Earnings & Capital") + amount("Unallocated Earnings")
+        );
+        assert_eq!(amount("Assets"), amount("Liabilities and Equity"));
+        assert_eq!(
+            amount("Liabilities and Equity"),
+            amount("Liabilities") + amount("Equity")
+        );
     }
 }
