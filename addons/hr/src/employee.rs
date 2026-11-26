@@ -848,40 +848,6 @@ impl HrEmployee {
 
     #[method]
     #[rpc(effect = read)]
-    async fn action_open_org_chart(
-        this: &RecordSet<HrEmployee>,
-        tx: &mut Transaction,
-    ) -> Result<Value> {
-        let id = this.as_records().ensure_one()?.int()?;
-        let name = match this.as_records().cell(tx, "name").await? {
-            Cell::Str(s) => format!("{s} — Org Chart"),
-            _ => "Organization Chart".to_string(),
-        };
-        Ok(Value::Map(Arc::new(ValueMap::from([
-            ("type".into(), Value::str("ir.actions.act_window")),
-            ("name".into(), Value::str(name)),
-            ("res_model".into(), Value::str("hr.employee")),
-            (
-                "views".into(),
-                Value::list([
-                    Value::list([Value::Bool(false), Value::str("hierarchy")]),
-                    Value::list([Value::Bool(false), Value::str("kanban")]),
-                    Value::list([Value::Bool(false), Value::str("list")]),
-                    Value::list([Value::Bool(false), Value::str("form")]),
-                ]),
-            ),
-            (
-                "context".into(),
-                Value::Map(Arc::new(ValueMap::from([(
-                    "default_parent_id".into(),
-                    Value::Int(id),
-                )]))),
-            ),
-        ]))))
-    }
-
-    #[method]
-    #[rpc(effect = read)]
     async fn action_open_departure_wizard(
         this: &RecordSet<HrEmployee>,
         _tx: &mut Transaction,
