@@ -23,6 +23,7 @@ pub mod error;
 mod human;
 pub mod identity;
 mod live;
+mod manager;
 pub mod module;
 pub mod native_addons;
 pub mod node;
@@ -220,6 +221,7 @@ fn execute(cli: &Cli) -> Result<()> {
             println!("{}", cluster::execute(&cmd.action)?);
             Ok(())
         }
+        Commands::Manager(ref cmd) => manager::execute(&cmd.action),
         Commands::Dev(ref args) => {
             dev::run_dev(args)?;
             println!(

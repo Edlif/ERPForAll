@@ -114,6 +114,10 @@ pub enum Commands {
     /// `erp cluster rollout open|close|status`)
     Cluster(ClusterCommand),
 
+    /// The database manager pages for the instances of one directory, in a process of their own
+    /// (`erp manager serve`, `erp manager hash-password`)
+    Manager(ManagerCommand),
+
     /// A report render worker: frames on stdin and stdout, run by `erp server`'s worker pool. It
     /// reads no configuration and opens no database (design `reports-pdf.md` §6.1.1).
     ReportWorker,
@@ -845,6 +849,48 @@ pub struct GrantVacuumRoleArgs {
     /// The maintenance role that runs the vacuum.
     #[arg(long)]
     pub role: String,
+}
+
+/// `erp manager` subcommand container.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ManagerCommand {
+    /// Manager action to perform
+    #[command(subcommand)]
+    pub action: ManagerAction,
+}
+
+/// Manager actions.
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ManagerAction {
+    /// Serve the manager pages: the instances of `instances_dir`, their state, start and stop
+    Serve(ManagerServeArgs),
+
+    /// Hash a master password into the PHC file that `master_password_file` names
+    HashPassword(ManagerHashPasswordArgs),
+}
+
+/// Arguments for `erp manager serve`.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ManagerServeArgs {
+    /// Manager configuration file (`manager.toml`, mode 600).
+    #[arg(long)]
+    pub config: PathBuf,
+}
+
+/// Arguments for `erp manager hash-password`.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ManagerHashPasswordArgs {
+    /// Mode-600 regular file containing the master password.
+    #[arg(long)]
+    pub password_file: PathBuf,
+
+    /// File to write the hash to; created with mode 600, never overwritten.
+    #[arg(long)]
+    pub output: PathBuf,
 }
 
 /// `erp cluster` subcommand container.
