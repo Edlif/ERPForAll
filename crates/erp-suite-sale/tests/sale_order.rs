@@ -123,6 +123,7 @@ fn system_for_pool(pool: erp_testkit::deadpool_postgres::Pool, stock: bool) -> M
                 &erp_addon_account::ADDON,
                 // auto-installed with account and mail, which sale brings in
                 &erp_addon_account_mail::ADDON,
+                &erp_addon_reporting::ADDON,
                 &erp_addon_sales_team::ADDON,
                 &erp_addon_sale::ADDON,
             ])
