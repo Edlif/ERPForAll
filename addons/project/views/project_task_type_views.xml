@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Stages: list and form, and the window action of the Configuration menu. -->
+<erp>
+  <record id="project_task_type_view_list" model="ir.ui.view">
+    <field name="name">project.task.type.list</field>
+    <field name="model">project.task.type</field>
+    <field name="arch" type="xml">
+      <list string="Stages">
+        <field name="sequence" options="{'enable_formatting': False}"/>
+        <field name="name"/>
+        <field name="fold"/>
+        <field name="project_ids" widget="many2many_tags"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="project_task_type_view_form" model="ir.ui.view">
+    <field name="name">project.task.type.form</field>
+    <field name="model">project.task.type</field>
+    <field name="arch" type="xml">
+      <form string="Stage">
+        <sheet>
+          <div class="oe_title">
+            <h1><field name="name" placeholder="Stage name"/></h1>
+          </div>
+          <group>
+            <group>
+              <field name="sequence" options="{'enable_formatting': False}"/>
+              <field name="fold" widget="boolean_toggle"/>
+            </group>
+            <group>
+              <field name="project_ids" widget="many2many_tags"/>
+            </group>
+          </group>
+          <notebook>
+            <page name="description" string="Description">
+              <field name="description" placeholder="What this stage means and when a task belongs here"/>
+            </page>
+          </notebook>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="project_task_type_action" model="ir.actions.act_window">
+    <field name="name">Stages</field>
+    <field name="res_model">project.task.type</field>
+    <field name="view_mode">list,form</field>
+    <field name="view_id" ref="project_task_type_view_list"/>
+  </record>
+</erp>

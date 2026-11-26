@@ -1,0 +1,47 @@
+name = "Project"
+summary = "Projects, tasks, stages and tags, with a task board grouped by stage"
+description = """
+The Project app: organise work in projects and their tasks. Data-only (no Rust code, nothing to compile).
+
+- Projects (project.project) have a customer, a project manager, tags, a start and an end date, an \
+optional company, and the stages their tasks move through.
+- Tasks (project.task) belong to a project and have a stage, assignees, a customer, tags, a priority \
+(normal or important), a deadline, a status (on track, ready for the next stage, blocked), a description \
+and subtasks.
+- Stages (project.task.type) are shared between projects; a folded stage is meant to be shown folded on \
+the task board. Tags (project.tags) label projects and tasks.
+- Projects and tasks have a chatter: messages, followers and activities.
+- Views: the task board (kanban), declared grouped by stage, plus a task list, form, search and a calendar of \
+deadlines; projects have a board, a list, a form and a search; stages and tags have a list and a form.
+- Security: the groups Project / User (works on projects and tasks) and Project / Manager (also creates \
+and deletes projects, deletes tasks, and configures stages and tags). Settings administrators are managers.
+- Default data: the stages New, In Progress, Done and Cancelled (the last two folded).
+
+A project or task without a company is visible in every company; a project with a company is visible \
+only in that company, and its tasks follow it.
+
+Not in this version, because it needs a native addon: new projects get no stages by themselves, the board \
+shows only stages that hold tasks, there are no task counts on projects, a stage change does not reset the \
+status or record a history line, subtasks take nothing from their parent, and tag names are not forced \
+to be unique.
+"""
+version = "1.0.0"
+license = "MIT OR Apache-2.0"
+author = "ERPForAll contributors"
+category = "Services/Project"
+application = true
+icon = "lucide:folder-kanban"
+depends = ["base", "web", "mail"]
+data = [
+    "security/project_security.xml",
+    "security/ir.access.csv",
+    "data/project_data.xml",
+    "views/project_tags_views.xml",
+    "views/project_task_type_views.xml",
+    "views/project_task_views.xml",
+    "views/project_project_views.xml",
+    "views/project_menus.xml",
+]
+demo = [
+    "demo/project_demo.xml",
+]
