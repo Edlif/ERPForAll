@@ -43,7 +43,7 @@ Follow a live walkthrough across **Accounting → Purchase → Inventory → Sal
   <sub>
     <a href="docs/showcase/full-cycle-demo.mp4"><b>▶ Watch / Download Full HD Video (MP4 · 1280×720)</b></a>
     &nbsp;·&nbsp;
-    <a href="docs/showcase/README.md"><b>Browse All 13 HiDPI Screenshots →</b></a>
+    <a href="docs/showcase/README.md"><b>Browse All 16 HiDPI Screenshots →</b></a>
   </sub>
 </p>
 
@@ -163,26 +163,38 @@ Every financial and operational report shares one interactive tree-grid engine w
   </tr>
 </table>
 
-<details>
-<summary><b>More screens — Human Resources &amp; Themes</b> (click to expand)</summary>
-<br>
+### Human Resources — Employees, Org Chart & Analytics
+
 <table>
   <tr>
-    <td width="65%" valign="top">
-      <a href="docs/showcase/screenshots/13-employees-directory.png">
-        <img src="docs/showcase/screenshots/13-employees-directory.png" alt="Employees Directory showing department tree sidebar, employee list, manager avatars and role tags">
+    <td width="50%" valign="top">
+      <a href="docs/showcase/screenshots/13-hr-employees-kanban.png">
+        <img src="docs/showcase/screenshots/13-hr-employees-kanban.png" alt="Employees Kanban directory with avatar cards, department tree sidebar, tenure and role tags">
       </a><br>
-      <b>Human Resources · Employees</b> — Employee directory with department hierarchy sidebar, manager links, skills, contracts and org views.
+      <b>Employees Directory (Kanban)</b> — Card directory with department tree sidebar, contact info, tenure and role tags.
     </td>
-    <td width="35%" valign="top">
-      <a href=".github/assets/accounting-dashboard.png">
-        <img src=".github/assets/accounting-dashboard.png" alt="Optional Office Blue theme showing Accounting Dashboard with navy sidebar">
+    <td width="50%" valign="top">
+      <a href="docs/showcase/screenshots/14-hr-org-chart.png">
+        <img src="docs/showcase/screenshots/14-hr-org-chart.png" alt="Interactive visual Organization Chart hierarchy tree from CEO down to department leads">
       </a><br>
-      <b>Optional Theme · Office Blue</b> — Switch between the default theme and Office Blue while keeping the same forms, views and keyboard shortcuts.
+      <b>Visual Organization Chart</b> — Interactive reporting hierarchy from leadership down through every team and direct report.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/showcase/screenshots/15-hr-employee-profile.png">
+        <img src="docs/showcase/screenshots/15-hr-employee-profile.png" alt="Employee Profile Form for Budi Santoso with Work, Payroll, Resume tabs and embedded Organization Chart">
+      </a><br>
+      <b>Employee Profile &amp; Inline Org Chart</b> — Complete employee record with work info, payroll, resume, skills, history and embedded org chart.
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/showcase/screenshots/16-hr-headcount-analytics.png">
+        <img src="docs/showcase/screenshots/16-hr-headcount-analytics.png" alt="HR Headcount Analysis interactive bar chart grouped by department">
+      </a><br>
+      <b>Headcount Analysis</b> — Interactive bar, line and pie charts alongside pivot tables for workforce reporting.
     </td>
   </tr>
 </table>
-</details>
 
 ---
 

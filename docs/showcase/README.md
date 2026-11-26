@@ -27,4 +27,7 @@ Live screenshots and HD walkthrough video captured from a self-hosted ERPForAll 
 | 10 | **Dynamic Reports** | Balance Sheet (Classified Assets = Liabilities + Equity) | [10-balance-sheet.png](screenshots/10-balance-sheet.png) |
 | 11 | **Dynamic Reports** | Profit and Loss (Gross Profit, Expenses & Net Profit) | [11-profit-and-loss.png](screenshots/11-profit-and-loss.png) |
 | 12 | **Dynamic Reports** | Purchase Report (Vendor → PO with Overdue Arrival Tone) | [12-purchase-report.png](screenshots/12-purchase-report.png) |
-| 13 | **Employees (HR)** | Employee Directory, Department Tree & Tags | [13-employees-directory.png](screenshots/13-employees-directory.png) |
+| 13 | **Employees (HR)** | Employees Directory (Kanban Cards, Department Tree & Tags) | [13-hr-employees-kanban.png](screenshots/13-hr-employees-kanban.png) |
+| 14 | **Employees (HR)** | Visual Organization Chart (Hierarchy View) | [14-hr-org-chart.png](screenshots/14-hr-org-chart.png) |
+| 15 | **Employees (HR)** | Employee Profile Form with Embedded Org Chart & Tabs | [15-hr-employee-profile.png](screenshots/15-hr-employee-profile.png) |
+| 16 | **Employees (HR)** | Headcount Analysis (Interactive Department Bar Chart) | [16-hr-headcount-analytics.png](screenshots/16-hr-headcount-analytics.png) |
