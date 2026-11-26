@@ -2174,7 +2174,18 @@ impl WebApp {
             .is_some_and(|site| !matches!(site, "same-origin" | "none"))
             || one(headers, "origin")?.is_some_and(|origin| origin != self.config.origin())
         {
-            return Err(response(StatusCode::FORBIDDEN, "cross-origin form refused"));
+            // The usual cause is a browser on another name for this server (localhost versus
+            // 127.0.0.1): say which address the server answers forms on, in the log and on the page.
+            tracing::warn!(
+                target: "erp::http",
+                configured_origin = self.config.origin(),
+                "cross-origin form refused: the page was not opened at the configured public origin"
+            );
+            let mut refused = response(StatusCode::FORBIDDEN, "cross-origin form refused");
+            refused
+                .extensions_mut()
+                .insert(CrossOriginForm(self.config.origin().to_owned()));
+            return Err(refused);
         }
         Ok(())
     }
@@ -2571,6 +2582,16 @@ fn finish_response(
                 "The application could not complete this request. Try again or contact your administrator.",
             ),
         };
+        let (title, message) = match result.extensions().get::<CrossOriginForm>() {
+            Some(CrossOriginForm(origin)) => (
+                "Wrong address for this server",
+                format!(
+                    "This page was opened at a different address than the one the server is set up for. Open {}/erp/login and sign in there.",
+                    page_brand::escape_html(origin)
+                ),
+            ),
+            None => (title, message.to_owned()),
+        };
         // A fresh id, never the client's X-Request-Id. Without OS randomness the page shows no
         // reference and the failure is logged; no other value stands in for it.
         let reference = match fresh_correlation_id() {
@@ -2588,7 +2609,7 @@ fn finish_response(
             .replace("{{STYLE}}", ERROR_STYLE)
             .replace("{{TITLE}}", title)
             .replace("{{STATUS}}", status.as_str())
-            .replace("{{MESSAGE}}", message)
+            .replace("{{MESSAGE}}", &message)
             .replace("{{REFERENCE}}", shown)
             .replace("{{PRODUCT}}", &brand().name_html());
         *result.body_mut() = Body::from(html);
@@ -3046,6 +3067,9 @@ fn force_demo_confirmed(bytes: &[u8]) -> erp_fields::Result<()> {
 }
 #[derive(Clone)]
 struct LifecycleResponse;
+/// A form refused because it came from another origin; holds the configured public origin.
+#[derive(Clone)]
+struct CrossOriginForm(String);
 // Preserve the public install adapter signature while retaining a typed immediate source.
 // Diagnostic strings never select outcome: only this exact trusted source bridge does.
 fn install_outcome_response(error: &erp_fields::Error) -> Option<Response> {
@@ -3497,6 +3521,19 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::unwrap_used, reason = "test assertions")]
+    async fn a_cross_origin_form_page_names_the_configured_address() {
+        let mut raw = response(StatusCode::FORBIDDEN, "cross-origin form refused");
+        raw.extensions_mut()
+            .insert(CrossOriginForm("http://127.0.0.1:8069".to_owned()));
+        let page = finish_response(raw, true, PageBrand::default);
+        assert_eq!(page.status(), StatusCode::FORBIDDEN);
+        let body = to_bytes(page.into_body(), 16_384).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.contains("Wrong address for this server"));
+        assert!(html.contains("Open http://127.0.0.1:8069/erp/login"));
+        assert!(!html.contains("does not have access"));
+    }
+    #[tokio::test]
     async fn navigation_errors_are_safe_documents_without_changing_protocol_failures() {
         let mut raw = response(
             StatusCode::SERVICE_UNAVAILABLE,
