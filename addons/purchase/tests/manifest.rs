@@ -20,8 +20,14 @@ fn list(manifest: &toml::Table, key: &str) -> Vec<String> {
 #[test]
 fn manifest_matches_the_declaration_and_keeps_the_data_order() {
     let manifest: toml::Table = include_str!("../manifest.toml").parse().unwrap();
-    assert_eq!(list(&manifest, "depends"), ["base", "account"]);
-    assert_eq!(erp_addon_purchase::ADDON.depends, ["base", "account"]);
+    assert_eq!(
+        list(&manifest, "depends"),
+        ["base", "web", "reporting", "account"]
+    );
+    assert_eq!(
+        erp_addon_purchase::ADDON.depends,
+        ["base", "web", "reporting", "account"]
+    );
     assert_eq!(manifest["application"].as_bool(), Some(true));
     assert!(
         manifest.get("auto_install").is_none(),

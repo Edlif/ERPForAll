@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Dynamic Purchase Report provider (`purchase.purchase_report`) following the upstream
-//! ledger-style report design: Vendor -> Purchase Orders treegrid, locale dates with danger tone on
-//! overdue expected arrivals, currency-symbol monetary cells, caret menus (`partner`, `open`),
-//! subtotals, and drill-down.
+//! Purchase Report provider (`purchase.purchase_report`): vendor -> purchase orders, read through
+//! the ORM as the caller (record rules and field groups apply), one company and one period,
+//! confirmed orders only (requests for quotation and cancelled orders are left out), amounts in
+//! the company currency only, orders paged per vendor. An expected arrival before the caller's
+//! today with quantities still to receive carries the danger tone.
+//!
+//! Period: `date_order` is a datetime; the period's days are compared as dates, which the domain
+//! layer turns into midnight of the caller's timezone (`env.tz`), the ORM's own convention.
 
 use std::collections::BTreeMap;
 
@@ -17,321 +21,635 @@ use erp_addon_reporting::{
 };
 use erp_sdk::prelude::*;
 use erp_sdk::serde_json::{Value as Json, json};
-use erp_sdk::{BoxFuture, Operation};
+use erp_sdk::{BoxFuture, Load, SearchOptions};
 
-struct PurchaseRow {
-    order_id: i64,
-    name: String,
-    partner_id: i64,
-    partner_name: String,
-    order_date: Date,
-    planned_date: Option<Date>,
-    ordered: Decimal,
-    received: Decimal,
-    billed: Decimal,
-    untaxed: Decimal,
-    total: Decimal,
+pub(crate) struct PurchaseReport;
+const SPEC: ProviderSpec = ProviderSpec::new("purchase.purchase_report", 2);
+const ORDER: &str = "purchase.order";
+/// The states the report leaves out: requests for quotation and cancelled orders (the same
+/// condition as "Purchases by Product").
+const EXCLUDED_STATES: [&str; 3] = ["draft", "sent", "cancel"];
+
+fn invalid(msg: impl Into<String>) -> Error {
+    Error::validation(msg.into())
 }
 
-fn db(err: impl std::fmt::Display) -> Error {
-    Error::db(format!("Purchase report query failed: {err}"))
+fn day(date: Date) -> String {
+    let (y, m, d) = date.ymd();
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
-async fn load_purchase_rows(
-    cx: &mut ReportCx<'_>,
-    options: &Options,
-) -> Result<(Vec<PurchaseRow>, Option<i64>)> {
-    cx.env()
-        .records("purchase.order")?
-        .check_access(cx.tx(), Operation::Read)
-        .await?;
-    let companies = &options.companies;
-    let cur_rows = cx
-        .tx()
-        .query(
-            "SELECT currency_id::int8 FROM res_company WHERE id = ANY($1::int8[]) ORDER BY id LIMIT 1",
-            &[companies],
-        )
-        .await?;
-    let currency = cur_rows.first().and_then(|r| r.try_get::<_, i64>(0).ok());
+fn cond(value: Json) -> Result<Domain> {
+    Ok(Domain::from_json(&value)?)
+}
 
-    let date_from = options.period.from.unwrap_or(options.period.to);
-    let date_to = options.period.to;
-    let rows = cx
-        .tx()
-        .query(
-            "SELECT o.id::int8, COALESCE(o.name, 'PO')::text, \
-                    COALESCE(o.partner_id, 0)::int8, COALESCE(p.name, 'Unknown Vendor')::text, \
-                    (o.date_order::date), (o.date_planned::date), \
-                    COALESCE((SELECT SUM(l.product_qty) FROM purchase_order_line l WHERE l.order_id = o.id), 0), \
-                    COALESCE((SELECT SUM(l.qty_received) FROM purchase_order_line l WHERE l.order_id = o.id), 0), \
-                    COALESCE((SELECT SUM(l.qty_invoiced) FROM purchase_order_line l WHERE l.order_id = o.id), 0), \
-                    COALESCE(o.amount_untaxed, 0), \
-                    COALESCE(o.amount_total, 0) \
-             FROM purchase_order o \
-             LEFT JOIN res_partner p ON p.id = o.partner_id \
-             WHERE o.company_id = ANY($1::int8[]) \
-               AND o.state != 'cancel' \
-               AND (o.date_order::date) >= $2 \
-               AND (o.date_order::date) <= $3 \
-             ORDER BY COALESCE(p.name, ''), o.date_order DESC, o.id DESC",
-            &[companies, &date_from, &date_to],
-        )
-        .await?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(PurchaseRow {
-            order_id: row.try_get(0).map_err(db)?,
-            name: row.try_get(1).map_err(db)?,
-            partner_id: row.try_get(2).map_err(db)?,
-            partner_name: row.try_get(3).map_err(db)?,
-            order_date: row.try_get(4).map_err(db)?,
-            planned_date: row.try_get(5).map_err(db)?,
-            ordered: row.try_get(6).map_err(db)?,
-            received: row.try_get(7).map_err(db)?,
-            billed: row.try_get(8).map_err(db)?,
-            untaxed: row.try_get(9).map_err(db)?,
-            total: row.try_get(10).map_err(db)?,
-        });
+fn num(value: Option<&GroupValue>) -> Result<Decimal> {
+    match value {
+        None | Some(GroupValue::Null | GroupValue::False) => Ok(Decimal::ZERO),
+        Some(GroupValue::Decimal(n)) => Ok(*n),
+        Some(GroupValue::Int(n)) => Ok(Decimal::from(*n)),
+        Some(other) => Err(Error::internal(format!(
+            "Purchase Report amount is not exact decimal: {other:?}"
+        ))),
     }
-    Ok((out, currency))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn purchase_cells(
-    order_date: Option<Date>,
-    planned_date: Option<Date>,
-    today: Date,
+fn group_id(value: Option<&GroupValue>) -> Option<i64> {
+    value.and_then(GroupValue::record_id).map(|id| id.get())
+}
+
+fn get(row: &Value, field: &str) -> Result<Value> {
+    row.dict()
+        .ok_or_else(|| Error::internal("Purchase Report row is not a batch handle."))?
+        .get(field)
+}
+
+fn int_field(row: &Value, field: &str) -> Result<i64> {
+    match get(row, field)? {
+        Value::Int(n) => Ok(n),
+        other => Err(Error::internal(format!(
+            "Purchase Report {field} is not an id: {other:?}"
+        ))),
+    }
+}
+
+fn dec_field(row: &Value, field: &str) -> Result<Decimal> {
+    match get(row, field)? {
+        Value::Decimal(n) => Ok(n),
+        Value::Int(n) => Ok(Decimal::from(n)),
+        Value::False => Ok(Decimal::ZERO),
+        other => Err(Error::internal(format!(
+            "Purchase Report {field} is not decimal: {other:?}"
+        ))),
+    }
+}
+
+fn text_field(row: &Value, field: &str) -> Result<String> {
+    match get(row, field)? {
+        Value::Str(s) => Ok(s.to_string()),
+        Value::False => Ok(String::new()),
+        other => Err(Error::internal(format!(
+            "Purchase Report {field} is not text: {other:?}"
+        ))),
+    }
+}
+
+/// The local date of a datetime field in `tz`; `None` when unset.
+fn local_date(row: &Value, field: &str, tz: &str) -> Result<Option<Date>> {
+    match get(row, field)? {
+        Value::DateTime(dt) => Ok(Some(Date::context_today_at(tz, dt)?)),
+        Value::False => Ok(None),
+        other => Err(Error::internal(format!(
+            "Purchase Report {field} is not a datetime: {other:?}"
+        ))),
+    }
+}
+
+/// One company, one period with a start.
+struct Scope {
+    company: i64,
+    from: Date,
+    to: Date,
+}
+
+fn scope(options: &Options) -> Result<Scope> {
+    let [company] = options.companies.as_slice() else {
+        return Err(invalid("Select one company for the Purchase Report."));
+    };
+    if options.column_groups.len() != 1 {
+        return Err(invalid("Use a single period for the Purchase Report."));
+    }
+    let from = options
+        .period
+        .from
+        .ok_or_else(|| invalid("The Purchase Report requires a date range with a start date."))?;
+    Ok(Scope {
+        company: *company,
+        from,
+        to: options.period.to,
+    })
+}
+
+/// The orders of the report (company, period, confirmed), as a JSON domain.
+fn orders_json(s: &Scope) -> Json {
+    json!([
+        ["company_id", "=", s.company],
+        ["state", "not in", EXCLUDED_STATES],
+        ["date_order", ">=", day(s.from)],
+        ["date_order", "<=", day(s.to)]
+    ])
+}
+
+fn partner_cond(partner: Option<i64>) -> Json {
+    match partner {
+        Some(pid) => json!([["partner_id", "=", pid]]),
+        None => json!([["partner_id", "=", false]]),
+    }
+}
+
+fn partner_orders(s: &Scope, partner: Option<i64>) -> Result<Domain> {
+    Ok(cond(orders_json(s))? & cond(partner_cond(partner))?)
+}
+
+fn lines_domain(orders: Json) -> Result<Domain> {
+    cond(json!([["order_id", "any", orders]]))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Col {
+    Date,
+    Planned,
+    Ordered,
+    Received,
+    Billed,
+    Untaxed,
+    Total,
+}
+
+impl Col {
+    fn parse(label: &str, kind: CellKind) -> Result<Self> {
+        Ok(match (label, kind) {
+            ("date_order", CellKind::Date) => Self::Date,
+            ("date_planned", CellKind::Date) => Self::Planned,
+            ("ordered", CellKind::Decimal) => Self::Ordered,
+            ("received", CellKind::Decimal) => Self::Received,
+            ("billed", CellKind::Decimal) => Self::Billed,
+            ("untaxed", CellKind::Monetary) => Self::Untaxed,
+            ("total", CellKind::Monetary) => Self::Total,
+            _ => {
+                return Err(invalid(format!(
+                    "The Purchase Report has no column {label} of kind {}. Use date_order, date_planned (date), ordered, received, billed (decimal), untaxed or total (monetary).",
+                    kind.as_str()
+                )));
+            }
+        })
+    }
+    fn amount(self) -> bool {
+        !matches!(self, Self::Date | Self::Planned)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct Sums {
     ordered: Decimal,
     received: Decimal,
     billed: Decimal,
     untaxed: Decimal,
     total: Decimal,
-    currency: Option<i64>,
-    drillable: bool,
-) -> Vec<ReportCell> {
-    let overdue = planned_date.is_some_and(|d| d < today && received < ordered);
-    vec![
-        match order_date {
-            Some(d) => ReportCell::date(d),
-            None => ReportCell::empty(),
-        },
-        match planned_date {
-            Some(d) => ReportCell::date(d).with_danger(overdue),
-            None => ReportCell::empty(),
-        },
-        ReportCell::number(CellKind::Decimal, Some(ordered), 2).with_drillable(drillable),
-        ReportCell::number(CellKind::Decimal, Some(received), 2).with_drillable(drillable),
-        ReportCell::number(CellKind::Decimal, Some(billed), 2).with_drillable(drillable),
-        ReportCell::monetary(Some(untaxed), 2, currency).with_drillable(drillable),
-        ReportCell::monetary(Some(total), 2, currency).with_drillable(drillable),
-    ]
 }
 
-async fn render_purchase_lines(
+impl Sums {
+    fn add(&mut self, other: Sums) {
+        self.ordered += other.ordered;
+        self.received += other.received;
+        self.billed += other.billed;
+        self.untaxed += other.untaxed;
+        self.total += other.total;
+    }
+}
+
+struct Layout {
+    cols: Vec<Col>,
+    scope: Scope,
+    currency: i64,
+    scale: u32,
+}
+
+impl Layout {
+    async fn load(cx: &mut ReportCx<'_>, report: &ReportDef, options: &Options) -> Result<Self> {
+        let cols = report
+            .columns
+            .iter()
+            .map(|c| Col::parse(&c.label, c.kind))
+            .collect::<Result<Vec<_>>>()?;
+        let scope = scope(options)?;
+        let env = cx.env().clone();
+        let company = env
+            .records("res.company")?
+            .browse([scope.company])?
+            .read_rows(cx.tx(), &["currency_id"], Load::Raw)
+            .await?;
+        let row = company
+            .iter()
+            .next()
+            .map(Value::Row)
+            .ok_or_else(|| invalid("The selected Purchase Report company is not visible."))?;
+        let currency = match get(&row, "currency_id")? {
+            Value::Int(id) if id > 0 => id,
+            _ => return Err(invalid("The Purchase Report company has no currency.")),
+        };
+        let rows = env
+            .records("res.currency")?
+            .browse([currency])?
+            .read_rows(cx.tx(), &["decimal_places"], Load::Raw)
+            .await?;
+        let row = rows
+            .iter()
+            .next()
+            .map(Value::Row)
+            .ok_or_else(|| invalid("The Purchase Report company currency is not visible."))?;
+        let scale = u32::try_from(int_field(&row, "decimal_places")?)
+            .map_err(|_| invalid("The Purchase Report currency precision is invalid."))?;
+        // only the total has a company-currency amount (amount_total_cc), the untaxed amount has
+        // none: never add amounts of two currencies
+        let foreign = cond(orders_json(&scope))? & cond(json!([["currency_id", "!=", currency]]))?;
+        if env
+            .records(ORDER)?
+            .search_count(cx.tx(), &foreign, Some(1))
+            .await?
+            > 0
+        {
+            return Err(invalid(
+                "The Purchase Report has orders in another currency than the company's in this period; it does not add amounts of different currencies. Narrow the period or use the purchase analysis.",
+            ));
+        }
+        Ok(Self {
+            cols,
+            scope,
+            currency,
+            scale,
+        })
+    }
+
+    fn cells(
+        &self,
+        report: &ReportDef,
+        dates: Option<(Date, Option<Date>, bool)>,
+        sums: Option<Sums>,
+        drillable: bool,
+    ) -> Vec<ReportCell> {
+        let money = |v: Option<Decimal>| {
+            ReportCell::monetary(v, self.scale, Some(self.currency)).with_drillable(drillable)
+        };
+        self.cols
+            .iter()
+            .zip(&report.columns)
+            .map(|(col, def)| {
+                let qty = |v: Option<Decimal>| {
+                    ReportCell::number(CellKind::Decimal, v, def.scale).with_drillable(drillable)
+                };
+                let cell = match col {
+                    Col::Date => dates.map_or_else(ReportCell::empty, |d| ReportCell::date(d.0)),
+                    Col::Planned => match dates {
+                        Some((_, Some(planned), overdue)) => {
+                            ReportCell::date(planned).with_danger(overdue)
+                        }
+                        _ => ReportCell::empty(),
+                    },
+                    Col::Ordered => qty(sums.map(|s| s.ordered)),
+                    Col::Received => qty(sums.map(|s| s.received)),
+                    Col::Billed => qty(sums.map(|s| s.billed)),
+                    Col::Untaxed => money(sums.map(|s| s.untaxed)),
+                    Col::Total => money(sums.map(|s| s.total)),
+                };
+                if def.blank_if_zero {
+                    cell.blank_if_zero()
+                } else {
+                    cell
+                }
+            })
+            .collect()
+    }
+}
+
+const LINE_AGGREGATES: [&str; 3] = ["product_qty:sum", "qty_received:sum", "qty_invoiced:sum"];
+
+fn set_quantities(sums: &mut Sums, row: &[GroupValue]) -> Result<()> {
+    sums.ordered = num(row.get(1))?;
+    sums.received = num(row.get(2))?;
+    sums.billed = num(row.get(3))?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Located {
+    Partner(Option<i64>),
+    Order(Option<i64>, i64),
+}
+
+fn positive(text: &str) -> Option<i64> {
+    text.parse::<i64>().ok().filter(|n| *n > 0)
+}
+
+fn locate(report: &ReportDef, id: &LineId) -> Result<Located> {
+    if id.report() != report.id {
+        return Err(invalid("This line is not part of this Purchase Report."));
+    }
+    let bad = || invalid("This is not a Purchase Report line.");
+    let segs = id.segments();
+    let partner_seg = segs.get(1).ok_or_else(bad)?;
+    if !matches!(partner_seg.kind(), SegmentKind::Group(f) if f == "partner_id")
+        || partner_seg.model() != "res.partner"
+    {
+        return Err(bad());
+    }
+    let partner = match partner_seg.value() {
+        "" => None,
+        value => Some(positive(value).ok_or_else(bad)?),
+    };
+    match segs.get(2) {
+        None => Ok(Located::Partner(partner)),
+        Some(seg)
+            if segs.len() == 3
+                && matches!(seg.kind(), SegmentKind::Group(f) if f == "order_id")
+                && seg.model() == ORDER =>
+        {
+            Ok(Located::Order(
+                partner,
+                positive(seg.value()).ok_or_else(bad)?,
+            ))
+        }
+        Some(_) => Err(bad()),
+    }
+}
+
+fn partner_segment(partner: Option<i64>) -> Segment {
+    let value = partner.map(|p| p.to_string()).unwrap_or_default();
+    Segment::group("partner_id", "res.partner", &value)
+}
+
+async fn top_lines(
     cx: &mut ReportCx<'_>,
     report: &ReportDef,
     options: &Options,
 ) -> Result<Expansion> {
-    let today = Date::today();
-    let (rows, currency) = load_purchase_rows(cx, options).await?;
-    let root = LineId::root(report.id);
-
-    let mut by_vendor: BTreeMap<(String, i64), Vec<&PurchaseRow>> = BTreeMap::new();
-    for row in &rows {
-        by_vendor
-            .entry((row.partner_name.clone(), row.partner_id))
-            .or_default()
-            .push(row);
+    let layout = Layout::load(cx, report, options).await?;
+    let env = cx.env().clone();
+    let limit = cx.bounds().max_screen_lines;
+    let groups = env
+        .records(ORDER)?
+        ._read_group(
+            cx.tx(),
+            ReadGroup::new(cond(orders_json(&layout.scope))?)
+                .groupby(["partner_id"])
+                .aggregates(["amount_untaxed:sum", "amount_total:sum"])
+                .limit(limit as u64 + 1),
+        )
+        .await?;
+    if groups.len() > limit {
+        return Err(invalid(
+            "The Purchase Report has more vendors than reporting.max_screen_lines allows; narrow the period.",
+        ));
+    }
+    if groups.is_empty() {
+        return Ok(Expansion::new(Vec::new()));
+    }
+    let mut by_partner: BTreeMap<Option<i64>, Sums> = BTreeMap::new();
+    for row in groups.rows() {
+        let sums = by_partner.entry(group_id(row.first())).or_default();
+        sums.untaxed = num(row.get(1))?;
+        sums.total = num(row.get(2))?;
+    }
+    let qty_groups = env
+        .records("purchase.order.line")?
+        ._read_group(
+            cx.tx(),
+            ReadGroup::new(lines_domain(orders_json(&layout.scope))?)
+                .groupby(["partner_id"])
+                .aggregates(LINE_AGGREGATES),
+        )
+        .await?;
+    for row in qty_groups.rows() {
+        if let Some(sums) = by_partner.get_mut(&group_id(row.first())) {
+            set_quantities(sums, &row)?;
+        }
     }
 
-    let mut lines = Vec::new();
-    let (mut g_ord, mut g_rec, mut g_bil, mut g_unt, mut g_tot) = (
-        Decimal::ZERO,
-        Decimal::ZERO,
-        Decimal::ZERO,
-        Decimal::ZERO,
-        Decimal::ZERO,
-    );
-
-    for ((vendor_name, vendor_id), vendor_rows) in by_vendor {
-        let (mut v_ord, mut v_rec, mut v_bil, mut v_unt, mut v_tot) = (
-            Decimal::ZERO,
-            Decimal::ZERO,
-            Decimal::ZERO,
-            Decimal::ZERO,
-            Decimal::ZERO,
-        );
-        for r in &vendor_rows {
-            v_ord += r.ordered;
-            v_rec += r.received;
-            v_bil += r.billed;
-            v_unt += r.untaxed;
-            v_tot += r.total;
+    let ids: Vec<i64> = by_partner.keys().flatten().copied().collect();
+    let mut names: BTreeMap<i64, String> = BTreeMap::new();
+    if !ids.is_empty() {
+        let found = env
+            .records("res.partner")?
+            .browse(ids.iter().copied())?
+            .read_rows(cx.tx(), &["id", "display_name"], Load::Raw)
+            .await?;
+        for row in found.iter().map(Value::Row) {
+            names.insert(int_field(&row, "id")?, text_field(&row, "display_name")?);
         }
-        g_ord += v_ord;
-        g_rec += v_rec;
-        g_bil += v_bil;
-        g_unt += v_unt;
-        g_tot += v_tot;
+    }
+    let mut ordered: Vec<(Option<i64>, String, Sums)> = by_partner
+        .into_iter()
+        .map(|(pid, sums)| {
+            let name = match pid {
+                Some(p) => names
+                    .get(&p)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Vendor #{p}")),
+                None => "No vendor".to_owned(),
+            };
+            (pid, name, sums)
+        })
+        .collect();
+    ordered.sort_by(|a, b| {
+        a.0.is_none()
+            .cmp(&b.0.is_none())
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+            .then_with(|| a.0.cmp(&b.0))
+    });
 
-        let vid_str = vendor_id.to_string();
-        let line_id = root.child(Segment::group("partner_id", "res.partner", &vid_str));
-        let unfolded = options.unfold_all || options.unfolded.contains(&line_id);
-        let mut group_line = Line::new(
-            line_id.clone(),
-            vendor_name.clone(),
+    let root = LineId::root(report.id);
+    let mut grand = Sums::default();
+    let mut lines = Vec::with_capacity(ordered.len() + 1);
+    for (pid, name, sums) in ordered {
+        grand.add(sums);
+        let mut line = Line::new(
+            root.child(partner_segment(pid)),
+            name,
             LineKind::Group,
-            purchase_cells(
-                None, None, today, v_ord, v_rec, v_bil, v_unt, v_tot, currency, true,
-            ),
+            layout.cells(report, None, Some(sums), true),
         );
-        group_line.unfoldable = true;
-        group_line.unfolded = unfolded;
-        group_line.caret = if vendor_id > 0 {
+        line.unfoldable = true;
+        line.caret = if pid.is_some() {
             vec!["open", "partner"]
         } else {
             vec!["open"]
         };
-        lines.push(group_line);
-
-        if unfolded {
-            for r in &vendor_rows {
-                let detail_id = line_id.child(Segment::group(
-                    "order_id",
-                    "purchase.order",
-                    &r.order_id.to_string(),
-                ));
-                let mut detail = Line::new(
-                    detail_id,
-                    r.name.clone(),
-                    LineKind::Detail,
-                    purchase_cells(
-                        Some(r.order_date),
-                        r.planned_date,
-                        today,
-                        r.ordered,
-                        r.received,
-                        r.billed,
-                        r.untaxed,
-                        r.total,
-                        currency,
-                        true,
-                    ),
-                );
-                detail.caret = vec!["open"];
-                lines.push(detail);
-            }
-        }
+        lines.push(line);
     }
-
     lines.push(Line::new(
         root.child(Segment::total()),
         "Total Purchases",
         LineKind::Total,
-        purchase_cells(
-            None, None, today, g_ord, g_rec, g_bil, g_unt, g_tot, currency, false,
-        ),
+        layout.cells(report, None, Some(grand), false),
     ));
-
     Ok(Expansion::new(lines))
 }
 
-async fn expand_vendor(
+async fn expand_partner(
     cx: &mut ReportCx<'_>,
+    report: &ReportDef,
     options: &Options,
-    line: &LineId,
+    id: &LineId,
+    page: ExpandPage,
 ) -> Result<Expansion> {
-    let today = Date::today();
-    let Some(last) = line.segments().last() else {
-        return Ok(Expansion::new(Vec::new()));
+    let Located::Partner(partner) = locate(report, id)? else {
+        return Err(invalid("This Purchase Report line has no children."));
     };
-    let vendor_id: i64 = last.value().parse().unwrap_or(0);
-    let (rows, currency) = load_purchase_rows(cx, options).await?;
-    let mut children = Vec::new();
-    for r in rows.into_iter().filter(|r| r.partner_id == vendor_id) {
-        let detail_id = line.child(Segment::group(
-            "order_id",
-            "purchase.order",
-            &r.order_id.to_string(),
-        ));
-        let mut detail = Line::new(
-            detail_id,
-            r.name,
-            LineKind::Detail,
-            purchase_cells(
-                Some(r.order_date),
-                r.planned_date,
-                today,
-                r.ordered,
-                r.received,
-                r.billed,
-                r.untaxed,
-                r.total,
-                currency,
-                true,
-            ),
-        );
-        detail.caret = vec!["open"];
-        children.push(detail);
-    }
-    Ok(Expansion::new(children))
-}
-
-fn drill_purchase(line: &LineId, target: &DrillTarget) -> Result<Json> {
-    let mut partner_id: Option<i64> = None;
-    let mut order_id: Option<i64> = None;
-    for seg in line.segments() {
-        if let SegmentKind::Group(field) = seg.kind() {
-            if field == "partner_id" {
-                partner_id = seg.value().parse().ok();
-            } else if field == "order_id" {
-                order_id = seg.value().parse().ok();
+    let end = page
+        .offset
+        .checked_add(page.limit)
+        .filter(|n| *n <= cx.bounds().max_screen_lines as u64)
+        .ok_or_else(|| {
+            invalid("Purchase Report paging exceeds reporting.max_screen_lines; narrow the period.")
+        })?;
+    let layout = Layout::load(cx, report, options).await?;
+    let env = cx.env().clone();
+    let today = env.context_today()?;
+    let tz = env.tz().to_owned();
+    let orders = env.records(ORDER)?;
+    let domain = partner_orders(&layout.scope, partner)?;
+    let count = orders.search_count(cx.tx(), &domain, None).await?;
+    let found = orders
+        .search_with(
+            cx.tx(),
+            &domain,
+            &SearchOptions::new()
+                .order("date_order desc, id desc")
+                .offset(page.offset)
+                .limit(page.limit),
+        )
+        .await?;
+    let rows = found
+        .read_rows(
+            cx.tx(),
+            &[
+                "id",
+                "name",
+                "date_order",
+                "date_planned",
+                "amount_untaxed",
+                "amount_total",
+            ],
+            Load::Raw,
+        )
+        .await?;
+    let ids: Vec<i64> = rows
+        .iter()
+        .map(|r| int_field(&Value::Row(r), "id"))
+        .collect::<Result<_>>()?;
+    let mut quantities: BTreeMap<i64, Sums> = BTreeMap::new();
+    if !ids.is_empty() {
+        let groups = env
+            .records("purchase.order.line")?
+            ._read_group(
+                cx.tx(),
+                ReadGroup::new(cond(json!([["order_id", "in", ids]]))?)
+                    .groupby(["order_id"])
+                    .aggregates(LINE_AGGREGATES),
+            )
+            .await?;
+        for row in groups.rows() {
+            if let Some(oid) = group_id(row.first()) {
+                set_quantities(quantities.entry(oid).or_default(), &row)?;
             }
         }
     }
-    if matches!(target, DrillTarget::Item(name) if name == "partner")
-        && let Some(pid) = partner_id
-        && pid > 0
-    {
-        return Ok(json!({
-            "type": "ir.actions.act_window",
-            "name": "Vendor",
-            "res_model": "res.partner",
-            "res_id": pid,
-            "target": "current",
-            "views": [[false, "form"]],
-        }));
+    let mut lines = Vec::with_capacity(ids.len() + 1);
+    for row in rows.iter().map(Value::Row) {
+        let oid = int_field(&row, "id")?;
+        let date = local_date(&row, "date_order", &tz)?
+            .ok_or_else(|| Error::internal(format!("Purchase order {oid} has no order date.")))?;
+        let planned = local_date(&row, "date_planned", &tz)?;
+        let mut sums = quantities.get(&oid).copied().unwrap_or_default();
+        sums.untaxed = dec_field(&row, "amount_untaxed")?;
+        sums.total = dec_field(&row, "amount_total")?;
+        let overdue = planned.is_some_and(|d| d < today) && sums.received < sums.ordered;
+        let mut line = Line::new(
+            id.child(Segment::group("order_id", ORDER, &oid.to_string())),
+            text_field(&row, "name")?,
+            LineKind::Detail,
+            layout.cells(report, Some((date, planned, overdue)), Some(sums), true),
+        );
+        line.caret = vec!["open"];
+        lines.push(line);
     }
-    if let Some(oid) = order_id {
-        return Ok(json!({
-            "type": "ir.actions.act_window",
-            "name": "Purchase Order",
-            "res_model": "purchase.order",
-            "res_id": oid,
-            "target": "current",
-            "views": [[false, "form"]],
-        }));
+    if count > end {
+        let mut more = Line::new(
+            id.child(Segment::more()),
+            "",
+            LineKind::More,
+            layout.cells(report, None, None, false),
+        );
+        more.remaining = Some(count - end);
+        more.next_offset = Some(end);
+        lines.push(more);
     }
-    let mut domain = vec![json!(["state", "!=", "cancel"])];
-    if let Some(pid) = partner_id
-        && pid > 0
-    {
-        domain.push(json!(["partner_id", "=", pid]));
-    }
+    Ok(Expansion::new(lines))
+}
+
+fn list_action(name: &str, domain: &Domain) -> Result<Json> {
     Ok(json!({
         "type": "ir.actions.act_window",
-        "name": "Purchase Orders",
-        "res_model": "purchase.order",
+        "name": name,
+        "res_model": ORDER,
         "target": "current",
         "views": [[false, "list"], [false, "form"]],
-        "domain": domain,
+        "domain": domain.to_json()?,
+        "context": {},
     }))
 }
 
-pub(crate) struct PurchaseReport;
-const SPEC: ProviderSpec = ProviderSpec::new("purchase.purchase_report", 1);
+fn form_action(name: &str, model: &str, id: i64) -> Json {
+    json!({
+        "type": "ir.actions.act_window",
+        "name": name,
+        "res_model": model,
+        "res_id": id,
+        "target": "current",
+        "views": [[false, "form"]],
+    })
+}
+
+async fn drill_line(
+    cx: &mut ReportCx<'_>,
+    report: &ReportDef,
+    options: &Options,
+    id: &LineId,
+    target: &DrillTarget,
+) -> Result<Json> {
+    let located = locate(report, id)?;
+    let layout = Layout::load(cx, report, options).await?;
+    if let DrillTarget::Cell(index) = target {
+        let col = layout
+            .cols
+            .get(*index)
+            .ok_or_else(|| invalid("The Purchase Report has no such column."))?;
+        if !col.amount() {
+            return Err(invalid("This Purchase Report cell has no amount to drill."));
+        }
+    }
+    match (located, target) {
+        (Located::Partner(Some(pid)), DrillTarget::Item(item)) if item == "partner" => {
+            Ok(form_action("Vendor", "res.partner", pid))
+        }
+        (Located::Partner(partner), DrillTarget::Cell(_)) => {
+            list_action("Purchase Orders", &partner_orders(&layout.scope, partner)?)
+        }
+        (Located::Partner(partner), DrillTarget::Item(item)) if item == "open" => {
+            list_action("Purchase Orders", &partner_orders(&layout.scope, partner)?)
+        }
+        (Located::Order(partner, oid), target)
+            if matches!(target, DrillTarget::Cell(_))
+                || matches!(target, DrillTarget::Item(item) if item == "open") =>
+        {
+            let domain = partner_orders(&layout.scope, partner)? & cond(json!([["id", "=", oid]]))?;
+            if cx
+                .env()
+                .records(ORDER)?
+                .search_count(cx.tx(), &domain, Some(1))
+                .await?
+                == 0
+            {
+                return Err(invalid("This order is not in the Purchase Report scope."));
+            }
+            Ok(form_action("Purchase Order", ORDER, oid))
+        }
+        (_, DrillTarget::Item(item)) => Err(invalid(format!(
+            "This Purchase Report line has no action {item}."
+        ))),
+        _ => Err(invalid("This Purchase Report action is not supported.")),
+    }
+}
 
 impl ReportProvider for PurchaseReport {
     fn spec(&self) -> &ProviderSpec {
@@ -341,10 +659,15 @@ impl ReportProvider for PurchaseReport {
         &'a self,
         _cx: &'a mut ReportCx<'_>,
         _report: &'a ReportDef,
-        _options: &'a mut Options,
+        options: &'a mut Options,
         _strict: bool,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            match options.provider.keys().next() {
+                Some(key) => Err(invalid(format!("The Purchase Report has no option {key}."))),
+                None => Ok(()),
+            }
+        })
     }
     fn lines<'a>(
         &'a self,
@@ -352,56 +675,49 @@ impl ReportProvider for PurchaseReport {
         report: &'a ReportDef,
         options: &'a Options,
     ) -> BoxFuture<'a, Result<Expansion>> {
-        Box::pin(async move { render_purchase_lines(cx, report, options).await })
+        Box::pin(top_lines(cx, report, options))
     }
     fn expand<'a>(
         &'a self,
         cx: &'a mut ReportCx<'_>,
-        _report: &'a ReportDef,
+        report: &'a ReportDef,
         options: &'a Options,
         line: &'a LineId,
-        _page: ExpandPage,
+        page: ExpandPage,
     ) -> BoxFuture<'a, Result<Expansion>> {
-        Box::pin(async move { expand_vendor(cx, options, line).await })
+        Box::pin(expand_partner(cx, report, options, line, page))
     }
     fn drill<'a>(
         &'a self,
-        _cx: &'a mut ReportCx<'_>,
-        _report: &'a ReportDef,
-        _options: &'a Options,
+        cx: &'a mut ReportCx<'_>,
+        report: &'a ReportDef,
+        options: &'a Options,
         line: &'a LineId,
         target: &'a DrillTarget,
     ) -> BoxFuture<'a, Result<Json>> {
-        Box::pin(async move { drill_purchase(line, target) })
+        Box::pin(drill_line(cx, report, options, line, target))
     }
 }
 
 erp_addon_reporting::provider_declarations!(PurchaseReport);
 
-#[cfg(test)]
-mod tests {
-    use super::purchase_cells;
-    use erp_sdk::{Date, Decimal};
-    use std::str::FromStr;
-
-    #[test]
-    fn purchase_report_marks_overdue_unreceived_arrival_as_danger() {
-        let today = Date::from_ymd(2026, 11, 26).unwrap();
-        let overdue = Date::from_ymd(2026, 11, 20).unwrap();
-        let cells = purchase_cells(
-            Some(Date::from_ymd(2026, 11, 15).unwrap()),
-            Some(overdue),
-            today,
-            Decimal::from(10),
-            Decimal::from(4),
-            Decimal::ZERO,
-            Decimal::from_str("100.00").unwrap(),
-            Decimal::from_str("110.00").unwrap(),
-            Some(1),
-            true,
-        );
-        assert_eq!(cells.len(), 7);
-        assert_eq!(cells[0].text_value(), Some("2026-11-15"));
-        assert_eq!(cells[1].text_value(), Some("2026-11-20"));
-    }
+/// The report definitions are `noupdate` data: a database that installed "Purchases by Product"
+/// before it left out requests for quotation and cancelled orders gets the condition here, dated
+/// by the order date like the Purchase Report.
+#[erp_sdk::migration(addon = "purchase", version = "1.8", stage = post)]
+async fn confirmed_orders_by_product(
+    tx: &mut Transaction,
+    _from: &erp_sdk::migrations::SemverVersion,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE reporting_report_expression e
+         SET date_field = 'date_order',
+             domain = '[[\"product_id\",\"!=\",false],[\"state\",\"not in\",[\"draft\",\"sent\",\"cancel\"]]]'
+         FROM ir_model_data d
+         WHERE d.module = 'purchase' AND d.model = 'reporting.report.expression' AND d.res_id = e.id
+           AND d.name IN ('pur_prod_ord', 'pur_prod_rec', 'pur_prod_bil', 'pur_prod_unt')",
+        &[],
+    )
+    .await?;
+    Ok(())
 }

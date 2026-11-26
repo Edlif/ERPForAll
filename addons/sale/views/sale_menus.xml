@@ -19,8 +19,8 @@ The Sales menu (sale/views/sale_menus.xml:4-40, laid out anew). The root ships i
       <menuitem id="menu_loyalty_program" name="Discounts &amp; Loyalty" action="action_loyalty_program" sequence="40"/>
     </menuitem>
     <menuitem id="menu_sale_report" name="Reporting" sequence="40">
-      <menuitem id="menu_sale_dynamic_report" name="Sales Report" action="action_sale_dynamic_report" sequence="10"/>
-      <menuitem id="menu_sale_by_product_report" name="Sales by Product" action="action_sale_by_product_report" sequence="15"/>
+      <menuitem id="menu_sale_dynamic_report" groups="sales_team.group_sale_salesman" name="Sales Report" action="action_sale_dynamic_report" sequence="10"/>
+      <menuitem id="menu_sale_by_product_report" groups="sales_team.group_sale_salesman" name="Sales by Product" action="action_sale_by_product_report" sequence="15"/>
       <menuitem id="menu_sale_analysis" name="Sales Pivot &amp; Graph" action="action_sale_order_analysis" sequence="20"/>
     </menuitem>
     <menuitem id="menu_sale_config" name="Configuration" groups="sales_team.group_sale_manager" sequence="90">
