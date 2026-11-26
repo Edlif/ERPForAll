@@ -1,7 +1,9 @@
 # Database manager: design proposal
 
-Status: proposal, not implemented. This file is the starting point of the `feature/database-manager` branch and
-turns into a guide once the code exists.
+Status: stage 1 is implemented on the `feature/database-manager` branch but has not been compiled, run or tested
+yet (it was written without a Rust toolchain at hand); stages 2 to 4 are a proposal. This file turns into a guide
+once the code is tested. What stage 1 does, where it differs from this proposal and how to try it:
+[Stage 1 as implemented](#stage-1-as-implemented).
 
 ## Goal
 
@@ -93,7 +95,7 @@ loudly with the step that refused.
 
 ## Stages
 
-1. Read-only list, selector, and start and stop of instances.
+1. Read-only list, selector, and start and stop of instances. Implemented, not yet compiled (below).
 2. Create and delete.
 3. Back up and restore.
 4. Duplicate.
@@ -104,3 +106,80 @@ rules ask.
 ## Out of scope
 
 Serving several databases from one `erp server` process, and any change to the request server's roles.
+
+## Stage 1 as implemented
+
+`erp manager serve --config manager.toml` serves the stage 1 pages; the code is in `crates/erp-cli/src/manager.rs`
+and `crates/erp-cli/src/manager/`. It opens no database and never reads an instance's credential files.
+
+- **Configuration.** `manager.toml` and the master password file are read with the server's own secret-file reader
+  (`erp_server::config::read_secret`): regular files of mode 600, not symbolic links, at most 4096 bytes. The keys
+  are `bind` (default `127.0.0.1:8070`), `allow_remote`, `public_origin`, `master_password_file`, `instances_dir`
+  and `erp_binary` (default: the running `erp`). A `bind` that is not loopback is refused unless
+  `allow_remote = true` and `public_origin` is HTTPS. An unknown key is refused. Relative paths are taken from the
+  directory of `manager.toml`.
+- **Master password.** A PHC hash, checked with `erp_security::auth::password::StoredHash` (Argon2id or
+  PBKDF2-SHA512, as for user passwords). `erp manager hash-password --password-file F --output H` writes one with
+  the default parameters to a new mode 600 file.
+- **Instances.** A subdirectory of `instances_dir` that holds `private/server.toml`: the layout `scripts/install.sh`
+  writes. The manager reads `database`, `bind` and `public_origin` from that file and nothing else.
+- **State.** Running: the pid in `server.pid` is alive, not a zombie, and its command name contains `erp` (the rule
+  `install.sh` applies with `ps`), and `GET /erp/health/ready` answers 200. Starting: alive but not ready. Stopped:
+  anything else.
+- **Start and stop.** Start runs `erp server --config <instance>/private/server.toml` in a process group of its
+  own, appends its output to `server.log` and writes `server.pid`, as `install.sh` does; it is refused while the
+  instance runs or while something else holds its port. Stop sends SIGTERM with `kill` and waits up to 60 s.
+- **Pages.** `/` lists the running instances, each linking to its own `/erp/login`, without sign-in.
+  `/manager/login` asks for the master password; `/manager/` lists every instance with its database, port and
+  state, and Start, Stop and Open. Every POST passes the same-origin rule of `/erp/login` and carries a CSRF token:
+  on the sign-in form a token that must equal a cookie only that form receives, afterwards the session's token.
+  Sessions live in memory for 8 hours. Cookies are `HttpOnly`, `SameSite=Strict`, limited to the path `/manager`
+  (a browser sends the cookies of `127.0.0.1` to every port, so the instances would see them otherwise), and
+  `Secure` behind an HTTPS origin. Five failed sign-ins from one address within 5 minutes make it wait (behind a
+  reverse proxy every client has the proxy's address, so the limit is shared).
+- **HTTP.** A small HTTP/1.1 reader of its own: one request per connection, a bounded head and body, no chunked
+  bodies, one thread per connection and at most 16 at once. `erp-cli` does not depend on `hyper` directly, and the
+  manager stays out of the request server.
+
+Unit tests sit next to the code: configuration and its refusals, the permission checks, instance discovery from a
+temporary directory, the state rule, the pid file, the readiness probe against a local listener, the HTTP reader,
+form decoding, CSRF tokens, sessions, the rate limit and cookies.
+
+### Gaps against this proposal
+
+- No database size on the list: it needs a database connection, which stage 1 does not open.
+- No `/manager/password` page: write a new hash with `erp manager hash-password` and restart the manager.
+- No audit log of operations yet.
+- No integration test through `erp-testkit` yet; stage 1 has unit tests only.
+- `cluster_admin_url_file`, `addons_path`, `assets_manifest`, `port_range` and `supervise` belong to later stages.
+- The manager does not start PostgreSQL. An instance installed with the Docker option needs its container running
+  (`docker start <container>`, or run `scripts/install.sh` again for that state directory).
+- Sessions are in memory: restarting the manager signs everyone out.
+
+### Try it
+
+A local install made with `scripts/install.sh` lives in `~/.erpforall/local` and is already an instance. Each
+further instance needs its own state directory, database, port and, with the Docker option, container:
+
+```sh
+scripts/install.sh --state-dir ~/.erpforall/shop --db-name shop --port 8071 --pg-container shop-postgres
+```
+
+Then give the manager a directory of its own next to them, with a password hash and a configuration whose
+`instances_dir` is `~/.erpforall` (the manager's directory holds no `private/server.toml`, so it is not listed):
+
+```sh
+mkdir -p ~/.erpforall/manager && cd ~/.erpforall/manager
+(umask 077; cat > password)        # type the master password, Enter, then Ctrl-D
+erp manager hash-password --password-file password --output master.phc
+rm password
+cat > manager.toml <<'TOML'
+master_password_file = 'master.phc'
+instances_dir = '..'
+TOML
+chmod 600 manager.toml
+erp manager serve --config manager.toml
+```
+
+`erp` is the binary of the checkout (`target/release/erp` after `scripts/install.sh`). Open
+`http://127.0.0.1:8070/manager/` and sign in with the master password; `http://127.0.0.1:8070/` is the selector.
