@@ -1,0 +1,17 @@
+# Why an opportunity was lost. Archive a reason instead of deleting it once leads use it.
+[[model]]
+name = "crm.lost.reason"
+description = "Opportunity Lost Reason"
+order = "name, id"
+
+[[model.field]]
+name = "name"
+type = "char"
+string = "Reason"
+required = true
+
+[[model.field]]
+name = "active"
+type = "boolean"
+string = "Active"
+default = true
