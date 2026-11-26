@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Start, stop and inspect the local ERPForAll installation that scripts/install.sh made.
+# ERPForAll.app (built by build-mac-app.sh) calls this script for every action; it also works from a terminal,
+# on macOS and on Linux. It owns nothing of its own: the state is the one install.sh keeps in
+# ~/.erpforall/local (or ERPFORALL_LOCAL_STATE), and starting, installing and rebuilding run install.sh.
+# Written for the bash 3.2 that macOS ships, because a GUI app finds /bin/bash first. That is also why arguments
+# are passed on as ${@+"$@"}: under set -u, bash before 4.0 reports an empty "$@" as an unbound variable.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${ERPFORALL_ROOT:-$(cd "$HERE/../.." && pwd)}"
+STATE="${ERPFORALL_LOCAL_STATE:-$HOME/.erpforall/local}"
+DOCKER_WAIT_SECS="${ERPFORALL_DOCKER_WAIT_SECS:-120}"
+STOP_WAIT_SECS=60   # the server drains requests for up to 45 s (shutdown_deadline_secs) before it exits
+OS="$(uname -s)"
+
+usage() {
+  cat <<'EOF'
+Usage: erpforall-ctl COMMAND
+
+  status          print one word: not-installed, stopped, starting, running or port-busy
+  info            print the state, URL, paths and database mode
+  install [FLAGS] first install: build, database with demo data, server (long; FLAGS go to install.sh)
+  start           start the database container and the server, wait until it is ready
+  stop            stop the server, then the database container that install.sh created
+  stop --keep-db  stop the server only
+  rebuild         rebuild changed code after a git pull and restart (the database stays)
+  open            open the web client in the browser
+  url             print the web client URL
+  logs [N]        print the last N lines of the server log (default 50)
+  log-path        print the path of the server log
+  password-file   print the path of the file that holds the admin password (never the password)
+  help            this text
+
+The checkout is the one this script lives in (or ERPFORALL_ROOT); the state directory is
+~/.erpforall/local (or ERPFORALL_LOCAL_STATE), the same as scripts/install.sh.
+EOF
+}
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'erpforall-ctl: %s\n' "$*" >&2; exit 1; }
+
+# A GUI app starts with PATH=/usr/bin:/bin:/usr/sbin:/sbin. Put the usual tool locations in front, the way a
+# login shell would, so cargo, docker and Homebrew tools are found.
+for d in /Applications/OrbStack.app/Contents/MacOS/xbin /Applications/Docker.app/Contents/Resources/bin \
+         "$HOME/.orbstack/bin" "$HOME/.docker/bin" /usr/local/bin /opt/homebrew/bin "$HOME/.cargo/bin"; do
+  case ":$PATH:" in *":$d:"*) ;; *) if [ -d "$d" ]; then PATH="$d:$PATH"; fi ;; esac
+done
+export PATH
+
+# ---- state of install.sh ------------------------------------------------------------------------
+DB_NAME=""; PORT=""; PG_MODE=""; CONTAINER=""; DATABASE_PHASE=""
+load_state() { # returns 1 when install.sh never wrote its state file
+  [ -f "$STATE/state.env" ] || return 1
+  # install.sh writes this file with printf %q and reads it back the same way.
+  # shellcheck disable=SC1091
+  . "$STATE/state.env"
+  return 0
+}
+installed() { load_state && [ "$DATABASE_PHASE" = "done" ]; }
+need_installed() {
+  installed || die "ERPForAll is not installed yet (no finished installation in $STATE). Run: erpforall-ctl install"
+}
+need_checkout() {
+  [ -x "$ROOT/scripts/install.sh" ] || die "no ERPForAll checkout at $ROOT (scripts/install.sh is missing). If you moved the checkout, run scripts/macos/build-mac-app.sh again from its new place."
+}
+
+url() { printf 'http://127.0.0.1:%s/erp' "$PORT"; }
+
+server_pid() { # the pid of the server install.sh started, when it is running; same test as install.sh
+  local pid
+  [ -f "$STATE/server.pid" ] || return 0
+  pid="$(cat "$STATE/server.pid")"
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  case "$(ps -p "$pid" -o stat= 2>/dev/null)" in ''|Z*) return 0 ;; esac
+  case "$(ps -p "$pid" -o comm= 2>/dev/null)" in *erp*) printf '%s' "$pid" ;; esac
+}
+port_in_use() { ( exec 3<>"/dev/tcp/127.0.0.1/$1" ) 2>/dev/null; }
+ready() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$(url)/health/ready" 2>/dev/null || true)" = 200 ]; }
+
+current_status() {
+  installed || { say not-installed; return 0; }
+  if [ -n "$(server_pid)" ]; then
+    if ready; then say running; else say starting; fi
+  elif port_in_use "$PORT"; then
+    say port-busy
+  else
+    say stopped
+  fi
+}
+
+# install.sh finds the erp binary by build profile (target/release or, with --fast, target/local) and does not
+# record which one it used, so take the newer binary that exists.
+profile_flag() {
+  local rel="$ROOT/target/release/erp" loc="$ROOT/target/local/erp"
+  if [ -x "$rel" ] && [ -x "$loc" ]; then
+    if [ "$loc" -nt "$rel" ]; then say --fast; fi
+  elif [ -x "$loc" ]; then
+    say --fast
+  elif [ ! -x "$rel" ]; then
+    return 1
+  fi
+  return 0
+}
+
+run_install() { # flags for scripts/install.sh; never passes an empty argument
+  ( cd "$ROOT" && "$ROOT/scripts/install.sh" ${@+"$@"} )
+}
+
+# ---- Docker ---------------------------------------------------------------------------------------
+uses_docker() { # install.sh picks Docker unless a PostgreSQL superuser is named (state, then PGUSER)
+  if load_state && [ -n "$PG_MODE" ]; then [ "$PG_MODE" = docker ]; else [ -z "${PGUSER:-}" ]; fi
+}
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 || die "docker was not found. Install Docker Desktop or OrbStack, start it once, and try again."
+  docker info >/dev/null 2>&1 && return 0
+  local app=""
+  if [ "$OS" = Darwin ]; then
+    if [ -d /Applications/OrbStack.app ]; then app=OrbStack; elif [ -d /Applications/Docker.app ]; then app=Docker; fi
+  fi
+  [ -n "$app" ] || die "Docker is installed but not running. Start it and try again."
+  say "starting $app (waiting up to ${DOCKER_WAIT_SECS}s)..."
+  open -a "$app"
+  local i=0
+  until docker info >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ "$i" -le "$DOCKER_WAIT_SECS" ] || die "$app did not become ready within ${DOCKER_WAIT_SECS}s. Open it, wait until it says it is running, and try again."
+    sleep 1
+  done
+}
+container_running() { docker ps --format '{{.Names}}' 2>/dev/null | grep -qx -- "$CONTAINER"; }
+
+# ---- commands -------------------------------------------------------------------------------------
+cmd_info() {
+  local st; st="$(current_status)"
+  say "state:          $st"
+  say "checkout:       $ROOT"
+  say "state dir:      $STATE"
+  if installed; then
+    say "url:            $(url)"
+    say "login:          admin (password in $STATE/private/admin-password)"
+    say "database:       $DB_NAME ($PG_MODE$([ "$PG_MODE" != docker ] || printf ', container %s' "$CONTAINER"))"
+    say "server log:     $STATE/server.log"
+    [ -z "$(server_pid)" ] || say "server pid:     $(server_pid)"
+  fi
+}
+
+cmd_install() {
+  need_checkout
+  if uses_docker; then ensure_docker; fi
+  run_install ${@+"$@"}
+  if [ "$(current_status)" = running ]; then cmd_open; fi
+  say ""
+  say "Done. You can close this window; use ERPForAll.app to start and stop the server from now on."
+}
+
+cmd_start() {
+  need_checkout
+  need_installed
+  case "$(current_status)" in
+    running) say "already running: $(url)"; return 0 ;;
+    port-busy) die "port $PORT on 127.0.0.1 is used by another program (a local Odoo, or an ERPForAll started by hand?). Stop that program and try again." ;;
+  esac
+  local flag
+  flag="$(profile_flag)" || die "no erp binary in $ROOT/target/release or $ROOT/target/local (was the checkout cleaned?). Run: erpforall-ctl rebuild"
+  if [ "$PG_MODE" = docker ]; then ensure_docker; fi
+  if [ -n "$flag" ]; then run_install "$flag"; else run_install; fi
+  [ "$(current_status)" = running ] || die "install.sh finished but the server does not answer on $(url)/health/ready; see $STATE/server.log"
+  say "running: $(url)"
+}
+
+cmd_stop() {
+  local keep_db=0
+  case "${1:-}" in
+    '') ;;
+    --keep-db) keep_db=1 ;;
+    *) die "unknown option for stop: $1 (try: erpforall-ctl help)" ;;
+  esac
+  load_state || die "ERPForAll is not installed (no $STATE/state.env), so there is nothing to stop"
+  local pid i=0
+  pid="$(server_pid)"
+  if [ -n "$pid" ]; then
+    kill "$pid"
+    while [ -n "$(server_pid)" ]; do
+      i=$((i + 1))
+      [ "$i" -le "$STOP_WAIT_SECS" ] || die "the server (pid $pid) did not stop within ${STOP_WAIT_SECS}s; see $STATE/server.log"
+      sleep 1
+    done
+    say "server stopped"
+  else
+    say "server was not running"
+  fi
+  [ "$keep_db" = 0 ] && [ "$PG_MODE" = docker ] || return 0
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    say "Docker is not running, so the database container is stopped already"
+  elif container_running; then
+    docker stop "$CONTAINER" >/dev/null
+    say "database container $CONTAINER stopped"
+  else
+    say "database container $CONTAINER was not running"
+  fi
+}
+
+cmd_rebuild() {
+  need_checkout
+  need_installed
+  local flag
+  flag="$(profile_flag)" || flag=""   # no binary yet: rebuild with the default release profile
+  if [ "$PG_MODE" = docker ]; then ensure_docker; fi
+  if [ -n "$flag" ]; then run_install --rebuild "$flag"; else run_install --rebuild; fi
+}
+
+cmd_open() {
+  need_installed
+  if [ "$OS" = Darwin ]; then open "$(url)"
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$(url)" >/dev/null 2>&1 &
+  else say "$(url)"; fi
+}
+
+cmd_logs() {
+  local n="${1:-50}"
+  case "$n" in ''|*[!0-9]*) die "logs takes a number of lines, got '$n'" ;; esac
+  [ -f "$STATE/server.log" ] || die "no server log yet ($STATE/server.log)"
+  tail -n "$n" "$STATE/server.log"
+}
+
+[ "$#" -gt 0 ] || { usage; exit 2; }
+cmd="$1"; shift
+case "$cmd" in
+  status) current_status ;;
+  info) cmd_info ;;
+  install) cmd_install ${@+"$@"} ;;
+  start) cmd_start ;;
+  stop) cmd_stop ${@+"$@"} ;;
+  rebuild) cmd_rebuild ;;
+  open) cmd_open ;;
+  url) need_installed; url; printf '\n' ;;
+  logs) cmd_logs ${@+"$@"} ;;
+  log-path) say "$STATE/server.log" ;;
+  password-file) need_installed; say "$STATE/private/admin-password" ;;
+  help|-h|--help) usage ;;
+  *) printf 'erpforall-ctl: unknown command %s\n\n' "$cmd" >&2; usage >&2; exit 2 ;;
+esac
