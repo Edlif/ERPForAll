@@ -88,6 +88,22 @@ fn cell_drill_capability_is_optional_and_generated_values_do_not_inherit_it() {
         Cell::empty().with_drillable(true).to_json()["drillable"],
         false
     );
+    // Blanking a zero takes a declared drill with it, in either order of the two calls.
+    let zero = Cell::monetary(Some(Decimal::ZERO), 2, Some(1));
+    for blank in [
+        zero.clone().with_drillable(true).blank_if_zero(),
+        zero.clone().blank_if_zero().with_drillable(true),
+    ] {
+        assert_eq!(blank.to_json()["drillable"], false);
+        assert_eq!(blank.display(), "");
+    }
+    assert_eq!(
+        Cell::monetary(Some(Decimal::ONE), 2, Some(1))
+            .with_drillable(true)
+            .blank_if_zero()
+            .to_json()["drillable"],
+        true
+    );
 }
 
 #[test]

@@ -396,6 +396,10 @@ impl Cell {
     pub fn blank_if_zero(mut self) -> Self {
         if self.is_zero() {
             self.number = None;
+            // A cell that shows nothing has no records to open: a drill declared before the blanking goes with it.
+            if let Some(supported) = &mut self.drillable {
+                *supported = false;
+            }
         }
         self
     }
